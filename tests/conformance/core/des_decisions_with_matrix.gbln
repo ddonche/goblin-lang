@@ -1,0 +1,39 @@
+/// known-gap: interp runs only a class's first decision (VM only, owner 2026-10-25)
+/// Objects made by a matrix keep their class's named decisions.
+<>Shop |
+    cheap: .8
+    hiring: .9
+xx
+<>Person |
+    ~bought: 0
+    ~jobs: 0
+    shop | decision against Shop by [
+        target >> cheap
+    ]
+    judge using shop
+        >= .5: buy(target)
+    end
+    work | decision against Shop by [
+        target >> hiring
+    ]
+    judge using work
+        >= .5: apply(target)
+    end
+xx
+act buy(p, s)
+    p >> bought |= p >> bought + 1
+xx
+act apply(p, s)
+    p >> jobs |= p >> jobs + 1
+xx
+
+<>Person matrix
+    name:   "{name}", ann
+    bought: 0,        nc
+end
+
+s <> Shop | cheap: .8
+tick()
+b | ann >> bought
+j | ann >> jobs
+say("bought {b}, jobs {j}")

@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::error::GoblinError;
 use crate::portable::{FromPortable, PValue, ToPortable};
-use crate::session::{LinkDef, OverlayApplyBehavior, OverlayDef, OverlayInstance, OverlayInstanceId, Session};
+use crate::session::{LinkDef, LinkOffset, OverlayApplyBehavior, OverlayDef, OverlayInstance, OverlayInstanceId, Session};
 
 pub(crate) struct POverlayDef {
     name: String,
@@ -49,7 +49,15 @@ pub(crate) struct DesImage {
     object_decisions: Vec<(String, goblin_ast::DecisionDef)>,
     overlays: Vec<POverlay>,
     object_names: Vec<(String, (String, bool))>,
+    /// Link offsets (`a link to b on ch offset ...`) from or to the
+    /// objects handed over, with the ticks they have left.
+    link_offsets: Vec<((String, String, String), Vec<LinkOffset>)>,
     overlay_ids: u32,
+}
+
+/// The names the handed objects were stored under.
+pub(crate) fn handed_names(session: &Session, objs: &HashSet<String>) -> HashSet<String> {
+    objs.iter().filter_map(|u| session.object_names.get(u).map(|(n, _)| n.clone())).collect()
 }
 
 fn pfields(tp: &mut ToPortable, m: &indexmap::IndexMap<String, crate::value::Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
@@ -92,6 +100,14 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
             }
         }
         img.object_names.sort();
+        if !session.link_offsets.is_empty() {
+            let names = handed_names(session, objs);
+            img.link_offsets = session.link_offsets.iter()
+                .filter(|((from, to, _), _)| names.contains(from) || names.contains(to))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            img.link_offsets.sort_by(|a, b| a.0.cmp(&b.0));
+        }
     }
     Ok(img)
 }
@@ -122,6 +138,9 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     s.des_overlay_id_counter = img.overlay_ids;
     for (u, n) in &img.object_names {
         s.object_names.insert(u.clone(), n.clone());
+    }
+    for (k, v) in &img.link_offsets {
+        s.link_offsets.insert(k.clone(), v.clone());
     }
     for o in &img.overlays {
         let inst = overlay_from_p(o, fp, s);
