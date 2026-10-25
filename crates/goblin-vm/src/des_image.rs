@@ -131,6 +131,7 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
 
 impl POverlay {
     pub(crate) fn host(&self) -> &str { &self.host_uuid }
+    pub(crate) fn name(&self) -> &str { &self.overlay_name }
 }
 
 /// One overlay, ready to cross to another thread.

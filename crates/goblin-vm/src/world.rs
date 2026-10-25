@@ -43,6 +43,9 @@ pub enum Change {
 pub enum Item {
     Change { uuid: String, field: String, change: Change },
     Overlay(POverlay),
+    /// Spread onto an overlay another region's object already has: the
+    /// strength it adds there.
+    Reinforce { host: String, overlay: String, amount: f64 },
     Post(PValue),
 }
 
@@ -77,6 +80,8 @@ pub struct WorldOut {
 pub struct RegionCtx {
     pub(crate) regions: Vec<u64>,
     pub(crate) remote: HashSet<String>,
+    /// The overlays those objects have: (overlay, host).
+    pub(crate) remote_overlays: HashSet<(String, String)>,
     pub(crate) sent: Vec<(Dest, Item)>,
 }
 
@@ -226,7 +231,7 @@ pub(crate) fn view_overlays(vm: &mut Vm) -> Vec<crate::session::OverlayInstance>
 /// tick with the other regions' objects in view, then the region's handler
 /// with `{"tick": n}`. Returns its snapshot and what it sends.
 pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
-    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), remote: HashSet::new(), sent: Vec::new() });
+    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), remote: HashSet::new(), remote_overlays: HashSet::new(), sent: Vec::new() });
     let r = region_steps(vm, state, handler, job);
     let ctx = vm.session.region.take();
     // Whatever happened, no other region's object stays here.
@@ -266,6 +271,12 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
                     crate::tick::overlay_push(vm, inst);
                 }
             }
+            Item::Reinforce { host, overlay, amount } => {
+                if let Some(i) = vm.session.overlay_instances.iter_mut()
+                    .find(|i| &i.host_uuid == host && &i.overlay_name == overlay) {
+                    i.strength = (i.strength + amount).min(1.0);
+                }
+            }
             Item::Post(p) => {
                 let m = fp.value(p, &mut vm.session);
                 let m = crate::actor::adopt_value(m, &mut vm.session);
@@ -282,6 +293,11 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
             if let Value::Object(o) = &v { before.push((uuid.clone(), (*o.fields).clone())); }
             vm.session.object_store.insert(uuid.clone(), v);
             if let Some(c) = vm.session.region.as_mut() { c.remote.insert(uuid.clone()); }
+        }
+        if let Some(c) = vm.session.region.as_mut() {
+            for o in &snap.overlays {
+                if c.remote.contains(o.host()) { c.remote_overlays.insert((o.name().to_string(), o.host().to_string())); }
+            }
         }
     }
     // 3. The DES tick.
@@ -365,6 +381,25 @@ pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance) 
         c.sent.push((Dest::Object(inst.host_uuid.clone()), Item::Overlay(p)));
     }
     true
+}
+
+/// Spread onto another region's object that already has this overlay:
+/// the owner adds `amount` to it next tick. Returns true when sent.
+pub(crate) fn reinforce_remote(vm: &mut Vm, overlay: &str, host: &str, amount: f64) -> bool {
+    let Some(c) = vm.session.region.as_mut() else { return false };
+    if !c.remote_overlays.contains(&(overlay.to_string(), host.to_string())) { return false; }
+    c.sent.push((Dest::Object(host.to_string()),
+        Item::Reinforce { host: host.to_string(), overlay: overlay.to_string(), amount }));
+    true
+}
+
+/// The main program sees the regions' objects as of the last tick and
+/// cannot change them: a change would be lost at the next tick (C0124).
+pub(crate) fn check_view_write(s: &crate::session::Session, uuid: &str) -> Result<(), GoblinError> {
+    if s.world.as_ref().is_some_and(|w| w.view.contains(uuid)) {
+        return Err(err("C0124: region-object-read-only: this object belongs to a region; the program that runs tick(regions) sees it as of the last tick and cannot change it; send the region a message to change it"));
+    }
+    Ok(())
 }
 
 /// Whether this object belongs to another region (in view during a tick).
