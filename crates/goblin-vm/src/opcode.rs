@@ -182,6 +182,11 @@ pub enum Opcode {
     /// calls the builtin and writes the result back along the path as
     /// `update!` does, pushing x's new value. The caller stores it into x.
     CallBuiltinMutPath(BuiltinId, u8, u8),
+    /// `:schedule!` / `:unschedule!` / `:due!` on the agenda at `x` or
+    /// `x[k1]…[kN]`: stack is [x, k1…kN, args…] (argc counts the agenda as
+    /// one argument). Leaves x (its operand when changed in place, else its
+    /// new value, for the caller to store) and then the call's value.
+    AgendaCall(BuiltinId, u8, u8),
 
     // ── Closures ──────────────────────────────────────────────────────────────
     /// Create a closure from constants[func_idx] (a FunctionObject).
@@ -409,6 +414,7 @@ impl Opcode {
             Opcode::RepeatIdx(_) => "RepeatIdx",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
+            Opcode::AgendaCall(..) => "AgendaCall",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
             Opcode::LoadItFieldOrJump(..) => "LoadItFieldOrJump",
             Opcode::StringInterpVals(..) => "StringInterpVals",
