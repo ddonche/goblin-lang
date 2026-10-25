@@ -13,8 +13,9 @@
 ///   waits until every district has reported (a barrier). Districts run in
 ///   parallel; anything that crosses districts (wages, hiring, moves) goes
 ///   through the clock as mail for the next day, in a fixed order.
-/// - Each district keeps its own event queue: events are scheduled onto a
-///   day, run in the order they were scheduled, and can be cancelled.
+/// - Each district keeps its own event queue (:agenda): events are
+///   scheduled onto a day with :schedule!, run in the order they were
+///   scheduled (:due!), and can be cancelled (:unschedule!).
 /// - Randomness comes from a small generator seeded from (seed, day,
 ///   district), so a run repeats exactly, and any day can be rebuilt.
 /// - History: a checkpoint of every district each year plus every day's
@@ -94,30 +95,28 @@ act make_district(d, cfg)
         :put_last!(hh, h)
     xx
     st | {"d": d, "nd": nd, "seed": cfg{"seed"}, "res": res, "hh": hh, "biz": biz, "where": where,
-          "all_biz": cfg{"all_biz"}, "treasury": 20000, "ev": {}, "cancel": {}, "next_ev": 1,
+          "all_biz": cfg{"all_biz"}, "treasury": 20000, "q": :agenda(),
           "out": [], "sum": {}, "next_res": n_res, "next_hh": :len(hh)}
     /// First paydays, rents and job searches, spread over the first weeks.
     j | 0
     while j < :len(st{"biz"})
         r |= (r * 48271) % 2147483647
-        st |= schedule(st, 1 + r % 14, {"kind": "payday", "biz": j})
+        :schedule!(st{"q"}, 1 + r % 14, {"kind": "payday", "biz": j})
         j |= j + 1
     xx
     j |= 0
     while j < :len(st{"hh"})
         r |= (r * 48271) % 2147483647
-        id | st{"next_ev"}
-        st |= schedule(st, 1 + r % 30, {"kind": "rent", "hh": j})
+        id | :schedule!(st{"q"}, 1 + r % 30, {"kind": "rent", "hh": j})
         :update!(st{"hh"}[j]{"rent_ev"}, id)
         j |= j + 1
     xx
     return st
 xx
 
-/// ---------- the event queue ----------
+/// ---------- helpers ----------
 
-/// Put an event on day `when`; events on one day run in the order scheduled.
-/// The event's id is the state's next_ev before the call.
+/// `arr` without the items equal to `v`.
 act without(arr, v)
     out | []
     for x in arr
@@ -126,25 +125,6 @@ act without(arr, v)
         xx
     xx
     return out
-xx
-
-act schedule(st, when, ev)
-    k | :str(when)
-    id | st{"next_ev"}
-    :update!(ev{"id"}, id)
-    if :has(st{"ev"}, k) == false
-        :update!(st{"ev"}{k}, [])
-    xx
-    :put_last!(st{"ev"}{k}, ev)
-    :update!(st{"next_ev"}, id + 1)
-    return st
-xx
-
-act cancel(st, id)
-    if id > 0
-        :update!(st{"cancel"}{:str(id)}, true)
-    xx
-    return st
 xx
 
 /// ---------- one district, one day ----------
@@ -214,22 +194,17 @@ act district_tick(st, t, mail)
                 :update!(st{"where"}{:str(p{"id"})}, li)
                 :put_last!(h{"members"}, li)
             xx
-            id | st{"next_ev"}
-            st |= schedule(st, t + 30, {"kind": "rent", "hh": hi})
+            id | :schedule!(st{"q"}, t + 30, {"kind": "rent", "hh": hi})
             :update!(h{"rent_ev"}, id)
             :put_last!(st{"hh"}, h)
         xx
     xx
 
     /// --- the day's events ---
-    key | :str(t)
-    if :has(st{"ev"}, key)
-        todo | st{"ev"}{key}
-        :delete!(st{"ev"}, key)
+    todo | :due!(st{"q"}, t)
+    if :len(todo) > 0
         for ev in todo
-            if :has(st{"cancel"}, :str(ev{"id"}))
-                :delete!(st{"cancel"}, :str(ev{"id"}))
-            elif ev{"kind"} == "payday"
+            if ev{"kind"} == "payday"
                 b | ev{"biz"}
                 bz | st{"biz"}[b]
                 if bz{"open"}
@@ -266,7 +241,7 @@ act district_tick(st, t, mail)
                     :update!(st{"biz"}[b]{"cash"}, bz{"cash"} + 4000)
                     :update!(st{"biz"}[b]{"open"}, true)
                 xx
-                st |= schedule(st, t + 14, {"kind": "payday", "biz": b})
+                :schedule!(st{"q"}, t + 14, {"kind": "payday", "biz": b})
             elif ev{"kind"} == "rent"
                 h | ev{"hh"}
                 total | 0
@@ -279,8 +254,7 @@ act district_tick(st, t, mail)
                     xx
                 xx
                 :update!(st{"treasury"}, st{"treasury"} + total)
-                id | st{"next_ev"}
-                st |= schedule(st, t + 30, {"kind": "rent", "hh": h})
+                id | :schedule!(st{"q"}, t + 30, {"kind": "rent", "hh": h})
                 :update!(st{"hh"}[h]{"rent_ev"}, id)
             elif ev{"kind"} == "seek"
                 i | ev{"res"}
@@ -327,8 +301,8 @@ act district_tick(st, t, mail)
                 :update!(st{"res"}[i]{"alive"}, false)
                 :update!(st{"treasury"}, st{"treasury"} + p{"money"})
                 :update!(st{"res"}[i]{"money"}, 0)
-                st |= cancel(st, p{"seek_ev"})
-                st |= cancel(st, p{"baby_ev"})
+                :unschedule!(st{"q"}, p{"seek_ev"})
+                :unschedule!(st{"q"}, p{"baby_ev"})
                 if p{"job"} >= 0
                     :put_last!(out, {"kind": "quit", "res": p{"id"}, "biz": p{"job"}})
                 xx
@@ -353,16 +327,14 @@ act district_tick(st, t, mail)
                 /// No job and not looking: start looking within a week.
                 if p{"job"} == -1 and p{"seek_ev"} < 0
                     r |= (r * 48271) % 2147483647
-                    id | st{"next_ev"}
-                    st |= schedule(st, t + 1 + r % 7, {"kind": "seek", "res": i})
+                    id | :schedule!(st{"q"}, t + 1 + r % 7, {"kind": "seek", "res": i})
                     :update!(st{"res"}[i]{"seek_ev"}, id)
                 xx
                 /// A child, now and then, for adults 20 to 40.
                 if p{"baby_ev"} < 0 and age > 20 * 365 and age < 40 * 365
                     r |= (r * 48271) % 2147483647
                     if r % 4000 == 0 and :len(st{"hh"}[p{"hh"}]{"members"}) < 6
-                        id | st{"next_ev"}
-                        st |= schedule(st, t + 270, {"kind": "birth", "res": i})
+                        id | :schedule!(st{"q"}, t + 270, {"kind": "birth", "res": i})
                         :update!(st{"res"}[i]{"baby_ev"}, id)
                     xx
                 xx
@@ -416,13 +388,13 @@ act district_tick(st, t, mail)
             people | []
             for i in st{"hh"}[h]{"members"}
                 p | st{"res"}[i]
-                st |= cancel(st, p{"seek_ev"})
-                st |= cancel(st, p{"baby_ev"})
+                :unschedule!(st{"q"}, p{"seek_ev"})
+                :unschedule!(st{"q"}, p{"baby_ev"})
                 :put_last!(people, p)
                 :update!(st{"res"}[i]{"here"}, false)
                 :update!(st{"res"}[i]{"money"}, 0)
             xx
-            st |= cancel(st, st{"hh"}[h]{"rent_ev"})
+            :unschedule!(st{"q"}, st{"hh"}[h]{"rent_ev"})
             :put_last!(out, {"kind": "move_in", "to": dest, "hh": st{"hh"}[h], "people": people})
             :update!(st{"hh"}[h]{"members"}, [])
             moved |= moved + 1

@@ -978,6 +978,11 @@ pub enum BuiltinId {
     WriteJson,
     ReapSample,
     ReapBang,
+    // The event queue (agenda.rs).
+    Agenda,
+    Schedule,
+    Unschedule,
+    Due,
     IsType,
     IsBoundName,
     Invoke,
@@ -1249,13 +1254,18 @@ impl CollectionValue {
 }
 
 /// The concrete backend layout Goblin uses for this collection.
+/// The large-map backend. Keys keep insertion order (IndexMap), so the
+/// hasher's per-process random keys never change what a program sees;
+/// aHash is just much faster than the default SipHash.
+pub type BigMap = indexmap::IndexMap<Value, Value, ahash::RandomState>;
+
 #[derive(Debug, Clone)]
 pub enum CollectionLayout {
     FlatArray(Rc<Vec<Value>>),
     RingBuf(Rc<RingBuf>),
     ChunkedSeq(Rc<ChunkedSeq>),
     SmallMap(Rc<Vec<(Value, Value)>>),
-    HashMapBackend(Rc<indexmap::IndexMap<Value, Value>>),
+    HashMapBackend(Rc<BigMap>),
 }
 
 /// Ring buffer for queue/stack semantics.
@@ -1377,7 +1387,21 @@ impl ChunkedSeq {
         self.chunks.iter().flat_map(|c| c.iter().cloned()).collect()
     }
 
+    /// Where `idx` sits when every chunk but the last is full (how
+    /// `from_flat` builds them), so a read doesn't walk the chunks.
+    #[inline]
+    fn direct(&self, idx: usize) -> Option<(usize, usize)> {
+        let last = self.chunks.last()?;
+        if last.len() > Self::CHUNK_SIZE
+            || self.len != (self.chunks.len() - 1) * Self::CHUNK_SIZE + last.len() {
+            return None;
+        }
+        let (c, r) = (idx / Self::CHUNK_SIZE, idx % Self::CHUNK_SIZE);
+        (c < self.chunks.len() && r < self.chunks[c].len()).then_some((c, r))
+    }
+
     pub fn get(&self, idx: usize) -> Option<&Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &self.chunks {
             if rem < chunk.len() {
@@ -1389,6 +1413,7 @@ impl ChunkedSeq {
     }
 
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut Value> {
+        if let Some((c, r)) = self.direct(idx) { return Some(&mut self.chunks[c][r]); }
         let mut rem = idx;
         for chunk in &mut self.chunks {
             if rem < chunk.len() {

@@ -128,6 +128,11 @@ pub struct Vm {
     resumable: bool,
     /// Set by a waiting builtin that stopped the handler: what it waits for.
     suspended: Option<crate::actor::Wait>,
+    /// Reused buffer for operands taken off the stack, so ops that take
+    /// several operands don't allocate a list for them every time.
+    scratch: Vec<Operand>,
+    /// Reused buffer for the resolved keys of an in-place path write.
+    key_buf: Vec<Value>,
     /// DES formulas already compiled, by parameter names and expression, so
     /// a formula evaluated every tick is compiled once.
     /// Compiled DES formulas, with whether `run_formula` can run each one.
@@ -146,7 +151,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, tick_exprs: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), tick_exprs: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -945,6 +950,13 @@ impl Vm {
             }
             Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
                 let brace = matches!(op, Opcode::KeyGet(_));
+                // Read the element where it is; only it is copied.
+                if let Some(v) = self.index_get_in_place(brace)? {
+                    let len = self.stack.len();
+                    self.stack.truncate(len - 2);
+                    self.stack.push(Operand::Val(v));
+                    return Ok(());
+                }
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 self.check_bracket(&coll_val, brace, label_idx)?;
@@ -978,13 +990,18 @@ impl Vm {
             }
             Opcode::CheckPath(n, info_idx) => {
                 let n = n as usize;
+                if self.stack.len() < n + 1 {
+                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
+                }
+                // Walk the path by reference first; only a step this can't
+                // read in place falls back to the copying walk below.
+                if self.check_path_in_place(n, info_idx)? {
+                    return Ok(());
+                }
                 let info: Vec<String> = match self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) {
                     Some(Value::Array(items)) => items.iter().map(|v| match v { Value::Str(s) => s.to_string(), _ => String::new() }).collect(),
                     _ => return Err(GoblinError::Runtime("CheckPath: bad info constant".into())),
                 };
-                if self.stack.len() < n + 1 {
-                    return Err(GoblinError::Runtime("stack underflow on CheckPath".into()));
-                }
                 let base = self.stack.len() - n - 1;
                 let mut cur = self.resolve_op(self.stack[base].clone())?;
                 for (i, seg) in info.iter().enumerate() {
@@ -1452,16 +1469,45 @@ impl Vm {
                 let updated = self.update_path(root, &segs, result)?;
                 self.stack.push(Operand::Val(updated));
             }
+            Opcode::AgendaCall(id, argc, n) => {
+                let n = n as usize;
+                let rest = argc as usize - 1;
+                if self.stack.len() < 1 + n + rest {
+                    return Err(GoblinError::Runtime("stack underflow on AgendaCall".into()));
+                }
+                let start = self.stack.len() - (n + rest);
+                if let Some(t) = self.sole_ref_target(1 + n + rest) {
+                    let mut keys = self.drain_operands(start)?;
+                    let args = keys.split_off(n);
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    let q = crate::agenda::path_mut(&mut stash.value, &keys)?;
+                    let result = crate::agenda::call(id, q, &args)?;
+                    // The agenda's variable stays on the stack, changed.
+                    self.stack.push(Operand::Val(result));
+                    return Ok(());
+                }
+                let mut keys = self.drain_operands(start)?;
+                let args = keys.split_off(n);
+                let mut root = self.pop_value()?;
+                let q = crate::agenda::path_mut(&mut root, &keys)?;
+                let result = crate::agenda::call(id, q, &args)?;
+                self.stack.push(Operand::Val(root));
+                self.stack.push(Operand::Val(result));
+            }
             Opcode::UpdatePathMut(n, mask) => {
                 // Stack: [root, key1, …, keyN, new_val]. Field segments go
                 // through member dispatch, so only index paths are done here.
                 if mask == 0 {
                     if let Some(t) = self.sole_ref_target(n as usize + 2) {
                         let start = self.stack.len() - (n as usize + 1);
-                        let mut vals = self.drain_operands(start)?;
+                        let mut vals = std::mem::take(&mut self.key_buf);
+                        vals.clear();
+                        self.drain_operands_into(start, &mut vals)?;
                         let new_val = vals.pop().unwrap();
                         let stash = self.session.resolve_mut(t.addr)?;
                         if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
+                            vals.clear();
+                            self.key_buf = vals;
                             return Ok(());
                         }
                         self.stack.extend(vals.into_iter().map(Operand::Val));
@@ -2876,13 +2922,99 @@ impl Vm {
         if shared { None } else { Some(t.clone()) }
     }
 
+    /// CheckPath without copying: `Ok(true)` when the whole walk was done
+    /// (the same bracket errors, the same stop at a missing step), `Ok(false)`
+    /// when a step needs the copying walk.
+    fn check_path_in_place(&self, n: usize, info_idx: u16) -> Result<bool, GoblinError> {
+        use crate::collections::{value_child_ref, ChildRef};
+        let Some(Value::Array(info)) = self.call_stack.last().and_then(|f| f.func.constants.get(info_idx as usize)) else {
+            return Err(GoblinError::Runtime("CheckPath: bad info constant".into()));
+        };
+        let base = self.stack.len() - n - 1;
+        let mut cur: &Value = match &self.stack[base] {
+            Operand::Val(v) => v,
+            Operand::Ref(t) => match &self.session.get_stash(t)?.value {
+                // An object goes through the object store; leave it to the copying walk.
+                Value::Ref(_) => return Ok(false),
+                v => v,
+            },
+        };
+        if let Value::Frozen(f) = cur { cur = &f.value; }
+        for (i, seg) in info.iter().enumerate() {
+            let key: &Value = match &self.stack[base + 1 + i] {
+                Operand::Val(Value::Frozen(f)) => &f.value,
+                Operand::Val(v) => v,
+                Operand::Ref(t) => match &self.session.get_stash(t)?.value {
+                    Value::Ref(_) => return Ok(false),
+                    Value::Frozen(f) => &f.value,
+                    v => v,
+                },
+            };
+            let seg = match seg { Value::Str(s) => s.as_str(), _ => "" };
+            if seg != "." {
+                bracket_error(cur, seg.starts_with('{'), &seg[1..]).map_or(Ok(()), Err)?;
+            }
+            // The last step's value is never checked, so don't look it up.
+            if i + 1 == info.len() { break; }
+            match value_child_ref(cur, key) {
+                ChildRef::Found(v) if !matches!(v, Value::Nil) => cur = v,
+                ChildRef::Found(_) | ChildRef::Missing => break,
+                ChildRef::Other => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    /// `coll[key]` / `coll{key}` read from the top two operands without
+    /// copying the collection. None when this can't be done in place (an
+    /// object, a missing element, or anything that must raise an error);
+    /// the copying path handles those.
+    fn index_get_in_place(&self, brace: bool) -> Result<Option<Value>, GoblinError> {
+        use crate::collections::{value_child_ref, ChildRef};
+        let len = self.stack.len();
+        if len < 2 { return Ok(None); }
+        let (Some(coll), Some(key)) = (self.plain_operand(&self.stack[len - 2])?, self.plain_operand(&self.stack[len - 1])?) else {
+            return Ok(None);
+        };
+        if bracket_error(coll, brace, "").is_some() { return Ok(None); }
+        if brace && !matches!(key, Value::Str(_) | Value::Char(_) | Value::Int(_)
+                | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
+            return Ok(None);
+        }
+        Ok(match value_child_ref(coll, key) {
+            ChildRef::Found(v) => Some(v.clone()),
+            _ => None,
+        })
+    }
+
+    /// The plain value an operand holds, by reference; None for an object.
+    fn plain_operand<'a>(&'a self, op: &'a Operand) -> Result<Option<&'a Value>, GoblinError> {
+        let v = match op {
+            Operand::Val(v) => v,
+            Operand::Ref(t) => &self.session.get_stash(t)?.value,
+        };
+        Ok(match v {
+            Value::Ref(_) => None,
+            Value::Frozen(f) => Some(&f.value),
+            v => Some(v),
+        })
+    }
+
     fn drain_operands(&mut self, start: usize) -> Result<Vec<Value>, GoblinError> {
-        let ops: Vec<Operand> = self.stack.drain(start..).collect();
-        let mut vals = Vec::with_capacity(ops.len());
-        for op in ops {
+        let mut vals = Vec::with_capacity(self.stack.len().saturating_sub(start));
+        self.drain_operands_into(start, &mut vals)?;
+        Ok(vals)
+    }
+
+    /// Like `drain_operands`, appending to `vals`.
+    fn drain_operands_into(&mut self, start: usize, vals: &mut Vec<Value>) -> Result<(), GoblinError> {
+        let mut ops = std::mem::take(&mut self.scratch);
+        ops.extend(self.stack.drain(start..));
+        for op in ops.drain(..) {
             vals.push(self.resolve_op(op)?);
         }
-        Ok(vals)
+        self.scratch = ops;
+        Ok(())
     }
 
     /// Dead code kept to avoid cascading changes — use resolve_op instead.

@@ -1,0 +1,4 @@
+/// A day must be a whole number.
+q | :agenda()
+:schedule!(q, 1.5, "x")
+say("not reached")

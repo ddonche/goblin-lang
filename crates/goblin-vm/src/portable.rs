@@ -19,7 +19,7 @@ use crate::error::GoblinError;
 use crate::session::Session;
 use crate::value::{
     ChunkedSeq, Closure, EnumVal, ObjectVal, CollectionLayout, CollectionMeta, CollectionValue, FormatSpec, Frozen,
-    FunctionObject, GoblinDateTime, RingBuf, Seq, UpvalueCell, UpvalueDescriptor, Value, BuiltinId,
+    FunctionObject, GStr, GoblinDateTime, RingBuf, Seq, UpvalueCell, UpvalueDescriptor, Value, BuiltinId,
 };
 
 #[derive(Debug, Clone)]
@@ -301,7 +301,15 @@ pub struct FromPortable {
     /// Shared values already rebuilt in this session.
     values: HashMap<*const PValue, Value>,
     global_names: HashMap<Vec<String>, Rc<std::cell::OnceCell<Vec<String>>>>,
+    /// Short strings already rebuilt, so repeated keys and names ("id",
+    /// "money", ...) share one copy instead of each allocating its own.
+    strs: HashMap<Box<str>, GStr>,
 }
+
+/// Strings up to this long are shared by content when rebuilt.
+const INTERN_STR: usize = 32;
+/// At most this many distinct short strings are remembered.
+const INTERN_MAX: usize = 4096;
 
 impl Default for FromPortable {
     fn default() -> Self { Self::new() }
@@ -309,7 +317,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new() }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new() }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -331,7 +339,7 @@ impl FromPortable {
             PValue::Big(d) => Value::Big(*d),
             PValue::Pct(x) => Value::Pct(*x),
             PValue::Char(c) => Value::Char(*c),
-            PValue::Str(s) => Value::Str(s.clone().into()),
+            PValue::Str(s) => Value::Str(self.str(s)),
             PValue::DateTime(d) => Value::DateTime(Box::new(d.clone())),
             PValue::Duration(d) => Value::Duration(Box::new(d.clone())),
             PValue::Formatted(inner, spec) => Value::Formatted(Box::new(self.value(inner, session)), spec.clone()),
@@ -423,6 +431,15 @@ impl FromPortable {
         let f = Rc::new(Frozen { value, shared: shared.clone() });
         self.frozen.insert(key, (f.clone(), has_closure(shared)));
         f
+    }
+
+    /// A rebuilt string; short ones are shared with earlier equal ones.
+    fn str(&mut self, s: &str) -> GStr {
+        if s.len() > INTERN_STR { return GStr::new(s.to_string()); }
+        if let Some(g) = self.strs.get(s) { return g.clone(); }
+        let g = GStr::new(s.to_string());
+        if self.strs.len() < INTERN_MAX { self.strs.insert(s.into(), g.clone()); }
+        g
     }
 
     fn values(&mut self, vs: &[PValue], session: &mut Session) -> Vec<Value> {
