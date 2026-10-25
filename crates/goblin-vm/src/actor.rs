@@ -1028,6 +1028,10 @@ impl Vm {
         // Their overlays went with them.
         if !graph.is_empty() {
             self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
+            if !self.session.link_offsets.is_empty() {
+                let names = crate::des_image::handed_names(&self.session, &graph);
+                self.session.link_offsets.retain(|(from, to, _), _| !names.contains(from) && !names.contains(to));
+            }
         }
         for u in &graph {
             self.session.object_store.shift_remove(u.as_str());
