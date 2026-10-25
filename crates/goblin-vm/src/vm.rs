@@ -128,6 +128,9 @@ pub struct Vm {
     resumable: bool,
     /// Set by a waiting builtin that stopped the handler: what it waits for.
     suspended: Option<crate::actor::Wait>,
+    /// DES formulas already compiled, by parameter names and expression, so
+    /// a formula evaluated every tick is compiled once.
+    tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<crate::value::FunctionObject>>,
 }
 
 /// How far an actor's handler got in one go.
@@ -142,7 +145,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, tick_exprs: std::collections::HashMap::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2174,7 +2177,8 @@ impl Vm {
                         map
                     },
                 };
-                self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
+                self.tick_exprs.clear();
+                self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
             Opcode::OverlayApply(i) => {
@@ -2260,7 +2264,8 @@ impl Vm {
                     formula_min,
                     formula_max,
                 };
-                self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
+                self.tick_exprs.clear();
+                self.session.link_defs.insert((def.class_name.clone(), channel), std::rc::Rc::new(link_def));
             }
 
             Opcode::ObjectLinkDef(i) => {
@@ -2275,7 +2280,8 @@ impl Vm {
                     formula_min,
                     formula_max,
                 };
-                self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
+                self.tick_exprs.clear();
+                self.session.object_link_defs.insert((def.object_var.clone(), channel), std::rc::Rc::new(link_def));
             }
 
             Opcode::LinkOffset(i) => {
@@ -2309,7 +2315,8 @@ impl Vm {
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
-                self.session.object_decisions.insert(var_name.clone(), d);
+                self.tick_exprs.clear();
+                self.session.object_decisions.insert(var_name.clone(), std::rc::Rc::new(d));
             }
 
             Opcode::UnitDecl(i) => {
@@ -3071,6 +3078,7 @@ impl Vm {
 
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
+        self.tick_exprs.clear();
         crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
 
         // Track the importing file's directory in base_dir so that GLAM files (which
@@ -3863,11 +3871,21 @@ impl Vm {
 
     /// Compile a single Expr into a callable FunctionObject with the given parameter names.
     fn compile_tick_expr(
-        &self,
+        &mut self,
         expr: &goblin_ast::Expr,
         param_names: &[&str],
     ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
-        Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())
+        // DES formulas live in shared (Rc) definitions, so a formula keeps
+        // its address; the key is that address, checked against the
+        // formula's span and kind, and the names it is called with.
+        let key = tick_expr_key(expr, param_names);
+        if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
+        let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
+        // A formula at a passing address (a copy) is compiled each time; keep
+        // the table from growing without end.
+        if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
+        self.tick_exprs.insert(key, f.clone());
+        Ok(f)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
@@ -4997,6 +5015,20 @@ fn concat_text(a: &str, b: &str) -> String {
     s.push_str(a);
     s.push_str(b);
     s
+}
+
+/// The tick-expr cache key: the formula's address, its span and kind, and
+/// the parameter names. A freed formula's address could be reused, so the
+/// table is emptied whenever a definition holding formulas is replaced, and
+/// a reused address must also match span and kind.
+fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usize, u32, u32, u64) {
+    use std::hash::{Hash, Hasher};
+    let sp = expr.span();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(expr).hash(&mut h);
+    params.hash(&mut h);
+    sp.file.hash(&mut h);
+    (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }
 
 /// The trait fields of a new object, as the interpreter infers them: every
