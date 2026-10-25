@@ -33,6 +33,9 @@ struct FunctionScope {
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
     bytecode: Vec<Opcode>,
+    /// Position of a `LoadNil` that only gives a statement-like call its
+    /// value; a statement that discards it drops the pair instead.
+    unused_nil: Option<usize>,
     /// Data for opcodes that carry strings or AST.
     op_data: Vec<crate::opcode::OpData>,
     /// Constant pool.
@@ -70,6 +73,7 @@ impl FunctionScope {
             all_locals: Vec::new(),
             upvalues: Vec::new(),
             bytecode: Vec::new(),
+            unused_nil: None,
             op_data: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u8,
@@ -177,6 +181,8 @@ impl FunctionScope {
 
     /// Patch a previously emitted jump to the current position.
     fn patch_jump(&mut self, jump_idx: usize) {
+        // A jump now lands after the trailing `LoadNil`, so it can't be dropped.
+        self.unused_nil = None;
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
@@ -188,6 +194,7 @@ impl FunctionScope {
 
     /// Patch a previously emitted jump to a specific target IP.
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
+        self.unused_nil = None;
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
@@ -741,7 +748,15 @@ impl Compiler {
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
-                self.emit(Opcode::Pop); // discard expression result
+                let sc = self.scope_mut();
+                if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
+                    // `LoadNil; Pop` does nothing: leave both out.
+                    sc.bytecode.pop();
+                    sc.line_numbers.pop();
+                    sc.unused_nil = None;
+                } else {
+                    self.emit(Opcode::Pop); // discard expression result
+                }
             }
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
@@ -3084,7 +3099,8 @@ impl Compiler {
                         let store_op = self.resolve_store(&root_name)
                             .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
                         self.emit(store_op);
-                        self.emit(Opcode::LoadNil);
+                        let at = self.emit(Opcode::LoadNil);
+                        self.scope_mut().unused_nil = Some(at);
                     }
                     _ => {
                         return Err(GoblinError::CompileError {
