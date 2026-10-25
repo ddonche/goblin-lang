@@ -4804,11 +4804,21 @@ impl Vm {
         // A formula that keeps needing the VM (it errors every time, say)
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, &locals) {
+            let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
+            match self.run_formula(&func_rc, &refs) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
         }
+        self.run_tick_formula_vm(func_rc, locals)
+    }
+
+    /// Runs a compiled DES formula on the VM, with a call frame.
+    fn run_tick_formula_vm(
+        &mut self,
+        func_rc: std::rc::Rc<crate::value::FunctionObject>,
+        locals: Vec<(&str, Value)>,
+    ) -> Result<Value, GoblinError> {
         if self.call_stack.len() >= MAX_CALL_DEPTH {
             return Err(GoblinError::StackOverflow);
         }
@@ -4825,6 +4835,29 @@ impl Vm {
         let op = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
         self.resolve_op(op)
+    }
+
+    /// `eval_tick_expr` with borrowed arguments: a formula that runs
+    /// directly reads them in place; only one that needs the VM copies them.
+    pub(crate) fn eval_tick_expr_ref(
+        &mut self,
+        expr: &goblin_ast::Expr,
+        locals: &[(&str, &Value)],
+    ) -> Result<Value, GoblinError> {
+        // compile_tick_expr keys on the names only.
+        let names: Vec<(&str, Value)> = locals.iter().map(|(n, _)| (*n, Value::Nil)).collect();
+        let formula = self.compile_tick_expr(expr, &names)?;
+        let func_rc = formula.func.clone();
+        if locals.len() != func_rc.params {
+            return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
+            match self.run_formula(&func_rc, locals) {
+                Some(v) => { formula.misses.set(0); return Ok(v); }
+                None => formula.misses.set(formula.misses.get() + 1),
+            }
+        }
+        self.run_tick_formula_vm(func_rc, locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -4847,7 +4880,7 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, Value)]) -> Option<Value> {
+    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)]) -> Option<Value> {
         enum Fv<'a> { Val(Value), Arg(&'a Value) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
@@ -4872,7 +4905,7 @@ impl Vm {
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
                 Opcode::LoadLocal(slot) => {
-                    let a = &args.get(slot as usize)?.1;
+                    let a = args.get(slot as usize)?.1;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
                         Value::Object(_) | Value::Ref(_) => st.push(Fv::Arg(a)),
@@ -5213,7 +5246,7 @@ impl Vm {
     fn link_score_in(
         &mut self,
         args: &[Value],
-        direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>,
+        direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>,
     ) -> Result<Value, GoblinError> {
         if args.len() < 3 { return Ok(Value::Nil); }
         let s = |i: usize| -> Result<&str, GoblinError> {
@@ -5250,7 +5283,7 @@ impl Vm {
     /// A variable's value as `lookup_var` finds it, except that an object
     /// variable gives its `Value::Ref` (the object must exist) instead of a
     /// copy of the object.
-    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>) -> Option<Value> {
+    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>) -> Option<Value> {
         let deref = |v: &Value| -> Option<Value> {
             match v {
                 Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()).then(|| v.clone()),
@@ -5267,7 +5300,7 @@ impl Vm {
         };
         match direct {
             Some((func, args)) => match func.local_names.iter().position(|n| n == name) {
-                Some(slot) if slot < args.len() => deref(&args[slot].1),
+                Some(slot) if slot < args.len() => deref(args[slot].1),
                 _ => globals(func),
             },
             None => {
