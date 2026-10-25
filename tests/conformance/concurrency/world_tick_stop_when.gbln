@@ -1,0 +1,21 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region's stop_when is checked after each tick, as after any message:
+/// once it holds, the region stops and :await gives its last state.
+act count(st, msg)
+    if :has(msg, "tick")
+        :update!(st{"ticks"}, st{"ticks"} + 1)
+    xx
+    return st
+xx
+act enough(st)
+    return st{"ticks"} >= 2
+xx
+r | :actor({"ticks": 0}, count, {stop_when: enough})
+tick([r])
+tick([r])
+say(:await(r))
+attempt
+    tick([r])
+rescue e
+    say("{e}")
+xx

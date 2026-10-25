@@ -53,7 +53,7 @@ pub enum Dest { Object(String), Actor(u64) }
 pub struct WorldIn {
     tick: i64,
     /// Only report the objects (the first call, before any tick).
-    prime: bool,
+    pub(crate) prime: bool,
     inbox: Vec<Item>,
     remote: Vec<Arc<Snapshot>>,
     regions: Vec<u64>,
@@ -323,9 +323,10 @@ fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut 
         _ => None,
     };
     let Some(Value::Object(o)) = vm.session.object_store.get_mut(uuid) else { return };
+    let is_trait = o.trait_fields.contains(field);
     let fields = std::rc::Rc::make_mut(&mut o.fields);
     let Some(cur) = fields.get_mut(field) else { return };
-    *cur = match (change, &*cur) {
+    let next = match (change, &*cur) {
         (Change::AddInt(d), Value::Int(x)) => Value::Int(x.wrapping_add(*d)),
         (Change::AddInt(d), Value::Float(x)) => Value::Float(x + *d as f64),
         (Change::AddFloat(d), Value::Int(x)) => Value::Float(*x as f64 + d),
@@ -333,6 +334,12 @@ fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut 
         (Change::Set(_), _) => new.unwrap(),
         // A number change to a field that is no longer a number: ignored.
         _ => return,
+    };
+    // A trait stays in 0..1, as it does for a write in the region itself.
+    *cur = match next {
+        Value::Float(f) if is_trait => Value::Float(f.clamp(0.0, 1.0)),
+        Value::Int(i) if is_trait => Value::Float((i as f64).clamp(0.0, 1.0)),
+        other => other,
     };
 }
 

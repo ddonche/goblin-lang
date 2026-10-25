@@ -1342,7 +1342,14 @@ impl Slot {
                         self.state = state;
                         let reply = reply.expect("a world tick is a request");
                         match r {
-                            Ok(()) => reply.set(Ok(Arc::new(PValue::Nil))),
+                            Ok(()) => {
+                                reply.set(Ok(Arc::new(PValue::Nil)));
+                                // The tick was a message: stop_when applies after it.
+                                if !job.prime {
+                                    let next = std::mem::replace(&mut self.state, Value::Nil);
+                                    if !self.finish_message(next, None) { return false; }
+                                }
+                            }
                             Err(e) => {
                                 // The region failed: the tick fails, and so does the actor.
                                 reply.set(Err(format!("C0123: tick-regions: a region failed during tick: {e}")));
