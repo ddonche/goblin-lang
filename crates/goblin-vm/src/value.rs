@@ -975,6 +975,11 @@ pub enum BuiltinId {
     WriteJson,
     ReapSample,
     ReapBang,
+    // The event queue (agenda.rs).
+    Agenda,
+    Schedule,
+    Unschedule,
+    Due,
     IsType,
     IsBoundName,
     Invoke,

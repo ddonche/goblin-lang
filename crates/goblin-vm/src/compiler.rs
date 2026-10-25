@@ -3115,6 +3115,52 @@ impl Compiler {
             // reap!(arr [, count]) — atomically remove+return random items.
             // Interpreter bang form: (arr, count?) NOT the {src,count} config-map.
             // Compiles to: ReapBang → [remaining, reaped]; store remaining back, return reaped.
+            // The event queue: the agenda changes in place and the call
+            // gives a value (an id, or the due events), so the agenda is
+            // stored back here and the value left on the stack.
+            "schedule!" | "unschedule!" | "due!" => {
+                let (bid, want) = match bare {
+                    "schedule!" => (BuiltinId::Schedule, 3),
+                    "unschedule!" => (BuiltinId::Unschedule, 2),
+                    _ => (BuiltinId::Due, 2),
+                };
+                if args.len() != want {
+                    return Err(self.locate_err(GoblinError::ArityMismatch { expected: want, got: args.len(), name: bare.into() }));
+                }
+                let mut keys = Vec::new();
+                let mut cur = &args[0];
+                let root = loop {
+                    match cur {
+                        Expr::Index(base, key, _) | Expr::IndexMap(base, key, _) => { keys.push(key.as_ref()); cur = base.as_ref(); }
+                        Expr::Ident(n, _) => break n.clone(),
+                        _ => return Err(GoblinError::CompileError {
+                            message: format!("'{bare}' needs the agenda as a variable, or a [] / {{}} path below one"),
+                            span_debug: String::new(),
+                        }),
+                    }
+                };
+                keys.reverse();
+                if keys.len() > 16 {
+                    return Err(GoblinError::CompileError {
+                        message: format!("'{bare}' target path is too deep (max 16 segments)"),
+                        span_debug: String::new(),
+                    });
+                }
+                let load = self.resolve_load(&root).map_err(|e| self.locate_err(e))?;
+                self.emit(load);
+                for k in &keys { self.compile_expr(k)?; }
+                self.emit_check_path(&args[0])?;
+                for a in &args[1..] { self.compile_expr(a)?; }
+                self.emit(Opcode::AgendaCall(bid, args.len() as u8, keys.len() as u8));
+                let tmp = self.scope_mut().declare_local("__agenda_tmp__");
+                self.emit(Opcode::StoreLocal(tmp));
+                let store = self.resolve_store(&root)
+                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root.clone() }))?;
+                self.emit(store);
+                self.emit(Opcode::LoadLocal(tmp));
+                Ok(true)
+            }
+
             "reap!" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(GoblinError::CompileError {
@@ -3338,6 +3384,10 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "delete_where"                  => BuiltinId::DeleteWhere,
         "delete_all"                    => BuiltinId::DeleteAll,
         "reap"                          => BuiltinId::ReapSample,
+        "agenda"                        => BuiltinId::Agenda,
+        "schedule!"                     => BuiltinId::Schedule,
+        "unschedule!"                   => BuiltinId::Unschedule,
+        "due!"                          => BuiltinId::Due,
         "reap_first"                    => BuiltinId::ReapFirst,
         "reap_last"                     => BuiltinId::ReapLast,
         "reap_at"                       => BuiltinId::ReapAt,
