@@ -377,8 +377,8 @@ pub fn run(
     // Convert everything once, in the calling session.
     let (image, p_items, p_action, p_context) = {
         let mut tp = ToPortable::new(session);
-        // Each task gets the globals its code can use, not all of them
-        // (the program's top-level data can be large).
+        // Copy only the globals the tasks' code can reach, as an actor does:
+        // a big table the action never names stays behind.
         let mut roots: Vec<&Value> = vec![&action];
         roots.extend(items.iter());
         if let Some(c) = &context { roots.push(c); }
