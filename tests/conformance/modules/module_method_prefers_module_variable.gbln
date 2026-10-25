@@ -1,0 +1,8 @@
+/// known-gap: interp shares an imported module's variables with the importer, so `lim | 100` is a duplicate there (R0111)
+/// A class method from an imported module reads that module's variable
+/// even when the importing program has one of the same name.
+import _support/modules/method_lim as ml
+lim | 100
+g | ml::make_gauge(5)
+say(ml::run_check(g))
+say(lim)

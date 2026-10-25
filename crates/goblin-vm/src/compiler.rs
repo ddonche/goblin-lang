@@ -218,6 +218,7 @@ impl FunctionScope {
             line_numbers: self.line_numbers,
             local_names,
             owner_glam: None,
+            global_prefix: None,
             source_file,
             global_names,
         }

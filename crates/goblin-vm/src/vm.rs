@@ -2425,12 +2425,20 @@ impl Vm {
                     },
                     None => None,
                 };
+                // A method from an imported module reads that module's
+                // variable first, as the interpreter does.
                 let result = match field {
                     Some(v) => v,
-                    None => self.session.global_names.iter().position(|n| n.as_str() == field_name.as_str())
-                        .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
-                        .and_then(|t| self.session.read_value(&t).ok())
-                        .unwrap_or(Value::Nil),
+                    None => {
+                        let qualified = self.call_stack.last()
+                            .and_then(|f| f.func.global_prefix.as_ref().map(|p| format!("{p}{field_name}")));
+                        let names = &self.session.global_names;
+                        qualified.and_then(|q| names.iter().position(|n| *n == q))
+                            .or_else(|| names.iter().position(|n| n.as_str() == field_name.as_str()))
+                            .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+                            .and_then(|t| self.session.read_value(&t).ok())
+                            .unwrap_or(Value::Nil)
+                    }
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -2589,8 +2597,12 @@ impl Vm {
         }
         // 3. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
+        //    A class method from an imported module looks in that module first.
         let global_tether = self.call_stack.last()
-            .and_then(|frame| frame.func.global_names().iter().position(|n| n == name))
+            .and_then(|frame| frame.func.global_prefix.as_ref().map(|p| format!("{p}{name}")))
+            .and_then(|q| self.session.global_names.iter().position(|n| *n == q))
+            .or_else(|| self.call_stack.last()
+                .and_then(|frame| frame.func.global_names().iter().position(|n| n == name)))
             .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
             .or_else(|| {
                 self.session.global_names.iter().position(|n| n == name)
@@ -3082,7 +3094,7 @@ impl Vm {
 
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
-        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
+        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums, Some(&module_prefix));
 
         // Track the importing file's directory in base_dir so that GLAM files (which
         // have owner_glam set on their frames) can resolve sub-imports relative to the
@@ -4697,6 +4709,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         }
@@ -4742,6 +4755,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -4773,6 +4787,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -4802,6 +4817,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -4824,6 +4840,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
