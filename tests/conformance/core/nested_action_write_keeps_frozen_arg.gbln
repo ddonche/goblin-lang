@@ -1,0 +1,21 @@
+/// known-gap: interp :freeze is not available
+/// An argument already passed stays frozen when a later argument's call
+/// rebinds the variable it came from.
+act outer()
+    x | :freeze([1])
+    act change()
+        x |= [9]
+        return 0
+    xx
+    act mutate(a, b)
+        :put_last!(a, 2)
+        return a
+    xx
+    attempt
+        say(mutate(x, change()))
+    rescue e
+        say(e)
+    xx
+    say(x)
+xx
+outer()

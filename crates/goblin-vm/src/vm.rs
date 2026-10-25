@@ -568,10 +568,14 @@ impl Vm {
                 // The variable belongs to the enclosing action too: change
                 // the value both hold.
                 let val = self.stack_pop_raw()?;
-                let t = self.call_stack.last().unwrap()
+                let cell = self.call_stack.last().unwrap()
                     .upvalues.get(idx as usize)
-                    .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
-                    .get();
+                    .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?;
+                let (t, lock) = (cell.get(), cell.1.clone());
+                let val = match lock {
+                    Some(lock) => crate::builtins::cast_value_to_lock(val, &lock)?,
+                    None => val,
+                };
                 self.write_shared(&t, val)?;
             }
 
@@ -1918,24 +1922,25 @@ impl Vm {
                 let descriptors = func_rc.upvalue_descriptors.clone();
                 let mut upvalues = Vec::with_capacity(descriptors.len());
                 for desc in &descriptors {
-                    let tether = match desc {
+                    let (tether, lock) = match desc {
                         UpvalueDescriptor::Local(slot) => {
-                            self.call_stack.last().unwrap().load_local(*slot)?
+                            let frame = self.call_stack.last().unwrap();
+                            (frame.load_local(*slot)?, frame.get_hard_type_lock(*slot).map(Rc::from))
                         }
                         UpvalueDescriptor::Upvalue(uv_idx) => {
-                            self.call_stack.last().unwrap()
+                            let cell = self.call_stack.last().unwrap()
                                 .upvalues.get(*uv_idx as usize)
                                 .ok_or_else(|| GoblinError::Runtime(
                                     format!("upvalue forward {uv_idx} out of range")
-                                ))?
-                                .get()
+                                ))?;
+                            (cell.get(), cell.1.clone())
                         }
                     };
                     // A captured stash has a second holder, so it is never
                     // changed in place (see sole_ref_target).
                     self.session.inc_tether(&tether)?;
                     self.session.has_cells = true;
-                    upvalues.push(UpvalueCell::new(tether));
+                    upvalues.push(UpvalueCell::with_lock(tether, lock));
                 }
 
                 let closure = Closure { func: func_rc, upvalues };
@@ -3030,7 +3035,11 @@ impl Vm {
             Value::Ref(uuid)
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
-            let old = self.session.read_value(t)?;
+            // A frozen value stays frozen for the reads still pending.
+            let old = match &self.session.get_stash(t)?.value {
+                v @ Value::Frozen(_) => v.clone(),
+                _ => self.session.read_value(t)?,
+            };
             for op in self.stack.iter_mut() {
                 if matches!(op, Operand::Ref(u) if u == t) { *op = Operand::Val(old.clone()); }
             }
