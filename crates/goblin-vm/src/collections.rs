@@ -1874,15 +1874,15 @@ pub fn update_path_in_place_hint(target: &mut Value, keys: &[Value], val: Value,
 /// the new value from the old one (nil for a key not there yet), or None to
 /// leave things as they were (the levels walked are only unshared, and
 /// their access counts are taken back).
-pub fn update_path_with(target: &mut Value, keys: &[Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
+pub fn update_path_with(target: &mut Value, keys: &[&Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
     !keys.is_empty() && keys.len() == segs.len() && write_with(target, keys, segs, f)
 }
 
-fn write_with(target: &mut Value, keys: &[Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
+fn write_with(target: &mut Value, keys: &[&Value], segs: &[crate::opcode::FusedSeg], f: &mut dyn FnMut(&Value) -> Option<Value>) -> bool {
     let Value::Collection(rc) = target else { return false };
     if rc.is_map() != segs[0].brace { return false; }
     let last = keys.len() == 1;
-    let Some(p) = probe_key(rc, &keys[0], !last && rc.is_map(), Some(&segs[0].slot)) else { return false };
+    let Some(p) = probe_key(rc, keys[0], !last && rc.is_map(), Some(&segs[0].slot)) else { return false };
     if last {
         // A new key: work the value out before adding the key.
         let new = if matches!(p, Probe::Insert) {
@@ -1897,10 +1897,10 @@ fn write_with(target: &mut Value, keys: &[Value], segs: &[crate::opcode::FusedSe
             }) else { return false };
             match f(v) { Some(v) => v, None => return false }
         };
-        *slot_at(rc, &keys[0], p) = new;
+        *slot_at(rc, keys[0], p) = new;
         return true;
     }
-    let slot = slot_at(rc, &keys[0], p);
+    let slot = slot_at(rc, keys[0], p);
     if write_with(slot, &keys[1..], &segs[1..], f) { return true; }
     if let Some(c) = Rc::get_mut(rc) { c.meta.mid_hits = c.meta.mid_hits.saturating_sub(1); }
     false
@@ -1962,21 +1962,36 @@ fn slot_at<'a>(rc: &'a mut Rc<CollectionValue>, key: &Value, p: Probe) -> &'a mu
                 Probe::Insert => { pairs.push((key.clone(), Value::Nil)); pairs.len() - 1 }
             };
             meta.len = pairs.len();
-            &mut pairs[i].1
+            let (k, v) = &mut pairs[i];
+            share_key(k, key);
+            v
         }
         (CollectionLayout::HashMapBackend(m), p) => {
+            use indexmap::map::MutableKeys;
             let m = Rc::make_mut(m);
             let i = match p {
                 Probe::At(i) => i,
                 Probe::Insert => m.insert_full(key.clone(), Value::Nil).0,
             };
             meta.len = m.len();
-            m.get_index_mut(i).expect("index from probe_key").1
+            let (k, v) = m.get_index_mut2(i).expect("index from probe_key");
+            share_key(k, key);
+            v
         }
         (CollectionLayout::FlatArray(v), Probe::At(i)) => &mut Rc::make_mut(v)[i],
         (CollectionLayout::RingBuf(rb), Probe::At(i)) => Rc::make_mut(rb).get_mut(i).expect("index from probe_key"),
         (CollectionLayout::ChunkedSeq(cs), Probe::At(i)) => Rc::make_mut(cs).get_mut(i).expect("index from probe_key"),
         (_, Probe::Insert) => unreachable!("probe_key inserts only into maps"),
+    }
+}
+
+/// A map key equal to `key` but held as another copy of the text: keep
+/// `key`'s copy instead, so the next look-up with it (the same key written
+/// in the code) matches without comparing the text. The key is unchanged.
+#[inline]
+fn share_key(k: &mut Value, key: &Value) {
+    if let (Value::Str(a), Value::Str(b)) = (&*k, key) {
+        if !a.same(b) { *k = key.clone(); }
     }
 }
 

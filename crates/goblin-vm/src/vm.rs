@@ -3241,34 +3241,60 @@ impl Vm {
             if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
         }
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
+        // `path + n` (or - or *) with n a number written in the code: the
+        // most common case, worked out straight from the old value.
+        let simple = match &q.expr {
+            crate::opcode::QExpr::Add(a, b) | crate::opcode::QExpr::Sub(a, b) | crate::opcode::QExpr::Mul(a, b) => match (&**a, &**b) {
+                (crate::opcode::QExpr::Target, crate::opcode::QExpr::Const(c)) => Some(func.constants[*c as usize].clone_fast()),
+                _ => None,
+            },
+            _ => None,
+        };
         // The parts of the new value that don't need the old one, in order.
         let mut nums = std::mem::take(&mut self.num_buf);
         nums.clear();
-        if !self.quick_leaves(&func, &q.expr, &mut nums)? { self.num_buf = nums; return Ok(None); }
-        let mut keys = std::mem::take(&mut self.key_buf);
-        keys.clear();
+        if simple.is_none() && !self.quick_leaves(&func, &q.expr, &mut nums)? { self.num_buf = nums; return Ok(None); }
+        // The keys: constants straight from the code, variables' values
+        // copied (they live next to the root, which is about to change).
+        const MAX_KEYS: usize = 8;
+        if f.segs.len() > MAX_KEYS { self.num_buf = nums; return Ok(None); }
+        let mut owned = std::mem::take(&mut self.key_buf);
+        owned.clear();
         let frame = self.call_stack.last().unwrap();
         for seg in &f.segs {
-            let k = match seg.key {
-                FusedKey::Const(c) => func.constants[c as usize].clone_fast(),
-                FusedKey::Local(s) => match frame.locals.get(s as usize) {
+            if let FusedKey::Local(s) = seg.key {
+                let k = match frame.locals.get(s as usize) {
                     Some(Some(kt)) => match &self.session.get_stash(kt)?.value {
-                        Value::Ref(_) => { self.key_buf = keys; self.num_buf = nums; return Ok(None) }
+                        Value::Ref(_) => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
                         Value::Frozen(fr) => fr.value.clone_fast(),
                         v => v.clone_fast(),
                     },
-                    _ => { self.key_buf = keys; self.num_buf = nums; return Ok(None) }
-                },
-            };
-            keys.push(k);
+                    _ => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
+                };
+                owned.push(k);
+            }
         }
+        let nil = Value::Nil;
+        let mut keys: [&Value; MAX_KEYS] = [&nil; MAX_KEYS];
+        let mut next_owned = 0;
+        for (i, seg) in f.segs.iter().enumerate() {
+            keys[i] = match seg.key {
+                FusedKey::Const(c) => &func.constants[c as usize],
+                FusedKey::Local(_) => { next_owned += 1; &owned[next_owned - 1] }
+            };
+        }
+        let keys = &keys[..f.segs.len()];
         let stash = self.session.resolve_mut(t.addr)?;
         let expr = &q.expr;
-        let done = crate::collections::update_path_with(&mut stash.value, &keys, &f.segs,
-            &mut |old| quick_eval(expr, &nums, &mut 0, old));
-        keys.clear();
+        let done = match simple {
+            Some(c) => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+                &mut |old| quick_arith(expr, old, &c)),
+            None => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+                &mut |old| quick_eval(expr, &nums, &mut 0, old)),
+        };
+        owned.clear();
         nums.clear();
-        self.key_buf = keys;
+        self.key_buf = owned;
         self.num_buf = nums;
         Ok(done.then_some(q.skip))
     }
@@ -5608,6 +5634,21 @@ fn quick_eval(e: &crate::opcode::QExpr, nums: &[Value], at: &mut usize, old: &Va
                 _ => None,
             }
         }
+    }
+}
+
+/// `quick_eval` for `target op c`: the same result, without the walk.
+#[inline]
+fn quick_arith(e: &crate::opcode::QExpr, old: &Value, c: &Value) -> Option<Value> {
+    use crate::opcode::QExpr;
+    match (e, old, c) {
+        (QExpr::Add(..), Value::Int(x), Value::Int(y)) => Some(Value::Int(x.wrapping_add(*y))),
+        (QExpr::Add(..), Value::Float(x), Value::Float(y)) => Some(Value::Float(x + y)),
+        (QExpr::Add(..), Value::Int(x), Value::Float(y)) => Some(Value::Float(*x as f64 + y)),
+        (QExpr::Add(..), Value::Float(x), Value::Int(y)) => Some(Value::Float(x + *y as f64)),
+        (QExpr::Sub(..), Value::Int(x), Value::Int(y)) => x.checked_sub(*y).map(Value::Int),
+        (QExpr::Mul(..), Value::Int(x), Value::Int(y)) => x.checked_mul(*y).map(Value::Int),
+        _ => None,
     }
 }
 
