@@ -2745,15 +2745,26 @@ impl Vm {
                 };
                 let self_tether = self.call_stack.last()
                     .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
-                let result = if let Some(t) = self_tether {
-                    match self.session.read_value(&t)? {
-                        Value::Object(ref o) => {
-                            o.fields.get(field_name.as_str()).cloned().unwrap_or(Value::Nil)
-                        }
-                        _ => Value::Nil,
-                    }
-                } else {
-                    Value::Nil
+                // A name in a method that is not a local: the object's field
+                // if it has one, else the program's variable of that name
+                // (as the interpreter reads it), else nil.
+                let field = match self_tether {
+                    Some(t) => match self.session.read_value(&t)? {
+                        Value::Object(ref o) => o.fields.get(field_name.as_str()).cloned(),
+                        Value::Ref(ref u) => match self.session.object_store.get(u.as_str()) {
+                            Some(Value::Object(o)) => o.fields.get(field_name.as_str()).cloned(),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let result = match field {
+                    Some(v) => v,
+                    None => self.session.global_names.iter().position(|n| n.as_str() == field_name.as_str())
+                        .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+                        .and_then(|t| self.session.read_value(&t).ok())
+                        .unwrap_or(Value::Nil),
                 };
                 self.stack.push(Operand::Val(result));
             }
