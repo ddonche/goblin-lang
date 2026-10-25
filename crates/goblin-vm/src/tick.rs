@@ -765,6 +765,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         out
     };
 
+    let mut targets = Targets::default();
     for (self_uuid, class_name) in candidates {
         // Borrow the definitions (an Rc copy, not a deep one), so each
         // formula keeps its address for the tick-expr cache. Taken per
@@ -793,7 +794,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for (name, decision, judge) in list {
             // Erased by an earlier decision's action: nothing more to decide.
             if !vm.session.object_store.contains_key(&self_uuid) { break; }
-            decide(vm, &self_uuid, name, decision, judge)?;
+            decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
         }
     }
 
@@ -802,7 +803,34 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
 /// One decision of one object: score the targets, pick the best (within
 /// the object's `margin`), and run the action its judge picks.
-fn decide(vm: &mut Vm, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
+/// The objects of each target class, in the order they were made, kept
+/// across one decision pass while no object is added or removed. A store
+/// that only grows at its end and keeps its order on removal changes its
+/// length or its last key whenever its set of objects changes.
+#[derive(Default)]
+struct Targets {
+    seen: Option<(usize, String)>,
+    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<String>>>,
+}
+
+impl Targets {
+    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<String>> {
+        let store = &vm.session.object_store;
+        let now = (store.len(), store.last().map(|(k, _)| k.clone()).unwrap_or_default());
+        if self.seen.as_ref() != Some(&now) {
+            self.by_class.clear();
+            self.seen = Some(now);
+        }
+        self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
+            store.iter()
+                .filter(|(_, v)| matches!(v, Value::Object(o) if o.class_name == class))
+                .map(|(u, _)| u.clone())
+                .collect()
+        )).clone()
+    }
+}
+
+fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
     let self_uuid = self_uuid.to_string();
     let margin = match vm.session.object_store.get(&self_uuid) {
         Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
@@ -817,16 +845,13 @@ fn decide(vm: &mut Vm, self_uuid: &str, name: &str, decision: &goblin_ast::Decis
     // where the objects live instead of copying every candidate.
     let self_ref = Value::Ref(self_uuid.clone());
 
-    let target_candidates: Vec<String> = vm.session.object_store.iter()
-        .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object(o) if o.class_name == decision.target_class))
-        .map(|(uuid, _)| uuid.clone())
-        .collect();
-
-    if target_candidates.is_empty() { return Ok(()); }
+    let target_candidates = targets.of(vm, &decision.target_class);
+    if !target_candidates.iter().any(|u| *u != self_uuid) { return Ok(()); }
 
     // Score all targets
     let mut scored: Vec<(String, f64)> = Vec::new();
-    for target_uuid in target_candidates {
+    for target_uuid in target_candidates.iter().filter(|u| **u != self_uuid) {
+        let target_uuid = target_uuid.clone();
         let raw_score = match eval_link_score(vm, self_ref.clone(), Value::Ref(target_uuid.clone()), &decision.formula, decision.formula_min, decision.formula_max) {
             Ok(s) => s,
             Err(_) => continue,
