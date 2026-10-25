@@ -20,6 +20,8 @@ town | make_town(3)
 r | :actor(town, region)
 :post(r, "count")
 :halt(r)
+/// Wait for it, so its line comes first.
+done | :await(r)
 ppl | []
 :put_last!(ppl, make_town(1){"people"}[0])
 attempt
