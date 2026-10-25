@@ -1,155 +1,115 @@
-# Town on DES: what stops the rebuild
+# Town on DES: what is built and what still stops it
 
-`town.gbln` here is the town rebuilt on DES: residents and businesses are
-classes, each district is a region, and `tick(districts)` runs a day.
-Today it covers residents aging, shopping (a decision) and dying (a
-transition). Each gap below stopped the next piece. None of them is worked
-around in the code.
+`town.gbln` is the town written with DES. Residents, businesses and district
+funds are classes. Each district is a region, and `tick(districts)` runs a
+day. It is 377 lines; the plain-map town in `sims/town` is 841.
 
-| # | Gap | Stops | Proposed change (needs Daniel's OK) |
-|---|-----|-------|-------------------------------------|
-| 1 | A class can't run a rule every tick | aging, paydays every 14 days, rent every 30 days | An `every N ticks` block in a class, run during the DES tick as `self` |
-| 2 | A class can have only one decision | shopping *and* looking for work | Several named decisions; `judge using <name>` already names which one |
-| 3 | Scores of real-value (`~`) fields collapse to 0 | choosing the cheaper shop | Scale real-value formulas over the candidates actually scored |
-| 4 | Nothing happens when an overlay ends | birth after pregnancy, a job answer after a wait | An overlay can run an action when it ends |
-| 5 | An erased object takes its fields with it | an estate going to the district fund on death | A transition can run an action as it fires |
-| 6 | Objects can't move between regions | households moving district | Later (the spec lists move as later) |
+What it does now:
 
-## 1. No rule that runs every tick
+- **Residents** age every day, shop every day (decision `shop`), take a job
+  at a business that is hiring (decision `work`), pay rent to their
+  district's fund every 30 days, and die (transitions).
+- **Businesses** update whether they are hiring every day, and pay their
+  staff every 14 days. Staff can live in any district. When a business is
+  short of cash it lays off its newest staff, and it shares spare cash as a
+  bonus. A business with no staff and no cash closes.
+- **Funds** pay a weekly benefit to adults without work, and spend what
+  they hold above 20,000 at their district's open businesses.
 
-The district handler has to loop over its objects to age them:
+`check.sh` runs 60 days and checks four things: the output is as expected,
+two runs match, 1 thread matches 4 threads, and with one district (so no
+money is in flight between districts) the money total never changes.
 
-```
-act district_day(st, msg)
-    if :has(msg, "tick")
-        repeat :objects(it >> age > -1)
-            it >> age |= it >> age + 1
-        xx
-    xx
-    return st
-xx
-```
+## Gaps
 
-This is plain code outside DES, and it only reaches the region's own
-objects. Paying wages is worse. Staff can live in another district, so a
-handler can't pay them; only a DES rule can reach another region's objects.
+| # | Gap | Status |
+|---|-----|--------|
+| 1 | A class can't run a rule every tick | **Built**: `every N ticks ... end` (PR #68) |
+| 2 | A class can have only one decision | **Built**: several named decisions, `judge using <name>` (PR #69) |
+| 3 | Scores on real-value (`~`) fields collapse to 0 | Open. The town uses a 0..1 trait, `cheapness`, set when a business is made |
+| 4 | Nothing happens when an overlay ends | Open. Stops births (pregnancy, then a baby) |
+| 5 | An erased object takes its fields with it | Open. A death takes the person's money out of the town |
+| 6 | Objects can't move between regions | Open, later. Stops households moving district |
 
-Proposed: a block in the class that DES runs on every object every N ticks,
-during the tick, so it sees the whole world like decisions do:
+## Found while building this
 
-```
-<>Resident |
-    ~age: 0
-    every 1 tick
-        self >> age |= self >> age + 1
-    end
-xx
-
-<>Business |
-    ~cash: 6000
-    ~wage: 400
-    every 14 ticks
-        repeat :objects(it >> job == self >> id)
-            it >> money |= it >> money + self >> wage
-            self >> cash |= self >> cash - self >> wage
-        xx
-    end
-xx
-```
-
-## 2. One decision per class
-
-A resident shops and also looks for work, and both are choices among
-businesses. A class has one `decision` and one `judge`. The syntax already
-names the score (`score | decision ...`, `judge using score`), so the
-natural extension is several named decisions:
-
-```
-shop | decision against Business by [ ... ]
-judge using shop
-    >= .2: buy(target)
-end
-
-work | decision against Business by [ ... ]
-judge using work
-    >= .5: apply_for_job(target)
-end
-```
-
-## 3. Real-value scores collapse
-
-```
-score | decision against Business by [
-    1 - ((target >> price) - 15) / 10
-]
-```
-
-DES scales a formula's result to 0..1 using the range it works out from the
-formula, and it assumes every `>>` field is a 0..1 trait. Prices are 15 to
-24, so most scores land at 0 and the ranking is wrong. In the run below
-only the 15- and 16-price shops got any sales; with `margin: .1` the
-collapsed scores happen to leave those two inside the margin. The same
-formula scaled over real ranges would rank all ten prices properly.
-
-Proposed: when a formula reads a real-value (`~`) field, scale over the
-scores of the candidates actually scored that tick (best = 1, worst = 0).
-Formulas on 0..1 traits keep today's behaviour.
-
-## 4. Nothing happens when an overlay ends
-
-`overlay Pregnant on r at 1 for 270 ticks` lasts the right time, but when
-it ends nothing runs, so no baby is born. The old town uses its event
-queue for this.
-
-Proposed: an overlay can name an action to run on its host when it ends.
-
-## 5. Erasing loses the object's fields
-
-`transition erase when ...` removes a resident with their money, so the
-town's money total drops on every death. The old town hands it to the
-district fund.
-
-Proposed: a transition can run an action on `self` as it fires, before the
-erase.
-
-## 6. Moving between regions
-
-A household moving district has to leave one region and join another.
-There is no way to move an object between regions yet.
-
-## Other findings from this run
-
-- **Everyone shops at the same few places.** A decision picks the best
-  target (within `margin`), so 1,000 residents all go to the 9 cheapest
-  shops. The old town picks a random local shop. `margin: 1` gives a
-  random pick; a choice weighted by score doesn't exist.
-- **Money in flight isn't in any report.** A resident pays at once, and a
-  shop in another district gets the money at the start of the next tick.
-  The main program's total is short by a day of cross-district spending.
-  It is conserved (one district alone never changes), but a report has to
-  know that.
-- **Everyone is broke by day 40.** With no wages (gap 1) residents spend
-  their 400 to 700 and stop. The money total stays flat at 851,889 from
-  day 60 on, which also shows nothing leaks.
-- **Speed.** 365 days took 114 s on 4 threads, about 310 ms per day, against
-  about 8 ms per day for the plain-map town. Most of it is copying every
-  region's objects to the others each tick, and scoring 50 businesses for
-  each of 1,000 residents. Too slow to iterate on; it needs its own speed
-  pass once the gaps are settled.
+- **Fixed: class methods couldn't read program variables** (PR #70). The VM
+  read `adult` inside a method as a field of `self` and got nil. The
+  interpreter reads the program's variable.
+- **Fixed: looping over `:overlays()` deleted the overlays' hosts** (PR #67).
+- **`margin` is one number for all of a class's decisions.** The town wants
+  a wide spread for shopping (`.8`) and none for work. Proposed: `margin`
+  per decision, e.g. `shop | decision against Business margin .8 by [...]`.
+  Needs Daniel's OK.
+- **A decision's action fails silently.** An error inside `buy` or `apply`
+  is ignored, so a typo there shows up only as "nothing happens".
+  `every` blocks stop the tick on an error instead. Proposed: decision
+  actions should do the same. Needs Daniel's OK, because it changes how
+  existing programs behave.
+- **`and` inside call parentheses doesn't parse**, so
+  `:objects(it >> district == d and it >> age > 18)` has to be a loop
+  with an `if`.
 
 ## The 365-day run
 
+Every adult who wants a job has one, all 50 businesses stay open, and
+nobody is broke. The money total moves only by what is in flight between
+districts. It drops most on paydays (day 210 is one), because wages to
+staff in other districts arrive the next day. One person died, and their
+money left with them (gap 5).
+
 ```
 town on DES: 1000 residents, 50 businesses, 4 districts, 365 days
-day 30: population 1000, money 842903
-day 60: population 1000, money 851889
-...  (unchanged every 30 days)
-day 365: population 1000, money 851889
---- businesses: sales by price ---
-price 15: 4 businesses, 59100 sales each
-price 16: 5 businesses, 61747 sales each
-price 17 to 23: 41 businesses, 0 sales each
+money at the start: 850500
+day 30: population 1000, adults 737, working 737, open businesses 50, money 830370
+day 60: population 1000, adults 739, working 739, open businesses 50, money 839967
+day 90: population 1000, adults 742, working 742, open businesses 50, money 840666
+day 120: population 1000, adults 744, working 744, open businesses 50, money 840527
+day 150: population 999, adults 745, working 745, open businesses 50, money 846308
+day 180: population 999, adults 745, working 745, open businesses 50, money 850265
+day 210: population 999, adults 746, working 746, open businesses 50, money 801764
+day 240: population 999, adults 748, working 739, open businesses 50, money 834136
+day 270: population 999, adults 749, working 742, open businesses 50, money 840378
+day 300: population 999, adults 751, working 751, open businesses 50, money 840753
+day 330: population 999, adults 752, working 752, open businesses 50, money 840811
+day 360: population 999, adults 752, working 752, open businesses 50, money 846623
+day 365: population 999, adults 753, working 745, open businesses 50, money 830958
+
+=== End of run: day 365 ===
+Where the money is (total 830958; 19542 left with the dead or is in flight):
+  people            372156   45%
+  businesses        243537   29%
+  district funds    215265   26%
+
+Wealth of the 753 adults, poorest fifth to richest:
+  fifth   holds   average   lowest   highest
+  1         9%       137        0       315
+  2        21%       326      316       336
+  3        22%       344      337       352
+  4        23%       361      352       369
+  5        25%       384      369       424
+
+Businesses by price:
+  price  businesses  open  staff  avg cash  avg sales
+     15           5     5     58       662     123885
+     16           9     9    105       696     131238
+     17           5     5     63       763     136231
+     18           5     5     63       872     144649
+     19           4     4     58      2307     151288
+     20           3     3     40      1713     158196
+     21           5     5     76     10068     164710
+     22           5     5     76     12268     171060
+     23           9     9    141     11079     179408
+
+Districts:
+  district  people  adults  working  avg adult money    fund
+         0     250     203      99%              302    56901
+         1     249     184     100%              317    53270
+         2     250     184      98%              316    52538
+         3     250     182      99%              306    52556
 ```
 
-Day 30 is 8,986 short because that day's cross-district spending is still
-in flight. 114 s on 4 threads.
+Speed: about 300 ms a day on 4 threads (a year in about 2 minutes),
+against about 8 ms for the plain-map town. Most of that time goes to copying every region's objects
+to the other regions each day, and to scoring 50 businesses twice for each
+of 1,000 residents. It needs its own speed pass.
