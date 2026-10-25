@@ -1696,6 +1696,31 @@ impl Vm {
                 let updated = self.update_path(root, &segs, result)?;
                 self.stack.push(Operand::Val(updated));
             }
+            Opcode::AgendaCall(id, argc, n) => {
+                let n = n as usize;
+                let rest = argc as usize - 1;
+                if self.stack.len() < 1 + n + rest {
+                    return Err(GoblinError::Runtime("stack underflow on AgendaCall".into()));
+                }
+                let start = self.stack.len() - (n + rest);
+                if let Some(t) = self.sole_ref_target(1 + n + rest) {
+                    let mut keys = self.drain_operands(start)?;
+                    let args = keys.split_off(n);
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    let q = crate::agenda::path_mut(&mut stash.value, &keys)?;
+                    let result = crate::agenda::call(id, q, &args)?;
+                    // The agenda's variable stays on the stack, changed.
+                    self.stack.push(Operand::Val(result));
+                    return Ok(());
+                }
+                let mut keys = self.drain_operands(start)?;
+                let args = keys.split_off(n);
+                let mut root = self.pop_value()?;
+                let q = crate::agenda::path_mut(&mut root, &keys)?;
+                let result = crate::agenda::call(id, q, &args)?;
+                self.stack.push(Operand::Val(root));
+                self.stack.push(Operand::Val(result));
+            }
             Opcode::UpdatePathHint(n, idx) => {
                 if let Some(t) = self.sole_ref_target(n as usize + 2) {
                     let start = self.stack.len() - (n as usize + 1);

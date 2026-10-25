@@ -1,0 +1,841 @@
+/// Town: a small, verifiable town simulation.
+///
+/// 1,000 residents in households, 50 businesses, 4 districts, one day per
+/// tick, five years. Residents age, buy food, work, get paid, have children,
+/// move between districts and die. Money never enters or leaves the town, so
+/// the total is checked every day.
+///
+/// How it runs:
+/// - The world is generated with :swarm, one task per district.
+/// - Each district is an actor that owns its residents, households and
+///   businesses as plain data (entities are not actors).
+/// - Each tick the clock sends every district the day and its mail, then
+///   waits until every district has reported (a barrier). Districts run in
+///   parallel; anything that crosses districts (wages, hiring, moves) goes
+///   through the clock as mail for the next day, in a fixed order.
+/// - Each district keeps its own event queue (:agenda): events are
+///   scheduled onto a day with :schedule!, run in the order they were
+///   scheduled (:due!), and can be cancelled (:unschedule!).
+/// - Randomness comes from a small generator seeded from (seed, day,
+///   district), so a run repeats exactly, and any day can be rebuilt.
+/// - History: a checkpoint of every district each year plus every day's
+///   mail. Any district on any day can be rebuilt from them; a few are
+///   rebuilt with :swarm at the end and compared with the live run.
+///
+/// TOWN_MODE=serial runs the same districts one after another without
+/// actors; its output must match the actor run line for line.
+/// TOWN_DAYS and TOWN_SEED override the length and the seed.
+
+seed | 42
+n_districts | 4
+n_residents | 1000
+n_businesses | 50
+years | 5
+days | 365 * years
+year_len | 365
+mode | :env("TOWN_MODE") ?? "actors"
+if :env("TOWN_SEED") != ""
+    seed |= :int(:env("TOWN_SEED"))
+xx
+if :env("TOWN_DAYS") != ""
+    days |= :int(:env("TOWN_DAYS"))
+xx
+
+/// ---------- random numbers ----------
+/// Park-Miller: state in 1..2147483646, next = state * 48271 mod (2^31 - 1).
+
+act rng_start(s, a, b)
+    r | (s * 1000003 + a * 7919 + b * 104729 + 12345) % 2147483647
+    if r == 0
+        r |= 1
+    xx
+    r |= (r * 48271) % 2147483647
+    r |= (r * 48271) % 2147483647
+    return r
+xx
+
+/// ---------- world generation (one :swarm task per district) ----------
+
+act make_district(d, cfg)
+    nd | cfg{"nd"}
+    r | rng_start(cfg{"seed"}, 0, d + 1)
+    n_res | :floor(cfg{"nres"} / nd)
+    res | []
+    hh | []
+    biz | []
+    where | {}
+    b | d
+    repeat b < cfg{"nbiz"}
+        r |= (r * 48271) % 2147483647
+        :put_last!(biz, {"id": b, "cash": 6000, "price": 15 + r % 10, "wage": 380 + r % 80, "staff": [], "open": true, "closed_on": -1, "sales": 0})
+        b |= b + nd
+    xx
+    i | 0
+    repeat i < n_res
+        r |= (r * 48271) % 2147483647
+        size | 1 + r % 4
+        if i + size > n_res
+            size |= n_res - i
+        xx
+        h | {"id": d * 100000 + :len(hh), "members": [], "rent_ev": -1}
+        repeat :range(0, size) as k
+            r |= (r * 48271) % 2147483647
+            age | 18 * 365 + r % (50 * 365)
+            if k >= 2
+                age |= r % (17 * 365)
+            xx
+            gid | d * 100000 + i
+            :put_last!(res, {"id": gid, "age": age, "hh": :len(hh), "job": -1, "money": 400 + r % 300, "alive": true, "here": true, "seek_ev": -1, "baby_ev": -1})
+            :update!(where{:str(gid)}, :len(res) - 1)
+            :put_last!(h{"members"}, :len(res) - 1)
+            i |= i + 1
+        xx
+        :put_last!(hh, h)
+    xx
+    st | {"d": d, "nd": nd, "seed": cfg{"seed"}, "res": res, "hh": hh, "biz": biz, "where": where,
+          "all_biz": cfg{"all_biz"}, "treasury": 20000, "q": :agenda(),
+          "out": [], "sum": {}, "next_res": n_res, "next_hh": :len(hh)}
+    /// First paydays, rents and job searches, spread over the first weeks.
+    repeat :range(0, :len(st{"biz"})) as j
+        r |= (r * 48271) % 2147483647
+        :schedule!(st{"q"}, 1 + r % 14, {"kind": "payday", "biz": j})
+    xx
+    repeat :range(0, :len(st{"hh"})) as j
+        r |= (r * 48271) % 2147483647
+        id | :schedule!(st{"q"}, 1 + r % 30, {"kind": "rent", "hh": j})
+        :update!(st{"hh"}[j]{"rent_ev"}, id)
+    xx
+    return st
+xx
+
+/// ---------- helpers ----------
+
+/// `arr` without the items equal to `v`.
+act without(arr, v)
+    out | []
+    repeat arr as x
+        if x != v
+            :put_last!(out, x)
+        xx
+    xx
+    return out
+xx
+
+/// ---------- one district, one day ----------
+
+/// Runs day t for one district: its mail first (in the order the clock sent
+/// it), then the day's events, then every resident's day. Leaves what must
+/// leave the district in st{"out"} and a report in st{"sum"}.
+act district_tick(st, t, mail)
+    d | st{"d"}
+    nd | st{"nd"}
+    r | rng_start(st{"seed"}, t, d + 1)
+    out | []
+    births | 0
+    deaths | 0
+    moved | 0
+    adult | 18 * 365
+
+    /// --- mail ---
+    repeat mail as m
+        kind | m{"kind"}
+        if kind == "wage"
+            i | st{"where"}{:str(m{"res"})}
+            if st{"res"}[i]{"alive"} and st{"res"}[i]{"here"}
+                :update!(st{"res"}[i]{"money"}, st{"res"}[i]{"money"} + m{"amount"})
+            else
+                :update!(st{"treasury"}, st{"treasury"} + m{"amount"})
+            xx
+        elif kind == "hire"
+            b | :floor(m{"biz"} / st{"nd"})
+            bz | st{"biz"}[b]
+            /// Hire only if the business can cover the next payday.
+            if bz{"open"} and :len(bz{"staff"}) < 15 and bz{"cash"} >= bz{"wage"} * (:len(bz{"staff"}) + 1) / 2
+                :put_last!(st{"biz"}[b]{"staff"}, m{"res"})
+                :put_last!(out, {"kind": "hired", "res": m{"res"}, "biz": m{"biz"}})
+            else
+                :put_last!(out, {"kind": "rejected", "res": m{"res"}})
+            xx
+        elif kind == "hired" or kind == "rejected" or kind == "fired"
+            i | st{"where"}{:str(m{"res"})}
+            rs | st{"res"}[i]
+            if rs{"alive"} and rs{"here"}
+                if kind == "hired"
+                    :update!(st{"res"}[i]{"job"}, m{"biz"})
+                else
+                    :update!(st{"res"}[i]{"job"}, -1)
+                xx
+            elif kind == "hired"
+                /// Died or left before the answer came: give the place back.
+                :put_last!(out, {"kind": "quit", "res": m{"res"}, "biz": m{"biz"}})
+            xx
+        elif kind == "quit"
+            b | :floor(m{"biz"} / st{"nd"})
+            :update!(st{"biz"}[b]{"staff"}, without(st{"biz"}[b]{"staff"}, m{"res"}))
+        elif kind == "move_in"
+            h | m{"hh"}
+            hi | :len(st{"hh"})
+            :update!(h{"members"}, [])
+            :update!(h{"id"}, d * 100000 + st{"next_hh"})
+            :update!(st{"next_hh"}, st{"next_hh"} + 1)
+            repeat m{"people"} as p
+                :update!(p{"hh"}, hi)
+                :update!(p{"here"}, true)
+                :update!(p{"seek_ev"}, -1)
+                :update!(p{"baby_ev"}, -1)
+                :put_last!(st{"res"}, p)
+                li | :len(st{"res"}) - 1
+                :update!(st{"where"}{:str(p{"id"})}, li)
+                :put_last!(h{"members"}, li)
+            xx
+            id | :schedule!(st{"q"}, t + 30, {"kind": "rent", "hh": hi})
+            :update!(h{"rent_ev"}, id)
+            :put_last!(st{"hh"}, h)
+        xx
+    xx
+
+    /// --- the day's events ---
+    todo | :due!(st{"q"}, t)
+    if :len(todo) > 0
+        repeat todo as ev
+            if ev{"kind"} == "payday"
+                b | ev{"biz"}
+                bz | st{"biz"}[b]
+                if bz{"open"}
+                    /// Short of cash: let the newest people go until the
+                    /// wages fit, then pay everyone who is left.
+                    staff | bz{"staff"}
+                    repeat :len(staff) > 0 and bz{"wage"} * :len(staff) > bz{"cash"}
+                        last | :len(staff) - 1
+                        :put_last!(out, {"kind": "fired", "res": staff[last], "biz": bz{"id"}})
+                        :delete!(staff, last)
+                    xx
+                    /// Cash well above what the business needs (two paydays
+                    /// plus 2,000) is shared out as a bonus: half of the
+                    /// extra, split evenly between the staff.
+                    bill | bz{"wage"} * :len(staff)
+                    bonus | 0
+                    extra | bz{"cash"} - bill - (2 * bill + 2000)
+                    if :len(staff) > 0 and extra > 0
+                        bonus |= :floor(extra / 2 / :len(staff))
+                    xx
+                    repeat staff as who
+                        :put_last!(out, {"kind": "wage", "res": who, "amount": bz{"wage"} + bonus})
+                    xx
+                    :update!(st{"biz"}[b]{"staff"}, staff)
+                    :update!(st{"biz"}[b]{"cash"}, bz{"cash"} - (bz{"wage"} + bonus) * :len(staff))
+                    /// Nobody left and almost broke: close for a while.
+                    if :len(staff) == 0 and bz{"cash"} < bz{"wage"}
+                        :update!(st{"biz"}[b]{"open"}, false)
+                        :update!(st{"biz"}[b]{"closed_on"}, t)
+                    xx
+                elif st{"treasury"} >= 4000 and t - bz{"closed_on"} >= 60
+                    /// Reopen with a grant from the district.
+                    :update!(st{"treasury"}, st{"treasury"} - 4000)
+                    :update!(st{"biz"}[b]{"cash"}, bz{"cash"} + 4000)
+                    :update!(st{"biz"}[b]{"open"}, true)
+                xx
+                :schedule!(st{"q"}, t + 14, {"kind": "payday", "biz": b})
+            elif ev{"kind"} == "rent"
+                h | ev{"hh"}
+                total | 0
+                repeat st{"hh"}[h]{"members"} as i
+                    p | st{"res"}[i]
+                    if p{"age"} >= adult
+                        pay | :min(p{"money"}, 150)
+                        :update!(st{"res"}[i]{"money"}, p{"money"} - pay)
+                        total |= total + pay
+                    xx
+                xx
+                :update!(st{"treasury"}, st{"treasury"} + total)
+                id | :schedule!(st{"q"}, t + 30, {"kind": "rent", "hh": h})
+                :update!(st{"hh"}[h]{"rent_ev"}, id)
+            elif ev{"kind"} == "seek"
+                i | ev{"res"}
+                :update!(st{"res"}[i]{"seek_ev"}, -1)
+                /// -2 = asked a business, waiting for the answer.
+                :update!(st{"res"}[i]{"job"}, -2)
+                r |= (r * 48271) % 2147483647
+                nb | :len(st{"all_biz"})
+                target | st{"all_biz"}[r % nb]
+                :put_last!(out, {"kind": "hire", "res": st{"res"}[i]{"id"}, "biz": target})
+            elif ev{"kind"} == "birth"
+                i | ev{"res"}
+                :update!(st{"res"}[i]{"baby_ev"}, -1)
+                h | st{"res"}[i]{"hh"}
+                gid | d * 100000 + st{"next_res"}
+                :update!(st{"next_res"}, st{"next_res"} + 1)
+                :put_last!(st{"res"}, {"id": gid, "age": 0, "hh": h, "job": -1, "money": 0, "alive": true, "here": true, "seek_ev": -1, "baby_ev": -1})
+                li | :len(st{"res"}) - 1
+                :update!(st{"where"}{:str(gid)}, li)
+                :put_last!(st{"hh"}[h]{"members"}, li)
+                births |= births + 1
+            xx
+        xx
+    xx
+
+    /// --- every resident's day ---
+    nb | :len(st{"biz"})
+    n | :len(st{"res"})
+    repeat :range(0, n) as i
+        p | st{"res"}[i]
+        if p{"alive"} and p{"here"}
+            age | p{"age"} + 1
+            :update!(st{"res"}[i]{"age"}, age)
+            r |= (r * 48271) % 2147483647
+            /// Death: rare until old age.
+            odds | 200000
+            if age > 70 * 365
+                odds |= 2500
+            elif age > 50 * 365
+                odds |= 25000
+            xx
+            if r % odds == 0
+                :update!(st{"res"}[i]{"alive"}, false)
+                :update!(st{"treasury"}, st{"treasury"} + p{"money"})
+                :update!(st{"res"}[i]{"money"}, 0)
+                :unschedule!(st{"q"}, p{"seek_ev"})
+                :unschedule!(st{"q"}, p{"baby_ev"})
+                if p{"job"} >= 0
+                    :put_last!(out, {"kind": "quit", "res": p{"id"}, "biz": p{"job"}})
+                xx
+                :update!(st{"hh"}[p{"hh"}]{"members"}, without(st{"hh"}[p{"hh"}]{"members"}, i))
+                deaths |= deaths + 1
+            elif age >= adult
+                /// Shop at a local business that is open: one item a day,
+                /// more when there is money to spare (up to four).
+                r |= (r * 48271) % 2147483647
+                b | r % nb
+                if st{"biz"}[b]{"open"}
+                    price | st{"biz"}[b]{"price"}
+                    units | :min(1 + :floor(p{"money"} / 250), 4)
+                    repeat units > 0 and price * units > p{"money"}
+                        units |= units - 1
+                    xx
+                    spend | price * units
+                    :update!(st{"res"}[i]{"money"}, p{"money"} - spend)
+                    :update!(st{"biz"}[b]{"cash"}, st{"biz"}[b]{"cash"} + spend)
+                    :update!(st{"biz"}[b]{"sales"}, st{"biz"}[b]{"sales"} + spend)
+                xx
+                /// No job and not looking: start looking within a week.
+                if p{"job"} == -1 and p{"seek_ev"} < 0
+                    r |= (r * 48271) % 2147483647
+                    id | :schedule!(st{"q"}, t + 1 + r % 7, {"kind": "seek", "res": i})
+                    :update!(st{"res"}[i]{"seek_ev"}, id)
+                xx
+                /// A child, now and then, for adults 20 to 40.
+                if p{"baby_ev"} < 0 and age > 20 * 365 and age < 40 * 365
+                    r |= (r * 48271) % 2147483647
+                    if r % 4000 == 0 and :len(st{"hh"}[p{"hh"}]{"members"}) < 6
+                        id | :schedule!(st{"q"}, t + 270, {"kind": "birth", "res": i})
+                        :update!(st{"res"}[i]{"baby_ev"}, id)
+                    xx
+                xx
+            xx
+        xx
+    xx
+
+    /// --- the weekly benefit for adults without work ---
+    if t % 7 == 0
+        repeat :range(0, n) as i
+            p | st{"res"}[i]
+            if p{"alive"} and p{"here"} and p{"age"} >= adult and p{"job"} < 0 and st{"treasury"} >= 120
+                :update!(st{"res"}[i]{"money"}, p{"money"} + 120)
+                :update!(st{"treasury"}, st{"treasury"} - 120)
+            xx
+        xx
+    xx
+
+    /// --- the district spends what it holds above a reserve ---
+    /// Rent comes in faster than benefits go out, so without this the
+    /// district fund slowly soaks up the town's money. Each day it spends a
+    /// thirtieth of the surplus at its open businesses, split evenly.
+    if st{"treasury"} > 20000
+        open_b | []
+        repeat :range(0, nb) as bi
+            if st{"biz"}[bi]{"open"}
+                :put_last!(open_b, bi)
+            xx
+        xx
+        if :len(open_b) > 0
+            each | :floor((st{"treasury"} - 20000) / 30 / :len(open_b))
+            repeat open_b as bi
+                :update!(st{"biz"}[bi]{"cash"}, st{"biz"}[bi]{"cash"} + each)
+                :update!(st{"biz"}[bi]{"sales"}, st{"biz"}[bi]{"sales"} + each)
+            xx
+            :update!(st{"treasury"}, st{"treasury"} - each * :len(open_b))
+        xx
+    xx
+
+    /// --- a household moves to another district, now and then ---
+    nh | :len(st{"hh"})
+    repeat :range(0, nh) as h
+        r |= (r * 48271) % 2147483647
+        if r % 20000 == 0 and :len(st{"hh"}[h]{"members"}) > 0
+            r |= (r * 48271) % 2147483647
+            dest | (d + 1 + r % (nd - 1)) % nd
+            people | []
+            repeat st{"hh"}[h]{"members"} as i
+                p | st{"res"}[i]
+                :unschedule!(st{"q"}, p{"seek_ev"})
+                :unschedule!(st{"q"}, p{"baby_ev"})
+                :put_last!(people, p)
+                :update!(st{"res"}[i]{"here"}, false)
+                :update!(st{"res"}[i]{"money"}, 0)
+            xx
+            :unschedule!(st{"q"}, st{"hh"}[h]{"rent_ev"})
+            :put_last!(out, {"kind": "move_in", "to": dest, "hh": st{"hh"}[h], "people": people})
+            :update!(st{"hh"}[h]{"members"}, [])
+            moved |= moved + 1
+        xx
+    xx
+
+    /// --- report ---
+    pop | 0
+    adults | 0
+    employed | 0
+    money | st{"treasury"}
+    repeat st{"res"} as p
+        if p{"alive"} and p{"here"}
+            pop |= pop + 1
+            money |= money + p{"money"}
+            if p{"age"} >= adult
+                adults |= adults + 1
+                if p{"job"} >= 0
+                    employed |= employed + 1
+                xx
+            xx
+        xx
+    xx
+    open | 0
+    repeat st{"biz"} as bz
+        money |= money + bz{"cash"}
+        if bz{"open"}
+            open |= open + 1
+        xx
+    xx
+    :update!(st{"out"}, out)
+    :update!(st{"sum"}, {"pop": pop, "adults": adults, "employed": employed, "open": open, "money": money, "births": births, "deaths": deaths, "moved": moved})
+    return st
+xx
+
+/// ---------- districts as actors ----------
+
+act district(st, msg)
+    if msg{"kind"} == "tick"
+        st |= district_tick(st, msg{"t"}, msg{"mail"})
+        :post(st{"done"}, {"d": st{"d"}, "out": st{"out"}, "sum": st{"sum"}})
+    xx
+    return st
+xx
+
+/// ---------- the clock ----------
+
+/// Which district a message goes to.
+act route(m, home, nd, nbiz)
+    k | m{"kind"}
+    if k == "hire" or k == "quit"
+        return m{"biz"} % nd
+    elif k == "move_in"
+        return m{"to"}
+    xx
+    return home{:str(m{"res"})}
+xx
+
+/// Money that is in the mail between districts.
+act in_flight(m)
+    if m{"kind"} == "wage"
+        return m{"amount"}
+    elif m{"kind"} == "move_in"
+        total | 0
+        repeat m{"people"} as p
+            total |= total + p{"money"}
+        xx
+        return total
+    xx
+    return 0
+xx
+
+/// Strip what only the live actor needs, so states compare as plain data.
+act plain(st)
+    :delete!(st, "done")
+    :delete!(st, "out")
+    :delete!(st, "sum")
+    return st
+xx
+
+/// Rebuild district d on `day` from the history: the checkpoint at or before
+/// it, then every day's mail since.
+act rebuild(job, hist)
+    d | job[0]
+    day | job[1]
+    year | (day - day % hist{"year_len"}) / hist{"year_len"}
+    st | hist{"checkpoints"}[year][d]
+    t0 | year * hist{"year_len"} + 1
+    repeat :range(t0, day + 1) as t
+        st |= district_tick(st, t, hist{"mail"}[t][d])
+    xx
+    return plain(st)
+xx
+
+all_biz | :range(0, n_businesses)
+cfg | {"nd": n_districts, "seed": seed, "nres": n_residents, "nbiz": n_businesses, "all_biz": all_biz}
+states | :swarm(:range(0, n_districts), make_district, n_districts, cfg)
+
+/// Where every resident lives, for routing their mail.
+home | {}
+repeat states as st
+    repeat st{"res"} as p
+        :update!(home{:str(p{"id"})}, st{"d"})
+    xx
+xx
+
+total_money | 0
+repeat states as st
+    total_money |= total_money + st{"treasury"}
+    repeat st{"res"} as p
+        total_money |= total_money + p{"money"}
+    xx
+    repeat st{"biz"} as bz
+        total_money |= total_money + bz{"cash"}
+    xx
+xx
+
+checkpoints | [:map_fn(states, plain)]
+mail_log | [[]]
+mail | []
+d | 0
+repeat d < n_districts
+    :put_last!(mail, [])
+    :put_last!(mail_log[0], [])
+    d |= d + 1
+xx
+
+done | :channel(n_districts)
+handles | []
+if mode == "actors"
+    repeat states as st
+        :update!(st{"done"}, done)
+        :put_last!(handles, :actor(st, district))
+    xx
+xx
+
+say("town: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days, seed {seed}, mode {mode}")
+births | 0
+d_births | []
+d_deaths | []
+d_moves | []
+repeat :range(0, n_districts) as d
+    :put_last!(d_births, 0)
+    :put_last!(d_deaths, 0)
+    :put_last!(d_moves, 0)
+xx
+deaths | 0
+moves | 0
+checks | []
+repeat [[1, 200], [2, 600], [0, 1100], [3, days]] as c
+    if c[1] <= days
+        :put_last!(checks, c)
+    xx
+xx
+live | []
+
+repeat :range(1, days + 1) as t
+    :put_last!(mail_log, mail)
+    reports | []
+    repeat :range(0, n_districts) as d
+        :put_last!(reports, nil)
+    xx
+    if mode == "actors"
+        repeat :range(0, n_districts) as d
+            :post(handles[d], {"kind": "tick", "t": t, "mail": mail[d]})
+        xx
+        /// Barrier: every district reports before the day ends.
+        repeat :range(0, n_districts) as d
+            rep | :receive(done)
+            :update_at!(reports, rep{"d"}, rep)
+        xx
+    else
+        repeat :range(0, n_districts) as d
+            st | states[d]
+            st |= district_tick(st, t, mail[d])
+            :update_at!(states, d, st)
+            :update_at!(reports, d, {"d": d, "out": st{"out"}, "sum": st{"sum"}})
+        xx
+    xx
+
+    /// Route tomorrow's mail: moves first so wages follow the people.
+    mail |= []
+    repeat :range(0, n_districts) as d
+        :put_last!(mail, [])
+    xx
+    flight | 0
+    /// Moves go first, so the new district knows its people before any
+    /// other mail about them arrives.
+    repeat reports as rep
+        repeat rep{"out"} as m
+            if m{"kind"} == "move_in"
+                repeat m{"people"} as p
+                    :update!(home{:str(p{"id"})}, m{"to"})
+                xx
+                :put_last!(mail[m{"to"}], m)
+                flight |= flight + in_flight(m)
+            xx
+        xx
+    xx
+    repeat reports as rep
+        repeat rep{"out"} as m
+            if m{"kind"} != "move_in"
+                :put_last!(mail[route(m, home, n_districts, n_businesses)], m)
+                flight |= flight + in_flight(m)
+            xx
+        xx
+    xx
+
+    sum | {"pop": 0, "adults": 0, "employed": 0, "open": 0, "money": flight}
+    repeat reports as rep
+        s | rep{"sum"}
+        repeat ["pop", "adults", "employed", "open", "money"] as k
+            :update!(sum{k}, sum{k} + s{k})
+        xx
+        births |= births + s{"births"}
+        deaths |= deaths + s{"deaths"}
+        moves |= moves + s{"moved"}
+        rd | rep{"d"}
+        :update_at!(d_births, rd, d_births[rd] + s{"births"})
+        :update_at!(d_deaths, rd, d_deaths[rd] + s{"deaths"})
+        :update_at!(d_moves, rd, d_moves[rd] + s{"moved"})
+    xx
+    if sum{"money"} != total_money
+        have | sum{"money"}
+        say("day {t}: money is {have}, should be {total_money}")
+    xx
+    if t % 30 == 0
+        pop | sum{"pop"}
+        adults | sum{"adults"}
+        employed | sum{"employed"}
+        open | sum{"open"}
+        say("day {t}: pop {pop}, adults {adults}, employed {employed}, open businesses {open}, births {births}, deaths {deaths}, moves {moves}, money ok")
+    xx
+
+    /// History: a checkpoint every year, and live states to check rebuilds.
+    want_cp | t % year_len == 0
+    want_live | false
+    repeat checks as c
+        if c[1] == t
+            want_live |= true
+        xx
+    xx
+    if want_cp or want_live
+        snap | []
+        if mode == "actors"
+            repeat handles as h
+                :put_last!(snap, plain(:await(:request(h, {"kind": "look"}))))
+            xx
+        else
+            snap |= :map_fn(states, plain)
+        xx
+        if want_cp
+            :put_last!(checkpoints, snap)
+        xx
+        repeat checks as c
+            if c[1] == t
+                :put_last!(live, snap[c[0]])
+            xx
+        xx
+    xx
+xx
+
+/// The final state of every district, for the report.
+final | []
+if mode == "actors"
+    repeat handles as h
+        :put_last!(final, plain(:await(:request(h, {"kind": "look"}))))
+    xx
+else
+    final |= :map_fn(states, plain)
+xx
+
+repeat handles as h
+    :halt(h)
+xx
+
+/// Rebuild a few (district, day) pairs from the history, in parallel, and
+/// compare them with what the live run had on that day.
+hist | :freeze({"checkpoints": checkpoints, "mail": mail_log, "year_len": year_len})
+rebuilt | :swarm(checks, rebuild, 4, hist)
+repeat :range(0, :len(checks)) as i
+    same | rebuilt[i] == live[i]
+    cd | checks[i][0]
+    cday | checks[i][1]
+    say("rebuild district {cd} day {cday} from history: {same}")
+xx
+say("done: births {births}, deaths {deaths}, moves {moves}")
+
+/// ---------- end-of-run report ----------
+
+act pad(v, n)
+    s | :str(v)
+    repeat :len(s) < n
+        s |= " " + s
+    xx
+    return s
+xx
+
+act share(part, whole)
+    if whole == 0
+        return "0%"
+    xx
+    return :str(:round(part * 100 / whole)) + "%"
+xx
+
+act sales_of(b)
+    return b{"sales"}
+xx
+
+adult_age | 18 * 365
+people_money | 0
+biz_money | 0
+treasuries | 0
+wealth | []
+repeat final as st
+    treasuries |= treasuries + st{"treasury"}
+    repeat st{"res"} as p
+        if p{"alive"} and p{"here"}
+            people_money |= people_money + p{"money"}
+            if p{"age"} >= adult_age
+                :put_last!(wealth, p{"money"})
+            xx
+        xx
+    xx
+    repeat st{"biz"} as bz
+        biz_money |= biz_money + bz{"cash"}
+    xx
+xx
+mail_money | total_money - people_money - biz_money - treasuries
+
+say("")
+say("=== End of run: day {days} ===")
+say("")
+say("Where the money is (total {total_money}):")
+m1 | pad(people_money, 8)
+m2 | pad(share(people_money, total_money), 4)
+say("  people             {m1}  {m2}")
+m1 |= pad(biz_money, 8)
+m2 |= pad(share(biz_money, total_money), 4)
+say("  businesses         {m1}  {m2}")
+m1 |= pad(treasuries, 8)
+m2 |= pad(share(treasuries, total_money), 4)
+say("  district funds     {m1}  {m2}")
+m1 |= pad(mail_money, 8)
+m2 |= pad(share(mail_money, total_money), 4)
+say("  in the mail        {m1}  {m2}")
+
+wealth |= :sort(wealth)
+n | :len(wealth)
+adult_total | :sum(wealth)
+say("")
+say("Wealth of the {n} adults, poorest fifth to richest:")
+say("  fifth   holds   average   lowest   highest")
+repeat :range(0, 5) as q
+    lo | :floor(n * q / 5)
+    hi | :floor(n * (q + 1) / 5)
+    tot | 0
+    repeat :range(lo, hi) as j
+        tot |= tot + wealth[j]
+    xx
+    avg | :floor(tot / (hi - lo))
+    lowest | wealth[lo]
+    highest | wealth[hi - 1]
+    fifth | q + 1
+    c1 | pad(share(tot, adult_total), 4)
+    c2 | pad(avg, 7)
+    c3 | pad(lowest, 6)
+    c4 | pad(highest, 7)
+    say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
+xx
+mid | :floor(n / 2)
+median | wealth[mid]
+broke | 0
+repeat wealth as w
+    if w < 50
+        broke |= broke + 1
+    xx
+xx
+say("  median {median}; {broke} adults have under 50")
+
+rows | []
+repeat final as st
+    repeat st{"biz"} as bz
+        :put_last!(rows, {"id": bz{"id"}, "d": st{"d"}, "open": bz{"open"}, "staff": :len(bz{"staff"}), "cash": bz{"cash"}, "sales": bz{"sales"}, "price": bz{"price"}, "wage": bz{"wage"}})
+    xx
+xx
+rows |= :reverse(:sort_by(rows, sales_of))
+say("")
+say("Businesses, best sales first (sales over the whole run):")
+say("   id  district  open  staff  price  wage     cash     sales")
+repeat rows as bz
+    op | "yes"
+    if not bz{"open"}
+        op |= "no"
+    xx
+    c1 | pad(bz{"id"}, 3)
+    c2 | pad(bz{"d"}, 8)
+    c3 | pad(op, 4)
+    c4 | pad(bz{"staff"}, 5)
+    c5 | pad(bz{"price"}, 5)
+    c6 | pad(bz{"wage"}, 4)
+    c7 | pad(bz{"cash"}, 7)
+    c8 | pad(bz{"sales"}, 8)
+    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}")
+xx
+
+say("")
+say("Districts:")
+say("  district  people  adults  employed  avg adult money  funds  open biz  biz cash  biz sales  births  deaths  moved out")
+repeat final as st
+    dd | st{"d"}
+    pop | 0
+    ad | 0
+    emp | 0
+    am | 0
+    repeat st{"res"} as p
+        if p{"alive"} and p{"here"}
+            pop |= pop + 1
+            if p{"age"} >= adult_age
+                ad |= ad + 1
+                am |= am + p{"money"}
+                if p{"job"} >= 0
+                    emp |= emp + 1
+                xx
+            xx
+        xx
+    xx
+    ob | 0
+    bc | 0
+    bs | 0
+    repeat st{"biz"} as bz
+        if bz{"open"}
+            ob |= ob + 1
+        xx
+        bc |= bc + bz{"cash"}
+        bs |= bs + bz{"sales"}
+    xx
+    avg_m | 0
+    if ad > 0
+        avg_m |= :floor(am / ad)
+    xx
+    c1 | pad(dd, 8)
+    c2 | pad(pop, 6)
+    c3 | pad(ad, 6)
+    c4 | pad(share(emp, ad), 8)
+    c5 | pad(avg_m, 15)
+    c6 | pad(st{"treasury"}, 5)
+    c7 | pad(ob, 8)
+    c8 | pad(bc, 8)
+    c9 | pad(bs, 9)
+    c10 | pad(d_births[dd], 6)
+    c11 | pad(d_deaths[dd], 6)
+    c12 | pad(d_moves[dd], 9)
+    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}  {c9}  {c10}  {c11}  {c12}")
+xx
