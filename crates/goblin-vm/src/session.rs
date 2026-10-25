@@ -489,6 +489,17 @@ impl Session {
     }
 
     /// Clone the Value payload for read-only introspection.
+    /// The errors `read_value` would give, without copying the value: a
+    /// statement like a bare `den` must still fail when `den` was handed
+    /// to an actor.
+    pub fn check_readable(&self, t: &Tether) -> Result<(), GoblinError> {
+        match &self.get_stash(t)?.value {
+            Value::Ref(uuid) if !self.object_store.contains_key(uuid.as_str()) =>
+                Err(crate::actor::missing_object(self, uuid)),
+            _ => Ok(()),
+        }
+    }
+
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
         match &self.get_stash(t)?.value {

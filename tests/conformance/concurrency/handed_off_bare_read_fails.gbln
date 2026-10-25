@@ -1,0 +1,24 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A statement that only names a variable handed to an actor still fails with C0115 (spec IV.4), at top level and inside an action.
+act on_message(room, text)
+    return room
+xx
+act go()
+    settings | {"theme": "dark"}
+    s | :actor(settings, on_message)
+    attempt
+        settings
+        say("no error")
+    rescue e
+        say(:has("{e}", "C0115"))
+    xx
+xx
+go()
+other | {"theme": "light"}
+s2 | :actor(other, on_message)
+attempt
+    other
+    say("no error")
+rescue e
+    say(:has("{e}", "C0115"))
+xx
