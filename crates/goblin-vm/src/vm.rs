@@ -146,6 +146,10 @@ pub struct Vm {
     /// Reused buffer for the resolved keys of an in-place path write.
     key_buf: Vec<Value>,
     num_buf: Vec<Value>,
+    /// DES formulas already compiled, by parameter names and expression, so
+    /// a formula evaluated every tick is compiled once.
+    /// Compiled DES formulas, with whether `run_formula` can run each one.
+    tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<TickFormula>, rustc_hash::FxBuildHasher>,
 }
 
 /// How far an actor's handler got in one go.
@@ -160,7 +164,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), tick_exprs: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1368,6 +1372,16 @@ impl Vm {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
                 };
+                // `obj >> field` on a variable: read the one field in place
+                // instead of copying the whole object off the variable.
+                if let Value::Str(ref name) = key {
+                    if let Some(r) = self.member_field_in_place(name) {
+                        let v = r?;
+                        self.stack.pop();
+                        self.stack.push(Operand::Val(v));
+                        return Ok(());
+                    }
+                }
                 let coll_val = self.pop_value()?;
                 let enum_field = match (&coll_val, &key) {
                     (Value::Enum(e), Value::Str(name)) => e.fields.as_ref().and_then(|f| f.get(name.as_str()).cloned()),
@@ -2262,7 +2276,8 @@ impl Vm {
                         map
                     },
                 };
-                self.session.overlay_defs.insert(vm_def.name.clone(), vm_def);
+                self.tick_exprs.clear();
+                self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
             Opcode::OverlayApply(i) => {
@@ -2348,7 +2363,8 @@ impl Vm {
                     formula_min,
                     formula_max,
                 };
-                self.session.link_defs.insert((def.class_name.clone(), channel), link_def);
+                self.tick_exprs.clear();
+                self.session.link_defs.insert((def.class_name.clone(), channel), std::rc::Rc::new(link_def));
             }
 
             Opcode::ObjectLinkDef(i) => {
@@ -2363,7 +2379,8 @@ impl Vm {
                     formula_min,
                     formula_max,
                 };
-                self.session.object_link_defs.insert((def.object_var.clone(), channel), link_def);
+                self.tick_exprs.clear();
+                self.session.object_link_defs.insert((def.object_var.clone(), channel), std::rc::Rc::new(link_def));
             }
 
             Opcode::LinkOffset(i) => {
@@ -2397,7 +2414,8 @@ impl Vm {
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
-                self.session.object_decisions.insert(var_name.clone(), d);
+                self.tick_exprs.clear();
+                self.session.object_decisions.insert(var_name.clone(), std::rc::Rc::new(d));
             }
 
             Opcode::UnitDecl(i) => {
@@ -2805,6 +2823,26 @@ impl Vm {
     /// Resolve an Operand to a Value: Val is returned directly (free), Ref is
     /// read from the arena (clones only when actually needed).
     #[inline]
+    /// The field `name` of the object the top operand holds, read without
+    /// copying the object, when the top operand is a variable holding an
+    /// object and `name` is not a builtin member. None means take the
+    /// general path.
+    fn member_field_in_place(&self, name: &str) -> Option<Result<Value, GoblinError>> {
+        let Some(Operand::Ref(t)) = self.stack.last() else { return None };
+        if member_builtin(name).is_some() { return None; }
+        let stash = self.session.get_stash(t).ok()?;
+        let obj = match &stash.value {
+            Value::Object(o) => o,
+            Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                Some(Value::Object(o)) => o,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some(obj.fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
+    }
+
     fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
         match op {
             Operand::Val(Value::Frozen(f)) => Ok(f.value.clone()),
@@ -3437,10 +3475,20 @@ impl Vm {
                 .unwrap_or((0, String::new()));
             GoblinError::WithLocation { inner: Box::new(e), line, file }
         };
-        while self.call_stack.len() > target_depth {
-            self.call_stack.pop();
-        }
+        self.unwind_to(target_depth);
         Err(located)
+    }
+
+    /// Drop the frames above `depth` after an uncaught error, and the
+    /// operands they left: everything from the lowest dropped frame's base,
+    /// so the caller's stack is as it was before it pushed that call. Without
+    /// this, every failed nested run (a DES formula, a callback) leaves its
+    /// operands behind and the stack grows for the rest of the program.
+    fn unwind_to(&mut self, depth: usize) {
+        if let Some(base) = self.call_stack.get(depth).map(|f| f.stack_base) {
+            self.call_stack.truncate(depth);
+            self.stack.truncate(base);
+        }
     }
 
     /// Start an actor's handler: push its frame and run it as far as it goes.
@@ -3571,9 +3619,7 @@ impl Vm {
                         .unwrap_or((0, String::new()));
                     GoblinError::WithLocation { inner: Box::new(e), line, file }
                 };
-                while self.call_stack.len() > target_depth {
-                    self.call_stack.pop();
-                }
+                self.unwind_to(target_depth);
                 located
             })?;
         }
@@ -3623,6 +3669,7 @@ impl Vm {
 
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
+        self.tick_exprs.clear();
         crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
 
         // Track the importing file's directory in base_dir so that GLAM files (which
@@ -4415,11 +4462,23 @@ impl Vm {
 
     /// Compile a single Expr into a callable FunctionObject with the given parameter names.
     fn compile_tick_expr(
-        &self,
+        &mut self,
         expr: &goblin_ast::Expr,
-        param_names: &[&str],
-    ) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
-        Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())
+        locals: &[(&str, Value)],
+    ) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
+        // DES formulas live in shared (Rc) definitions, so a formula keeps
+        // its address; the key is that address, checked against the
+        // formula's span and kind, and the names it is called with.
+        let key = tick_expr_key(expr, locals);
+        if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
+        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
+        let f = Self::compile_expr_fn(expr, &param_names, crate::compiler::Compiler::new())?;
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), func: f });
+        // A formula at a passing address (a copy) is compiled each time; keep
+        // the table from growing without end.
+        if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
+        self.tick_exprs.insert(key, f.clone());
+        Ok(f)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
@@ -4466,11 +4525,18 @@ impl Vm {
         expr: &goblin_ast::Expr,
         locals: Vec<(&str, Value)>,
     ) -> Result<Value, GoblinError> {
-        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
-        let func_rc = self.compile_tick_expr(expr, &param_names)?;
-        let args: Vec<Value> = locals.into_iter().map(|(_, v)| v).collect();
-        if args.len() != func_rc.params {
+        let formula = self.compile_tick_expr(expr, &locals)?;
+        let func_rc = formula.func.clone();
+        if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        // A formula that keeps needing the VM (it errors every time, say)
+        // stops being tried directly; one success makes it eligible again.
+        if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
+            match self.run_formula(&func_rc, &locals) {
+                Some(v) => { formula.misses.set(0); return Ok(v); }
+                None => formula.misses.set(formula.misses.get() + 1),
+            }
         }
         if self.call_stack.len() >= MAX_CALL_DEPTH {
             return Err(GoblinError::StackOverflow);
@@ -4478,7 +4544,7 @@ impl Vm {
         let stack_base = self.stack.len();
         self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
-        for (i, a) in args.into_iter().enumerate() {
+        for (i, (_, a)) in locals.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
             new_frame.locals[i] = Some(t);
         }
@@ -4500,6 +4566,141 @@ impl Vm {
             Ok(Value::Int(i)) => i != 0,
             Ok(Value::Float(f)) => f != 0.0,
             _ => false,
+        }
+    }
+
+    /// Run a simple DES formula (arithmetic, comparisons and `obj >> field`
+    /// on its arguments) without a call frame, argument copies or the
+    /// dispatch loop. Gives the same result the VM would; `None` means the
+    /// formula met something it does not handle (a type other than int,
+    /// float, bool or nil in an operation, a missing field, an error), and
+    /// the caller runs it on the VM instead. Nothing here has side effects,
+    /// so running it again from the start is safe.
+    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, Value)]) -> Option<Value> {
+        enum Fv<'a> { Val(Value), Arg(&'a Value) }
+        // An operand an operation may use: numbers, bools and nil only.
+        fn plain(v: Fv<'_>) -> Option<Value> {
+            match v {
+                Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => Some(v),
+                _ => None,
+            }
+        }
+        let code = &f.bytecode;
+        let mut st: Vec<Fv> = Vec::with_capacity(8);
+        let mut ip = 0usize;
+        // Bound the loop: a formula is straight-line code with forward jumps.
+        let mut budget = 4 * code.len() + 16;
+        loop {
+            if budget == 0 { return None; }
+            budget -= 1;
+            let op = *code.get(ip)?;
+            ip += 1;
+            match op {
+                Opcode::LoadConst(i) => st.push(Fv::Val(f.constants.get(i as usize)?.clone_fast())),
+                Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
+                Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
+                Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
+                Opcode::LoadLocal(slot) => {
+                    let a = &args.get(slot as usize)?.1;
+                    match a {
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
+                        Value::Object(_) | Value::Ref(_) => st.push(Fv::Arg(a)),
+                        _ => return None,
+                    }
+                }
+                Opcode::GetMember(idx) => {
+                    let Some(Fv::Arg(a)) = st.pop() else { return None };
+                    // `formula_runs_direct` ruled out names of member builtins.
+                    let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
+                    let obj = match a {
+                        Value::Object(o) => o,
+                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                            Some(Value::Object(o)) => o,
+                            _ => return None,
+                        },
+                        _ => return None,
+                    };
+                    let v = obj.fields.get(name.as_ref() as &str)?;
+                    if matches!(v, Value::Frozen(_)) { return None; }
+                    st.push(Fv::Val(v.clone_fast()));
+                }
+                Opcode::Pop => { st.pop()?; }
+                Opcode::Dup => {
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a) => Fv::Arg(a) };
+                    st.push(top);
+                }
+                Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
+                    let b = plain(st.pop()?)?;
+                    let a = plain(st.pop()?)?;
+                    let r = match (op, &a, &b) {
+                        (Opcode::Add, Value::Int(x), Value::Int(y)) => Value::Int(x.wrapping_add(*y)),
+                        (Opcode::Add, Value::Float(x), Value::Float(y)) => Value::Float(x + y),
+                        (Opcode::Add, Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 + y),
+                        (Opcode::Add, Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
+                        // Int overflow becomes a big number on the VM: leave that to it.
+                        (Opcode::Sub, Value::Int(x), Value::Int(y)) => Value::Int(x.checked_sub(*y)?),
+                        (Opcode::Mul, Value::Int(x), Value::Int(y)) => Value::Int(x.checked_mul(*y)?),
+                        // With a float on either side it is plain f64 math (`numeric_binop`).
+                        (Opcode::Sub | Opcode::Mul, Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+                            let x = match a { Value::Int(n) => n as f64, Value::Float(x) => x, _ => return None };
+                            let y = match b { Value::Int(n) => n as f64, Value::Float(y) => y, _ => return None };
+                            Value::Float(if matches!(op, Opcode::Sub) { x - y } else { x * y })
+                        }
+                        (Opcode::Div, Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) =>
+                            num_div(&a, &b).ok()?,
+                        _ => return None,
+                    };
+                    st.push(Fv::Val(r));
+                }
+                Opcode::Neg => {
+                    let r = match plain(st.pop()?)? {
+                        Value::Int(x) => Value::Int(x.checked_neg()?),
+                        Value::Float(x) => Value::Float(-x),
+                        _ => return None,
+                    };
+                    st.push(Fv::Val(r));
+                }
+                Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge => {
+                    let b = plain(st.pop()?)?;
+                    let a = plain(st.pop()?)?;
+                    if !matches!(a, Value::Int(_) | Value::Float(_)) || !matches!(b, Value::Int(_) | Value::Float(_)) { return None; }
+                    let (sym, test): (&'static str, fn(i32) -> bool) = match op {
+                        Opcode::Lt => ("<", |c| c < 0),
+                        Opcode::Le => ("<=", |c| c <= 0),
+                        Opcode::Gt => (">", |c| c > 0),
+                        _ => (">=", |c| c >= 0),
+                    };
+                    let c = self.compare_values(&a, &b, sym).ok()?;
+                    st.push(Fv::Val(Value::Bool(test(c))));
+                }
+                Opcode::Eq | Opcode::Ne => {
+                    let b = plain(st.pop()?)?;
+                    let a = plain(st.pop()?)?;
+                    let eq = values_equal(&a, &b);
+                    st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
+                }
+                Opcode::Not => {
+                    let a = plain(st.pop()?)?;
+                    st.push(Fv::Val(Value::Bool(!a.is_truthy())));
+                }
+                Opcode::Jump(off) => { ip = (ip as isize + off as isize) as usize; }
+                Opcode::JumpIfFalse(off) | Opcode::JumpIfTrue(off) => {
+                    let c = plain(st.pop()?)?.is_truthy();
+                    if c == matches!(op, Opcode::JumpIfTrue(_)) { ip = (ip as isize + off as isize) as usize; }
+                }
+                Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, argc) => {
+                    let start = st.len().checked_sub(argc as usize)?;
+                    let mut largs = Vec::with_capacity(argc as usize);
+                    for v in st.drain(start..) {
+                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_) | Value::Ref(_)) => largs.push(v), _ => return None }
+                    }
+                    st.push(Fv::Val(self.link_score_in(&largs, Some((f, args))).ok()?));
+                }
+                Opcode::Return => {
+                    return match st.pop()? { Fv::Val(v) if st.is_empty() => Some(v), _ => None };
+                }
+                _ => return None,
+            }
         }
     }
 
@@ -4731,30 +4932,82 @@ impl Vm {
     /// link_score(class, [channel,] a_var, b_var): the link formula for the pair,
     /// normalised to 0..1, plus the pair's offsets (the interpreter's `link_score`).
     fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        self.link_score_in(&args, None)
+    }
+
+    /// `link_score` with its variable names looked up in the running
+    /// formula: the current call frame, or, for a formula run by
+    /// `run_formula`, that formula's parameter names and arguments.
+    fn link_score_in(
+        &mut self,
+        args: &[Value],
+        direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>,
+    ) -> Result<Value, GoblinError> {
         if args.len() < 3 { return Ok(Value::Nil); }
-        let s = |i: usize| -> Result<String, GoblinError> {
+        let s = |i: usize| -> Result<&str, GoblinError> {
             match &args[i] {
-                Value::Str(s) => Ok(s.to_string()),
+                Value::Str(s) => Ok(s.as_ref()),
                 other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
             }
         };
         let (class_name, channel, a_var, b_var) = if args.len() >= 4 {
             (s(0)?, s(1)?, s(2)?, s(3)?)
         } else {
-            (s(0)?, "default".to_string(), s(1)?, s(2)?)
+            (s(0)?, "default", s(1)?, s(2)?)
         };
-        let (self_val, target_val) = match (self.lookup_var(&a_var), self.lookup_var(&b_var)) {
+        // The objects stay in the object store: the formula reads their
+        // fields through the reference instead of a copy of each object.
+        let (self_val, target_val) = match (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) {
             (Some(a), Some(b)) => (a, b),
             _ => return Ok(Value::Nil),
         };
-        let def = self.session.object_link_defs.get(&(a_var.clone(), channel.clone())).cloned()
-            .or_else(|| self.session.link_defs.get(&(class_name.clone(), channel.clone())).cloned());
+        let def = (!self.session.object_link_defs.is_empty())
+            .then(|| self.session.object_link_defs.get(&(a_var.to_string(), channel.to_string())).cloned())
+            .flatten()
+            .or_else(|| self.session.link_defs.get(&(class_name.to_string(), channel.to_string())).cloned());
         let Some(d) = def else { return Ok(Value::Nil) };
         let mut score = crate::tick::eval_link_score(self, self_val, target_val, &d.formula, d.formula_min, d.formula_max)?;
-        if let Some(offsets) = self.session.link_offsets.get(&(a_var, b_var, channel)) {
-            for o in offsets { score += o.value; }
+        if !self.session.link_offsets.is_empty() {
+            if let Some(offsets) = self.session.link_offsets.get(&(a_var.to_string(), b_var.to_string(), channel.to_string())) {
+                for o in offsets { score += o.value; }
+            }
         }
         Ok(Value::Float(score.clamp(0.0, 1.0)))
+    }
+
+    /// A variable's value as `lookup_var` finds it, except that an object
+    /// variable gives its `Value::Ref` (the object must exist) instead of a
+    /// copy of the object.
+    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>) -> Option<Value> {
+        let deref = |v: &Value| -> Option<Value> {
+            match v {
+                Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()).then(|| v.clone()),
+                Value::Frozen(f) => Some(f.value.clone()),
+                other => Some(other.clone_fast()),
+            }
+        };
+        let globals = |func: &crate::value::FunctionObject| -> Option<Value> {
+            let t = func.global_names().iter().position(|n| n == name)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+                .or_else(|| self.session.global_names.iter().position(|n| n == name)
+                    .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))?;
+            deref(&self.session.get_stash(&t).ok()?.value)
+        };
+        match direct {
+            Some((func, args)) => match func.local_names.iter().position(|n| n == name) {
+                Some(slot) if slot < args.len() => deref(&args[slot].1),
+                _ => globals(func),
+            },
+            None => {
+                let frame = self.call_stack.last()?;
+                let local = frame.func.local_names.iter().position(|n| n == name)
+                    .and_then(|slot| frame.locals.get(slot).cloned().flatten());
+                match local {
+                    Some(t) => deref(&self.session.get_stash(&t).ok()?.value),
+                    None => globals(&frame.func),
+                }
+            }
+        }
     }
 
     /// decision_debug(): one line per object variable saying whether its class
@@ -5064,19 +5317,43 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
     Ok(())
 }
 
-fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
+/// A compiled DES formula.
+pub(crate) struct TickFormula {
+    func: std::rc::Rc<crate::value::FunctionObject>,
+    /// Every opcode is one `Vm::run_formula` handles.
+    direct: bool,
+    /// Direct runs in a row that had to fall back to the VM.
+    misses: std::cell::Cell<u32>,
+}
+
+impl TickFormula {
+    const MAX_MISSES: u32 = 32;
+}
+
+/// Whether every opcode in a compiled DES formula is one `Vm::run_formula`
+/// handles, so it is worth trying before the VM.
+fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
+    // `obj >> name` where name is also a member builtin (`size`, ...) is
+    // left to the VM, which knows which one wins.
+    let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
+        Some(Value::Str(n)) if member_builtin(n).is_none());
+    f.locals == f.params && f.upvalue_descriptors.is_empty() && f.bytecode.iter().all(|op| match op {
+        Opcode::GetMember(idx) => plain_member(idx),
+        op => matches!(op,
+        Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
+        | Opcode::Pop | Opcode::Dup
+        | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
+        | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
+        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
+        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+    })
+}
+
+/// The builtin a `x >> name` member access calls, if `name` is one; those
+/// names win over an object's fields of the same name.
+fn member_builtin(name: &str) -> Option<crate::value::BuiltinId> {
     use crate::value::BuiltinId;
-    use crate::builtins::call_builtin;
-
-    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
-    if let Value::Enum(e) = v {
-        if let Some(f) = &e.fields {
-            if let Some(x) = f.get(name) { return Ok(x.clone()); }
-        }
-    }
-
-    // Try builtin method dispatch first
-    let bid = match name {
+    match name {
         "str" | "string"   => Some(BuiltinId::ToStr),
         "int"              => Some(BuiltinId::ToInt),
         "float"            => Some(BuiltinId::ToFloat),
@@ -5199,7 +5476,22 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         "url_decode"       => Some(BuiltinId::UrlDecode),
         "url_encode"       => Some(BuiltinId::UrlEncode),
         _ => None,
-    };
+    }
+}
+
+fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value, GoblinError> {
+    use crate::value::BuiltinId;
+    use crate::builtins::call_builtin;
+
+    // A variant's fields, so nested paths such as `update!(w.payload.x, 2)` can descend.
+    if let Value::Enum(e) = v {
+        if let Some(f) = &e.fields {
+            if let Some(x) = f.get(name) { return Ok(x.clone()); }
+        }
+    }
+
+    // Try builtin method dispatch first
+    let bid = member_builtin(name);
 
     if let Some(id) = bid {
         return call_builtin(id, vec![v.clone()], session);
@@ -5251,6 +5543,84 @@ mod tests {
             vec![Value::Int(42)],
         )).unwrap();
         assert!(matches!(result, Value::Int(42)));
+    }
+
+    fn parse_formula(src: &str) -> goblin_ast::Expr {
+        let tokens = goblin_lexer::lex(src, "<test>").expect("lex");
+        let module = goblin_parser::Parser::new(&tokens).parse_module().expect("parse");
+        match module.items.into_iter().next() {
+            Some(goblin_ast::Stmt::Expr(e)) => e,
+            other => panic!("not an expression: {other:?}"),
+        }
+    }
+
+    fn nation(uuid: &str, military: Value) -> Value {
+        let mut fields = indexmap::IndexMap::new();
+        fields.insert("military".to_string(), military);
+        fields.insert("name".to_string(), Value::Str("France".into()));
+        Value::Object(Box::new(crate::value::ObjectVal {
+            class_name: "Nation".into(),
+            fields: std::rc::Rc::new(fields),
+            readonly_fields: Default::default(),
+            trait_fields: Default::default(),
+            uuid: uuid.into(),
+        }))
+    }
+
+    #[test]
+    fn direct_formulas_match_the_vm() {
+        // Every formula gives the same value (or fails the same way) through
+        // `run_formula` as through a call frame on the VM.
+        let formulas = [
+            "a * 2 + b", "a - b * 3", "a / b", "a / 4", "-a", "a * 1.5 - b",
+            "a < b and b >= 3", "a > 2 or b <= 1", "a == b", "a != 6",
+            "9223372036854775807 + a", "9223372036854775807 * b", "0 - 9223372036854775807 - a",
+            "s >> military * .4 - a", "s >> military > 0.5 and s >> military < 2",
+            "s >> name", "s >> missing * 2", "a / 0",
+        ];
+        let pairs = [
+            (Value::Int(6), Value::Int(3)),
+            (Value::Float(2.5), Value::Int(4)),
+            (Value::Int(i64::MAX), Value::Float(0.5)),
+            (Value::Int(7), Value::Nil),
+        ];
+        let mut ran_direct = 0;
+        for src in formulas {
+            let expr = parse_formula(src);
+            for (a, b) in &pairs {
+                for s in [nation("u1", Value::Float(0.7)), nation("u2", Value::Int(3))] {
+                    let mut vm = make_vm();
+                    let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
+                    let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
+                    if vm.run_formula(&f, &locals).is_some() { ran_direct += 1; }
+                    let fast = vm.eval_tick_expr(&expr, locals);
+                    let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
+                    match (&fast, &slow) {
+                        (Ok(x), Ok(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "{src} with {a:?}, {b:?}"),
+                        (Err(_), Err(_)) => {}
+                        _ => panic!("{src} with {a:?}, {b:?}: {fast:?} vs {slow:?}"),
+                    }
+                }
+            }
+        }
+        assert!(ran_direct > 80, "only {ran_direct} runs were direct");
+    }
+
+    #[test]
+    fn failed_nested_call_leaves_no_operands() {
+        // A callback that pushes operands and then fails, called the way DES
+        // formulas and builtin callbacks are: the stack must not grow.
+        let mut vm = make_vm();
+        let f = Value::Function(std::rc::Rc::new(simple_func(
+            vec![Opcode::LoadConst(0), Opcode::LoadConst(1), Opcode::LoadConst(0), Opcode::LoadConst(1), Opcode::Mul, Opcode::Return],
+            vec![Value::Str("a".into()), Value::Nil],
+        )));
+        let before = vm.stack.len();
+        for _ in 0..100 {
+            assert!(vm.call_func_value(f.clone(), vec![]).is_err());
+        }
+        assert_eq!(vm.stack.len(), before);
+        assert!(vm.call_stack.is_empty());
     }
 
     #[test]
@@ -5589,6 +5959,21 @@ fn concat_text(a: &str, b: &str) -> String {
     s.push_str(a);
     s.push_str(b);
     s
+}
+
+/// The tick-expr cache key: the formula's address, its span and kind, and
+/// the parameter names. A freed formula's address could be reused, so the
+/// table is emptied whenever a definition holding formulas is replaced, and
+/// a reused address must also match span and kind.
+fn tick_expr_key(expr: &goblin_ast::Expr, params: &[(&str, Value)]) -> (usize, usize, usize, u32, u32, u64) {
+    use std::hash::{Hash, Hasher};
+    let sp = expr.span();
+    let mut h = rustc_hash::FxHasher::default();
+    std::mem::discriminant(expr).hash(&mut h);
+    params.len().hash(&mut h);
+    for (n, _) in params { n.hash(&mut h); }
+    sp.file.hash(&mut h);
+    (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }
 
 /// The trait fields of a new object, as the interpreter infers them: every
