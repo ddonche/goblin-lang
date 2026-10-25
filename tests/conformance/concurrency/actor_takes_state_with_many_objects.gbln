@@ -1,0 +1,29 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A variable holding a state with several objects is one holder: the
+/// actor takes it (C0113 is only for another variable or collection).
+<>Person |
+    health: .9
+xx
+act make_town(n)
+    people | []
+    repeat :range(0, n)
+        p <> Person | health: .5
+        :put_last!(people, p)
+    xx
+    return {"people": people}
+xx
+act region(st, msg)
+    say(:len(st{"people"}))
+    return st
+xx
+town | make_town(3)
+r | :actor(town, region)
+:post(r, "count")
+:halt(r)
+ppl | []
+:put_last!(ppl, make_town(1){"people"}[0])
+attempt
+    r2 | :actor({"people": ppl}, region)
+rescue e
+    say(:has("{e}", "C0113"))
+xx

@@ -1,0 +1,32 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An overlay on an object handed to an actor goes with the object: the
+/// actor's ticks keep applying it, and it is gone from the starting program.
+<>Person |
+    health: .9
+xx
+overlay Sick |
+    decays .1
+    modifies:
+        health - .05
+    end
+end
+act make()
+    p <> Person | health: .8
+    overlay Sick on p at .9
+    return p
+xx
+act region(st, msg)
+    say(:len(:overlays(it >> overlay_name == "Sick")))
+    tick()
+    repeat st{"people"}
+        h | it >> health
+        say(h)
+    xx
+    return st
+xx
+st | {"people": [make()]}
+say(:len(:overlays()))
+r | :actor(st, region)
+say(:len(:overlays()))
+:post(r, "tick")
+:halt(r)

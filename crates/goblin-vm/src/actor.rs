@@ -954,7 +954,13 @@ impl Vm {
             // `named_values` registers a declared object under its own
             // variable's name; that entry goes with the object.
             for op in &self.stack { if let Operand::Val(x) = op { count_refs(x, &graph, &mut n); } }
-            let allowed = if from_var { 1 } else { 0 };
+            // The variable handed over holds the state itself: every
+            // reference inside the state is that one holder, not another.
+            let allowed = if from_var {
+                let mut own = 0usize;
+                count_refs(&state, &graph, &mut own);
+                own
+            } else { 0 };
             if n > allowed {
                 return Err(err(
                     "C0113: actor-shared-state: this object is also held somewhere else (another variable, a collection or another object), so it cannot be handed to an actor; drop the other reference first, or hand over a copy made with :freeze"));
@@ -968,10 +974,10 @@ impl Vm {
         }
 
         let converted = (|| {
-            let mut tp = ToPortable::new(&self.session).sharing_values();
+            let mut tp = ToPortable::new(&self.session).sharing_values().only_objects(graph.clone());
             let mut roots = vec![&state, &handler];
             if let Some(f) = &policy.stop_when { roots.push(f); }
-            let image = crate::swarm::image_of(&self.session, &mut tp, Some(&roots))?;
+            let image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
@@ -1019,6 +1025,10 @@ impl Vm {
                 let mut k = 0; count_refs(v, &graph, &mut k); k == 0
             });
         }
+        // Their overlays went with them.
+        if !graph.is_empty() {
+            self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
+        }
         for u in &graph {
             self.session.object_store.shift_remove(u.as_str());
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
@@ -1047,6 +1057,11 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
 
 /// The error for reading an object that is gone.
 pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
+    if let Some(var) = session.kept_home.get(uuid) {
+        let what = if var == "this object" { var.clone() } else { format!("`{var}`") };
+        return err(format!(
+            "C0122: actor-not-owned: {what} belongs to the program that started this actor; an actor only has the objects handed to it in its state. Hand it over in the state, or send the actor what it needs in a message"));
+    }
     match session.handed_off.get(uuid) {
         Some(var) if var == "this object" => err(
             "C0115: actor-handed-off: this object was handed to an actor and can no longer be used here"),
@@ -1232,7 +1247,11 @@ fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&P
     vm.session.rng_state = seed | 1;
     let handler = fp.value(handler, &mut vm.session);
     let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
+    // Every object in the state, however deep, lives in the actor's object
+    // store, so its ticks and field writes reach it.
+    fp.adopting(true);
     let first = fp.value(state, &mut vm.session);
+    fp.adopting(false);
     let state = adopt(first, &mut vm.session);
     (vm, handler, stop_when, state)
 }

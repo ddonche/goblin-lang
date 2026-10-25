@@ -63,6 +63,9 @@ pub enum PValue {
     Handle(crate::actor::Handle),
     /// A variable whose object was handed to an actor: it stays dead.
     HandedOff { uuid: String, var: String },
+    /// An object that stays with the session that started an actor (it was
+    /// not handed over); the name it was stored under.
+    KeptHome { uuid: String, var: String },
     /// A collection or long string holding no session state, converted once
     /// and shared: every actor on one worker reads the same copy.
     Shared(Arc<PValue>),
@@ -108,6 +111,9 @@ pub struct ToPortable<'s> {
     /// Short texts converted so far: map keys and words like "wage" repeat
     /// in every item, so each is converted once.
     strs: std::collections::HashSet<Arc<str>>,
+    /// For an actor: the objects handed to it. Any other object of the
+    /// session stays behind instead of crossing as a copy.
+    home: Option<std::collections::HashSet<String>>,
 }
 
 /// Texts up to this long are converted once per conversion and shared.
@@ -118,7 +124,7 @@ const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default() }
+        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -126,6 +132,18 @@ impl<'s> ToPortable<'s> {
     pub fn sharing_values(mut self) -> Self { self.share = true; self }
 
     pub fn is_sharing(&self) -> bool { self.share }
+
+    /// Only the objects in `handed` cross; the session's other objects stay
+    /// where they are (an actor owns what it was handed, nothing more).
+    pub(crate) fn only_objects(mut self, handed: std::collections::HashSet<String>) -> Self { self.home = Some(handed); self }
+
+    /// An object of this session that does not go with the actor.
+    fn stays_home(&self, uuid: &str) -> Option<PValue> {
+        let h = self.home.as_ref()?;
+        if h.contains(uuid) || !self.session.object_store.contains_key(uuid) { return None; }
+        let var = self.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| "this object".to_string());
+        Some(PValue::KeptHome { uuid: uuid.to_string(), var })
+    }
 
     fn text(&mut self, s: &str) -> Arc<str> {
         if s.len() > SHORT_STR { return Arc::from(s); }
@@ -162,6 +180,7 @@ impl<'s> ToPortable<'s> {
             Value::CtrlSkip => PValue::CtrlSkip,
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
+            Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
             Value::Object(o) => PValue::Object {
                 class_name: o.class_name.clone(),
                 fields: self.fields(&o.fields)?,
@@ -170,6 +189,7 @@ impl<'s> ToPortable<'s> {
                 uuid: o.uuid.clone(),
             },
             // An object reference crosses as the object itself.
+            Value::Ref(uuid) if self.stays_home(uuid).is_some() => self.stays_home(uuid).unwrap(),
             Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                 Some(obj) => self.value(&obj.clone())?,
                 None => match self.session.handed_off.get(uuid.as_str()) {
@@ -316,6 +336,9 @@ pub struct FromPortable {
     /// Short strings already rebuilt, so repeated keys and names ("id",
     /// "money", ...) share one copy instead of each allocating its own.
     strs: HashMap<Box<str>, GStr>,
+    /// Objects rebuilt go into the session's object store, and the value
+    /// holds a reference (an actor's starting state, at any depth).
+    adopt: bool,
 }
 
 /// Strings up to this long are shared by content when rebuilt.
@@ -329,7 +352,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new() }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -341,8 +364,23 @@ impl FromPortable {
         self.values.clear();
     }
 
+    /// While on, every object rebuilt is stored in the session's object
+    /// store and stands as a reference, however deep it sits.
+    pub(crate) fn adopting(&mut self, on: bool) { self.adopt = on; }
+
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
         match p {
+            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } if self.adopt => {
+                let fields = Rc::new(self.fields(fields, session));
+                session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
+                    class_name: class_name.clone(),
+                    fields,
+                    readonly_fields: readonly_fields.clone(),
+                    trait_fields: trait_fields.clone(),
+                    uuid: uuid.clone(),
+                })));
+                Value::Ref(uuid.clone())
+            }
             PValue::Nil => Value::Nil,
             PValue::Unit => Value::Unit,
             PValue::Bool(b) => Value::Bool(*b),
@@ -407,6 +445,10 @@ impl FromPortable {
             PValue::Handle(h) => Value::Handle(h.clone()),
             PValue::HandedOff { uuid, var } => {
                 session.handed_off.insert(uuid.clone(), var.clone());
+                Value::Ref(uuid.clone())
+            }
+            PValue::KeptHome { uuid, var } => {
+                session.kept_home.insert(uuid.clone(), var.clone());
                 Value::Ref(uuid.clone())
             }
             PValue::Shared(inner) => self.shared_value(inner, session),
@@ -590,7 +632,7 @@ pub(crate) fn inert(p: &PValue) -> bool {
             PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => p.iter().all(|(k, v)| inert(k) && inert(v)),
         },
         PValue::Object { .. } | PValue::Closure(..) | PValue::Frozen(_) | PValue::Handle(_)
-        | PValue::HandedOff { .. } => false,
+        | PValue::HandedOff { .. } | PValue::KeptHome { .. } => false,
     }
 }
 
