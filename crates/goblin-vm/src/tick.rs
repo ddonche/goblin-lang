@@ -849,15 +849,19 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     let target_candidates = targets.of(vm, &decision.target_class);
     let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
 
-    // Score all targets (by position in the list)
-    let mut scored: Vec<(usize, f64)> = Vec::new();
+    // Score all targets (by position in the list), the formula compiled once.
+    // (A formula that does not compile scores no target, as before.)
+    let Ok(formula) = vm.tick_formula(&decision.formula, &["self", "target"]) else { return Ok(()) };
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
     for (k, target) in target_candidates.iter().enumerate() {
         if is_self(target) { continue; }
-        let raw_score = match eval_link_score_ref(vm, &self_ref, target, &decision.formula, decision.formula_min, decision.formula_max) {
-            Ok(s) => s,
+        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)]) {
+            Ok(Value::Float(f)) => f,
+            Ok(Value::Int(i)) => i as f64,
+            Ok(_) => 0.5,
             Err(_) => continue,
         };
-        scored.push((k, raw_score));
+        scored.push((k, normalize_score(raw, decision.formula_min, decision.formula_max)));
     }
     if scored.is_empty() { return Ok(()); }
 
@@ -1071,25 +1075,11 @@ pub(crate) fn eval_link_score(
     Ok(normalized)
 }
 
-/// `eval_link_score` with the objects borrowed (a `Value::Ref` each).
-pub(crate) fn eval_link_score_ref(
-    vm: &mut Vm,
-    self_val: &Value,
-    target_val: &Value,
-    formula: &goblin_ast::Expr,
-    formula_min: f64,
-    formula_max: f64,
-) -> Result<f64, GoblinError> {
-    let raw = match vm.eval_tick_expr_ref(formula, &[("self", self_val), ("target", target_val)])? {
-        Value::Float(f) => f,
-        Value::Int(i) => i as f64,
-        _ => return Ok(0.5),
-    };
+/// A raw formula value scaled to 0..1 over the formula's range, as
+/// `eval_link_score` does.
+fn normalize_score(raw: f64, formula_min: f64, formula_max: f64) -> f64 {
     let range = formula_max - formula_min;
-    let normalized = if range.abs() < 1e-12 { 0.5 } else {
-        ((raw - formula_min) / range).clamp(0.0, 1.0)
-    };
-    Ok(normalized)
+    if range.abs() < 1e-12 { 0.5 } else { ((raw - formula_min) / range).clamp(0.0, 1.0) }
 }
 
 pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
