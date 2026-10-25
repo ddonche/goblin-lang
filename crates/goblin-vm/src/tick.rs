@@ -731,59 +731,63 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     };
 
     for (self_uuid, class_name) in candidates {
-        let (decision, judge) = {
-            if let Some(obj_decision) = vm.session.object_decisions.get(&self_uuid).cloned() {
-                let class = match vm.session.classes.get(&class_name).cloned() { Some(c) => c, None => continue };
-                let judge = match class.judge.clone() { Some(j) => j, None => continue };
-                (obj_decision, judge)
-            } else {
-                let class = match vm.session.classes.get(&class_name).cloned() { Some(c) => c, None => continue };
-                match (class.decision.clone(), class.judge.clone()) {
-                    (Some(d), Some(j)) => (d, j),
-                    _ => continue,
-                }
-            }
+        // Borrow the definitions (an Rc copy, not a deep one), so each
+        // formula keeps its address for the tick-expr cache. Taken per
+        // object, so a class an earlier action installed is seen here.
+        let classes = vm.session.classes.clone();
+        let Some(class) = classes.get(&class_name) else { continue };
+        let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
+        let decision: &goblin_ast::DecisionDef = match (&obj_decision, &class.decision) {
+            (Some(d), _) => d,
+            (None, Some(d)) => d,
+            (None, None) => continue,
         };
+        let Some(judge) = &class.judge else { continue };
 
-        let self_val = match vm.session.object_store.get(&self_uuid).cloned() { Some(v) => v, None => continue };
+        let margin = match vm.session.object_store.get(&self_uuid) {
+            Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
+                Value::Float(f) => Some(*f),
+                Value::Int(i) => Some(*i as f64),
+                _ => None,
+            }).unwrap_or(0.0),
+            Some(_) => 0.0,
+            None => continue,
+        };
+        // Formulas see `self` and `target` by reference: they read fields
+        // where the objects live instead of copying every candidate.
+        let self_ref = Value::Ref(self_uuid.clone());
 
-        let target_candidates: Vec<(String, Value)> = vm.session.object_store.iter()
+        let target_candidates: Vec<String> = vm.session.object_store.iter()
             .filter(|(uuid, v)| *uuid != &self_uuid && matches!(v, Value::Object(o) if o.class_name == decision.target_class))
-            .map(|(uuid, v)| (uuid.clone(), v.clone()))
+            .map(|(uuid, _)| uuid.clone())
             .collect();
 
         if target_candidates.is_empty() { continue; }
 
         // Score all targets
-        let mut scored: Vec<(String, Value, f64)> = Vec::new();
-        for (target_uuid, target_val) in &target_candidates {
-            let raw_score = match eval_link_score(vm, self_val.clone(), target_val.clone(), &decision.formula, decision.formula_min, decision.formula_max) {
+        let mut scored: Vec<(String, f64)> = Vec::new();
+        for target_uuid in target_candidates {
+            let raw_score = match eval_link_score(vm, self_ref.clone(), Value::Ref(target_uuid.clone()), &decision.formula, decision.formula_min, decision.formula_max) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            scored.push((target_uuid.clone(), target_val.clone(), raw_score));
+            scored.push((target_uuid, raw_score));
         }
         if scored.is_empty() { continue; }
 
-        let best = scored.iter().map(|(_, _, s)| *s).fold(f64::NEG_INFINITY, f64::max);
-        let margin = if let Value::Object(ref o) = self_val {
-            o.fields.get("margin").and_then(|v| match v {
-                Value::Float(f) => Some(*f),
-                Value::Int(i) => Some(*i as f64),
-                _ => None,
-            }).unwrap_or(0.0)
-        } else { 0.0 };
+        let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 
-        let pool: Vec<(String, Value, f64)> = scored.into_iter()
-            .filter(|(_, _, s)| *s >= best - margin)
+        let pool: Vec<(String, f64)> = scored.into_iter()
+            .filter(|(_, s)| *s >= best - margin)
             .collect();
 
         let chosen_idx = if pool.len() == 1 { 0 } else {
             let r = vm.session.next_u128() as f64 / u128::MAX as f64;
             (r * pool.len() as f64).floor() as usize % pool.len()
         };
-        let (best_target_uuid, target_val_owned, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+        let (best_target_uuid, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
         let final_score = final_score.clamp(0.0, 1.0);
+        let target_ref = Value::Ref(best_target_uuid.clone());
 
         // Run judge to find selected action
         let mut selected_action: Option<String> = None;
@@ -801,8 +805,8 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                         cond,
                         vec![
                             ("score", Value::Float(final_score)),
-                            ("self", self_val.clone()),
-                            ("target", target_val_owned.clone()),
+                            ("self", self_ref.clone()),
+                            ("target", target_ref.clone()),
                         ],
                     );
                     if fires {
@@ -817,7 +821,13 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
         let action_name = selected_action.or(else_action).unwrap_or_default();
         if !action_name.is_empty() {
-            let _ = vm.call_named(&action_name, vec![self_val, target_val_owned]);
+            // The action gets the objects as they are now (nothing above
+            // changes them), the same values it was given before.
+            let (Some(self_val), Some(target_val)) = (
+                vm.session.object_store.get(&self_uuid).cloned(),
+                vm.session.object_store.get(&best_target_uuid).cloned(),
+            ) else { continue };
+            let _ = vm.call_named(&action_name, vec![self_val, target_val]);
             // Ignore errors — decisions are best-effort
         }
     }
@@ -847,13 +857,14 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     for (self_uuid, class_name) in &candidates {
         if erased.contains(self_uuid) { continue; }
 
-        let transitions = match vm.session.classes.get(class_name) {
-            Some(c) => c.transitions.clone(),
+        let classes = vm.session.classes.clone();
+        let transitions = match classes.get(class_name) {
+            Some(c) => &c.transitions,
             None => continue,
         };
         let self_val = match vm.session.object_store.get(self_uuid).cloned() { Some(v) => v, None => continue };
 
-        for tdef in &transitions {
+        for tdef in transitions {
             let trigger_fired = vm.eval_tick_expr_bool(
                 &tdef.trigger,
                 vec![("self", self_val.clone())],
@@ -868,7 +879,11 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
                 TransitionKind::Spawn => {
                     let child_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
-                    if let Some(child_decl) = vm.session.classes.get(&child_class).cloned() {
+                    // Borrow the class through the shared table instead of
+                    // copying it: the formula cache knows a formula by its
+                    // address, which a dropped copy could hand to another.
+                    let classes = vm.session.classes.clone();
+                    if let Some(child_decl) = classes.get(&child_class) {
                         let new_uuid = uuid::Uuid::new_v4().to_string();
                         let mut fields = IndexMap::new();
                         for fd in &child_decl.fields {
@@ -1037,10 +1052,11 @@ pub fn apply_overlay_modifiers(
     count: u64,
     extra_fields: &indexmap::IndexMap<String, Value>,
 ) {
-    let modifiers: Vec<(String, goblin_ast::Expr)> = match vm.session.overlay_defs.get(overlay_name) {
-        Some(d) if !d.modifiers.is_empty() => d.modifiers.clone(),
+    let def = match vm.session.overlay_defs.get(overlay_name) {
+        Some(d) if !d.modifiers.is_empty() => d.clone(),
         _ => return,
     };
+    let modifiers = &def.modifiers;
 
     // A `stacks as <label>` overlay also sees its count under that label.
     let count_label: Option<String> = vm.session.overlay_defs.get(overlay_name).and_then(|d| {
@@ -1048,7 +1064,7 @@ pub fn apply_overlay_modifiers(
         if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
     });
     let mut deltas: Vec<(String, f64)> = Vec::new();
-    for (fname, expr) in &modifiers {
+    for (fname, expr) in modifiers {
         let mut bindings = vec![
             ("strength", Value::Float(strength)),
             ("count", Value::Int(count as i64)),
