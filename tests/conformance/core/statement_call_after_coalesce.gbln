@@ -1,0 +1,13 @@
+/// A statement whose call sits behind `??` (so may not run) is followed
+/// by the next statement as usual, inside an action and at the top.
+act f()
+    a | {"x": 1}
+    1 ?? :update!(a{"x"}, 2)
+    say("ok")
+    nil ?? :update!(a{"x"}, 3)
+    say(a{"x"})
+xx
+f()
+b | {"x": 1}
+1 ?? :update!(b{"x"}, 2)
+say("top ok")
