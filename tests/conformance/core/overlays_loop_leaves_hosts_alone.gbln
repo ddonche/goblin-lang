@@ -1,6 +1,7 @@
 /// known-gap: interp binding an :overlays() result to `it` replaces its host object (same bug, not reproduced)
 /// Going through :overlays() with `it` does not touch the overlays' hosts:
-/// the hosts keep their class and fields, so spreading goes on next tick.
+/// the hosts keep their class and fields, so spreading goes on next tick,
+/// and the overlay records don't show up as objects.
 <>Person |
     health: 1
     town: 0
@@ -25,6 +26,7 @@ repeat d <= 3
         say("tick {d}: flu {s}")
     xx
     n | :len(:objects(it >> health > -1))
-    say("tick {d}: people {n}")
+    all | :len(:objects())
+    say("tick {d}: people {n}, objects {all}")
     d |= d + 1
 xx
