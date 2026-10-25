@@ -1,0 +1,17 @@
+/// known-gap: interp actions cannot be kept in a list and called later
+/// `v [= item` in a loop body is a fresh name each pass, like `v | item`:
+/// actions made in different passes each keep their own pass's value.
+act make()
+    fs | []
+    repeat [1, 2, 3] as item
+        v [= item
+        act show()
+            return v
+        xx
+        :put_last!(fs, show)
+    xx
+    return fs
+xx
+repeat make() as s
+    say(s())
+xx

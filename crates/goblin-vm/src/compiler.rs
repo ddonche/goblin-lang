@@ -2334,12 +2334,21 @@ impl Compiler {
         if !self.user_actions.contains(bare) || bare == name { return None; }
         let slot = self.scope().find_local(name)?;
         if self.is_imm_name(name) { return None; }
-        let quoted = format!("{name:?}");
+        // Any other mention of the name, including inside a string's
+        // `{...}` placeholder, rules the handover out. Matching the bare
+        // word in the debug text errs on the side of not moving.
+        let mentions = |hay: &str| {
+            let word = |c: char| c.is_alphanumeric() || c == '_';
+            hay.match_indices(name.as_str()).any(|(i, _)| {
+                !hay[..i].chars().next_back().map_or(false, word)
+                    && !hay[i + name.len()..].chars().next().map_or(false, word)
+            })
+        };
         let mut own = 0;
         for a in args {
             match a {
                 Expr::Ident(n, _) if n == name => own += 1,
-                other => if format!("{other:?}").contains(&quoted) { return None; },
+                other => if mentions(&format!("{other:?}")) { return None; },
             }
         }
         (own == 1).then(|| (args.first().unwrap() as *const Expr, name.clone(), slot))
@@ -2459,7 +2468,7 @@ impl Compiler {
         if let Some(ref lock) = lock_type {
             { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
-            self.emit(Opcode::StoreLocal(slot));
+            self.emit(Opcode::BindLocal(slot));
         }
         Ok(())
     }
