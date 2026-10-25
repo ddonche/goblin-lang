@@ -1,0 +1,16 @@
+/// Inside a class method, a name that is not a local or a field of the
+/// object reads the program's variable of that name; a field wins.
+lim | 3
+a | 99
+<>P |
+    a: 1
+    act check()
+        if a < lim
+            say("less")
+        xx
+        y | lim + 1
+        say("y {y}, a {a}")
+    xx
+xx
+p <> P | a: 1
+p.check()
