@@ -334,11 +334,17 @@ impl Vm {
             }
             Opcode::StoreLocal(slot) => return done!(self.store_local_op(slot, true)),
             Opcode::BindLocal(slot) => return done!(self.store_local_op(slot, false)),
-            Opcode::Pop => match self.stack.pop() {
-                Some(op @ (Operand::Ref(_) | Operand::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil))) => std::mem::forget(op),
-                Some(op) => drop(op),
-                None => return Step::Slow,
-            },
+            Opcode::Pop => {
+                // A reference that can't be read (handed to an actor) errors the slow way.
+                match self.stack.last() {
+                    Some(Operand::Ref(t)) if self.session.check_readable(t).is_err() => return Step::Slow,
+                    None => return Step::Slow,
+                    _ => match self.stack.pop() {
+                        Some(op @ (Operand::Ref(_) | Operand::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil))) => std::mem::forget(op),
+                        op => drop(op),
+                    },
+                }
+            }
             Opcode::Jump(offset) => {
                 let frame = self.call_stack.last_mut().unwrap();
                 frame.ip = (frame.ip as isize + offset as isize) as usize;
@@ -763,8 +769,13 @@ impl Vm {
 
             // ── Stack ────────────────────────────────────────────────────────
             Opcode::Pop => {
-                // Nothing reads the value, so don't fetch it.
-                if self.stack.pop().is_none() { return Err(GoblinError::Runtime("stack underflow".into())); }
+                // Nothing uses the value, so don't copy it; reading a name
+                // still fails where a read would (a value handed to an actor).
+                match self.stack.pop() {
+                    Some(Operand::Ref(t)) => self.session.check_readable(&t)?,
+                    Some(_) => {}
+                    None => return Err(GoblinError::Runtime("stack underflow".into())),
+                }
             }
             Opcode::Dup => {
                 // Clone the Operand (cheap for Ref — just 8 bytes; no stash access).
