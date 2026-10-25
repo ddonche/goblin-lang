@@ -698,11 +698,16 @@ pub struct CompiledModule {
 /// (where inner and outer both see mutations) require full open/close upvalue
 /// cells; that is a planned future improvement.
 #[derive(Debug, Clone)]
-pub struct UpvalueCell(pub Rc<RefCell<Tether>>);
+pub struct UpvalueCell(pub Rc<RefCell<Tether>>, pub Option<Rc<str>>);
 
 impl UpvalueCell {
     pub fn new(t: Tether) -> Self {
-        UpvalueCell(Rc::new(RefCell::new(t)))
+        UpvalueCell(Rc::new(RefCell::new(t)), None)
+    }
+    /// A cell for a variable the enclosing action locked to a type: writes
+    /// from the nested action are cast to it, as the enclosing ones are.
+    pub fn with_lock(t: Tether, lock: Option<Rc<str>>) -> Self {
+        UpvalueCell(Rc::new(RefCell::new(t)), lock)
     }
     pub fn get(&self) -> Tether {
         self.0.borrow().clone()
