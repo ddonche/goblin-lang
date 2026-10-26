@@ -166,7 +166,9 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
 
     // ── Pass 3b: `each tick:` changes, kept ─────────────────────────────────
-    each_tick_pass(vm)?;
+    // A host its `each tick:` changes bring to an erase condition goes now,
+    // before anything acts this tick.
+    with_erase_check(vm, each_tick_pass)?;
 
     // ── Pass 4: Spawn ─────────────────────────────────────────────────────────
     spawn_pass(vm)?;
@@ -269,6 +271,7 @@ fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 Err(e) => return Err(fail(format!("failed: {e}"))),
             }
         }
+        vm.session.touch(&host);
         let Some(Value::Object(o)) = vm.session.object_store.get_mut(&host) else { continue };
         let is_trait: Vec<bool> = deltas.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
         let class = o.class_name.clone();
