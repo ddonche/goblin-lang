@@ -574,6 +574,7 @@ impl Vm {
                 };
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -589,6 +590,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -606,6 +608,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -811,6 +814,7 @@ impl Vm {
                 let target = self.stack_pop()?;
                 match target {
                     Value::Ref(uuid) => {
+                        self.session.touch(&uuid);
                         if let Some(slot_val) = self.session.object_store.get_mut(&uuid) {
                             *slot_val = new_val;
                         }
@@ -1340,6 +1344,7 @@ impl Vm {
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 crate::world::check_view_write(&self.session, &uuid)?;
+                self.session.touch(&uuid);
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object(ref mut o) = obj {
@@ -3316,6 +3321,7 @@ impl Vm {
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -3329,7 +3335,8 @@ impl Vm {
     /// of them see it. Pending reads of the old value keep the old value.
     fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
         let val = if let Some(uuid) = registered_uuid(&val) {
-            self.session.object_store.insert(uuid.clone(), val);
+            self.session.touch(&uuid);
+                    self.session.object_store.insert(uuid.clone(), val);
             Value::Ref(uuid)
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
@@ -5724,6 +5731,7 @@ impl Vm {
                 let Value::Str(field) = key else {
                     return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
                 };
+                self.session.touch(&uuid);
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;

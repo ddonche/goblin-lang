@@ -797,7 +797,8 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             // Erased by an earlier block this tick: nothing to run.
             if !vm.session.object_store.contains_key(&uuid) { break; }
             let Some(f) = vm.session.compiled_methods.get(&(class_name.clone(), e.action.clone())).cloned() else { continue };
-            vm.call_callable(Value::Function(f), vec![Value::Ref(uuid.clone())])?;
+            let me = Value::Ref(uuid.clone());
+            with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), vec![me]).map(|_| ()))?;
         }
     }
     Ok(())
@@ -1204,10 +1205,8 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 TransitionKind::Erase => {
                     // `on erase: action` runs first, while the object and its
                     // fields are still there. An error in it stops the tick.
-                    if let Some(action) = classes.get(class_name).and_then(|c| c.on_erase.clone()) {
-                        call_object_action(vm, self_uuid, &action, Vec::new())?;
-                    }
-                    vm.session.object_store.shift_remove(self_uuid);
+                    let on_erase = classes.get(class_name).and_then(|c| c.on_erase.clone());
+                    erase_object(vm, self_uuid, on_erase.as_deref())?;
                     erased.insert(self_uuid.clone());
                     break;
                 }
@@ -1447,6 +1446,7 @@ pub fn apply_overlay_modifiers(
 
     if deltas.is_empty() { return done; }
 
+    vm.session.touch(host_uuid);
     if let Some(obj) = vm.session.object_store.get_mut(host_uuid) {
         if let Value::Object(ref mut o) = obj {
             let trait_fields = o.trait_fields.clone();
@@ -1499,13 +1499,87 @@ fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value
         None => return Ok(()),
     };
     let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
-    match method {
-        Some(f) => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_callable(Value::Function(f), args)?; }
+    args.insert(0, Value::Ref(uuid.to_string()));
+    with_erase_check(vm, |vm| match method {
+        Some(f) => vm.call_callable(Value::Function(f), args).map(|_| ()),
         // A reference, as a class action gets: if the action moves or
         // erases the object, reading it afterwards fails instead of reading
         // a stale copy.
-        None => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_named(action, args)?; }
+        None => vm.call_named(action, args).map(|_| ()),
+    })
+}
+
+/// Runs an action, then the erase transitions of the objects it changed:
+/// an object whose erase condition now holds goes right away (after its
+/// `on erase:` action), not at the end of the tick, so it neither acts nor
+/// is chosen again this tick. Never in the middle of an action.
+fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinError>) -> Result<(), GoblinError> {
+    let outer = vm.session.des_touched.replace(Vec::new());
+    let r = f(vm);
+    let touched = std::mem::replace(&mut vm.session.des_touched, outer);
+    r?;
+    match touched {
+        Some(t) if !t.is_empty() => erase_changed(vm, t),
+        _ => Ok(()),
     }
+}
+
+fn erase_changed(vm: &mut Vm, mut touched: Vec<String>) -> Result<(), GoblinError> {
+    use goblin_ast::TransitionKind;
+    let mut seen = std::collections::HashSet::with_capacity(touched.len());
+    touched.retain(|u| seen.insert(u.clone()));
+    let classes = vm.session.classes.clone();
+    for uuid in touched {
+        let class_name = match vm.session.object_store.get(&uuid) {
+            Some(Value::Object(o)) => &o.class_name,
+            _ => continue,
+        };
+        let Some(class) = classes.get(class_name) else { continue };
+        if !class.transitions.iter().any(|t| matches!(t.kind, TransitionKind::Erase)) { continue; }
+        if vm.session.des_erasing.contains(&uuid) || crate::world::is_remote(vm, &uuid) { continue; }
+        // A condition that rolls dice (`pick 1 from 1...200000`) is a chance
+        // per tick: it is checked once, at the end of the tick, as before.
+        let fires = class.transitions.iter()
+            .filter(|t| matches!(t.kind, TransitionKind::Erase) && !uses_chance(&t.trigger))
+            .any(|t| vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(uuid.clone()))]));
+        if fires { erase_object(vm, &uuid, class.on_erase.as_deref())?; }
+    }
+    Ok(())
+}
+
+/// Whether an expression draws a random number (`pick`, `:roll`, ...).
+fn uses_chance(e: &goblin_ast::Expr) -> bool {
+    use goblin_ast::Expr as E;
+    let random_name = |n: &str| {
+        let n = n.trim_end_matches('!');
+        matches!(n, "pick" | "reap" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str"
+            | "shuffle" | "sample_weighted" | "uuid_v4" | "uuid_v7")
+            || n.starts_with("secure_") || n.ends_with("_random") || n.ends_with("_sample")
+    };
+    match e {
+        E::FreeCall(n, args, _) => random_name(n) || args.iter().any(uses_chance),
+        E::NsCall(_, n, args, _) => random_name(n) || args.iter().any(uses_chance),
+        E::Call(r, n, args, _) | E::OptCall(r, n, args, _) => random_name(n) || uses_chance(r) || args.iter().any(uses_chance),
+        E::Binary(l, _, r, _) => uses_chance(l) || uses_chance(r),
+        E::Prefix(_, x, _) | E::Postfix(x, _, _) => uses_chance(x),
+        E::Member(x, _, _) | E::OptMember(x, _, _) => uses_chance(x),
+        E::Index(a, b, _) | E::IndexMap(a, b, _) => uses_chance(a) || uses_chance(b),
+        E::Array(xs, _) => xs.iter().any(uses_chance),
+        E::Object(kv, _) => kv.iter().any(|(_, v)| uses_chance(v)),
+        _ => false,
+    }
+}
+
+/// Erases an object for its erase transition, after its `on erase:`
+/// action (which sees the object and its fields; an error in it stops the tick).
+fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), GoblinError> {
+    if let Some(action) = on_erase {
+        vm.session.des_erasing.push(uuid.to_string());
+        let r = call_object_action(vm, uuid, action, Vec::new());
+        vm.session.des_erasing.retain(|u| u != uuid);
+        r?;
+    }
+    vm.session.object_store.shift_remove(uuid);
     Ok(())
 }
 

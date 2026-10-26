@@ -1,0 +1,32 @@
+/// known-gap: interp checks erase transitions only at the end of the tick
+/// An object's erase transitions are checked as soon as an action that
+/// changed it finishes, never in the middle of one. One killed early in a
+/// tick is gone: it doesn't act later that tick and isn't chosen again.
+/// Its `on erase:` action still runs first.
+<>F |
+    ~name: ""
+    ~side: 0
+    ~hp: 3
+    hit | decision against F where [ target >> side != self >> side ] by [ 1 - target >> hp / 10 ]
+    judge using hit
+        >= 0: strike(target)
+    end
+    on erase: fall
+    transition erase when (self >> hp) <= 0
+    end
+xx
+act strike(f, t)
+    a | f >> name
+    b | t >> name
+    t >> hp |= t >> hp - 5
+    h | t >> hp
+    say("{a} hits {b}, hp {h}")
+xx
+act fall(f)
+    a | f >> name
+    say("{a} falls")
+xx
+x <> F | name: "x", side: 0, hp: 9
+y <> F | name: "y", side: 1, hp: 3
+z <> F | name: "z", side: 1, hp: 8
+tick()

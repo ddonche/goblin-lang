@@ -150,6 +150,11 @@ pub struct Session {
     /// Objects this region moved to another one (`:move!`), and the
     /// variable each was stored under, so reading one says where it went.
     pub(crate) moved_away: HashMap<String, String>,
+    /// While a DES action runs: the objects it changed, so their erase
+    /// transitions are checked as soon as it finishes.
+    pub(crate) des_touched: Option<Vec<String>>,
+    /// Objects whose `on erase:` action is running: not erased again.
+    pub(crate) des_erasing: Vec<String>,
     /// The main program's world of regions (`tick(regions)`).
     pub world: Option<crate::world::World>,
     /// In a region, while it runs a world tick.
@@ -289,6 +294,12 @@ pub struct Session {
 }
 
 impl Session {
+    /// Notes that the object `uuid` changed, when a DES action is running.
+    #[inline]
+    pub(crate) fn touch(&mut self, uuid: &str) {
+        if let Some(t) = &mut self.des_touched { t.push(uuid.to_string()); }
+    }
+
     /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.
     /// A GLAM's top-level code writes only into its own namespace (B0102)
     /// and only names its `[provides]` lists (B0105); a tether to a name
@@ -349,6 +360,8 @@ impl Session {
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
             moved_away: HashMap::new(),
+            des_touched: None,
+            des_erasing: Vec::new(),
             kept_home: HashMap::new(),
             world: None,
             region: None,
