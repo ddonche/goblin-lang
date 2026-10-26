@@ -7136,6 +7136,81 @@ impl<'t> Parser<'t> {
     }
 
     /// Parse overlay definition body after `overlay Name |`
+
+    /// The `field + expr` / `field - expr` lines of an overlay's
+    /// `modifies:` or `each tick:` block, up to its `end`.
+    fn parse_overlay_changes(&mut self) -> Vec<(String, ast::Expr)> {
+        use goblin_lexer::TokenKind;
+        let mut changes: Vec<(String, ast::Expr)> = Vec::new();
+        self.skip_layout();
+        loop {
+            self.skip_layout();
+            if self.is_eof() { break; }
+            if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Ident)
+                    && matches!(tok.value.as_deref(), Some("end") | Some("xx")
+                        | Some("conflicts") | Some("spawns") | Some("hosts")
+                        | Some("spreads") | Some("decays") | Some("lasts")
+                        | Some("transition") | Some("stacks") | Some("replaces")
+                        | Some("caps") | Some("on") | Some("each"))
+                {
+                    break;
+                }
+            }
+            let Some(field_name) = self.eat_ident() else { break; };
+            self.skip_layout_inline();
+            // expect + or -
+            let negative = if self.eat_op("+") {
+                false
+            } else if self.eat_op("-") {
+                true
+            } else {
+                break;
+            };
+            self.skip_layout_inline();
+            // parse full expression (supports self >> count * .0000003 etc)
+            let val_pe = self.parse_coalesce().unwrap_or(PExpr::Int("0".to_string()));
+            let val_expr = self.lower_expr(val_pe);
+            let modifier_expr = if negative {
+                ast::Expr::Prefix(
+                    "-".to_string(),
+                    Box::new(val_expr),
+                    goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0),
+                )
+            } else {
+                val_expr
+            };
+            changes.push((field_name, modifier_expr));
+        }
+        // consume optional 'end' closing modifies block
+        if let Some(tok) = self.peek() {
+            if matches!(tok.kind, TokenKind::Ident)
+                && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
+            {
+                let saved = self.i;
+                self.i += 1;
+                self.skip_layout();
+                if let Some(next) = self.peek() {
+                    if matches!(next.kind, TokenKind::Ident)
+                        && matches!(next.value.as_deref(),
+                            Some("conflicts") | Some("spawns") | Some("hosts")
+                            | Some("spreads") | Some("decays") | Some("lasts")
+                            | Some("transition") | Some("stacks") | Some("replaces")
+                            | Some("caps") | Some("on") | Some("each")
+                            | Some("end") | Some("xx"))
+                    {
+                        // consumed ok
+                    } else {
+                        self.i = saved; // restore — this end closes the overlay
+                    }
+                } else {
+                    self.i = saved;
+                }
+            }
+        }
+        changes
+    }
+
     fn parse_overlay_def(&mut self, name: String, start_i: usize) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -7150,6 +7225,7 @@ impl<'t> Parser<'t> {
         let mut apply_behavior: ast::OverlayApplyBehavior = ast::OverlayApplyBehavior::Caps;
         let mut extra_fields: Vec<(String, ast::Expr)> = Vec::new();
         let mut on_end: Option<String> = None;
+        let mut each_tick: Vec<(String, ast::Expr)> = Vec::new();
 
         self.skip_layout();
 
@@ -7300,72 +7376,28 @@ impl<'t> Parser<'t> {
                     // modifies: field +/- expr ... end
                     self.skip_layout_inline();
                     self.eat_op(":");
-                    self.skip_layout();
-                    loop {
-                        self.skip_layout();
-                        if self.is_eof() { break; }
-                        if let Some(tok) = self.peek() {
-                            if matches!(tok.kind, TokenKind::Ident)
-                                && matches!(tok.value.as_deref(), Some("end") | Some("xx")
-                                    | Some("conflicts") | Some("spawns") | Some("hosts")
-                                    | Some("spreads") | Some("decays") | Some("lasts")
-                                    | Some("transition") | Some("stacks") | Some("replaces")
-                                    | Some("caps") | Some("on"))
-                            {
-                                break;
-                            }
-                        }
-                        let Some(field_name) = self.eat_ident() else { break; };
-                        self.skip_layout_inline();
-                        // expect + or -
-                        let negative = if self.eat_op("+") {
-                            false
-                        } else if self.eat_op("-") {
-                            true
-                        } else {
-                            break;
-                        };
-                        self.skip_layout_inline();
-                        // parse full expression (supports self >> count * .0000003 etc)
-                        let val_pe = self.parse_coalesce().unwrap_or(PExpr::Int("0".to_string()));
-                        let val_expr = self.lower_expr(val_pe);
-                        let modifier_expr = if negative {
-                            ast::Expr::Prefix(
-                                "-".to_string(),
-                                Box::new(val_expr),
-                                goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0),
-                            )
-                        } else {
-                            val_expr
-                        };
-                        modifiers.push((field_name, modifier_expr));
+                    modifiers.extend(self.parse_overlay_changes());
+                }
+                "each" => {
+                    // each tick: field +/- expr ... end — made every tick, kept
+                    self.skip_layout_inline();
+                    if !matches!(self.peek_ident(), Some("tick")) {
+                        return Err(s_help_site!(
+                            "P1243",
+                            "Expected 'tick' after 'each' in an overlay",
+                            "Write: each tick:  hp - 2  end  (changes made to the host every tick, never taken back)"
+                        ));
                     }
-                    // consume optional 'end' closing modifies block
-                    if let Some(tok) = self.peek() {
-                        if matches!(tok.kind, TokenKind::Ident)
-                            && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
-                        {
-                            let saved = self.i;
-                            self.i += 1;
-                            self.skip_layout();
-                            if let Some(next) = self.peek() {
-                                if matches!(next.kind, TokenKind::Ident)
-                                    && matches!(next.value.as_deref(),
-                                        Some("conflicts") | Some("spawns") | Some("hosts")
-                                        | Some("spreads") | Some("decays") | Some("lasts")
-                                        | Some("transition") | Some("stacks") | Some("replaces")
-                                        | Some("caps")
-                                        | Some("end") | Some("xx"))
-                                {
-                                    // consumed ok
-                                } else {
-                                    self.i = saved; // restore — this end closes the overlay
-                                }
-                            } else {
-                                self.i = saved;
-                            }
-                        }
+                    let _ = self.eat_ident();
+                    self.skip_layout_inline();
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1244",
+                            "Expected ':' after 'each tick'",
+                            "Write: each tick:  hp - 2  end"
+                        ));
                     }
+                    each_tick.extend(self.parse_overlay_changes());
                 }
                 "stacks" => {
                     // stacks  OR  stacks as label
@@ -7537,6 +7569,7 @@ impl<'t> Parser<'t> {
             apply_behavior,
             extra_fields,
             on_end,
+            each_tick,
             span,
         }))
     }

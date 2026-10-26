@@ -206,6 +206,9 @@ pub struct OverlayDefStmt {
     /// `on end: action` — called with the host when the overlay runs out
     /// (time up or strength 0), not when it is removed by hand.
     pub on_end: Option<String>,
+    /// `each tick:` — changes made to the host on every tick the overlay
+    /// is on. Unlike `modifies:` they are lasting: nothing is taken back.
+    pub each_tick: Vec<(String, Expr)>,
     pub span: Span,
 }
 

@@ -25,6 +25,7 @@ pub(crate) struct POverlayDef {
     transitions: Vec<goblin_ast::TransitionDef>,
     extra_fields: Vec<(String, PValue)>,
     on_end: Option<String>,
+    each_tick: Vec<(String, goblin_ast::Expr)>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +88,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
             transitions: d.transitions.clone(),
             extra_fields: pfields(tp, &d.extra_fields)?,
             on_end: d.on_end.clone(),
+            each_tick: d.each_tick.clone(),
         });
     }
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
@@ -132,6 +134,7 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
             transitions: d.transitions.clone(),
             extra_fields,
             on_end: d.on_end.clone(),
+            each_tick: d.each_tick.clone(),
         }));
     }
     s.overlay_defs = defs;

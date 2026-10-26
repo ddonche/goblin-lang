@@ -59,6 +59,8 @@ in parentheses are the pull requests that made each change.
   `heal | decision against Fighter where [ target >> side == self >> side ] by [ ... ]`.
 - DES: `one of heal, attack` in a class makes decisions alternatives: they are tried in
   that order each tick and the first whose judge runs an action ends the group.
+- DES: overlays take `each tick:` changes (`hp - 2`), made to the host every tick the
+  overlay is on and never taken back; `modifies:` stays temporary. A failing change is R1221.
 
 ## 0.49.0 — 2026-10-26
 

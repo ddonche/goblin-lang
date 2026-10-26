@@ -1,0 +1,6 @@
+tick 1: hp 18
+tick 2: hp 16
+cured
+tick 3: hp 14
+regen 1: hp 17, def 3
+regen 2: hp 20, def 2

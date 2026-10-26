@@ -165,6 +165,9 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
     }
 
+    // ── Pass 3b: `each tick:` changes, kept ─────────────────────────────────
+    each_tick_pass(vm)?;
+
     // ── Pass 4: Spawn ─────────────────────────────────────────────────────────
     spawn_pass(vm)?;
 
@@ -226,6 +229,67 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // ── Pass 9: Object transition tick ────────────────────────────────────────
     object_transition_tick(vm)?;
 
+    Ok(())
+}
+
+/// Each overlay that is on (strength above 0) makes its `each tick:`
+/// changes to its host, including on the tick its time runs out. They are
+/// lasting: unlike `modifies:`, nothing is taken back when it ends. The
+/// expressions see `self` (the host), `strength`, `count` and the overlay's
+/// own fields. One that fails or gives no number stops the tick (R1221).
+fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
+    if !vm.session.overlay_defs.values().any(|d| !d.each_tick.is_empty()) { return Ok(()); }
+    let live: Vec<(String, String, f64, u64)> = vm.session.overlay_instances.iter()
+        .filter(|i| i.strength > 0.0)
+        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.each_tick.is_empty()))
+        .filter(|i| !crate::world::is_remote(vm, &i.host_uuid))
+        .map(|i| (i.overlay_name.clone(), i.host_uuid.clone(), i.strength, i.count))
+        .collect();
+    for (name, host, strength, count) in live {
+        let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
+        let count_label = match &def.apply_behavior {
+            crate::session::OverlayApplyBehavior::Stacks { label: Some(l) } => Some(l.clone()),
+            _ => None,
+        };
+        let mut deltas: Vec<(String, f64)> = Vec::with_capacity(def.each_tick.len());
+        for (field, expr) in &def.each_tick {
+            let mut bind: Vec<(&str, Value)> = vec![
+                ("self", Value::Ref(host.clone())),
+                ("strength", Value::Float(strength)),
+                ("count", Value::Int(count as i64)),
+            ];
+            if let Some(ref l) = count_label { bind.push((l.as_str(), Value::Int(count as i64))); }
+            for (k, v) in &def.extra_fields { bind.push((k.as_str(), v.clone())); }
+            let fail = |what: String| GoblinError::Runtime(format!(
+                "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {what}"));
+            match vm.eval_tick_expr(expr, bind) {
+                Ok(Value::Float(f)) => deltas.push((field.clone(), f)),
+                Ok(Value::Int(i)) => deltas.push((field.clone(), i as f64)),
+                Ok(other) => return Err(fail(format!("gave {}, not a number", other.type_name()))),
+                Err(e) => return Err(fail(format!("failed: {e}"))),
+            }
+        }
+        let Some(Value::Object(o)) = vm.session.object_store.get_mut(&host) else { continue };
+        let is_trait: Vec<bool> = deltas.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
+        let class = o.class_name.clone();
+        let fields = std::rc::Rc::make_mut(&mut o.fields);
+        for ((field, d), t) in deltas.into_iter().zip(is_trait) {
+            let Some(v) = fields.get_mut(&field) else {
+                return Err(GoblinError::Runtime(format!(
+                    "R1221: overlay-each-tick: overlay {name} changes `{field}`, which {class} has no field named")));
+            };
+            *v = match v {
+                // A whole-number field stays whole while the change is whole.
+                Value::Int(i) if d.fract() == 0.0 && !t => Value::Int(*i + d as i64),
+                Value::Int(i) if t => Value::Float((*i as f64 + d).clamp(0.0, 1.0)),
+                Value::Int(i) => Value::Float(*i as f64 + d),
+                Value::Float(f) if t => Value::Float((*f + d).clamp(0.0, 1.0)),
+                Value::Float(f) => Value::Float(*f + d),
+                other => return Err(GoblinError::Runtime(format!(
+                    "R1221: overlay-each-tick: overlay {name} changes `{field}`, which holds {}, not a number", other.type_name()))),
+            };
+        }
+    }
     Ok(())
 }
 

@@ -28,6 +28,8 @@ pub struct OverlayDef {
     pub extra_fields: indexmap::IndexMap<String, Value>,
     /// `on end: action`: called with the host when the overlay runs out.
     pub on_end: Option<String>,
+    /// `each tick:` changes, made every tick and never taken back.
+    pub each_tick: Vec<(String, goblin_ast::Expr)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

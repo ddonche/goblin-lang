@@ -2498,6 +2498,7 @@ impl Vm {
                     spawn_rules: def.spawn_rules.clone(),
                     transitions: def.transitions.clone(),
                     on_end: def.on_end.clone(),
+                    each_tick: def.each_tick.clone(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
