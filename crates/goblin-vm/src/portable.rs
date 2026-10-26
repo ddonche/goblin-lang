@@ -68,6 +68,9 @@ pub enum PValue {
     KeptHome { uuid: String, var: String },
     /// A reference to an object that moved to another region (`:move!`).
     Moved { uuid: String, var: String },
+    /// A field that points back at an object already being copied in this
+    /// value (`a >> next |= a`): it stays a reference to that copy.
+    ObjRef(String),
     /// A collection or long string holding no session state, converted once
     /// and shared: every actor on one worker reads the same copy.
     Shared(Arc<PValue>),
@@ -120,6 +123,9 @@ pub struct ToPortable<'s> {
     /// For an actor: the objects handed to it. Any other object of the
     /// session stays behind instead of crossing as a copy.
     home: Option<std::collections::HashSet<String>>,
+    /// Objects being copied right now (an object and the objects its fields
+    /// reach): a field that comes back to one of them is a cycle.
+    visiting: std::collections::HashSet<String>,
 }
 
 /// Texts up to this long are converted once per conversion and shared.
@@ -130,7 +136,7 @@ const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None }
+        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default() }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -187,15 +193,22 @@ impl<'s> ToPortable<'s> {
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
             Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
-            Value::Object(o) => PValue::Object {
-                class_name: o.class_name.clone(),
-                fields: self.fields(&o.fields)?,
-                readonly_fields: (*o.readonly_fields).clone(),
-                trait_fields: (*o.trait_fields).clone(),
-                uuid: o.uuid.clone(),
-            },
+            Value::Object(o) if self.visiting.contains(o.uuid.as_str()) => PValue::ObjRef(o.uuid.clone()),
+            Value::Object(o) => {
+                self.visiting.insert(o.uuid.clone());
+                let fields = self.object_fields(&o.fields);
+                self.visiting.remove(o.uuid.as_str());
+                PValue::Object {
+                    class_name: o.class_name.clone(),
+                    fields: fields?,
+                    readonly_fields: (*o.readonly_fields).clone(),
+                    trait_fields: (*o.trait_fields).clone(),
+                    uuid: o.uuid.clone(),
+                }
+            }
             // An object reference crosses as the object itself.
             Value::Ref(uuid) if self.stays_home(uuid).is_some() => self.stays_home(uuid).unwrap(),
+            Value::Ref(uuid) if self.visiting.contains(uuid.as_str()) => PValue::ObjRef(uuid.clone()),
             Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                 Some(obj) => self.value(&obj.clone())?,
                 None => match self.session.handed_off.get(uuid.as_str()) {
@@ -264,6 +277,20 @@ impl<'s> ToPortable<'s> {
 
     fn values(&mut self, vs: &[Value]) -> Result<Vec<PValue>, GoblinError> {
         vs.iter().map(|v| self.value(v)).collect()
+    }
+
+    /// An object's fields. A field naming an object that was erased reads
+    /// nil, so it crosses as nil.
+    fn object_fields(&mut self, m: &indexmap::IndexMap<String, Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
+        let mut out = Vec::with_capacity(m.len());
+        for (k, v) in m {
+            let gone = matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u.as_str())
+                && !self.session.handed_off.contains_key(u.as_str())
+                && !self.session.moved_away.contains_key(u.as_str())
+                && self.stays_home(u).is_none());
+            out.push((k.clone(), if gone { PValue::Nil } else { self.value(v)? }));
+        }
+        Ok(out)
     }
 
     fn fields(&mut self, m: &indexmap::IndexMap<String, Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
@@ -465,6 +492,7 @@ impl FromPortable {
                 session.moved_away.insert(uuid.clone(), var.clone());
                 Value::Ref(uuid.clone())
             }
+            PValue::ObjRef(uuid) => Value::Ref(uuid.clone()),
             PValue::Shared(inner) => self.shared_value(inner, session),
             PValue::World(_) => Value::Nil,
         }
@@ -648,7 +676,7 @@ pub(crate) fn inert(p: &PValue) -> bool {
             PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => p.iter().all(|(k, v)| inert(k) && inert(v)),
         },
         PValue::Object { .. } | PValue::Closure(..) | PValue::Frozen(_) | PValue::Handle(_)
-        | PValue::HandedOff { .. } | PValue::KeptHome { .. } | PValue::Moved { .. } | PValue::World(_) => false,
+        | PValue::HandedOff { .. } | PValue::KeptHome { .. } | PValue::Moved { .. } | PValue::ObjRef(_) | PValue::World(_) => false,
     }
 }
 
