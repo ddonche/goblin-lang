@@ -1321,12 +1321,18 @@ fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]
 /// (`act give_birth()` in the class, run with `self`), else a program
 /// action, given the object first. `args` follow.
 fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<(), GoblinError> {
-    let Some(obj) = vm.session.object_store.get(uuid).cloned() else { return Ok(()) };
-    let class_name = match &obj { Value::Object(o) => o.class_name.clone(), _ => String::new() };
+    let class_name = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        Some(_) => String::new(),
+        None => return Ok(()),
+    };
     let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
     match method {
         Some(f) => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_callable(Value::Function(f), args)?; }
-        None => { args.insert(0, obj); vm.call_named(action, args)?; }
+        // A reference, as a class action gets: if the action moves or
+        // erases the object, reading it afterwards fails instead of reading
+        // a stale copy.
+        None => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_named(action, args)?; }
     }
     Ok(())
 }
