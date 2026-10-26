@@ -1286,35 +1286,47 @@ impl Compiler {
                     // Resolve `{name}` placeholders to the variables in scope here
                     // (locals, captured upvalues, globals) so shadowed and
                     // block-local names interpolate the right binding.
+                    // Placeholders are worked out in the order they are written,
+                    // so `{bump(n)} {n}` reads `n` after the call changed it.
                     let mut names: Vec<String> = Vec::new();
-                    for name in interp_placeholder_names(s) {
-                        let ok = match self.scope().find_local_entry(&name) {
-                            Some((i, _)) => self.scope().local_meta[i].bound,
-                            None => true,
-                        };
-                        if !ok { continue; }
-                        match self.resolve_load(&name) {
-                            Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
-                                self.emit(op);
-                                names.push(name);
-                            }
-                            _ => {}
-                        }
-                    }
-                    // `{n - wins}`, `{lost[0]}`, `{self >> hp}`: an expression whose
-                    // names are all variables in scope is worked out here and
-                    // filled in. Anything else in braces stays as written.
-                    for (text, e) in interp_placeholder_exprs(s) {
+                    for (text, e) in interp_placeholders(s) {
                         if names.iter().any(|n| *n == text) { continue; }
+                        let Some(e) = e else {
+                            let name = text;
+                            let ok = match self.scope().find_local_entry(&name) {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => true,
+                            };
+                            if !ok { continue; }
+                            match self.resolve_load(&name) {
+                                Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
+                                    self.emit(op);
+                                    names.push(name);
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        };
+                        // `{n - wins}`, `{lost[0]}`, `{self >> hp}`: an expression whose
+                        // names are all variables in scope, and whose calls are to
+                        // actions or builtins that exist, is worked out here and
+                        // filled in. Anything else in braces stays as written.
                         let mut idents = Vec::new();
+                        let mut callees = Vec::new();
                         // A name or a call in it: `{1,3}` in a regex is not an expression to fill in.
-                        if !interp_expr_idents(&e, &mut idents) || (idents.is_empty() && !interp_has_call(&e)) { continue; }
+                        if !interp_expr_idents(&e, &mut idents, &mut callees) || (idents.is_empty() && !interp_has_call(&e)) { continue; }
                         let all_known = idents.iter().all(|name| {
                             match self.scope().find_local_entry(name) {
                                 Some((i, _)) => self.scope().local_meta[i].bound,
                                 None => self.scopes.len() > 1 && self.scopes[..self.scopes.len() - 1].iter().any(|sc| sc.find_local(name).is_some())
                                     || self.global_index(name).is_some(),
                             }
+                        }) && callees.iter().all(|name| {
+                            let bare = name.trim_start_matches(':');
+                            self.user_actions.contains(bare) || builtin_by_name(name).is_some()
+                                || builtin_by_name(bare).is_some()
+                                || self.scope().find_local_entry(bare).is_some_and(|(i, _)| self.scope().local_meta[i].bound)
+                                || self.global_index(bare).is_some()
                         });
                         if !all_known { continue; }
                         self.compile_expr(&e)?;
@@ -4019,45 +4031,13 @@ fn reap_bang_position(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The `{name}` placeholders of an interpolated string, in order, without
-/// duplicates (escaped `\{`, `{{{…}}}` tokens and `{#…}` box keys skipped).
-fn interp_placeholder_names(s: &str) -> Vec<String> {
+/// The `{...}` placeholders of an interpolated string, in the order they are
+/// written, without duplicates: a plain name with None, anything else with
+/// the expression it parses as (text that isn't one expression is left
+/// out). Escapes, `{{{…}}}` tokens and `{#…}` box keys are skipped.
+fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
     let chars: Vec<char> = s.chars().collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '\\' { i += 2; continue; }
-        if chars[i] == '{' {
-            if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
-                let mut j = i + 3;
-                while j + 2 < chars.len() && !(chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}') { j += 1; }
-                i = j + 3;
-                continue;
-            }
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '}' { j += 1; }
-            if j >= chars.len() { break; }
-            let inner: String = chars[i + 1..j].iter().collect();
-            let inner = inner.trim();
-            if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && !out.iter().any(|n| n == inner)
-            {
-                out.push(inner.to_string());
-            }
-            i = j + 1;
-            continue;
-        }
-        i += 1;
-    }
-    out
-}
-
-/// The `{...}` placeholders of a string that hold more than a plain name,
-/// each with the expression it parses as (text that isn't one expression
-/// is left out). Escapes, `{{{…}}}` tokens and `{#…}` box keys are skipped.
-fn interp_placeholder_exprs(s: &str) -> Vec<(String, Expr)> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out: Vec<(String, Expr)> = Vec::new();
+    let mut out: Vec<(String, Option<Expr>)> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '\\' { i += 2; continue; }
@@ -4073,11 +4053,12 @@ fn interp_placeholder_exprs(s: &str) -> Vec<(String, Expr)> {
             if j >= chars.len() { break; }
             let inner: String = chars[i + 1..j].iter().collect();
             let text = inner.trim();
-            let plain = text.chars().all(|c| c.is_alphanumeric() || c == '_');
-            if !plain && !text.starts_with('#') && !text.contains(['{', '\n'])
-                && !out.iter().any(|(t, _)| t == text)
-            {
-                if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), e)); }
+            if !text.is_empty() && !out.iter().any(|(t, _)| t == text) {
+                if text.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    out.push((text.to_string(), None));
+                } else if !text.starts_with('#') && !text.contains(['{', '\n']) {
+                    if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), Some(e))); }
+                }
             }
             i = j + 1;
             continue;
@@ -4111,19 +4092,21 @@ fn interp_has_call(e: &Expr) -> bool {
 /// The variable names an interpolated expression reads. False when it holds
 /// something other than names, literals, operators, `>>` fields, indexes
 /// and calls: then it is not filled in.
-fn interp_expr_idents(e: &Expr, out: &mut Vec<String>) -> bool {
+fn interp_expr_idents(e: &Expr, out: &mut Vec<String>, calls: &mut Vec<String>) -> bool {
+    let all = |xs: &[Expr], out: &mut Vec<String>, calls: &mut Vec<String>| xs.iter().all(|x| interp_expr_idents(x, out, calls));
     match e {
         Expr::Ident(n, _) => { out.push(n.clone()); true }
         Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
         Expr::Str(t, _) => !t.contains('{'),
-        Expr::Binary(l, _, r, _) => interp_expr_idents(l, out) && interp_expr_idents(r, out),
-        Expr::Prefix(_, x, _) => interp_expr_idents(x, out),
-        Expr::Array(xs, _) => xs.iter().all(|x| interp_expr_idents(x, out)),
-        Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out),
-        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out) && interp_expr_idents(b, out),
-        Expr::FreeCall(_, args, _) => args.iter().all(|a| interp_expr_idents(a, out)),
+        Expr::Binary(l, _, r, _) => interp_expr_idents(l, out, calls) && interp_expr_idents(r, out, calls),
+        Expr::Prefix(_, x, _) => interp_expr_idents(x, out, calls),
+        Expr::Array(xs, _) => all(xs, out, calls),
+        Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out, calls),
+        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out, calls) && interp_expr_idents(b, out, calls),
+        // The name called must exist too (checked by the caller).
+        Expr::FreeCall(name, args, _) => { calls.push(name.clone()); all(args, out, calls) }
         Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) =>
-            interp_expr_idents(r, out) && args.iter().all(|a| interp_expr_idents(a, out)),
+            interp_expr_idents(r, out, calls) && all(args, out, calls),
         _ => false,
     }
 }
