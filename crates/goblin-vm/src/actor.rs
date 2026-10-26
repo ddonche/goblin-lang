@@ -1029,8 +1029,8 @@ impl Vm {
         if !graph.is_empty() {
             self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
             if !self.session.link_offsets.is_empty() {
-                let names = crate::des_image::handed_names(&self.session, &graph);
-                self.session.link_offsets.retain(|(from, to, _), _| !names.contains(from) && !names.contains(to));
+                self.session.link_offsets.retain(|(from, to, _), _| !graph.contains(from) && !graph.contains(to));
+                self.session.object_link_defs.retain(|(obj, _), _| !graph.contains(obj));
             }
         }
         for u in &graph {

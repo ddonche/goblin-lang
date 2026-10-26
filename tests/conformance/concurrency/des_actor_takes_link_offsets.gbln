@@ -4,24 +4,24 @@
 <>Person |
     hunger: .4
 xx
-link Person contact by [
+link Person contact 0...1 by [
     self >> hunger * .5 + target >> hunger * .5
 ]
 act make()
     a <> Person | hunger: .4
     b <> Person | hunger: .4
     a link to b on contact offset +.3 for 2 ticks
-    say(:link_score("Person", "contact", "a", "b"))
+    say(:link_score(a, b, "contact"))
     return [a, b]
 xx
 act region(st, msg)
     a | st{"people"}[0]
     b | st{"people"}[1]
-    say(:link_score("Person", "contact", "a", "b"))
+    say(:link_score(a, b, "contact"))
     tick()
-    say(:link_score("Person", "contact", "a", "b"))
+    say(:link_score(a, b, "contact"))
     tick()
-    say(:link_score("Person", "contact", "a", "b"))
+    say(:link_score(a, b, "contact"))
     return st
 xx
 r | :actor({"people": make()}, region)

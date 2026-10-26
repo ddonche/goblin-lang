@@ -58,10 +58,6 @@ pub(crate) struct DesImage {
 }
 
 /// The names the handed objects were stored under.
-pub(crate) fn handed_names(session: &Session, objs: &HashSet<String>) -> HashSet<String> {
-    objs.iter().filter_map(|u| session.object_names.get(u).map(|(n, _)| n.clone())).collect()
-}
-
 fn pfields(tp: &mut ToPortable, m: &indexmap::IndexMap<String, crate::value::Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
     m.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
 }
@@ -105,9 +101,8 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
         }
         img.object_names.sort();
         if !session.link_offsets.is_empty() {
-            let names = handed_names(session, objs);
             img.link_offsets = session.link_offsets.iter()
-                .filter(|((from, to, _), _)| names.contains(from) || names.contains(to))
+                .filter(|((from, to, _), _)| objs.contains(from) || objs.contains(to))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             img.link_offsets.sort_by(|a, b| a.0.cmp(&b.0));

@@ -2486,6 +2486,16 @@ impl Vm {
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
             Opcode::OverlayDef(i) => {
                 let crate::opcode::OpData::OverlayDef(def) = self.op_data_at(i) else { unreachable!() };
+                // The runtime reads no meaning into a link: what a link does
+                // is the formula the program writes.
+                if let Some(ch) = def.spread_rules.iter().find_map(|r| match r {
+                    goblin_ast::SpreadRule::Channel { channel, .. } => Some(channel.clone()),
+                    _ => None,
+                }) {
+                    return Err(GoblinError::Runtime(format!(
+                        "R1229: spreads-through: overlay {} spreads through {ch}; write the condition yourself: `spreads where :link_score(self, target, \"{ch}\") > 0 at RATE per tick`",
+                        def.name)));
+                }
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
                 let vm_def = OverlayDef {
                     name: def.name.clone(),
@@ -2604,55 +2614,82 @@ impl Vm {
                 let crate::opcode::OpData::LinkDef(def) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
-                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
+                let Some(range) = def.range.clone() else {
+                    return Err(GoblinError::Runtime(format!(
+                        "R1227: link-no-range: `link {} {channel}` needs its range: `link {} {channel} 0...1` (any two numbers) or `link {} {channel} bool`",
+                        def.class_name, def.class_name, def.class_name)));
+                };
                 let link_def = LinkDef {
                     class_name: def.class_name.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min,
-                    formula_max,
+                    has_formula: def.has_formula,
+                    range: Some(range),
                 };
                 self.tick_exprs.clear();
                 self.session.link_defs.insert((def.class_name.clone(), channel), std::rc::Rc::new(link_def));
             }
 
+            // `Rome link trust by [ formula ]`: that object's own formula,
+            // kept under its id.
             Opcode::ObjectLinkDef(i) => {
                 let crate::opcode::OpData::ObjectLinkDef(def) = self.op_data_at(i) else { unreachable!() };
+                let def = def.clone();
                 use crate::session::LinkDef;
+                let obj = self.stack_pop()?;
+                let uuid = self.link_end(&obj, &def.object_var)?;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
-                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.object_var.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min,
-                    formula_max,
+                    has_formula: true,
+                    range: None,
                 };
                 self.tick_exprs.clear();
-                self.session.object_link_defs.insert((def.object_var.clone(), channel), std::rc::Rc::new(link_def));
+                self.session.object_link_defs.insert((uuid, channel), std::rc::Rc::new(link_def));
             }
 
+            // `a link to b on trade offset +.3 [for N ticks]`: a change to
+            // a's link to b (b's link to a is its own).
             Opcode::LinkOffset(i) => {
                 let crate::opcode::OpData::LinkOffset(s) = self.op_data_at(i) else { unreachable!() };
+                let s = s.clone();
                 use crate::session::LinkOffset;
-                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
-                let new_offset = LinkOffset { value: s.offset, ticks_remaining: s.ticks };
-                let offsets = self.session.link_offsets.entry(key).or_default();
-                let existing = offsets.iter_mut().find(|o| o.ticks_remaining == new_offset.ticks_remaining);
-                if let Some(existing) = existing {
-                    if new_offset.value.abs() >= existing.value.abs() {
-                        *existing = new_offset;
-                    } else {
-                        existing.ticks_remaining = new_offset.ticks_remaining;
-                    }
+                let value = self.stack_pop()?;
+                let to = self.stack_pop()?;
+                let from = self.stack_pop()?;
+                let value = match value {
+                    Value::Int(n) => n as f64,
+                    Value::Float(f) => f,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R1224: link-offset: `{} link to {} on {} offset ...` needs a number, got {}",
+                        s.from_var, s.to_var, s.channel, other.type_name()))),
+                };
+                let (from_id, to_id) = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?);
+                let (lo, hi) = crate::tick::link_bounds(self, &from_id, &s.channel)?;
+                let key = (from_id.clone(), to_id.clone(), s.channel.clone());
+                if s.ticks.is_none() {
+                    // A lasting change moves the link, and keeps it inside its
+                    // range: past the top, a later drop starts from the top.
+                    let base = crate::tick::link_base(self, &from_id, &to_id, &s.channel)?;
+                    let offsets = self.session.link_offsets.entry(key).or_default();
+                    let lasting: f64 = offsets.iter().filter(|o| o.ticks_remaining.is_none()).map(|o| o.value).sum();
+                    let kept = (base + lasting + value).clamp(lo, hi) - base;
+                    offsets.retain(|o| o.ticks_remaining.is_some());
+                    offsets.push(LinkOffset { value: kept, ticks_remaining: None });
                 } else {
-                    offsets.push(new_offset);
+                    // A timed change is taken back when its ticks run out.
+                    self.session.link_offsets.entry(key).or_default().push(LinkOffset { value, ticks_remaining: s.ticks });
                 }
             }
 
             Opcode::ClearLink(i) => {
                 let crate::opcode::OpData::ClearLink(s) = self.op_data_at(i) else { unreachable!() };
-                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+                let s = s.clone();
+                let to = self.stack_pop()?;
+                let from = self.stack_pop()?;
+                let key = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?, s.channel.clone());
                 self.session.link_offsets.remove(&key);
                 self.session.des_link_ids.remove(&key);
             }
@@ -5118,7 +5155,7 @@ impl Vm {
                     let start = st.len().checked_sub(argc as usize)?;
                     let mut largs = Vec::with_capacity(argc as usize);
                     for v in st.drain(start..) {
-                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_) | Value::Ref(_)) => largs.push(v), _ => return None }
+                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v), _ => return None }
                     }
                     st.push(Fv::Val(self.link_score_in(&largs, Some((f, args))).ok()?));
                 }
@@ -5411,50 +5448,60 @@ impl Vm {
         self.session.read_value(&t).ok()
     }
 
-    /// link_score(class, [channel,] a_var, b_var): the link formula for the pair,
-    /// normalised to 0..1, plus the pair's offsets (the interpreter's `link_score`).
+    /// `:link_score(a, b, "trade")`: a's link to b (one way), as
+    /// `crate::tick::link_value` works it out. The older form names the
+    /// class and the two variables: `:link_score("Nation", "trade", "a", "b")`.
     fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
         self.link_score_in(&args, None)
     }
 
-    /// `link_score` with its variable names looked up in the running
-    /// formula: the current call frame, or, for a formula run by
+    /// `link_score`, with variable names (the older form) looked up in the
+    /// running formula: the current call frame, or, for a formula run by
     /// `run_formula_in`, that formula's parameter names and arguments.
     fn link_score_in(
         &mut self,
         args: &[Value],
         direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>,
     ) -> Result<Value, GoblinError> {
-        if args.len() < 3 { return Ok(Value::Nil); }
+        let is_obj = |v: &Value| matches!(v, Value::Ref(_) | Value::Object(_));
+        if args.len() == 3 && is_obj(&args[0]) && is_obj(&args[1]) {
+            let Value::Str(ch) = &args[2] else {
+                return Err(GoblinError::type_error("str", args[2].type_name(), "link_score"));
+            };
+            let from = self.link_end(&args[0], "the first object")?;
+            let to = self.link_end(&args[1], "the second object")?;
+            return crate::tick::link_value(self, &from, &to, ch.as_ref());
+        }
+        if args.len() < 3 {
+            return Err(GoblinError::Runtime("R1225: link-not-object: write :link_score(a, b, \"trade\") with the two objects and the link's name".into()));
+        }
         let s = |i: usize| -> Result<&str, GoblinError> {
             match &args[i] {
                 Value::Str(s) => Ok(s.as_ref()),
                 other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
             }
         };
-        let (class_name, channel, a_var, b_var) = if args.len() >= 4 {
-            (s(0)?, s(1)?, s(2)?, s(3)?)
+        let (channel, a_var, b_var) = if args.len() >= 4 {
+            (s(1)?, s(2)?, s(3)?)
         } else {
-            (s(0)?, "default", s(1)?, s(2)?)
+            ("default", s(1)?, s(2)?)
         };
-        // The objects stay in the object store: the formula reads their
-        // fields through the reference instead of a copy of each object.
-        let (self_val, target_val) = match (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(Value::Nil),
+        let (Some(a), Some(b)) = (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) else {
+            return Ok(Value::Nil);
         };
-        let def = (!self.session.object_link_defs.is_empty())
-            .then(|| self.session.object_link_defs.get(&(a_var.to_string(), channel.to_string())).cloned())
-            .flatten()
-            .or_else(|| self.session.link_defs.get(&(class_name.to_string(), channel.to_string())).cloned());
-        let Some(d) = def else { return Ok(Value::Nil) };
-        let mut score = crate::tick::eval_link_score(self, self_val, target_val, &d.formula, d.formula_min, d.formula_max)?;
-        if !self.session.link_offsets.is_empty() {
-            if let Some(offsets) = self.session.link_offsets.get(&(a_var.to_string(), b_var.to_string(), channel.to_string())) {
-                for o in offsets { score += o.value; }
-            }
+        let from = self.link_end(&a, a_var)?;
+        let to = self.link_end(&b, b_var)?;
+        crate::tick::link_value(self, &from, &to, channel)
+    }
+
+    /// The object at one end of a link, by id.
+    pub(crate) fn link_end(&self, v: &Value, name: &str) -> Result<String, GoblinError> {
+        match v {
+            Value::Ref(u) => Ok(u.to_string()),
+            Value::Object(o) => Ok(o.uuid.clone()),
+            other => Err(GoblinError::Runtime(format!(
+                "R1225: link-not-object: `{name}` in a link holds {}, not an object", other.type_name()))),
         }
-        Ok(Value::Float(score.clamp(0.0, 1.0)))
     }
 
     /// A variable's value as `lookup_var` finds it, except that an object

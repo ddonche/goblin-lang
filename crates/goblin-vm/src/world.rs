@@ -656,13 +656,10 @@ fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let mut overlays = Vec::new();
     for i in s.overlay_instances.iter().filter(|i| i.host_uuid == uuid) { overlays.push(overlay_to_p(i, &mut tp)?); }
     let name = s.object_names.get(uuid).cloned();
-    let mut links: Vec<_> = match &name {
-        Some((n, _)) => s.link_offsets.iter()
-            .filter(|((from, to, _), _)| from == n || to == n)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        None => Vec::new(),
-    };
+    let mut links: Vec<_> = s.link_offsets.iter()
+        .filter(|((from, to, _), _)| from == uuid || to == uuid)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     links.sort_by(|a, b| a.0.cmp(&b.0));
     let decision = s.object_decisions.get(uuid).map(|d| (**d).clone());
     drop(tp);

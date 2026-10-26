@@ -5407,21 +5407,8 @@ fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     }
     session.object_decisions.remove(var_name);
     session.object_decisions.remove(uuid);
-    session.object_link_defs.retain(|(obj, _), _| obj != var_name);
-    let dropped_keys: Vec<(String, String, String)> = session.link_offsets.keys()
-        .filter(|(from, to, _)| from == var_name || to == var_name)
-        .cloned()
-        .collect();
-    for key in &dropped_keys {
-        if let Some(link_id) = session.des_link_ids.remove(key) {
-            let from_h = session.des_store.handle_for_name(&key.0);
-            let to_h = session.des_store.handle_for_name(&key.1);
-            if let (Some(fh), Some(th)) = (from_h, to_h) {
-                session.des_index.remove_link(fh, th, link_id);
-            }
-        }
-    }
-    session.link_offsets.retain(|(from, to, _), _| from != var_name && to != var_name);
+    session.object_link_defs.retain(|(obj, _), _| obj != uuid);
+    session.link_offsets.retain(|(from, to, _), _| from != uuid && to != uuid);
 }
 
 pub fn fmt_value_raw(v: &Value) -> String {

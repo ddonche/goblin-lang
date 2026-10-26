@@ -109,7 +109,22 @@ pub struct LinkDefStmt {
     pub channel: Option<String>,
     /// The formula expression. May reference `self` and `target` as identifiers.
     pub formula: Expr,
+    /// Whether `by [ formula ]` was written; without it, a link starts at
+    /// 0 (or the nearer end of its range when 0 is outside it).
+    pub has_formula: bool,
+    /// `link Nation trade 0...1` / `link Nation border bool`: the values
+    /// the link can take.
+    pub range: Option<LinkRange>,
     pub span: Span,
+}
+
+/// The values a link can take, written when it is declared.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkRange {
+    /// `bool`: true or false.
+    Bool,
+    /// `lo...hi`: a number from lo to hi.
+    Between(f64, f64),
 }
 
 /// `ObjectName link [channel] by [ formula ]` — defines an object-level link formula override.
@@ -130,6 +145,9 @@ pub struct LinkOffsetStmt {
     pub to_var: String,
     pub channel: String,
     pub offset: f64,
+    /// The change when it is written as an expression (`offset row{"canada"}`)
+    /// rather than a number; then `offset` is 0.
+    pub offset_expr: Option<Expr>,
     /// None = permanent. Some(N) = expires after N ticks.
     pub ticks: Option<u32>,
     pub span: Span,

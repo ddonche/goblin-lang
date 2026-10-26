@@ -61,8 +61,12 @@ pub struct LinkDef {
     pub class_name: String,
     pub channel: String,
     pub formula: goblin_ast::Expr,
-    pub formula_min: f64,
-    pub formula_max: f64,
+    /// Whether `by [ formula ]` was written (else the link starts at 0,
+    /// kept inside its range).
+    pub has_formula: bool,
+    /// The values the link can take (None only for an object's own
+    /// formula, which takes its class's range).
+    pub range: Option<goblin_ast::LinkRange>,
 }
 
 /// The smallest arena size that triggers a collection.

@@ -92,6 +92,15 @@ in parentheses are the pull requests that made each change.
   score for `through`), from the seeded random numbers. Before, a hidden 0.15 cutoff made it
   spread to every target at once or to none, and links below 0.3 never spread. The epidemic
   sim now uses `spreads ... at .004`.
+- DES links: a link is one number, one way, from one object to another, under a name the
+  program makes up. It is declared with its range (`link Nation trade 0...1`,
+  `link Nation respect -100...100`, `link Nation border bool`), kept inside it, and starts at 0
+  (or a `by [ formula ]`). Changes belong to the real objects, so `self link to target on trade
+  offset +.3` works in actions and loops, and the change can be any number expression.
+  `:link_score(a, b, "trade")` takes the two objects. The runtime reads no meaning into a link:
+  `spreads through trade` is now an error that says to write `spreads where` with the formula.
+  Before, links were stored under variable names (changes made in actions never reached the
+  objects) and scaled into 0..1 over a range guessed from the formula.
 
 ## 0.49.0 — 2026-10-26
 

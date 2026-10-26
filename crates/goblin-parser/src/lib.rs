@@ -7817,19 +7817,67 @@ impl<'t> Parser<'t> {
 
         // Optional channel name: link Nation border by [...]
         //                        link Nation by [...]  (no channel)
-        let channel = if self.peek_ident() != Some("by") {
+        let channel = if self.peek_ident() != Some("by") && self.peek_ident() != Some("bool") {
             self.eat_ident()
         } else {
             None
         };
+
+        // The range: `bool`, or `lo...hi` (either may be negative).
+        self.skip_layout_inline();
+        let mut range = None;
+        if self.peek_ident() == Some("bool") {
+            let _ = self.eat_ident();
+            range = Some(ast::LinkRange::Bool);
+        } else {
+            let save = self.i;
+            let neg_lo = self.eat_op("-");
+            if let Some(lo) = self.eat_number_f64() {
+                let lo = if neg_lo { -lo } else { lo };
+                if !self.eat_op("...") {
+                    return Err(s_help_site!(
+                        "P1304",
+                        "Expected '...' between the two ends of a link's range",
+                        "Write: link Nation trade 0...1",
+                    ));
+                }
+                let neg_hi = self.eat_op("-");
+                let Some(hi) = self.eat_number_f64() else {
+                    return Err(s_help_site!(
+                        "P1304",
+                        "Expected a number after '...' in a link's range",
+                        "Write: link Nation trade 0...1",
+                    ));
+                };
+                let hi = if neg_hi { -hi } else { hi };
+                if hi < lo {
+                    return Err(s_help_site!(
+                        "P1305",
+                        "A link's range must go from low to high",
+                        "Write: link Nation respect -100...100",
+                    ));
+                }
+                range = Some(ast::LinkRange::Between(lo, hi));
+            } else {
+                self.i = save;
+            }
+        }
+
+        self.skip_layout_inline();
+        if range.is_some() && self.peek_ident() != Some("by") {
+            let lo = match range { Some(ast::LinkRange::Between(lo, _)) => lo, _ => 0.0 };
+            let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            let formula = ast::Expr::Number(format!("{lo}"), span.clone());
+            return Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: false, range, span }));
+        }
 
         self.skip_layout();
 
         if self.peek_ident() != Some("by") {
             return Err(s_help_site!(
                 "P1301",
-                "Expected 'by' after class name in link declaration",
-                "Write: link Nation border by [ formula ]",
+                "Expected a range or 'by' after the link's name",
+                "Write: link Nation trade 0...1, or link Nation trade 0...1 by [ formula ]",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
@@ -7857,7 +7905,7 @@ impl<'t> Parser<'t> {
         }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, span }))
+        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: true, range, span }))
     }
 
     /// Parse `ObjectName link [channel] by [ formula ]`
@@ -7903,14 +7951,21 @@ impl<'t> Parser<'t> {
             }
             let _ = self.eat_ident(); // consume 'offset'
             self.skip_layout_inline();
-            // Parse offset value (may have + or - prefix)
+            // Parse offset value (may have + or - prefix): a number, or
+            // any expression (`offset row{"canada"}`, `offset -amount`).
             let negative = self.eat_op("-");
             let positive = if !negative { self.eat_op("+") } else { false };
-            let Some(offset_abs) = self.eat_number_f64() else {
-                return Err(s_help_site!("P1324", "Expected numeric offset value",
-                    "Write: Rome link to Carthage on trust offset -.6"));
+            let (offset, offset_expr) = if let Some(offset_abs) = self.eat_number_f64() {
+                (if negative { -offset_abs } else { offset_abs }, None)
+            } else {
+                let Ok(pe) = self.parse_coalesce() else {
+                    return Err(s_help_site!("P1324", "Expected an offset value",
+                        "Write: Rome link to Carthage on trust offset -.6"));
+                };
+                let e = self.lower_expr(pe);
+                let e = if negative { ast::Expr::Prefix("-".to_string(), Box::new(e.clone()), e.span().clone()) } else { e };
+                (0.0, Some(e))
             };
-            let offset: f64 = if negative { -offset_abs } else { offset_abs };
             self.skip_layout_inline();
             // Optional: for N ticks
             let ticks = if self.peek_ident() == Some("for") {
@@ -7927,6 +7982,7 @@ impl<'t> Parser<'t> {
                 to_var,
                 channel,
                 offset,
+                offset_expr,
                 ticks,
                 span,
             }));

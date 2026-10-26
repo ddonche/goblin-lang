@@ -10,13 +10,13 @@
     end
 xx
 overlay Sick |
-    spreads through contact at .9
+    spreads where :link_score(self, target, "contact") > .3 at .9
     decays .02
     modifies:
         health - .08
     end
 end
-link Person contact by [
+link Person contact 0...1 by [
     self >> hunger * .5 + target >> hunger * .5
 ]
 act world(n)

@@ -1,15 +1,22 @@
-/// link_score(class, channel, a, b) evaluates the class's link formula for the pair (normalised to 0..1);
-/// an undefined channel or an unknown object gives nil.
+/// known-gap: interp scales a link into 0..1 over a range it guesses from the formula, and takes variable names
+/// A link is declared with its range. `:link_score(a, b, "border")` is a's
+/// link to b: its formula, plus the changes made to the pair, kept inside
+/// the range. Links go one way: b's link to a is its own.
 <>Nation |
     military: .5
     economy: .5
 xx
-link Nation border by [
+link Nation border 0...1 by [
     self >> military * .5 + target >> economy * .25
 ]
+link Nation respect -10...10
 a <> Nation | military: .8, economy: .2
 b <> Nation | military: .4, economy: .4
-say(:link_score("Nation", "border", "a", "b"))
-say(:link_score("Nation", "border", "b", "a"))
-say(:link_score("Nation", "trade", "a", "b"))
-say(:link_score("Nation", "border", "a", "zz"))
+say(:link_score(a, b, "border"))
+say(:link_score(b, a, "border"))
+say(:link_score(a, b, "respect"))
+a link to b on respect offset +4
+say(:link_score(a, b, "respect"))
+say(:link_score(b, a, "respect"))
+a link to b on border offset +.9
+say(:link_score(a, b, "border"))

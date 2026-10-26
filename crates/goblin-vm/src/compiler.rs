@@ -1038,13 +1038,25 @@ impl Compiler {
             Stmt::LinkDef(def) => {
                 let i = self.op_data(crate::opcode::OpData::LinkDef(Box::new(def.clone()))); self.emit(Opcode::LinkDef(i));
             }
+            // Links belong to the objects the variables hold now, so the
+            // objects are loaded first (`self link to target` in an action
+            // reaches the two objects it was called with).
             Stmt::ObjectLinkDef(def) => {
+                self.compile_expr(&Expr::Ident(def.object_var.clone(), def.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ObjectLinkDef(Box::new(def.clone()))); self.emit(Opcode::ObjectLinkDef(i));
             }
             Stmt::LinkOffset(s) => {
+                self.compile_expr(&Expr::Ident(s.from_var.clone(), s.span.clone()))?;
+                self.compile_expr(&Expr::Ident(s.to_var.clone(), s.span.clone()))?;
+                match &s.offset_expr {
+                    Some(e) => self.compile_expr(e)?,
+                    None => self.compile_expr(&Expr::Number(format!("{}", s.offset), s.span.clone()))?,
+                }
                 let i = self.op_data(crate::opcode::OpData::LinkOffset(Box::new(s.clone()))); self.emit(Opcode::LinkOffset(i));
             }
             Stmt::ClearLink(s) => {
+                self.compile_expr(&Expr::Ident(s.from_var.clone(), s.span.clone()))?;
+                self.compile_expr(&Expr::Ident(s.to_var.clone(), s.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ClearLink(Box::new(s.clone()))); self.emit(Opcode::ClearLink(i));
             }
             Stmt::ObjectDecision(var_name, def) => {

@@ -11,7 +11,7 @@ overlay Sick |
         health - .05
     end
 end
-link Person contact by [
+link Person contact 0...1 by [
     self >> hunger * .5 + target >> hunger * .5
 ]
 act region(st, msg)
@@ -21,7 +21,7 @@ act region(st, msg)
     h | p >> health
     say("health {h}")
     say(:len(:overlays_of("p")))
-    say(:link_score("Person", "contact", "p", "p"))
+    say(:link_score(p, p, "contact"))
     return st
 xx
 r | :actor({"n": 1}, region)
