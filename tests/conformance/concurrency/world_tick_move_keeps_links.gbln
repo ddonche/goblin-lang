@@ -2,13 +2,14 @@
 /// An object that moves to another region takes its own links with it
 /// (its changes and its own link formula); links other objects have to it
 /// stay with them. West moves `a` on tick 2; on tick 4 a (now in east)
-/// still has its link to b (7 + 3), and b (in west) its link to a (5).
+/// still has its link to b (7 + 3), and on tick 5 b (in west) its link to
+/// a (5). (One prints a tick after the other, so the order is fixed.)
 <>P |
     ~n: 0
     ~age: 0
     every 1 tick
         self >> age |= self >> age + 1
-        if self >> age == 4
+        if self >> age == 3 + self >> n
             repeat :objects(it >> n != self >> n) as o
                 v | :link_score(self, o, "trust")
                 say("{self >> n} to {o >> n}: {v}")
@@ -41,6 +42,6 @@ xx
 west | :actor(make_west(), region_day)
 east | :actor(make_east(), region_day)
 :post(west, {"peer": east})
-repeat :range(1, 5)
+repeat :range(1, 6)
     tick([west, east])
 xx
