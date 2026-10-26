@@ -1,0 +1,74 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A moving object stays in view of the other regions: a shop pays its
+/// workers every tick, and a worker that moves on tick 2 is paid on tick 3,
+/// the tick it arrives, as on every other tick.
+<>Shop |
+    ~code: 0
+    ~cash: 100
+    ~wage: 10
+    every 1 tick
+        repeat :objects(it >> employer == self >> code)
+            it >> money |= it >> money + self >> wage
+            self >> cash |= self >> cash - self >> wage
+        xx
+    end
+xx
+<>Worker |
+    ~employer: 0
+    ~money: 0
+    ~mover: 0
+    every 2 ticks
+        if self >> mover == 1 and new_home != nil
+            self >> mover |= 2
+            :move!(self, new_home)
+        xx
+    end
+xx
+new_home | nil
+act make_shop()
+    s <> Shop | code: 7
+    return {"things": [s], "have": 0}
+xx
+act make_workers(n, movers)
+    things | []
+    repeat :range(0, n) as i
+        m | 0
+        if i < movers
+            m |= 1
+        xx
+        w <> Worker | employer: 7, mover: m
+        :put_last!(things, w)
+    xx
+    return {"things": things, "have": n}
+xx
+act day(st, msg)
+    if :has(msg, "new_home")
+        new_home |= msg{"new_home"}
+    elif :has(msg, "tick")
+        :update!(st{"have"}, :len(:objects(it >> employer == 7)))
+    xx
+    return st
+xx
+shops | :actor(make_shop(), day)
+old_town | :actor(make_workers(2, 1), day)
+new_town | :actor(make_workers(1, 0), day)
+:post(old_town, {"new_home": new_town})
+repeat :range(1, 4) as t
+    tick([shops, old_town, new_town])
+    cash | 0
+    repeat :objects(it >> cash > -1)
+        c | it >> cash
+        cash |= cash + c
+    xx
+    paid | 0
+    repeat :objects(it >> employer == 7)
+        m | it >> money
+        paid |= paid + m
+    xx
+    total | cash + paid
+    o | :await(:request(old_town, {"ask": 1}))
+    n | :await(:request(new_town, {"ask": 1}))
+    oh | o{"have"}
+    nh | n{"have"}
+    say("tick {t}: shop {cash}, workers {paid}, total {total}; old town {oh}, new town {nh}")
+xx

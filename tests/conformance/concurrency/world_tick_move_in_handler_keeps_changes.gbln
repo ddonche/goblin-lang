@@ -2,7 +2,8 @@
 /// A region's handler can move an object while it takes in what other
 /// regions sent: what was sent to that object after the message follows it
 /// to its new region. Here a shop tells the workers' town to move a worker
-/// and pays the worker in the same tick; no pay is lost.
+/// and pays the worker in the same tick; no pay is lost. On tick 4, the
+/// tick it arrives, the shop still sees it and pays it (the pay is in transit).
 <>Shop |
     ~cash: 100
     every 2 ticks
