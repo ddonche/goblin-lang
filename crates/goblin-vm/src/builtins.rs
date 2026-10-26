@@ -3870,9 +3870,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
-            let host_var = match read(0)? { Value::Str(s) => s, _ => return Ok(Value::Array(vec![])) };
+            // The host: the object itself, or the name of its variable.
+            let host = read(0)?;
+            let on_host = |oi: &crate::session::OverlayInstance| match &host {
+                Value::Ref(u) => *oi.host_uuid == **u,
+                Value::Object(o) => *oi.host_uuid == *o.uuid,
+                Value::Str(v) => *oi.host_var == **v,
+                _ => false,
+            };
             let overlays: Vec<Value> = session.overlay_instances.iter()
-                .filter(|oi| oi.host_var == host_var)
+                .filter(|oi| on_host(oi))
                 .map(|oi| Value::Str(oi.overlay_name.clone().into()))
                 .collect();
             Ok(Value::Array(overlays))
@@ -3882,8 +3889,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::Runtime(format!("overlay_strength: expected 2 args, got {}", args.len())));
             }
             let overlay = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            let host_var = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            match session.overlay_instances.iter().find(|oi| oi.host_var == host_var && oi.overlay_name == overlay) {
+            // The host: the object itself, or the name of its variable.
+            let host = read(1)?;
+            let on_host = |oi: &crate::session::OverlayInstance| match &host {
+                Value::Ref(u) => *oi.host_uuid == **u,
+                Value::Object(o) => *oi.host_uuid == *o.uuid,
+                Value::Str(v) => *oi.host_var == **v,
+                _ => false,
+            };
+            if !matches!(host, Value::Ref(_) | Value::Object(_) | Value::Str(_)) {
+                return Err(GoblinError::type_error("object or str", host.type_name(), "overlay_strength"));
+            }
+            match session.overlay_instances.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay) {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
             }

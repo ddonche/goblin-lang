@@ -1,0 +1,31 @@
+/// known-gap: interp takes only the name of the host's variable
+/// `:overlay_strength(name, host)` and `:overlays_of(host)` take the host
+/// object itself, so they work on objects made inside an action, which
+/// have no variable of their own. The variable's name still works.
+<>F |
+    ~hp: 10
+xx
+overlay Guarded |
+    lasts 2 ticks
+end
+overlay Blessed |
+end
+act make()
+    f <> F | hp: 5
+    return f
+xx
+a <> F | hp: 10
+b | make()
+overlay Guarded on b at .8
+overlay Blessed on b at 1
+overlay Blessed on a at .5
+say(:overlays_of(b))
+say(:overlay_strength("Guarded", b))
+say(:overlay_strength("Guarded", a))
+say(:overlays_of(a))
+say(:overlay_strength("Blessed", "a"))
+act check(f)
+    s | :overlay_strength("Guarded", f) ?? 0
+    say("guarded {s}")
+xx
+check(b)

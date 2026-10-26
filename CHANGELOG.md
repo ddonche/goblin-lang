@@ -66,6 +66,8 @@ in parentheses are the pull requests that made each change.
 - DES: erase transitions are checked as soon as an action that changed the object finishes
   (decision actions, `every` blocks, `on end:`), so the dead don't act or get chosen again that
   tick. A condition that draws a random number stays a once-per-tick check at the end.
+- DES: `:overlay_strength(name, host)` and `:overlays_of(host)` take the host object itself
+  (the variable's name still works), so they work on objects made inside actions.
 
 ## 0.49.0 — 2026-10-26
 
