@@ -2838,7 +2838,7 @@ impl Compiler {
                 let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
                 let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
-                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0, named: as_name.is_some(),
                 }));
                 // RepeatStart sets the loop up from the value on the stack.
                 self.emit(Opcode::RepeatStart(rep));
@@ -2901,7 +2901,7 @@ impl Compiler {
                 let loop_id = self.scope().repeat_loops;
                 self.scope_mut().repeat_loops += 1;
                 let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
-                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0, named: false,
                 }));
                 self.emit(Opcode::RepeatStart(rep));
                 let loop_start = self.scope_mut().bytecode.len();

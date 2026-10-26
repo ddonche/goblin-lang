@@ -3343,9 +3343,15 @@ impl Vm {
         use crate::opcode::{OpData, Opcode};
         let frame = self.call_stack.last().unwrap();
         let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatStart without its data") };
-        let (id, idx_slot) = (r.id as usize, r.idx);
+        let (id, idx_slot, named) = (r.id as usize, r.idx, r.named);
         let v = self.pop_value()?;
         let (mode, iter, limit) = crate::builtins::repeat_plan(v, &mut self.session)?;
+        // A count, a condition or a forever loop has no item for `as` to name.
+        if named && !matches!(mode, 1 | 2) {
+            let what = match mode { 0 => "a count", 4 => "a condition", _ => "a loop with nothing to walk" };
+            return Err(GoblinError::Runtime(format!(
+                "'repeat ... as name' needs items or a map to walk; {what} has none to name. Read the pass number from `idx` (0, 1, 2, ...), or write `repeat :range(0, n) as name`")));
+        }
         let frame = self.call_stack.last_mut().unwrap();
         if frame.loops.len() <= id { frame.loops.resize_with(id + 1, || LoopState { mode: 3, iter: Value::Nil, limit: 0, counter: 0 }); }
         frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };

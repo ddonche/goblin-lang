@@ -506,6 +506,9 @@ pub struct RepeatSlots {
     pub cond_len: u32,
     /// Steps from just after RepeatNext to the loop's exit.
     pub exit: u32,
+    /// Written with `as name`: only a loop over items or a map has
+    /// something to name.
+    pub named: bool,
 }
 
 /// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).

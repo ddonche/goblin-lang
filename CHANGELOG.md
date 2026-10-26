@@ -17,6 +17,8 @@ in parentheses are the pull requests that made each change.
   in an `every` block.
 - DES (VM): a decision's judge can call an action written inside the class
   (`act govern(target)`); the VM only found program-level actions and silently did nothing.
+- VM: `repeat 3 as d` gives a clear error (a count has no items to name; use `idx`
+  or `repeat :range(0, 3) as d`) instead of "local slot 0 is uninitialized".
 
 ## 0.49.0 — 2026-10-26
 
