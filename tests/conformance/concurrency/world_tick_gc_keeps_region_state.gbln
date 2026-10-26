@@ -1,0 +1,30 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region's state stays alive while its DES tick runs: memory cleaned up
+/// during the tick does not lose a closure's variables held in the state.
+<>Cleaner |
+    ~n: 0
+    every 1 tick
+        :gc()
+    end
+xx
+act make_counter()
+    n | 0
+    act bump()
+        n |= n + 1
+        return n
+    xx
+    return bump
+xx
+act make_region()
+    c <> Cleaner | n: 1
+    return {"things": [c], "count": make_counter()}
+xx
+act day(st, msg)
+    next | st{"count"}
+    say(next())
+    return st
+xx
+r | :actor(make_region(), day)
+repeat 3
+    tick([r])
+xx

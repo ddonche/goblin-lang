@@ -260,6 +260,20 @@ fn call_handler(vm: &mut Vm, state: &mut Value, handler: &Value, msg: Value) -> 
 
 fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
     if job.prime { return Ok(()); }
+    // The state is held on the stack while the tick runs, so memory cleaned
+    // up meanwhile (`:gc()`, automatic collection) keeps what it holds.
+    let root = vm.stack.len();
+    vm.stack.push(crate::vm::Operand::Val(state.clone()));
+    let r = region_tick_steps(vm, state, handler, job, root);
+    vm.stack.truncate(root);
+    r?;
+    // 5. The region's own code for this tick.
+    let mut m = IndexMap::new();
+    m.insert("tick".to_string(), Value::Int(job.tick));
+    call_handler(vm, state, handler, Value::MapOrd(Box::new(m)))
+}
+
+fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn, root: usize) -> Result<(), GoblinError> {
     let mut fp = FromPortable::new();
     // 1. What the other regions sent last tick, in order.
     for item in &job.inbox {
@@ -278,9 +292,12 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
                 }
             }
             Item::Post(p) => {
-                let m = fp.value(p, &mut vm.session);
+                // Its objects get new ids, as in any message: the copy is
+                // independent of the sender's objects.
+                let m = crate::actor::snapshot(p, &mut vm.session);
                 let m = crate::actor::adopt_value(m, &mut vm.session);
                 call_handler(vm, state, handler, m)?;
+                vm.stack[root] = crate::vm::Operand::Val(state.clone());
             }
         }
     }
@@ -328,10 +345,7 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
         vm.session.object_store.retain(|k, _| !remote.contains(k));
         vm.session.overlay_instances.retain(|i| !remote.contains(&i.host_uuid));
     }
-    // 5. The region's own code for this tick.
-    let mut m = IndexMap::new();
-    m.insert("tick".to_string(), Value::Int(job.tick));
-    call_handler(vm, state, handler, Value::MapOrd(Box::new(m)))
+    Ok(())
 }
 
 fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut FromPortable) {

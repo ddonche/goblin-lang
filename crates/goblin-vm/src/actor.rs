@@ -1595,7 +1595,7 @@ impl Slot {
 /// new ids: they are independent copies, so they must never be mistaken for
 /// the originals (the ones handed over, say). References inside the copy
 /// keep pointing at each other.
-fn snapshot(p: &PValue, session: &mut Session) -> Value {
+pub(crate) fn snapshot(p: &PValue, session: &mut Session) -> Value {
     fn walk(p: &mut PValue, ids: &mut std::collections::HashMap<String, String>) {
         use crate::portable::PLayout as L;
         match p {
