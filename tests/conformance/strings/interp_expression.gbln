@@ -1,6 +1,7 @@
 /// known-gap: interp leaves an expression in braces as written
 /// `{expr}` fills in an expression when every name in it is a variable in
-/// scope (operators, `>>` fields, indexes and calls). Anything else in
+/// scope (operators, `>>` fields, indexes and calls), and it reads a
+/// variable or calls something. Anything else in
 /// braces, such as CSS, an unknown name or a regex `{1,3}`, stays as written.
 x | 1
 lost | [3, 5]
@@ -12,7 +13,7 @@ p <> P | name: "pip"
 say("{x + 1}")
 say("{lost[0]} and {lost[x]}")
 say("{p >> name} has {p >> hp * 2}")
-say("{:upper(p >> name)}")
+say("{:upper(p >> name)} {:len([1, 2, 3])}")
 say("css { color: red; }, {nope + 1} and {1,3} stay")
 act f(n)
     say("{n * 3}")
