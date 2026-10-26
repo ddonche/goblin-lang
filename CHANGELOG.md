@@ -12,7 +12,8 @@ in parentheses are the pull requests that made each change.
 - DES: `margin N` on a decision (`shop | decision against Business margin .8 by [...]`)
   sets that decision's margin; without it the object's `margin` field is used.
 - DES (VM): a decision written for one object (`x score | decision against ...`)
-  now applies; the VM looked it up by object id instead of variable name and never found it.
+  now applies, to the object `x` holds when it is written (also through another
+  name for it, or for objects made inside an action); before, the VM never found it.
 - DES: an error inside a decision's action stops the tick (it was ignored), as
   in an `every` block.
 - DES (VM): a decision's judge can call an action written inside the class
