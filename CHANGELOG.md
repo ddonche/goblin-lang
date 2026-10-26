@@ -43,6 +43,9 @@ in parentheses are the pull requests that made each change.
   offsets and decision; what other regions send it meanwhile follows it. The
   main program sees it the whole time and can move an object too: its region
   moves it at the start of the next tick.
+- DES town (`sims/town_des`): babies are born (overlay `Pregnant` with
+  `on end:`), a resident's money goes to their district's fund when they die
+  (`on erase:`), and adults now and then move district (`:move!`).
 
 ## 0.49.0 — 2026-10-26
 

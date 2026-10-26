@@ -1,37 +1,37 @@
 town on DES: 1000 residents, 50 businesses, 4 districts, 60 days
-money at the start: 850500
-day 30: population 1000, adults 737, working 737, open businesses 50, money 830370
-day 60: population 1000, adults 739, working 739, open businesses 50, money 839967
+money at the start: 853247
+day 30: population 1000, adults 736, working 736, open businesses 50, money 833350; born 0, died 0, moved 9
+day 60: population 1000, adults 740, working 740, open businesses 50, money 842634; born 0, died 0, moved 18
 
 === End of run: day 60 ===
-Where the money is (total 839967; 10533 left with the dead or is in flight):
-  people            264187   31%
-  businesses        375453   45%
-  district funds    200327   24%
+Where the money is (total 842634; 10613 in flight between districts):
+  people            263669   31%
+  businesses        377735   45%
+  district funds    201230   24%
 
-Wealth of the 739 adults, poorest fifth to richest:
+Wealth of the 740 adults, poorest fifth to richest:
   fifth   holds   average   lowest   highest
-  1        13%       103        0       133
-  2        18%       143      133       154
-  3        20%       162      155       171
-  4        23%       179      171       189
-  5        26%       205      190       232
+  1        13%       102        0       127
+  2        18%       142      127       155
+  3        20%       165      156       174
+  4        23%       183      175       195
+  5        27%       217      195       378
 
 Businesses by price:
   price  businesses  open  staff  avg cash  avg sales
-     15           5     5     70      2439      20780
-     16           9     9    127      4727      22073
-     17           5     5     73      5331      22931
-     18           5     5     71      5447      24570
-     19           4     4     62      8870      26567
-     20           3     3     44      9706      28431
-     21           5     5     76      9741      28102
-     22           5     5     73     11765      29852
-     23           9     9    143     10520      31147
+     15           6     6     79      2930      20289
+     16           6     6     83      4244      21992
+     17           3     3     46      4682      23703
+     18           8     8    124      5226      24869
+     19           5     5     77      7880      26522
+     20           4     4     60      8530      28240
+     21           6     6     91      8449      27140
+     22           4     4     55     13996      31261
+     23           8     8    125     12327      31269
 
 Districts:
   district  people  adults  working  avg adult money    fund
-         0     250     196     100%              156    52102
-         1     250     180     100%              162    49553
-         2     250     183     100%              163    49601
-         3     250     180     100%              153    49071
+         0     247     191     100%              167    52041
+         1     253     188     100%              161    50549
+         2     246     181     100%              157    49966
+         3     254     180     100%              161    48674

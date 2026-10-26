@@ -13,7 +13,12 @@
 ///   Fund      one per district; pays a weekly benefit to adults without
 ///             work, and spends what it holds above 20,000 at the
 ///             district's open businesses, a thirtieth a day.
-/// Births, moving house and estates are not here yet; see GAPS.md.
+///   Life      an adult under 40 can become pregnant (overlay
+///             `Pregnant`, 270 days); when it ends a baby is born in the
+///             mother's district. Now and then an adult moves to
+///             another district (`:move!`), and pays rent there from then
+///             on; their job stays where it is. When a resident dies, their money goes to their
+///             district's fund (`on erase:`), so no money leaves the town.
 
 :rand_seed(42)
 n_districts | 4
@@ -27,6 +32,15 @@ xx
 if :env("TOWN_DISTRICTS") != ""
     n_districts |= :int(:env("TOWN_DISTRICTS"))
 xx
+
+/// The districts, for moving house: every district gets the list once
+/// they all exist.
+all_districts | []
+
+overlay Pregnant |
+    lasts 270 ticks
+    on end: give_birth
+end
 
 <>Fund |
     ~fund_of: 0
@@ -120,8 +134,16 @@ xx
     ~money: 500
     ~district: 0
     ~job: -1
+    ~expecting: 0
+    ~moves: 0
+    on erase: settle_estate
     every 1 tick
         self >> age |= self >> age + 1
+        a | self >> age
+        if self >> expecting == 0 and a >= adult and a < 40 * 365 and (pick 1 from 1...9000) == 1
+            self >> expecting |= 1
+            overlay Pregnant on self at 1
+        xx
     end
     every 30 ticks
         if self >> age >= adult
@@ -130,6 +152,13 @@ xx
                 it >> cash |= it >> cash + pay
             xx
             self >> money |= self >> money - pay
+        xx
+        /// Now and then an adult moves to another district.
+        if n_districts > 1 and self >> age >= adult and (pick 1 from 1...100) == 1
+            to | (self >> district + 1 + (pick 1 from 0...(n_districts - 2))) % n_districts
+            self >> district |= to
+            self >> moves |= self >> moves + 1
+            :move!(self, all_districts[to])
         xx
     end
     /// Cheaper open shops score higher (prices run 15 to 24; a closed shop
@@ -153,6 +182,21 @@ xx
     end
     transition erase when (pick 1 from 1...200000) == 1
     end
+xx
+
+/// A baby, in the mother's district, with no money of its own.
+act give_birth(mom)
+    mom >> expecting |= 0
+    d | mom >> district
+    baby <> Resident | age: 0, money: 0, district: d
+xx
+
+/// A death: what the resident held goes to their district's fund.
+act settle_estate(r)
+    left | r >> money
+    repeat :objects(it >> fund_of == r >> district)
+        it >> cash |= it >> cash + left
+    xx
 xx
 
 /// Shopping, for adults: one item a day, more when there is money to
@@ -202,14 +246,23 @@ act make_district(d)
         age | pick 1 from 0...(70 * 365)
         money | 400 + (pick 1 from 0...299)
         r <> Resident | age: age, money: money, district: d
+        /// Some are already expecting on day 1, halfway along.
+        if age >= adult and age < 40 * 365 and (pick 1 from 1...40) == 1
+            r >> expecting |= 1
+            overlay Pregnant on r at 1 for 135 ticks
+        xx
         :put_last!(things, r)
         total |= total + money
     xx
     return {"d": d, "things": things, "money": total}
 xx
 
-/// A district's own code each day: nothing yet, DES does the rest.
+/// A district's own code: it learns the list of districts once; DES does
+/// the rest.
 act district_day(st, msg)
+    if :has(msg, "districts")
+        all_districts |= msg{"districts"}
+    xx
     return st
 xx
 
@@ -219,6 +272,9 @@ repeat :range(0, n_districts) as d
     town | make_district(d)
     start_money |= start_money + town{"money"}
     :put_last!(districts, :actor(town, district_day))
+xx
+repeat districts as dist
+    :post(dist, {"districts": districts})
 xx
 
 act money_total()
@@ -259,7 +315,13 @@ repeat :range(1, days + 1) as t
         working | :len(:objects(it >> job > -1))
         open_b | :len(:objects(it >> open == 1))
         money | money_total()
-        say("day {t}: population {pop}, adults {adults}, working {working}, open businesses {open_b}, money {money}")
+        born | :len(:objects(it >> age >= 0 and it >> age < t))
+        died | n_residents + born - pop
+        moved | 0
+        repeat :objects(it >> moves > 0)
+            moved |= moved + (it >> moves)
+        xx
+        say("day {t}: population {pop}, adults {adults}, working {working}, open businesses {open_b}, money {money}; born {born}, died {died}, moved {moved}")
     xx
 xx
 
@@ -287,7 +349,7 @@ total | people_money + biz_money + funds
 gone | start_money - total
 say("")
 say("=== End of run: day {days} ===")
-say("Where the money is (total {total}; {gone} left with the dead or is in flight):")
+say("Where the money is (total {total}; {gone} in flight between districts):")
 m1 | pad(people_money, 8)
 m2 | pad(share(people_money, total), 4)
 say("  people          {m1}  {m2}")
