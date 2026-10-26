@@ -2635,12 +2635,20 @@ impl Vm {
 
             Opcode::ObjectDecision(i) => {
                 let crate::opcode::OpData::ObjectDecision { var_name, def } = self.op_data_at(i) else { unreachable!() };
-                let mut d = *def.clone();
+                let (var_name, def) = (var_name.clone(), def.clone());
+                // Kept under the object's id, so it is that object's decision
+                // only, whatever other variables hold it or held it before.
+                let key = match self.stack_pop()? {
+                    Value::Ref(uuid) => uuid,
+                    Value::Object(o) => o.uuid.clone(),
+                    _ => var_name,
+                };
+                let mut d = *def;
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
                 self.tick_exprs.clear();
-                self.session.object_decisions.insert(var_name.clone(), std::rc::Rc::new(d));
+                self.session.object_decisions.insert(key, std::rc::Rc::new(d));
             }
 
             Opcode::UnitDecl(i) => {
