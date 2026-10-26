@@ -2,7 +2,8 @@
 /// tick(regions) ticks every region together. An overlay spreads inside a
 /// region during the tick; one that reaches another region's object
 /// through a link lands there at the start of the next tick. The main
-/// program's :objects() and :overlays() see every region.
+/// program's :objects() and :overlays() see every region. At rate 1 from a
+/// full-strength host, everyone in town catches it (chance 1).
 :rand_seed(42)
 <>Person |
     health: 1
@@ -13,8 +14,7 @@ link Person contact by [
 ]
 overlay Flu |
     hosts Person
-    spreads through contact at .6
-    decays .05
+    spreads through contact at 1
     modifies:
         health - .02
     end
@@ -24,7 +24,7 @@ act make_town(t, n, sick)
     repeat :range(0, n) as i
         p <> Person | town: t
         if i < sick
-            overlay Flu on p at .9
+            overlay Flu on p at 1
         xx
         :put_last!(people, p)
     xx

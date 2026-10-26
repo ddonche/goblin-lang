@@ -7,9 +7,9 @@ a day for 8 days (`each tick:`), and when it runs out the host is immune
 (`on end:`). People die at 0 health (`transition erase`). People now and
 then travel to the next town with `:move!` and take the sickness with them.
 
-The sickness reaches every town, peaks around day 35 with about 120 sick,
-and is gone by day 65. Of 400 people, 122 die and 216 end up immune.
-120 days take 0.7 s on 4 threads.
+The sickness reaches every town, peaks around day 30 with about 100 sick,
+and is gone by day 70. Of 400 people, 124 die and 227 end up immune.
+120 days take 0.5 s on 4 threads.
 
 `check.sh`: 60 days match `expected.txt`, two runs match, and 1 thread
 matches 4.
@@ -20,60 +20,36 @@ matches 4.
   lines:** `lasts 8 ticks`, `each tick: health - 1`, `on end: recover`.
 - **Erase right after the action (#93):** a person who reaches 0 health is
   gone at once and can't infect anyone after dying.
-- **`:overlay_strength("Sick", other)` taking an object (#94)** is how a
-  person checks whether someone is already sick.
 - `:move!` carries the overlay along, so travel spreads the sickness with
   no extra code.
 
-## 1. `spreads` has no chance in it, so it can't model an infection
+## 1. `spreads` had no chance in it (fixed in the next PR)
 
-The overlay already has a way to spread:
+`spreads ... at rate` used a hidden cutoff: each tick it worked out
+`strength * rate`, and above 0.15 every matching object caught the overlay
+at once; below it, nobody did. `.1` infected no one, `.2` made whole towns
+sick in a day, and the sim spread the sickness by hand in an `every`
+block.
+
+Now the rate is the chance: each tick, each object the rule reaches
+catches it with chance `rate` times the spreader's strength, drawn from
+the seeded random numbers like `pick`. The sim says it in one line:
 
 ```goblin
 overlay Sick |
-    spreads where (other >> town == self >> town) at .2 per tick
+    spreads where target >> town == self >> town and target >> immune == 0 at .004 per tick
 ```
 
-But it isn't random. Each tick it works out `strength * rate`, and if that
-is above 0.15 (a number written into the runtime, not in the docs) every
-matching object gets the overlay. Below 0.15 nobody does. So:
-
-| rate | result |
-|---|---|
-| `.1` | nobody else is ever infected |
-| `.16` or `.2` | whole towns are infected at once: 200 sick by day 5, 148 dead in the end |
-
-There is no setting in between, so I wrote the spreading by hand in an
-`every` block:
-
-```goblin
-every 1 tick
-    if :overlay_strength("Sick", self) != nil
-        repeat :objects(it >> kind == "person" and it >> town == self >> town and it >> immune == 0) as other
-            if (pick 1 from 1...1000) <= 4 and :overlay_strength("Sick", other) == nil
-                overlay Sick on other at 1
-            xx
-        xx
-    xx
-```
-
-**Change (a name for you to pick):** let `spreads` take a chance per
-contact, for example
-`spreads where (other >> town == self >> town) chance 4 in 1000 per tick`.
-Each matching object would then catch it with that chance each tick, drawn
-from the seeded random numbers like `pick`. The 0.15 cutoff should also be
-either documented or turned into a setting, because today a rate below it
-silently does nothing.
+It gives the same kind of curve as the hand-written block (about 100 sick
+at the peak, 124 dead) and runs 120 days in 0.5 s instead of 0.7 s.
 
 ## 2. Spreading costs every sick person a scan of everyone
 
-The `every` block above runs a `:objects` scan for each sick person, so a
-day costs (sick people × all people). With 120 sick in 400 people this is
-still fast (0.7 s for 120 days), but it grows as the square of the town.
-`spreads where` has the same cost inside the runtime. Proposal 3 from the
-predator-prey sim (a decision or query limited to its own region) would
-cut it to one town; a chance-based `spreads` (1) would at least move it
-into native code.
+`spreads where` checks its condition for each sick person against every
+object, so a day costs (sick people × all people), including the other
+towns' copies. With 100 sick in 400 people this is fast (0.5 s for 120
+days), but it grows as the square of the town. Proposal 3 from the
+predator-prey sim (limited to its own region) would cut it to one town.
 
 ## 3. Again: no way to ask an object its class
 

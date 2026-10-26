@@ -149,7 +149,7 @@ pub struct ClearLinkStmt {
 /// How an overlay propagates to new hosts each tick.
 #[derive(Debug, Clone)]
 pub enum SpreadRule {
-    /// `spreads through channel at rate` — only to hosts with link score > threshold on channel.
+    /// `spreads through channel at rate` — to hosts linked on channel; the chance scales with the link score.
     Channel { channel: String, rate: f64 },
     /// `spreads to all ClassName at rate` — broadcasts to all live objects of that class.
     All { class_name: String, rate: f64 },

@@ -87,6 +87,11 @@ in parentheses are the pull requests that made each change.
 - `sims/civilization`: four villages (regions) whose people farm, cut wood, build huts, have
   children, die, move on when crowded, and send food to a hungry neighbour. `check.sh` and
   FINDINGS.md.
+- DES: `spreads ... at rate` treats the rate as a chance. Each tick, each object the rule
+  reaches catches the overlay with chance rate times the spreader's strength (times the link
+  score for `through`), from the seeded random numbers. Before, a hidden 0.15 cutoff made it
+  spread to every target at once or to none, and links below 0.3 never spread. The epidemic
+  sim now uses `spreads ... at .004`.
 
 ## 0.49.0 — 2026-10-26
 

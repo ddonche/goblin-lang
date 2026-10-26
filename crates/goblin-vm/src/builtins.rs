@@ -5629,7 +5629,7 @@ fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
     }
 }
 
-fn rng_u01(session: &mut Session) -> f64 {
+pub(crate) fn rng_u01(session: &mut Session) -> f64 {
     let x = (session.next_u128() >> 64) as u64;
     (x as f64) / (u64::MAX as f64)
 }

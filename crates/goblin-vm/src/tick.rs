@@ -313,6 +313,19 @@ fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
 // ── Spread pass ───────────────────────────────────────────────────────────────
 
+/// `spreads ... at rate`: each tick, every object the rule reaches that
+/// doesn't carry the overlay yet catches it with chance `rate` times the
+/// spreader's strength (times the link score for `through`), drawn from
+/// the program's seeded random numbers like `pick`. `at .004` with a
+/// full-strength overlay is 4 in 1,000 a tick; `at 1` always. The new host
+/// gets the spreader's strength. (The interpreter instead spreads to every
+/// target once strength * rate passes 0.15, and never below it.)
+fn catches(vm: &mut Vm, chance: f64) -> bool {
+    if chance >= 1.0 { return true; }
+    if chance <= 0.0 { return false; }
+    crate::builtins::rng_u01(&mut vm.session) < chance
+}
+
 fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     use goblin_ast::SpreadRule;
     let defs = vm.session.overlay_defs.clone();
@@ -349,8 +362,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     for (target_uuid, target_val) in candidates {
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         let link_score = eval_link_score(vm, self_val.clone(), target_val, &link_def.formula, link_def.formula_min, link_def.formula_max)?;
-                        if link_score < 0.3 { continue; }
                         let amount = inst.strength * inst.strength * rate * link_score;
+                        let chance = inst.strength * rate * link_score;
                         if amount <= 0.0 { continue; }
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
@@ -360,8 +373,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -373,6 +386,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         .collect();
                     for target_uuid in candidates {
                         let amount = inst.strength * inst.strength * rate;
+                        let chance = inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
@@ -383,8 +397,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -402,6 +416,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         .collect();
                     for target_uuid in candidates {
                         let amount = inst.strength * rate;
+                        let chance = amount;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
@@ -412,8 +427,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -435,6 +450,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         );
                         if !fires { continue; }
                         let amount = inst.strength * rate;
+                        let chance = amount;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
@@ -445,8 +461,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }

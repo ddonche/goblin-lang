@@ -1,0 +1,46 @@
+/// known-gap: interp spreads to every target once strength * rate passes 0.15, and to none below it
+/// `spreads ... at rate`: each tick, each object the rule reaches catches
+/// the overlay with chance rate (times the spreader's strength). At .1 about
+/// a tenth of the town catches it on the first day; at 1 all of it; at 0
+/// none. Below .15 it used to reach nobody, and above it everyone at once.
+<>P |
+    ~town: 0
+xx
+overlay Cold |
+    hosts P
+    spreads where target >> town == self >> town at .1 per tick
+end
+overlay Flu |
+    hosts P
+    spreads where target >> town == self >> town at 1 per tick
+end
+overlay Pox |
+    hosts P
+    spreads where target >> town == self >> town at 0 per tick
+end
+act day_one(name)
+    :rand_seed(3)
+    repeat :objects() as o
+        delete_object!(o)
+    xx
+    first | nil
+    repeat :range(0, 200) as i
+        p <> P | town: i % 2
+        if i == 0
+            first |= p
+        xx
+    xx
+    if name == "Cold"
+        overlay Cold on first at 1
+    elif name == "Flu"
+        overlay Flu on first at 1
+    else
+        overlay Pox on first at 1
+    xx
+    tick()
+    return :len(:overlays(it >> overlay_name == name)) - 1
+xx
+cold | day_one("Cold")
+say(cold > 0 and cold < 25)
+say(day_one("Flu"))
+say(day_one("Pox"))
