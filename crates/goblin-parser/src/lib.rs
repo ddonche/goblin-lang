@@ -7205,8 +7205,14 @@ impl<'t> Parser<'t> {
                         | Some("conflicts") | Some("spawns") | Some("hosts")
                         | Some("spreads") | Some("decays") | Some("lasts")
                         | Some("transition") | Some("stacks") | Some("replaces")
-                        | Some("caps") | Some("on") | Some("each"))
+                        | Some("caps"))
                 {
+                    break;
+                }
+                // `on end:` and `each tick:` start the next clause; a field
+                // named `on` or `each` is still a change (`on + 1`).
+                let next = self.toks.get(self.i + 1).and_then(|t| t.value.as_deref());
+                if matches!((tok.value.as_deref(), next), (Some("on"), Some("end")) | (Some("each"), Some("tick"))) {
                     break;
                 }
             }
@@ -7249,7 +7255,7 @@ impl<'t> Parser<'t> {
                             Some("conflicts") | Some("spawns") | Some("hosts")
                             | Some("spreads") | Some("decays") | Some("lasts")
                             | Some("transition") | Some("stacks") | Some("replaces")
-                            | Some("caps") | Some("on") | Some("each")
+                            | Some("caps") | Some("on") | Some("each") | Some("modifies")
                             | Some("end") | Some("xx"))
                     {
                         // consumed ok
