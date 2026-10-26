@@ -1,0 +1,34 @@
+/// known-gap: interp scores a formula on `~` fields over 0..1, so every shop scores 0
+/// A `~` field read inside a map literal scores the same as a plain read:
+/// the cheapest shop scores 1.
+<>Shop |
+    ~price: 0
+    ~sold: 0
+xx
+<>Buyer |
+    hunger: .5
+    buy | decision against Shop by [
+        0 - {"price": target >> price}{"price"}
+    ]
+    judge using buy
+        >= .9: purchase(target)
+        else: browse(target)
+    end
+xx
+act purchase(b, s)
+    s >> sold |= s >> sold + 1
+xx
+act browse(b, s)
+    return nil
+xx
+a <> Shop | price: 30
+b <> Shop | price: 10
+c <> Shop | price: 20
+m <> Buyer | hunger: .5
+n <> Buyer | hunger: .5
+tick()
+repeat :objects(it >> price > 0)
+    p | it >> price
+    s | it >> sold
+    say("price {p}: sold {s}")
+xx

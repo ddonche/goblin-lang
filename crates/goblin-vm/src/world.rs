@@ -123,6 +123,9 @@ pub struct World {
     in_flight: Vec<(String, PValue, usize)>,
     /// The overlays those objects carry, for the main program's `:overlays()`.
     in_flight_overlays: Vec<POverlay>,
+    /// The same objects by the region they go to: the other regions see
+    /// them there on the tick they arrive.
+    flying: Vec<Arc<Snapshot>>,
 }
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
@@ -152,10 +155,34 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     }
     let fresh = vm.session.world.as_ref().is_none_or(|w| w.ids != ids);
     if fresh {
+        // A new list (other regions, or the same in another order): what is
+        // on its way to a region still in it goes there. An object on its
+        // way to a region left out would be lost, so that is an error.
+        let at = |id: &u64| ids.iter().position(|x| x == id);
+        if let Some(old) = vm.session.world.as_ref() {
+            for (k, id) in old.ids.iter().enumerate() {
+                if at(id).is_none() && old.inbox[k].iter().any(|it| matches!(it, Item::Arrive(_))) {
+                    return Err(err("C0123: tick-regions: an object is on its way to a region that is not in this list; tick the list it was moved in once more first"));
+                }
+            }
+        }
+        let mut inbox = vec![Vec::new(); ids.len()];
+        let mut flying = vec![Arc::new(Snapshot::default()); ids.len()];
+        let (mut in_flight, mut in_flight_overlays) = (Vec::new(), Vec::new());
         if let Some(old) = vm.session.world.take() {
             vm.session.object_store.retain(|k, _| !old.view.contains(k));
+            for (k, items) in old.inbox.into_iter().enumerate() {
+                if let Some(j) = at(&old.ids[k]) { inbox[j] = items; }
+            }
+            for (k, f) in old.flying.into_iter().enumerate() {
+                if let Some(j) = at(&old.ids[k]) { flying[j] = f; }
+            }
+            for (u, p, k) in old.in_flight {
+                if let Some(j) = at(&old.ids[k]) { in_flight.push((u, p, j)); }
+            }
+            in_flight_overlays = old.in_flight_overlays;
         }
-        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox: vec![Vec::new(); ids.len()], view: HashSet::new(), in_flight: Vec::new(), in_flight_overlays: Vec::new() });
+        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: HashSet::new(), in_flight, in_flight_overlays, flying });
         // Before the first tick, every region reports its objects, so the
         // first tick already sees the whole world.
         let outs = round(vm, &actors, &ids, true)?;
@@ -175,6 +202,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     // to it this tick follows it there.
     let mut in_flight = Vec::new();
     let mut in_flight_overlays = Vec::new();
+    let mut flying: Vec<Snapshot> = (0..ids.len()).map(|_| Snapshot::default()).collect();
     for o in &outs {
         for (dest, item) in &o.sent {
             if let (Dest::Actor(a), Item::Arrive(x)) = (dest, item) {
@@ -182,6 +210,8 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
                     owner.insert(x.uuid.as_str(), j);
                     in_flight.push((x.uuid.clone(), x.object.clone(), j));
                     in_flight_overlays.extend(x.overlays.iter().cloned());
+                    flying[j].objects.push((x.uuid.clone(), x.object.clone()));
+                    flying[j].overlays.extend(x.overlays.iter().cloned());
                 }
             }
         }
@@ -200,6 +230,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     w.inbox = inbox;
     w.in_flight = in_flight;
     w.in_flight_overlays = in_flight_overlays;
+    w.flying = flying.into_iter().map(Arc::new).collect();
     w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
     let n = w.tick;
     refresh_view(vm);
@@ -251,8 +282,12 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
     let tick = w.tick + 1;
     let mut sent = Vec::with_capacity(actors.len());
     for (i, a) in actors.iter().enumerate() {
+        // The other regions' objects, and those on their way to them.
         let remote: Vec<Arc<Snapshot>> = if prime { Vec::new() } else {
-            w.snaps.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, s)| s.clone()).collect()
+            w.snaps.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, s)| s.clone())
+                .chain(w.flying.iter().enumerate()
+                    .filter(|(j, f)| *j != i && !f.objects.is_empty()).map(|(_, f)| f.clone()))
+                .collect()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
         let job = Arc::new(WorldIn { tick, me: ids[i], prime, inbox, remote, regions: ids.to_vec(), out: Mutex::new(None) });
