@@ -12,11 +12,14 @@ in parentheses are the pull requests that made each change.
 - DES: `margin N` on a decision (`shop | decision against Business margin .8 by [...]`)
   sets that decision's margin; without it the object's `margin` field is used.
 - DES (VM): a decision written for one object (`x score | decision against ...`)
-  now applies; the VM looked it up by object id instead of variable name and never found it.
+  now applies, to the object `x` holds when it is written (also through another
+  name for it, or for objects made inside an action); before, the VM never found it.
 - DES: an error inside a decision's action stops the tick (it was ignored), as
   in an `every` block.
 - DES (VM): a decision's judge can call an action written inside the class
   (`act govern(target)`); the VM only found program-level actions and silently did nothing.
+  The action gets `self`, then the arguments the arm writes (`purchase(target, 3)`,
+  `rest()`); before, it always got just the target.
 - VM: `repeat 3 as d` gives a clear error (a count has no items to name; use `idx`
   or `repeat :range(0, 3) as d`) instead of "local slot 0 is uninitialized".
 
