@@ -1,0 +1,29 @@
+/// known-gap: interp runs the class action but its field writes do not stick
+/// Objects a judge arm passes go by reference, as in an ordinary call:
+/// `strike(target, target, self)` changes one dummy twice, and reads through
+/// `me` the change it made through `self`.
+<>Dummy |
+    ~hp: 10
+xx
+<>Fighter |
+    ~want: 1
+    ~seen: 5
+    pick_one | decision against Dummy by [
+        target >> hp
+    ]
+    judge using pick_one
+        >= .5: strike(target, target, self)
+        else: strike(target, target, self)
+    end
+    act strike(a, b, me)
+        a >> hp |= a >> hp - 1
+        b >> hp |= b >> hp - 1
+        self >> want |= 0
+        self >> seen |= me >> want
+    end
+xx
+d <> Dummy | hp: 10
+f <> Fighter | want: 1
+tick()
+say(d >> hp)
+say(f >> seen)
