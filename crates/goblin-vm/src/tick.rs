@@ -889,16 +889,29 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
 
     // Score all targets (by position in the list), the formula compiled once.
-    // (A formula that does not compile scores no target, as before.)
-    let Ok(formula) = vm.tick_formula(&decision.formula, &["self", "target"]) else { return Ok(()) };
+    // A formula that fails, or gives something other than a number, stops
+    // the tick with an error: a decision never does nothing silently.
+    let formula_error = |vm: &Vm, what: String| {
+        let class = match vm.session.object_store.get(&self_uuid) {
+            Some(Value::Object(o)) => o.class_name.clone(),
+            _ => String::new(),
+        };
+        GoblinError::Runtime(format!("R1220: decision-formula: decision `{name}` of {class} (against {}): {what}", decision.target_class))
+    };
+    let formula = match vm.tick_formula(&decision.formula, &["self", "target"]) {
+        Ok(f) => f,
+        Err(e) => return Err(formula_error(vm, format!("the formula can't be compiled: {e}"))),
+    };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
     for (k, (target, target_at)) in target_candidates.iter().enumerate() {
         if is_self(target) { continue; }
         let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
             Ok(Value::Float(f)) => f,
             Ok(Value::Int(i)) => i as f64,
-            Ok(_) => 0.5,
-            Err(_) => continue,
+            Ok(other) => return Err(formula_error(vm, format!(
+                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where [ ... ]` to leave targets out)",
+                if other.type_name().starts_with(['a','e','i','o','u']) { "an" } else { "a" }, other.type_name()))),
+            Err(e) => return Err(formula_error(vm, format!("the formula failed: {e}"))),
         };
         // A score that overflowed (inf) or is not a number can't be ranked.
         if !raw.is_finite() { continue; }

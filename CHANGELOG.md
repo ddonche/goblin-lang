@@ -51,6 +51,10 @@ in parentheses are the pull requests that made each change.
 - DES: when a timed overlay ends, it takes back only what its `modifies:` added.
   Before, every field it modified went back to its value from before the
   overlay, so other changes meanwhile (damage taken, a second overlay) were lost.
+- DES: a decision formula that fails, or gives something other than a number,
+  stops the tick with R1220 naming the decision. Before, the target was
+  skipped (or scored 0.5) and the decision silently did nothing. A type error
+  on `*`, `-` and the like now names the side that is not a number.
 
 ## 0.49.0 — 2026-10-26
 

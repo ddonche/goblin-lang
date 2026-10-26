@@ -5558,7 +5558,12 @@ impl Vm {
                 Ok(Value::Big(d))
             }
             (Value::Pct(x), Value::Pct(y))     => Ok(Value::Pct(flt_fn(*x, *y))),
-            _ => Err(GoblinError::type_error("number", b.type_name(), op)),
+            // Name the side that is not a number (`true * 3` names the bool).
+            _ => {
+                let numeric = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_));
+                let bad = if numeric(&a) { &b } else { &a };
+                Err(GoblinError::type_error("number", bad.type_name(), op))
+            }
         }
     }
 
