@@ -2903,6 +2903,12 @@ impl Vm {
                         } else {
                             out.push_str(val);
                         }
+                    } else if let Some((_, v)) = self.interp_overrides.iter().find(|(n, _)| n.as_str() == inner) {
+                        // An expression (`{n - wins}`) the compiler worked out.
+                        match v {
+                            Value::Str(t) => out.push_str(t),
+                            v => out.push_str(&crate::builtins::fmt_value_raw(v)),
+                        }
                     } else {
                         out.push('{'); out.push_str(raw); out.push('}');
                     }

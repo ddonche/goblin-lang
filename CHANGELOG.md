@@ -68,6 +68,9 @@ in parentheses are the pull requests that made each change.
   tick. A condition that draws a random number stays a once-per-tick check at the end.
 - DES: `:overlay_strength(name, host)` and `:overlays_of(host)` take the host object itself
   (the variable's name still works), so they work on objects made inside actions.
+- Strings fill in expressions: `"{n - wins} left"`, `"{lost[0]}"`, `"{p >> hp * 2}"`, when every name in
+  them is a variable in scope (at least one). Anything else in braces (CSS, unknown names,
+  regex `{1,3}`) stays as written.
 
 ## 0.49.0 — 2026-10-26
 

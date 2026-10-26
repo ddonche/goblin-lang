@@ -1301,6 +1301,25 @@ impl Compiler {
                             _ => {}
                         }
                     }
+                    // `{n - wins}`, `{lost[0]}`, `{self >> hp}`: an expression whose
+                    // names are all variables in scope is worked out here and
+                    // filled in. Anything else in braces stays as written.
+                    for (text, e) in interp_placeholder_exprs(s) {
+                        if names.iter().any(|n| *n == text) { continue; }
+                        let mut idents = Vec::new();
+                        // At least one name: `{1,3}` in a regex is not an expression to fill in.
+                        if !interp_expr_idents(&e, &mut idents) || idents.is_empty() { continue; }
+                        let all_known = idents.iter().all(|name| {
+                            match self.scope().find_local_entry(name) {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => self.scopes.len() > 1 && self.scopes[..self.scopes.len() - 1].iter().any(|sc| sc.find_local(name).is_some())
+                                    || self.global_index(name).is_some(),
+                            }
+                        });
+                        if !all_known { continue; }
+                        self.compile_expr(&e)?;
+                        names.push(text);
+                    }
                     if names.is_empty() {
                         self.emit(Opcode::StringInterp(idx));
                     } else {
@@ -4031,6 +4050,70 @@ fn interp_placeholder_names(s: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// The `{...}` placeholders of a string that hold more than a plain name,
+/// each with the expression it parses as (text that isn't one expression
+/// is left out). Escapes, `{{{…}}}` tokens and `{#…}` box keys are skipped.
+fn interp_placeholder_exprs(s: &str) -> Vec<(String, Expr)> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<(String, Expr)> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' { i += 2; continue; }
+        if chars[i] == '{' {
+            if i + 2 < chars.len() && chars[i + 1] == '{' && chars[i + 2] == '{' {
+                let mut j = i + 3;
+                while j + 2 < chars.len() && !(chars[j] == '}' && chars[j + 1] == '}' && chars[j + 2] == '}') { j += 1; }
+                i = j + 3;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '}' { j += 1; }
+            if j >= chars.len() { break; }
+            let inner: String = chars[i + 1..j].iter().collect();
+            let text = inner.trim();
+            let plain = text.chars().all(|c| c.is_alphanumeric() || c == '_');
+            if !plain && !text.starts_with('#') && !text.contains(['{', '\n'])
+                && !out.iter().any(|(t, _)| t == text)
+            {
+                if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), e)); }
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `text` as one expression, or None.
+fn parse_interp_expr(text: &str) -> Option<Expr> {
+    let toks = goblin_lexer::lex(text, "<interpolation>").ok()?;
+    let module = goblin_parser::Parser::new(&toks).parse_module().ok()?;
+    match module.items.as_slice() {
+        [Stmt::Expr(e)] => Some(e.clone()),
+        _ => None,
+    }
+}
+
+/// The variable names an interpolated expression reads. False when it holds
+/// something other than names, literals, operators, `>>` fields, indexes
+/// and calls: then it is not filled in.
+fn interp_expr_idents(e: &Expr, out: &mut Vec<String>) -> bool {
+    match e {
+        Expr::Ident(n, _) => { out.push(n.clone()); true }
+        Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
+        Expr::Str(t, _) => !t.contains('{'),
+        Expr::Binary(l, _, r, _) => interp_expr_idents(l, out) && interp_expr_idents(r, out),
+        Expr::Prefix(_, x, _) => interp_expr_idents(x, out),
+        Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out),
+        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out) && interp_expr_idents(b, out),
+        Expr::FreeCall(_, args, _) => args.iter().all(|a| interp_expr_idents(a, out)),
+        Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) =>
+            interp_expr_idents(r, out) && args.iter().all(|a| interp_expr_idents(a, out)),
+        _ => false,
+    }
 }
 
 /// How an indexed expression reads in the source, for bracket errors.
