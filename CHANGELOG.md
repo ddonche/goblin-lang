@@ -24,6 +24,10 @@ in parentheses are the pull requests that made each change.
 - DES (VM): scoring a decision does less work per candidate (no per-score
   lists, no id lookup for objects the tick already knows): about 14% fewer
   instructions for the DES town, same output.
+- DES (VM): in `tick(regions)`, each region (and the main program's view)
+  keeps its copies of the other regions' objects between ticks and rebuilds
+  only the fields that changed, instead of every object every tick. DES town
+  30 days: 1 thread 2.35 -> 1.78 s, 4 threads 0.80 -> 0.65 s; same output.
 
 ## 0.49.0 — 2026-10-26
 

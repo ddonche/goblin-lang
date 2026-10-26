@@ -168,12 +168,23 @@ fn refresh_view(vm: &mut Vm) {
     let Some(w) = vm.session.world.as_mut() else { return };
     let old = std::mem::take(&mut w.view);
     let snaps = w.snaps.clone();
+    // Last tick's copies are brought up to date field by field (see
+    // `refresh_copy`); they go back in snapshot order, as before.
+    let mut copies: HashMap<String, Value> = HashMap::with_capacity(old.len());
+    for u in &old {
+        if let Some(slot) = vm.session.object_store.get_mut(u) {
+            copies.insert(u.clone(), std::mem::replace(slot, Value::Nil));
+        }
+    }
     vm.session.object_store.retain(|k, _| !old.contains(k));
     let mut fp = FromPortable::new();
     let mut view = HashSet::new();
     for s in &snaps {
         for (u, p) in &s.objects {
-            let v = fp.value(p, &mut vm.session);
+            let v = match copies.remove(u) {
+                Some(mut v) => if refresh_copy(&mut v, p, &mut fp, &mut vm.session) { v } else { fp.value(p, &mut vm.session) },
+                None => fp.value(p, &mut vm.session),
+            };
             vm.session.object_store.insert(u.clone(), v);
             view.insert(u.clone());
         }
@@ -302,12 +313,20 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         }
     }
     // 2. The other regions' objects, as they were at the end of last tick.
-    let mut before: Vec<(String, IndexMap<String, Value>)> = Vec::new();
+    // Last tick's copy of an object is brought up to date field by field;
+    // only an object that is new here (or changed shape) is built whole.
+    // `before` keeps each copy's fields as they arrived: a change this tick
+    // makes the object its own fields, so the two compare by pointer.
+    let mut copies = std::mem::take(&mut vm.session.remote_copies);
+    let mut before: Vec<(String, std::rc::Rc<IndexMap<String, Value>>)> = Vec::new();
     for snap in &job.remote {
         for (uuid, p) in &snap.objects {
             if vm.session.object_store.contains_key(uuid) { continue; }
-            let v = fp.value(p, &mut vm.session);
-            if let Value::Object(o) = &v { before.push((uuid.clone(), (*o.fields).clone())); }
+            let v = match copies.remove(uuid) {
+                Some(mut v) => if refresh_copy(&mut v, p, &mut fp, &mut vm.session) { v } else { fp.value(p, &mut vm.session) },
+                None => fp.value(p, &mut vm.session),
+            };
+            if let Value::Object(o) = &v { before.push((uuid.clone(), o.fields.clone())); }
             vm.session.object_store.insert(uuid.clone(), v);
             if let Some(c) = vm.session.region.as_mut() { c.remote.insert(uuid.clone()); }
         }
@@ -326,6 +345,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         let mut tp = ToPortable::new(&vm.session);
         for (uuid, old) in &before {
             let Some(Value::Object(o)) = vm.session.object_store.get(uuid) else { continue };
+            if std::rc::Rc::ptr_eq(&o.fields, old) { continue; }
             for (k, new) in o.fields.iter() {
                 let change = match (old.get(k), new) {
                     (Some(a), b) if a == b => continue,
@@ -342,10 +362,56 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     if let Some(c) = vm.session.region.as_mut() {
         c.sent.extend(changes);
         let remote = std::mem::take(&mut c.remote);
+        // Keep the copies, with the fields they arrived with, for next tick.
+        let mut kept = std::collections::HashMap::with_capacity(before.len());
+        for (uuid, old) in before {
+            if let Some(slot) = vm.session.object_store.get_mut(&uuid) {
+                let mut v = std::mem::replace(slot, Value::Nil);
+                if let Value::Object(o) = &mut v { o.fields = old; }
+                kept.insert(uuid, v);
+            }
+        }
         vm.session.object_store.retain(|k, _| !remote.contains(k));
         vm.session.overlay_instances.retain(|i| !remote.contains(&i.host_uuid));
+        vm.session.remote_copies = kept;
     }
     Ok(())
+}
+
+/// Brings `v`, a copy built from an earlier snapshot, up to `p`: rebuilds
+/// only the fields whose value changed. False when it differs in shape
+/// (class, field names or order, readonly or trait fields): build it anew.
+fn refresh_copy(v: &mut Value, p: &PValue, fp: &mut FromPortable, session: &mut crate::session::Session) -> bool {
+    let (Value::Object(o), PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid }) = (v, p) else { return false };
+    if o.uuid != *uuid || o.class_name != *class_name || o.fields.len() != fields.len()
+        || o.readonly_fields != *readonly_fields || o.trait_fields != *trait_fields
+        || o.fields.keys().zip(fields).any(|(k, (pk, _))| k != pk) {
+        return false;
+    }
+    let mut stale: smallvec::SmallVec<[usize; 8]> = smallvec::SmallVec::new();
+    for (i, ((_, now), (_, next))) in o.fields.iter().zip(fields).enumerate() {
+        if !same_plain(next, now) { stale.push(i); }
+    }
+    if stale.is_empty() { return true; }
+    let m = std::rc::Rc::make_mut(&mut o.fields);
+    for i in stale {
+        let nv = fp.value(&fields[i].1, session);
+        if let Some((_, slot)) = m.get_index_mut(i) { *slot = nv; }
+    }
+    true
+}
+
+/// Whether a plain value (nil, bool, number, string) is the same in both.
+/// Anything else counts as changed and is rebuilt.
+fn same_plain(p: &PValue, v: &Value) -> bool {
+    match (p, v) {
+        (PValue::Nil, Value::Nil) => true,
+        (PValue::Bool(a), Value::Bool(b)) => a == b,
+        (PValue::Int(a), Value::Int(b)) => a == b,
+        (PValue::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (PValue::Str(a), Value::Str(b)) => **a == *b.as_str(),
+        _ => false,
+    }
 }
 
 fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut FromPortable) {

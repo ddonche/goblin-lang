@@ -1,0 +1,65 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region keeps its copies of the other regions' objects between ticks
+/// and brings them up to date: every tick it sees what the owner did last
+/// tick (a number, a string), and what it did to a copy itself goes to the
+/// owner and is not kept in its copy.
+:rand_seed(3)
+<>Sheep |
+    ~fat: 10
+    mood: "calm"
+    every 1 tick
+        self >> fat |= self >> fat + 3
+        if self >> mood == "bitten"
+            self >> mood |= "calm"
+        else
+            self >> mood |= "grazing"
+        xx
+    end
+xx
+<>Wolf |
+    hunger: .5
+    ~saw: 0
+    seen_mood: "none"
+    score | decision against Sheep by [
+        self >> hunger
+    ]
+    judge using score
+        >= .2: bite(target)
+    end
+xx
+act bite(w, s)
+    w >> saw |= s >> fat
+    w >> seen_mood |= s >> mood
+    s >> fat |= s >> fat - 1
+    s >> mood |= "bitten"
+xx
+act make_zone(wolves, sheep)
+    things | []
+    repeat :range(0, wolves)
+        w <> Wolf | hunger: .5
+        :put_last!(things, w)
+    xx
+    repeat :range(0, sheep)
+        s <> Sheep | fat: 10
+        :put_last!(things, s)
+    xx
+    return {"things": things}
+xx
+act zone_day(st, msg)
+    return st
+xx
+a | :actor(make_zone(1, 0), zone_day)
+b | :actor(make_zone(0, 1), zone_day)
+repeat :range(1, 6) as d
+    tick([a, b])
+    repeat :objects(it >> hunger == .5)
+        saw | it >> saw
+        m | it >> seen_mood
+        say("tick {d}: the wolf saw fat {saw}, mood {m}")
+    xx
+    repeat :objects(it >> fat > 0)
+        f | it >> fat
+        m | it >> mood
+        say("tick {d}: the sheep has {f}, mood {m}")
+    xx
+xx
