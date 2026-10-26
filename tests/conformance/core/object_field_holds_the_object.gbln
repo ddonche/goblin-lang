@@ -1,0 +1,27 @@
+/// known-gap: interp stores a copy of the object in the field, so writes through the field never reach it
+/// A field given an object holds that object, not a copy: a change made
+/// through the field shows on the object, a change to the object shows
+/// through the field, the field can be pointed at another object, an
+/// object equals itself, and a field whose object was erased reads nil.
+<>Village |
+    ~food: 10
+xx
+<>Person |
+    ~home: nil
+xx
+v <> Village | food: 10
+p <> Person | home: v
+p >> home >> food |= 5
+say(v >> food)
+v >> food |= 7
+say(p >> home >> food)
+say(p >> home == v)
+w <> Village | food: 1
+p >> home |= w
+p >> home >> food |= 2
+say("{w >> food} {v >> food}")
+h | p >> home
+h >> food |= 3
+say(w >> food)
+delete_object!(w)
+say(:is_nil(p >> home))

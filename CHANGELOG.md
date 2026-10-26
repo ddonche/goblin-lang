@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Objects (VM): a field given an object holds that object, not a copy, like a
+  database entry. `p >> home >> food |= 5` changes the village; a change to the
+  village shows through `p >> home`; the field reads nil once the object is
+  erased. An object equals itself (any copy of it), as on the interpreter.
 - DES: a decision formula on `~` fields (prices, money) is scored against
   the candidates: the best scores 1 and the others in proportion (spread
   worst-to-best when some score is below 0). Before, every such score

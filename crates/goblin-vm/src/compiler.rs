@@ -2076,9 +2076,12 @@ impl Compiler {
                 self.compile_expr(rhs)?;
                 let idx = self.add_constant(Value::Str(field_name.into()));
                 self.emit(Opcode::SetField(idx));
+                // A field reached through another field (`p >> home >> food |= 5`)
+                // names a stored object by its id: SetField changes it in place,
+                // so there is no variable to store back.
                 let var_name = match obj_expr {
                     Expr::Ident(n, _) => n.clone(),
-                    _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
+                    _ => return Ok(()),
                 };
                 let store_op = self.resolve_store(&var_name)
                     .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;

@@ -415,6 +415,10 @@ impl PartialEq for Value {
             (Value::CtrlStop,         Value::CtrlStop)         => true,
             (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
             (Value::Ref(a),           Value::Ref(b))           => a == b,
+            // An object is an entry: equal to itself (any copy of it), as on
+            // the interpreter.
+            (Value::Object(a),        Value::Object(b))        => a.uuid == b.uuid,
+            (Value::Object(o), Value::Ref(u)) | (Value::Ref(u), Value::Object(o)) => o.uuid == *u,
             (Value::GridRef { grid_id: ga, x: xa, y: ya },
              Value::GridRef { grid_id: gb, x: xb, y: yb }) => ga == gb && xa == xb && ya == yb,
             (Value::Collection(a),    Value::Collection(b)) if Rc::ptr_eq(a, b) => true,

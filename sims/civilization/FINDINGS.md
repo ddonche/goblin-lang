@@ -52,6 +52,11 @@ a decision's `target` does: reads and writes go to the object itself, and
 the field reads nil once the object is erased. No new name. At the least,
 a write through such a copy should be an error.
 
+**Fixed in the runtime:** a field given an object now holds the object
+itself (its id): writes through `p >> home` reach the village, and the
+field reads nil once the village is erased. The sim still finds its
+village by number; it moves to `home` with the object index change.
+
 ## 2. An action in a `one of` group can't say it didn't act
 
 The first version had `leave` first in the group: a homeless person

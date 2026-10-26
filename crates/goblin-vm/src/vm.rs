@@ -1342,6 +1342,7 @@ impl Vm {
                     Value::Object(o) => o.uuid,
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
+                let new_val = entry_of(&self.session, new_val);
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 crate::world::check_view_write(&self.session, &uuid)?;
                 self.session.touch(&uuid);
@@ -1384,6 +1385,7 @@ impl Vm {
                     Value::Object(o) => o.fields.get(field.as_str()).cloned(),
                     _ => None,
                 };
+                let found = found.map(|v| entry_out(&self.session, v));
                 if let Some(v) = found {
                     self.stack.push(Operand::Val(v));
                     let frame = self.call_stack.last_mut().unwrap();
@@ -1461,7 +1463,7 @@ impl Vm {
                             return Err(GoblinError::Runtime(format!(
                                 "T0207: non-nullable-field-nil: cannot assign nil to non-nullable field '{}'", field.name)));
                         }
-                        v.clone()
+                        self.as_entry(v.clone())
                     } else if let Some(default_expr) = &field.default {
                         self.field_default(&class_name, &field.name, default_expr)?
                     } else if field.nullable || !plain {
@@ -2816,9 +2818,9 @@ impl Vm {
                 // (as the interpreter reads it), else nil.
                 let field = match self_tether {
                     Some(t) => match self.session.read_value(&t)? {
-                        Value::Object(ref o) => o.fields.get(field_name.as_str()).cloned(),
+                        Value::Object(ref o) => o.fields.get(field_name.as_str()).cloned().map(|v| entry_out(&self.session, v)),
                         Value::Ref(ref u) => match self.session.object_store.get(u.as_str()) {
-                            Some(Value::Object(o)) => o.fields.get(field_name.as_str()).cloned(),
+                            Some(Value::Object(o)) => o.fields.get(field_name.as_str()).cloned().map(|v| entry_out(&self.session, v)),
                             _ => None,
                         },
                         _ => None,
@@ -2997,7 +2999,7 @@ impl Vm {
         if let Some(t) = self_tether {
             if let Ok(Value::Object(ref o)) = self.session.read_value(&t) {
                 if let Some(fv) = o.fields.get(name) {
-                    return Some(fv.clone());
+                    return Some(entry_out(&self.session, fv.clone()));
                 }
             }
         }
@@ -3162,7 +3164,7 @@ impl Vm {
             },
             _ => return None,
         };
-        Some(obj.fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+        Some(obj.fields.get(name).cloned().map(|v| entry_out(&self.session, v)).ok_or_else(|| GoblinError::Runtime(format!(
             "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
     }
 
@@ -3241,6 +3243,8 @@ impl Vm {
 
     /// Pop one operand, resolve it, and dereference Value::Ref through object_store.
     #[inline]
+    fn as_entry(&self, v: Value) -> Value { entry_of(&self.session, v) }
+
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
@@ -5061,7 +5065,7 @@ impl Vm {
                             v
                         }
                     };
-                    if matches!(v, Value::Frozen(_)) { return None; }
+                    if matches!(v, Value::Frozen(_) | Value::Ref(_)) { return None; }
                     st.push(Fv::Val(v.clone_fast()));
                 }
                 // In a query predicate, a bare name is `it`'s field when it
@@ -5078,7 +5082,7 @@ impl Vm {
                         _ => None,
                     };
                     if let Some(v) = obj.and_then(|o| o.fields.get(name.as_ref() as &str)) {
-                        if matches!(v, Value::Frozen(_)) { return None; }
+                        if matches!(v, Value::Frozen(_) | Value::Ref(_)) { return None; }
                         st.push(Fv::Val(v.clone_fast()));
                         ip = (ip as isize + off as isize) as usize;
                     }
@@ -5809,6 +5813,7 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
                 };
                 self.session.touch(&uuid);
+                let replacement = entry_of(&self.session, replacement);
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;
@@ -5839,6 +5844,27 @@ impl Vm {
 /// The id prefix of an `:overlays()` result: a record of an overlay, not an
 /// object of a class, so it is never put in the object store.
 const OVERLAY_RECORD: &str = "overlay:";
+
+/// A value put in an object's field: an object that lives in the store is
+/// kept as its id (a `Value::Ref`), so the field names that object and every
+/// change to it shows through the field. Anything else is kept as it is.
+/// What reading a field gives: a field that names a stored object by its id
+/// reads as that object, and as nil once the object is erased.
+fn entry_out(session: &crate::session::Session, v: Value) -> Value {
+    match &v {
+        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) =>
+            session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+        _ => v,
+    }
+}
+
+fn entry_of(session: &crate::session::Session, v: Value) -> Value {
+    match &v {
+        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) && session.object_store.contains_key(o.uuid.as_str()) =>
+            Value::Ref(o.uuid.clone()),
+        _ => v,
+    }
+}
 
 /// The id an object bound to a variable is stored under, or None for a
 /// value that stays as it is (not an object, or an overlay record).
@@ -6080,7 +6106,7 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
 
     // For Object, look in fields; an object has only the fields its class declares.
     if let Value::Object(o) = v {
-        return o.fields.get(name).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+        return o.fields.get(name).cloned().map(|v| entry_out(session, v)).ok_or_else(|| GoblinError::Runtime(format!(
             "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name")));
     }
     crate::collections::get_index(v, &Value::Str(name.to_string().into()))
