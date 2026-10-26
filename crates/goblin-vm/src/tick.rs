@@ -864,6 +864,7 @@ fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
         E::FreeCall(_, args, _) | E::NsCall(_, _, args, _) | E::Array(args, _) => args.iter().for_each(|a| member_reads(a, out)),
         E::Call(recv, _, args, _) | E::OptCall(recv, _, args, _) => { member_reads(recv, out); args.iter().for_each(|a| member_reads(a, out)) }
         E::Index(a, b, _) | E::IndexMap(a, b, _) => { member_reads(a, out); member_reads(b, out) }
+        E::Object(kv, _) => kv.iter().for_each(|(_, v)| member_reads(v, out)),
         _ => {}
     }
 }
