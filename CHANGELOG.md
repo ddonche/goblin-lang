@@ -82,6 +82,8 @@ in parentheses are the pull requests that made each change.
   object no longer copies its read-only and trait field sets.
 - `sims/predator_prey`: rabbits, foxes and grass over four meadows (regions); the populations
   cycle. `check.sh` and FINDINGS.md.
+- `sims/epidemic`: a sickness spreading through four towns (regions), with death, immunity and
+  travel. `check.sh` and FINDINGS.md.
 
 ## 0.49.0 — 2026-10-26
 
