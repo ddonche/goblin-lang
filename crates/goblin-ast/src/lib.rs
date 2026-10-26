@@ -364,6 +364,8 @@ pub struct DecisionDef {
     /// `margin N` written on the decision: how far below the best score a
     /// target may be and still be picked. None = the object's `margin` field.
     pub margin: Option<f64>,
+    /// `where [ condition ]`: only targets for which it is true are scored.
+    pub filter: Option<Expr>,
     pub span: Span,
 }
 

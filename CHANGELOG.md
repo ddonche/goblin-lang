@@ -55,6 +55,8 @@ in parentheses are the pull requests that made each change.
   stops the tick with R1220 naming the decision. Before, the target was
   skipped (or scored 0.5) and the decision silently did nothing. A type error
   on `*`, `-` and the like now names the side that is not a number.
+- DES: a decision can leave targets out before scoring with `where [ condition ]`:
+  `heal | decision against Fighter where [ target >> side == self >> side ] by [ ... ]`.
 
 ## 0.49.0 — 2026-10-26
 

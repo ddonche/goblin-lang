@@ -234,6 +234,7 @@ struct PDecisionDef {
     target_class: String,
     formula: Box<PExpr>,
     margin: Option<f64>,
+    filter: Option<Box<PExpr>>,
 }
 
 #[derive(Debug, Clone)]
@@ -4246,7 +4247,9 @@ impl<'t> Parser<'t> {
                     ));
                 };
                 self.skip_layout();
-                let margin = self.parse_decision_margin()?;
+                let mut margin = self.parse_decision_margin()?;
+                let filter = self.parse_decision_where()?;
+                if margin.is_none() { margin = self.parse_decision_margin()?; }
                 if self.peek_ident() != Some("by") {
                     return Err(s_help_site!(
                         "P1404",
@@ -4280,7 +4283,7 @@ impl<'t> Parser<'t> {
                         "Give each decision its own name: shop | decision against Shop by [ ... ], work | decision against Shop by [ ... ]",
                     ));
                 }
-                let d = PDecisionDef { target_class, formula: Box::new(formula), margin };
+                let d = PDecisionDef { target_class, formula: Box::new(formula), margin, filter: filter.map(Box::new) };
                 if decision.is_none() { decision = Some(d.clone()); }
                 let first = named.is_empty();
                 let early = waiting.iter().position(|(u, _)| match u {
@@ -7008,15 +7011,17 @@ impl<'t> Parser<'t> {
                         formula_min,
                         formula_max,
                         margin: d.margin,
+                        filter: d.filter.map(|f| self.lower_expr(*f)),
                         span: sp.clone(),
                     }
                 });
                 let decisions_ast: Vec<ast::NamedDecision> = named.into_iter().map(|(name, d, judge)| {
                     let formula = self.lower_expr(*d.formula);
                     let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                    let filter = d.filter.map(|f| self.lower_expr(*f));
                     ast::NamedDecision {
                         name,
-                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, span: sp.clone() },
+                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
                         judge,
                     }
                 }).collect();
@@ -7595,6 +7600,26 @@ impl<'t> Parser<'t> {
     }
 
     /// Eat a numeric token and return it as u32.
+    /// `where [ condition ]` between a decision's target class and `by`.
+    fn parse_decision_where(&mut self) -> Result<Option<PExpr>, String> {
+        if self.peek_ident() != Some("where") { return Ok(None); }
+        let _ = self.eat_ident();
+        self.skip_layout();
+        if !self.eat_op("[") {
+            return Err(s_help_site!("P1417", "Expected '[' after 'where'",
+                "Write: heal | decision against Fighter where [ target >> side == self >> side ] by [ formula ]"));
+        }
+        self.skip_layout();
+        let cond = self.parse_coalesce()?;
+        self.skip_layout();
+        if !self.eat_op("]") {
+            return Err(s_help_site!("P1418", "Expected ']' to close the 'where' condition",
+                "Write: heal | decision against Fighter where [ target >> hp > 0 ] by [ formula ]"));
+        }
+        self.skip_layout();
+        Ok(Some(cond))
+    }
+
     /// `margin N` between a decision's target class and `by`.
     fn parse_decision_margin(&mut self) -> Result<Option<f64>, String> {
         if self.peek_ident() != Some("margin") { return Ok(None); }
@@ -7817,7 +7842,9 @@ impl<'t> Parser<'t> {
                 "Write: Germany score | decision against Nation by [ formula ]"));
         };
         self.skip_layout();
-        let margin = self.parse_decision_margin()?;
+        let mut margin = self.parse_decision_margin()?;
+        let filter = self.parse_decision_where()?.map(|f| self.lower_expr(f));
+        if margin.is_none() { margin = self.parse_decision_margin()?; }
         if self.peek_ident() != Some("by") {
             return Err(s_help_site!("P1414", "Expected 'by'",
                 "Write: Germany score | decision against Nation by [ formula ]"));
@@ -7843,6 +7870,7 @@ impl<'t> Parser<'t> {
             formula_min: 0.0,
             formula_max: 1.0,
             margin,
+            filter,
             span: span.clone(),
         };
         Ok(ast::Stmt::ObjectDecision(var_name, def))

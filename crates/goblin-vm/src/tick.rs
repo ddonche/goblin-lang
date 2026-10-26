@@ -902,9 +902,26 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         Ok(f) => f,
         Err(e) => return Err(formula_error(vm, format!("the formula can't be compiled: {e}"))),
     };
+    // `where [ ... ]`: the targets that qualify; the others are not scored.
+    let filter = match &decision.filter {
+        Some(f) => match vm.tick_formula(f, &["self", "target"]) {
+            Ok(c) => Some(c),
+            Err(e) => return Err(formula_error(vm, format!("the `where` condition can't be compiled: {e}"))),
+        },
+        None => None,
+    };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
     for (k, (target, target_at)) in target_candidates.iter().enumerate() {
         if is_self(target) { continue; }
+        if let Some(c) = &filter {
+            match vm.run_tick_formula_ref(c, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
+                Ok(Value::Bool(true)) => {}
+                Ok(Value::Bool(false)) => continue,
+                Ok(other) => return Err(formula_error(vm, format!(
+                    "the `where` condition gave {}, not true or false", other.type_name()))),
+                Err(e) => return Err(formula_error(vm, format!("the `where` condition failed: {e}"))),
+            }
+        }
         let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
             Ok(Value::Float(f)) => f,
             Ok(Value::Int(i)) => i as f64,
