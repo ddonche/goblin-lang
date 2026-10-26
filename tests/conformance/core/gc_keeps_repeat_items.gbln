@@ -1,0 +1,18 @@
+/// known-gap: interp gc is VM-only (unknown action)
+/// A collection during a repeat keeps what the loop is walking, even when
+/// the loop is the only thing holding it: here, closures in a temporary list.
+act make_counter(start)
+    n | start
+    act bump(x)
+        n |= n + x
+        return n
+    xx
+    return bump
+xx
+act make_all()
+    return [make_counter(10), make_counter(20), make_counter(30)]
+xx
+repeat make_all() as bump_it
+    :gc()
+    say(bump_it(1))
+xx

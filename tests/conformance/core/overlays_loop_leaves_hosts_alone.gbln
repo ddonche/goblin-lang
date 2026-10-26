@@ -1,0 +1,32 @@
+/// known-gap: interp binding an :overlays() result to `it` replaces its host object (same bug, not reproduced)
+/// Going through :overlays() with `it` does not touch the overlays' hosts:
+/// the hosts keep their class and fields, so spreading goes on next tick,
+/// and the overlay records don't show up as objects.
+<>Person |
+    health: 1
+    town: 0
+xx
+link Person contact by [
+    1 - abs((self >> town) - (target >> town)) * .5
+]
+overlay Flu |
+    hosts Person
+    spreads through contact at .6
+    decays .05
+end
+x <> Person | health: 1
+y <> Person | health: 1
+overlay Flu on x at .9
+overlay Flu on y at .9
+d | 1
+repeat d <= 3
+    tick()
+    repeat :overlays(it >> overlay_name == "Flu")
+        s | :round((it >> strength) * 1000) / 1000
+        say("tick {d}: flu {s}")
+    xx
+    n | :len(:objects(it >> health > -1))
+    all | :len(:objects())
+    say("tick {d}: people {n}, objects {all}")
+    d |= d + 1
+xx

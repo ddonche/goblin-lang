@@ -1,0 +1,2 @@
+runtime error: C0102: frozen-snapshot: 'a' holds a frozen snapshot (from :freeze), which cannot be changed
+[9]

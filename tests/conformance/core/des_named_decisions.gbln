@@ -1,0 +1,42 @@
+/// known-gap: interp runs only a class's first decision (VM only, owner 2026-10-25)
+/// A class can have several decisions, each named, each acted on by the
+/// judge that uses its name. They run in the order written, every tick.
+:rand_seed(5)
+<>Shop |
+    ~open: 1
+    hiring: .9
+    cheap: .8
+xx
+<>Person |
+    ~bought: 0
+    ~jobs: 0
+    shop | decision against Shop by [
+        target >> cheap
+    ]
+    judge using shop
+        >= .5: buy(target)
+    end
+    work | decision against Shop by [
+        target >> hiring
+    ]
+    judge using work
+        >= .95: apply(target)
+        else: wait(target)
+    end
+xx
+act buy(p, s)
+    p >> bought |= p >> bought + 1
+xx
+act apply(p, s)
+    p >> jobs |= p >> jobs + 1
+xx
+act wait(p, s)
+    say("waiting")
+xx
+s <> Shop | open: 1
+p <> Person | bought: 0
+tick()
+tick()
+b | p >> bought
+j | p >> jobs
+say("bought {b}, jobs {j}")

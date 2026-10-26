@@ -885,9 +885,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -899,9 +898,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..arr.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); result.push(arr[idxs[i]].clone()); }
+                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -913,9 +911,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
                     } else {
-                        let mut idxs: Vec<usize> = (0..entries.len()).collect();
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
+                        for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -938,9 +935,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                             (0..n_out).map(|_| Value::Char(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
                         } else {
                             if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique chars", n_out, pool.len()))); }
-                            let mut idxs: Vec<usize> = (0..pool.len()).collect();
                             let mut result = Vec::with_capacity(n_out);
-                            for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Char(pool[idxs[i]])); }
+                            for k in pick_indices(session, pool.len(), n_out) { result.push(Value::Char(pool[k])); }
                             result
                         };
                         // char picks always join into a string (matching interpreter behaviour)
@@ -954,11 +950,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let out: Vec<Value> = if allow_dups {
                         (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect()
                     } else {
-                        let pool: Vec<i64> = (range_start..range_end).collect();
-                        if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, pool.len()))); }
-                        let mut idxs: Vec<usize> = (0..pool.len()).collect();
+                        let len = range as usize;
+                        if n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, len))); }
                         let mut result = Vec::with_capacity(n_out);
-                        for i in 0..n_out { let j = i + rng_bounded(session, (pool.len() - i) as u64) as usize; idxs.swap(i, j); result.push(Value::Int(pool[idxs[i]])); }
+                        for k in pick_indices(session, len, n_out) { result.push(Value::Int(range_start + k as i64)); }
                         result
                     };
                     if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
@@ -2672,30 +2667,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
         BuiltinId::RepeatPrep => {
-            let v = read(0)?;
-            let plan = |mode: i64, iter: Value, limit: i64| Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]));
-            match v {
-                Value::Int(n) if n >= 0 => plan(0, Value::Nil, n),
-                Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
-                Value::Nil => plan(3, Value::Nil, i64::MAX),
-                Value::Bool(_) => plan(4, Value::Nil, i64::MAX),
-                Value::Map(_) | Value::MapOrd(_) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(2, it, n)
-                }
-                Value::Collection(ref c) if collections::is_map_collection(c) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(2, it, n)
-                }
-                Value::Array(_) | Value::Collection(_) | Value::Seq(_) => {
-                    let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
-                    let n = collections::element_count(&it) as i64;
-                    plan(1, it, n)
-                }
-                other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
-            }
+            let (mode, iter, limit) = repeat_plan(read(0)?, session)?;
+            Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]))
         }
         BuiltinId::ToForIter => {
             // The loop reads `iter[i]` each pass, so the iterable must be cheap to
@@ -3824,7 +3797,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::OwnsTree => {
             // owns_tree(root): one "{Class: id}" line per object, children
             // (sorted) indented two spaces per level.
-            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value>, depth: usize) -> String {
+            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
                 let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
                     let id = o.fields.get("id")
@@ -3860,12 +3833,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
             };
+            crate::world::check_view_write(session, &uuid)?;
             erase_object(session, &var_name, &uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
+            crate::world::check_view_write(session, &uuid)?;
             session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
@@ -3876,6 +3851,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
             };
+            crate::world::check_view_write(session, &host_uuid)?;
             drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
@@ -5580,6 +5556,22 @@ fn fisher_yates_shuffle(items: &mut Vec<Value>, session: &mut Session) {
     }
 }
 
+/// `n` distinct positions out of `0..len`, in the order a partial
+/// Fisher-Yates shuffle of `0..len` gives them (same random draws), without
+/// building the whole list: only the swapped positions are remembered.
+fn pick_indices(session: &mut Session, len: usize, n: usize) -> Vec<usize> {
+    let mut moved: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let j = i + rng_bounded(session, (len - i) as u64) as usize;
+        let at_j = moved.get(&j).copied().unwrap_or(j);
+        let at_i = moved.get(&i).copied().unwrap_or(i);
+        moved.insert(j, at_i);
+        out.push(at_j);
+    }
+    out
+}
+
 fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
     if bound <= 1 { return 0; }
     loop {
@@ -6081,4 +6073,26 @@ fn big_pow(b: rust_decimal::Decimal, e: i64) -> Result<rust_decimal::Decimal, Go
         if e > 0 { base = base.checked_mul(base).ok_or_else(overflow)?; }
     }
     Ok(acc)
+}
+
+/// How a `repeat` runs over `v`: (mode, iterable, limit). Mode 0 = count
+/// (int), 1 = items (array/collection), 2 = map (iterable of [k, v]),
+/// 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
+/// matching the interpreter's `repeat` dispatch.
+pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64), GoblinError> {
+    let iter_of = |v: Value, session: &mut Session| -> Result<(Value, i64), GoblinError> {
+        let it = dispatch(BuiltinId::ToForIter, vec![v], session)?;
+        let n = collections::element_count(&it) as i64;
+        Ok((it, n))
+    };
+    match v {
+        Value::Int(n) if n >= 0 => Ok((0, Value::Nil, n)),
+        Value::Int(n) => Err(GoblinError::Runtime(format!("'repeat' count must be >= 0 (got {n})"))),
+        Value::Nil => Ok((3, Value::Nil, i64::MAX)),
+        Value::Bool(_) => Ok((4, Value::Nil, i64::MAX)),
+        Value::Map(_) | Value::MapOrd(_) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
+        Value::Collection(ref c) if collections::is_map_collection(c) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
+        Value::Array(_) | Value::Collection(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
+        other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
+    }
 }

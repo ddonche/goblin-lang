@@ -1,0 +1,20 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// tick(regions) takes a list of region actors (C0123); a region that fails
+/// during the tick makes the tick fail (C0123) instead of waiting forever.
+act bad(st, msg)
+    if :has(msg, "tick")
+        x | 1 / 0
+    xx
+    return st
+xx
+attempt
+    tick([1, 2])
+rescue e
+    say(:has("{e}", "C0123"))
+xx
+r | :actor({"a": 1}, bad)
+attempt
+    tick([r])
+rescue e
+    say(:has("{e}", "C0123: tick-regions: a region failed"))
+xx

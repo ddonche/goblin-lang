@@ -22,13 +22,13 @@ struct FunctionScope {
     /// Maps variable names to local slot indices within this function.
     /// Only the names visible at the current point: a block's locals are
     /// dropped when it closes (the slots are not reused).
-    locals: Vec<(String, u8)>,
+    locals: Vec<(String, u16)>,
     /// Parallel to `locals`.
     local_meta: Vec<LocalMeta>,
     /// `locals.len()` at the start of each open block.
     block_marks: Vec<usize>,
     /// Every local ever declared, for slot names (string interpolation).
-    all_locals: Vec<(String, u8)>,
+    all_locals: Vec<(String, u16)>,
     /// Upvalue captures from enclosing scopes.
     upvalues: Vec<(String, UpvalueDescriptor)>,
     /// Bytecode under construction.
@@ -41,7 +41,9 @@ struct FunctionScope {
     /// Constant pool.
     constants: Vec<Value>,
     /// Total local slots allocated so far.
-    next_slot: u8,
+    next_slot: u16,
+    /// `repeat` loops compiled so far (each gets its own state in the frame).
+    repeat_loops: u16,
     /// How many slots are parameters (always slots 0..params-1).
     params: usize,
     /// Arguments a caller must pass; the rest have defaults.
@@ -76,7 +78,8 @@ impl FunctionScope {
             unused_nil: None,
             op_data: Vec::new(),
             constants: Vec::new(),
-            next_slot: params as u8,
+            next_slot: params as u16,
+            repeat_loops: 0,
             params,
             required_params: params,
             name: name.into(),
@@ -101,7 +104,7 @@ impl FunctionScope {
     }
 
     /// Declare a new local variable in this scope. Returns its slot index.
-    fn declare_local(&mut self, name: &str) -> u8 {
+    fn declare_local(&mut self, name: &str) -> u16 {
         let slot = self.next_slot;
         self.next_slot = self.next_slot.saturating_add(1);
         self.locals.push((name.to_string(), slot));
@@ -113,7 +116,7 @@ impl FunctionScope {
     /// Declare a hoisted local: it has a slot from the start of the function
     /// (so forward references compile), but counts as bound only once its
     /// `x | v` statement is reached.
-    fn declare_hoisted(&mut self, name: &str) -> u8 {
+    fn declare_hoisted(&mut self, name: &str) -> u16 {
         let slot = self.declare_local(name);
         self.local_meta.last_mut().unwrap().bound = false;
         slot
@@ -122,14 +125,14 @@ impl FunctionScope {
     /// Declare parameters (must be called before any other locals).
     fn declare_params(&mut self, names: &[String]) {
         for (i, n) in names.iter().enumerate() {
-            self.locals.push((n.clone(), i as u8));
+            self.locals.push((n.clone(), i as u16));
             self.local_meta.push(LocalMeta { depth: 0, bound: true, imm: false });
-            self.all_locals.push((n.clone(), i as u8));
+            self.all_locals.push((n.clone(), i as u16));
         }
     }
 
     /// The innermost visible local with this name: (index into `locals`, slot).
-    fn find_local_entry(&self, name: &str) -> Option<(usize, u8)> {
+    fn find_local_entry(&self, name: &str) -> Option<(usize, u16)> {
         self.locals.iter().enumerate().rev().find(|(_, (n, _))| n == name).map(|(i, (_, s))| (i, *s))
     }
 
@@ -138,7 +141,7 @@ impl FunctionScope {
     }
 
     /// Stop resolving names to this slot (the slot itself stays allocated).
-    fn hide_local(&mut self, slot: u8) {
+    fn hide_local(&mut self, slot: u16) {
         if let Some(e) = self.locals.iter_mut().rev().find(|(_, s)| *s == slot) {
             e.0 = String::from("\u{0}hidden");
         }
@@ -152,7 +155,7 @@ impl FunctionScope {
     }
 
     /// Look up a local variable by name. Returns its slot, if found.
-    fn find_local(&self, name: &str) -> Option<u8> {
+    fn find_local(&self, name: &str) -> Option<u16> {
         // Search in reverse (innermost binding wins).
         self.locals.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
     }
@@ -225,6 +228,7 @@ impl FunctionScope {
             line_numbers: self.line_numbers,
             local_names,
             owner_glam: None,
+            global_prefix: None,
             source_file,
             global_names,
         }
@@ -326,6 +330,10 @@ pub struct Compiler {
     /// Compiling the base of a `[]`/`{}` read: the outermost read fuses
     /// the whole path into one step.
     in_path: bool,
+    /// Open `attempt`s around the code being compiled (in any action).
+    attempt_depth: usize,
+    /// `x |= f(x)`: the call's argument list and x's slot, for TakeLocal.
+    take_arg: Option<(*const Expr, String, u16)>,
     /// Innermost scope is at the back.
     scopes: Vec<FunctionScope>,
     /// Registered global names (name → global slot index).
@@ -391,7 +399,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -751,20 +759,15 @@ impl Compiler {
         match stmt {
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
-                let sc = self.scope_mut();
-                if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
-                    // `LoadNil; Pop` does nothing: leave both out.
-                    sc.bytecode.pop();
-                    sc.line_numbers.pop();
-                    sc.unused_nil = None;
-                } else {
-                    self.emit(Opcode::Pop); // discard expression result
-                }
+                self.emit_discard();
             }
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
             Stmt::Bind(bind) => {
-                self.compile_expr(&bind.expr)?;
+                self.take_arg = self.take_candidate(bind);
+                let r = self.compile_expr(&bind.expr);
+                self.take_arg = None;
+                r?;
 
                 // If this is a typed bind (alice|Person = {...}), instantiate the class.
                 if let Some(ref cn) = bind.class_name {
@@ -1421,7 +1424,16 @@ impl Compiler {
                 if self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
                     self.emit(load_op);
-                    for arg in args { self.compile_expr(arg)?; }
+                    let take = match self.take_arg.take() {
+                        Some((at, n, slot)) if args.first().map(|a| a as *const Expr) == Some(at) => Some((n, slot)),
+                        _ => None,
+                    };
+                    for arg in args {
+                        match (&take, arg) {
+                            (Some((n, slot)), Expr::Ident(a, _)) if a == n => { self.emit(Opcode::TakeLocal(*slot)); }
+                            _ => self.compile_expr(arg)?,
+                        }
+                    }
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
@@ -1853,7 +1865,9 @@ impl Compiler {
                             self.compile_expr(e)?;
                         } else {
                             self.compile_stmt(s)?;
-                            self.emit(Opcode::LoadNil);
+                            let at = self.emit(Opcode::LoadNil);
+                            // A body whose value is thrown away drops this.
+                            self.scope_mut().unused_nil = Some(at);
                         }
                     } else {
                         self.compile_stmt(s)?;
@@ -2308,6 +2322,66 @@ impl Compiler {
         if st.len() == 1 { st.pop() } else { None }
     }
 
+    /// `x |= f(x, …)` on a local of this action, with f a user action and x
+    /// named once in the whole call, as an argument of its own, outside any
+    /// `attempt` (which could see x after a failed call): the argument list
+    /// and x's slot. The argument is then moved to the call (TakeLocal).
+    fn take_candidate(&self, bind: &goblin_ast::BindStmt) -> Option<(*const Expr, String, u16)> {
+        if !matches!(bind.mode, BindMode::Retether) || bind.class_name.is_some() || bind.lock_type.is_some() { return None; }
+        if self.attempt_depth > 0 || self.scope().pred_fields { return None; }
+        let name = &bind.name.0;
+        let Expr::FreeCall(fname, args, _) = &bind.expr else { return None };
+        let bare = fname.trim_start_matches(':');
+        if !self.user_actions.contains(bare) || bare == name { return None; }
+        let slot = self.scope().find_local(name)?;
+        if self.is_imm_name(name) { return None; }
+        // Any other mention of the name, including inside a string's
+        // `{...}` placeholder, rules the handover out. Matching the bare
+        // word in the debug text errs on the side of not moving.
+        let mentions = |hay: &str| {
+            let word = |c: char| c.is_alphanumeric() || c == '_';
+            hay.match_indices(name.as_str()).any(|(i, _)| {
+                !hay[..i].chars().next_back().map_or(false, word)
+                    && !hay[i + name.len()..].chars().next().map_or(false, word)
+            })
+        };
+        let mut own = 0;
+        for a in args {
+            match a {
+                Expr::Ident(n, _) if n == name => own += 1,
+                other => if mentions(&format!("{other:?}")) { return None; },
+            }
+        }
+        (own == 1).then(|| (args.first().unwrap() as *const Expr, name.clone(), slot))
+    }
+
+    /// Reads in `e` of the same path `check` writes become `QExpr::Target`.
+    fn mark_target(&self, e: crate::opcode::QExpr, check: u16) -> crate::opcode::QExpr {
+        use crate::opcode::{FusedKey, OpData, QExpr};
+        let sc = self.scope();
+        let OpData::Fused(c) = &sc.op_data[check as usize] else { return e };
+        let key_eq = |a: &FusedKey, b: &FusedKey| match (a, b) {
+            (FusedKey::Const(x), FusedKey::Const(y)) => sc.constants[*x as usize] == sc.constants[*y as usize],
+            (FusedKey::Local(x), FusedKey::Local(y)) => x == y,
+            _ => false,
+        };
+        let same = |i: u16| match &sc.op_data[i as usize] {
+            OpData::Fused(r) => r.root == c.root && r.segs.len() == c.segs.len()
+                && r.segs.iter().zip(&c.segs).all(|(a, b)| a.brace == b.brace && key_eq(&a.key, &b.key)),
+            _ => false,
+        };
+        fn walk(e: QExpr, same: &dyn Fn(u16) -> bool) -> QExpr {
+            match e {
+                QExpr::Read(i) if same(i) => QExpr::Target,
+                QExpr::Add(a, b) => QExpr::Add(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                QExpr::Sub(a, b) => QExpr::Sub(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                QExpr::Mul(a, b) => QExpr::Mul(Box::new(walk(*a, same)), Box::new(walk(*b, same))),
+                other => other,
+            }
+        }
+        walk(e, &same)
+    }
+
     fn emit_check_path(&mut self, target: &Expr) -> Result<(), GoblinError> {
         let mut info: Vec<Value> = Vec::new();
         let mut cur = target;
@@ -2395,7 +2469,7 @@ impl Compiler {
         if let Some(ref lock) = lock_type {
             { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
-            self.emit(Opcode::StoreLocal(slot));
+            self.emit(Opcode::BindLocal(slot));
         }
         Ok(())
     }
@@ -2462,7 +2536,7 @@ impl Compiler {
         if let Some(ref lock) = lock_type {
             { let n = self.name_data(lock.clone()); self.emit(Opcode::StoreLockLocal(slot, n)); }
         } else {
-            self.emit(Opcode::StoreLocal(slot));
+            self.emit(Opcode::BindLocal(slot));
         }
         Ok(())
     }
@@ -2490,11 +2564,28 @@ impl Compiler {
         Ok(true)
     }
 
+    /// Throw away the value just computed: `Pop`, or, when that value is
+    /// a `LoadNil` nothing jumps past (see `unused_nil`), leave both out.
+    fn emit_discard(&mut self) {
+        let sc = self.scope_mut();
+        if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
+            sc.bytecode.pop();
+            sc.line_numbers.pop();
+            sc.unused_nil = None;
+        } else {
+            self.emit(Opcode::Pop);
+        }
+    }
+
     fn emit_obj_rebind_guard(&mut self, name: &str) -> Result<(), GoblinError> {
         let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
-        self.emit(load_op);
         let idx = self.add_constant(Value::Str(name.to_string().into()));
-        self.emit(Opcode::GuardObjRebind(idx));
+        if let Opcode::LoadLocal(slot) = load_op {
+            self.emit(Opcode::GuardRebindLocal(slot, idx));
+        } else {
+            self.emit(load_op);
+            self.emit(Opcode::GuardObjRebind(idx));
+        }
         Ok(())
     }
 
@@ -2529,9 +2620,9 @@ impl Compiler {
         self.scope_mut().required_params = required;
         for (i, p) in params.iter().enumerate() {
             let Some(default) = &p.default else { continue };
-            let skip = self.emit(Opcode::JumpIfLocalSet(i as u8, 0));
+            let skip = self.emit(Opcode::JumpIfLocalSet(i as u16, 0));
             self.compile_expr(default)?;
-            self.emit(Opcode::StoreLocal(i as u8));
+            self.emit(Opcode::StoreLocal(i as u16));
             self.scope_mut().patch_jump(skip);
         }
         Ok(())
@@ -2682,7 +2773,7 @@ impl Compiler {
                 // Loop context so `skip`/`stop` in the body target this loop.
                 self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
-                self.emit(Opcode::Pop); // discard body result
+                self.emit_discard();
                 // Jump back to loop start
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
@@ -2723,38 +2814,12 @@ impl Compiler {
                 } else {
                     self.compile_expr(&args[0])?;
                 }
-                // RepeatPrep(n) → [mode, iterable, limit]; mode 0 = count (int),
-                // 1 = items (array/collection), 2 = map (iterable of [k, v]),
-                // 3 = forever (nil), 4 = condition (bool; re-evaluated each pass),
-                // matching the interpreter's `repeat` dispatch.
+                // RepeatStart works out the loop's kind from this value
+                // (see builtins::repeat_plan) and sets up its hidden locals.
                 // Loop variables (it, key, val, idx, `as` names) are scoped to the loop.
                 self.scope_mut().begin_block();
-                self.emit(Opcode::CallBuiltin(BuiltinId::RepeatPrep, 1));
-                let prep_slot = self.scope_mut().declare_local("__repeat_prep__");
-                self.emit(Opcode::StoreLocal(prep_slot));
-                let get = |c: &mut Self, slot: u8, i: i64| {
-                    let k = c.scope_mut().add_constant(Value::Int(i));
-                    c.emit(Opcode::LoadLocal(slot));
-                    c.emit(Opcode::LoadConst(k));
-                    c.emit(Opcode::GetIndex);
-                };
-                let mode_slot = self.scope_mut().declare_local("__repeat_mode__");
-                get(self, prep_slot, 0);
-                self.emit(Opcode::StoreLocal(mode_slot));
-                let iter_slot = self.scope_mut().declare_local("__repeat_iter__");
-                get(self, prep_slot, 1);
-                self.emit(Opcode::StoreLocal(iter_slot));
-                let limit_slot = self.scope_mut().declare_local("__repeat_limit__");
-                get(self, prep_slot, 2);
-                self.emit(Opcode::StoreLocal(limit_slot));
-
-                let zero = self.scope_mut().add_constant(Value::Int(0));
-                let one = self.scope_mut().add_constant(Value::Int(1));
-                let two = self.scope_mut().add_constant(Value::Int(2));
-                let four = self.scope_mut().add_constant(Value::Int(4));
-                self.emit(Opcode::LoadConst(zero));
-                let counter_slot = self.scope_mut().declare_local("__repeat_i__");
-                self.emit(Opcode::StoreLocal(counter_slot));
+                let loop_id = self.scope().repeat_loops;
+                self.scope_mut().repeat_loops += 1;
 
                 let name_arg = |e: Option<&Expr>| match e {
                     Some(Expr::Str(s, _)) | Some(Expr::Ident(s, _)) if !s.is_empty() => Some(s.clone()),
@@ -2772,64 +2837,36 @@ impl Compiler {
                 };
                 let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
+                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                }));
+                // RepeatStart sets the loop up from the value on the stack.
+                self.emit(Opcode::RepeatStart(rep));
 
-                // LOOP START: counter < limit
+                // LOOP START: one RepeatNext per pass. It moves the counter
+                // on, leaves at the limit and binds the names; only a
+                // condition loop runs the test after it.
                 let loop_start = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::LoadLocal(limit_slot));
-                self.emit(Opcode::Lt);
-                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // condition mode: re-evaluate the header expression
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(four));
-                self.emit(Opcode::Eq);
-                let not_cond = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                self.emit(Opcode::RepeatNext(rep));
+                let cond_start = self.scope_mut().bytecode.len();
                 self.compile_expr(&args[0])?;
                 let cond_exit = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.scope_mut().patch_jump(not_cond);
-                // items mode: bind the element
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Eq);
-                let not_items = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(item_slot));
-                self.scope_mut().patch_jump(not_items);
-                // map mode: bind key and value
-                self.emit(Opcode::LoadLocal(mode_slot));
-                self.emit(Opcode::LoadConst(two));
-                self.emit(Opcode::Eq);
-                let not_map = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                for (slot, k) in [(key_slot, zero), (val_slot, one)] {
-                    self.emit(Opcode::LoadLocal(iter_slot));
-                    self.emit(Opcode::LoadLocal(counter_slot));
-                    self.emit(Opcode::GetIndex);
-                    self.emit(Opcode::LoadConst(k));
-                    self.emit(Opcode::GetIndex);
-                    self.emit(Opcode::StoreLocal(slot));
-                }
-                self.scope_mut().patch_jump(not_map);
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::StoreLocal(idx_slot));
+                // A condition loop's idx is set after its test, as before.
+                self.emit(Opcode::RepeatIdx(rep));
+                let cond_len = (self.scope().bytecode.len() - cond_start) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.cond_len = cond_len; }
 
                 self.loop_stack.push(LoopCtx::default());
                 self.compile_expr(&args[1])?;
-                self.emit(Opcode::Pop);
+                self.emit_discard();
                 let increment_ip = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(counter_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Add);
-                self.emit(Opcode::StoreLocal(counter_slot));
                 let cur = self.scope_mut().bytecode.len();
                 let offset = -(((cur - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 let exit_ip = self.scope_mut().bytecode.len();
-                self.scope_mut().patch_jump(exit_jump);
                 self.scope_mut().patch_jump(cond_exit);
+                let exit = (exit_ip - (loop_start + 1)) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.exit = exit; }
                 let ctx = self.loop_stack.pop().unwrap();
                 for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
                 for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
@@ -2854,58 +2891,33 @@ impl Compiler {
                 };
                 // The loop variable is scoped to the loop (D3).
                 self.scope_mut().begin_block();
-                // Compile iterable; coerce maps/strings/nil to sequential array
+                // Compile iterable; coerce maps/strings/nil to sequential array.
+                // Then it runs as a `repeat` over those items: one step per pass.
                 self.compile_expr(&args[1])?;
                 self.emit(Opcode::CallBuiltin(BuiltinId::ToForIter, 1));
-                let iter_slot = self.scope_mut().declare_local("__for_iter__");
-                self.emit(Opcode::StoreLocal(iter_slot));
-                // index = 0
-                let zero = self.scope_mut().add_constant(Value::Int(0));
-                self.emit(Opcode::LoadConst(zero));
-                let idx_slot = self.scope_mut().declare_local("__for_i__");
-                self.emit(Opcode::StoreLocal(idx_slot));
-                // loop variable slot
                 let var_slot = self.scope_mut().declare_local(&var_name);
-                self.emit(Opcode::LoadConst(zero));
-                self.emit(Opcode::StoreLocal(var_slot));
-                // loop_start: idx < count(iter)?
+                let val_slot = self.scope_mut().declare_local("__for_val__");
+                let idx_slot = self.scope_mut().declare_local("__for_i__");
+                let loop_id = self.scope().repeat_loops;
+                self.scope_mut().repeat_loops += 1;
+                let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
+                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                }));
+                self.emit(Opcode::RepeatStart(rep));
                 let loop_start = self.scope_mut().bytecode.len();
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::CallBuiltin(BuiltinId::Count, 1));
-                self.emit(Opcode::Lt);
-                let exit_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
-                // elem = iter[idx]
-                self.emit(Opcode::LoadLocal(iter_slot));
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::GetIndex);
-                self.emit(Opcode::StoreLocal(var_slot));
-                // push loop context for stop/skip
+                self.emit(Opcode::RepeatNext(rep));
                 self.loop_stack.push(LoopCtx::default());
-                // body
                 self.compile_expr(&args[2])?;
-                self.emit(Opcode::Pop);
-                // increment position (skip jumps here)
+                self.emit_discard();
                 let increment_ip = self.scope_mut().bytecode.len();
-                let one = self.scope_mut().add_constant(Value::Int(1));
-                self.emit(Opcode::LoadLocal(idx_slot));
-                self.emit(Opcode::LoadConst(one));
-                self.emit(Opcode::Add);
-                self.emit(Opcode::StoreLocal(idx_slot));
-                // back-jump
-                let cur = self.scope_mut().bytecode.len();
-                let offset = -(((cur - loop_start) as i16) + 1);
+                let offset = -(((increment_ip - loop_start) as i16) + 1);
                 self.emit(Opcode::Jump(offset));
                 let exit_ip = self.scope_mut().bytecode.len();
-                self.scope_mut().patch_jump(exit_jump);
-                // patch stop/skip jumps
+                let exit = (exit_ip - (loop_start + 1)) as u32;
+                if let crate::opcode::OpData::Repeat(r) = &mut self.scope_mut().op_data[rep as usize] { r.exit = exit; }
                 let ctx = self.loop_stack.pop().unwrap();
-                for idx in ctx.break_patches {
-                    self.scope_mut().patch_jump_to(idx, exit_ip);
-                }
-                for idx in ctx.continue_patches {
-                    self.scope_mut().patch_jump_to(idx, increment_ip);
-                }
+                for idx in ctx.break_patches { self.scope_mut().patch_jump_to(idx, exit_ip); }
+                for idx in ctx.continue_patches { self.scope_mut().patch_jump_to(idx, increment_ip); }
                 self.scope_mut().end_block();
                 self.emit(Opcode::LoadNil);
                 Ok(true)
@@ -3009,6 +3021,7 @@ impl Compiler {
                     self.emit(Opcode::LoadNil); // keep the stack shape; never reached
                     return Ok(true);
                 }
+                self.attempt_depth += 1;
                 // Extract first rescue block info if present
                 let first_rescue: Option<(Option<String>, usize)> = if args.len() > 1 {
                     if let Expr::Array(rescue_pairs, _) = &args[1] {
@@ -3106,6 +3119,7 @@ impl Compiler {
 
                 // Result
                 self.emit(Opcode::LoadLocal(result_slot));
+                self.attempt_depth -= 1;
                 Ok(true)
             }
 
@@ -3185,7 +3199,7 @@ impl Compiler {
                         };
                         let value_at = self.scope().bytecode.len();
                         self.compile_expr(&args[1])?;
-                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, e)));
+                        let quick = fused.and_then(|check| self.quick_expr(value_at).map(|e| (check, self.mark_target(e, check))));
                         self.emit(match fused {
                             Some(i) => Opcode::UpdatePathHint(segs.len() as u8, i),
                             None => Opcode::UpdatePathMut(segs.len() as u8, mask),

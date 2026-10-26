@@ -1,0 +1,32 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An actor holds only the objects handed to it and the ones it makes: the
+/// starting program's other objects do not come along as copies, so a
+/// region's tick never runs them. Reading one there is an error (C0122).
+<>Person |
+    health: .9
+xx
+bob <> Person | health: .8
+ann <> Person | health: .7
+act make(h)
+    p <> Person | health: h
+    return p
+xx
+act region(st, msg)
+    if msg == "count"
+        c <> Person | health: .5
+        say(:len(:objects(it >> health > 0)))
+    elif msg == "bob"
+        attempt
+            h | bob >> health
+            say(h)
+        rescue e
+            say(:has("{e}", "C0122: actor-not-owned: `bob` belongs to the program that started this actor"))
+        xx
+    xx
+    return st
+xx
+r | :actor({"people": [make(.3), make(.4)]}, region)
+:post(r, "count")
+:post(r, "bob")
+:halt(r)
+say(:len(:objects(it >> health > 0)))

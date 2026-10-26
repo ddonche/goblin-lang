@@ -954,7 +954,13 @@ impl Vm {
             // `named_values` registers a declared object under its own
             // variable's name; that entry goes with the object.
             for op in &self.stack { if let Operand::Val(x) = op { count_refs(x, &graph, &mut n); } }
-            let allowed = if from_var { 1 } else { 0 };
+            // The variable handed over holds the state itself: every
+            // reference inside the state is that one holder, not another.
+            let allowed = if from_var {
+                let mut own = 0usize;
+                count_refs(&state, &graph, &mut own);
+                own
+            } else { 0 };
             if n > allowed {
                 return Err(err(
                     "C0113: actor-shared-state: this object is also held somewhere else (another variable, a collection or another object), so it cannot be handed to an actor; drop the other reference first, or hand over a copy made with :freeze"));
@@ -968,10 +974,10 @@ impl Vm {
         }
 
         let converted = (|| {
-            let mut tp = ToPortable::new(&self.session).sharing_values();
+            let mut tp = ToPortable::new(&self.session).sharing_values().only_objects(graph.clone());
             let mut roots = vec![&state, &handler];
             if let Some(f) = &policy.stop_when { roots.push(f); }
-            let image = crate::swarm::image_of(&self.session, &mut tp, Some(&roots))?;
+            let image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
@@ -1019,6 +1025,14 @@ impl Vm {
                 let mut k = 0; count_refs(v, &graph, &mut k); k == 0
             });
         }
+        // Their overlays went with them.
+        if !graph.is_empty() {
+            self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
+            if !self.session.link_offsets.is_empty() {
+                let names = crate::des_image::handed_names(&self.session, &graph);
+                self.session.link_offsets.retain(|(from, to, _), _| !names.contains(from) && !names.contains(to));
+            }
+        }
         for u in &graph {
             self.session.object_store.shift_remove(u.as_str());
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
@@ -1047,6 +1061,11 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
 
 /// The error for reading an object that is gone.
 pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
+    if let Some(var) = session.kept_home.get(uuid) {
+        let what = if var == "this object" { var.clone() } else { format!("`{var}`") };
+        return err(format!(
+            "C0122: actor-not-owned: {what} belongs to the program that started this actor; an actor only has the objects handed to it in its state. Hand it over in the state, or send the actor what it needs in a message"));
+    }
     match session.handed_off.get(uuid) {
         Some(var) if var == "this object" => err(
             "C0115: actor-handed-off: this object was handed to an actor and can no longer be used here"),
@@ -1058,6 +1077,8 @@ pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
 
 /// Objects inside the actor's session live in its object store, as they do
 /// after `StoreLocal`, so field writes find them.
+pub(crate) fn adopt_value(v: Value, s: &mut Session) -> Value { adopt(v, s) }
+
 fn adopt(v: Value, s: &mut Session) -> Value {
     match v {
         Value::Object(mut o) => {
@@ -1232,7 +1253,11 @@ fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&P
     vm.session.rng_state = seed | 1;
     let handler = fp.value(handler, &mut vm.session);
     let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
+    // Every object in the state, however deep, lives in the actor's object
+    // store, so its ticks and field writes reach it.
+    fp.adopting(true);
     let first = fp.value(state, &mut vm.session);
+    fp.adopting(false);
     let state = adopt(first, &mut vm.session);
     (vm, handler, stop_when, state)
 }
@@ -1313,6 +1338,30 @@ impl Slot {
                         return false;
                     }
                     let (p_msg, reply) = match msg { Msg::Post(p) => (p, None), Msg::Request(p, r) => (p, Some(r)) };
+                    // One tick of a world this actor is a region of.
+                    if let PValue::World(job) = &p_msg {
+                        let mut state = std::mem::replace(&mut self.state, Value::Nil);
+                        let handler = self.handler.clone();
+                        let r = crate::world::region_tick(&mut self.vm, &mut state, &handler, job);
+                        self.state = state;
+                        let reply = reply.expect("a world tick is a request");
+                        match r {
+                            Ok(()) => {
+                                reply.set(Ok(Arc::new(PValue::Nil)));
+                                // The tick was a message: stop_when applies after it.
+                                if !job.prime {
+                                    let next = std::mem::replace(&mut self.state, Value::Nil);
+                                    if !self.finish_message(next, None) { return false; }
+                                }
+                            }
+                            Err(e) => {
+                                // The region failed: the tick fails, and so does the actor.
+                                reply.set(Err(format!("C0123: tick-regions: a region failed during tick: {e}")));
+                                if self.fail(e.to_string()) { continue; } else { return false; }
+                            }
+                        }
+                        continue;
+                    }
                     // Converted afresh per message, so nothing from old messages is kept.
                     let message = {
                         let m = snapshot(&p_msg, &mut self.vm.session);
@@ -1321,7 +1370,13 @@ impl Slot {
                     drop(p_msg);
                     let base = self.vm.call_stack.len();
                     self.current = Some(Current { reply, base, wait: None });
-                    let step = self.vm.start_actor_call(self.handler.clone(), vec![self.state.clone(), message]);
+                    // The state is handed to the handler, not copied: the
+                    // handler's result replaces it, and if the handler fails
+                    // the actor restarts from its starting state or ends.
+                    // A copy kept here would make every in-place change the
+                    // handler makes copy the state first.
+                    let state = std::mem::replace(&mut self.state, Value::Nil);
+                    let step = self.vm.start_actor_call(self.handler.clone(), vec![state, message]);
                     match self.after_step(step) {
                         Some(true) => continue,
                         Some(false) => return true,
@@ -1540,7 +1595,7 @@ impl Slot {
 /// new ids: they are independent copies, so they must never be mistaken for
 /// the originals (the ones handed over, say). References inside the copy
 /// keep pointing at each other.
-fn snapshot(p: &PValue, session: &mut Session) -> Value {
+pub(crate) fn snapshot(p: &PValue, session: &mut Session) -> Value {
     fn walk(p: &mut PValue, ids: &mut std::collections::HashMap<String, String>) {
         use crate::portable::PLayout as L;
         match p {
@@ -1548,7 +1603,7 @@ fn snapshot(p: &PValue, session: &mut Session) -> Value {
                 let new = ids.entry(uuid.clone()).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone();
                 *uuid = new.clone();
                 for (k, v) in fields.iter_mut() {
-                    if k == "uuid" { *v = PValue::Str(new.clone()); } else { walk(v, ids); }
+                    if k == "uuid" { *v = PValue::Str(new.as_str().into()); } else { walk(v, ids); }
                 }
             }
             PValue::Formatted(v, _) | PValue::CtrlReturn(v) => walk(v, ids),
@@ -1713,6 +1768,14 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
     match h {
         Handle::Actor(a) => {
             let p = ToPortable::new(session).value(msg)?;
+            // From one region to another during a world tick: delivered at
+            // the start of the next tick, in a fixed order.
+            if let Some(c) = session.region.as_mut() {
+                if c.regions.contains(&a.id) {
+                    c.sent.push((crate::world::Dest::Actor(a.id), crate::world::Item::Post(p)));
+                    return Ok(PostStep::Done(Value::Bool(true)));
+                }
+            }
             match a.mailbox.try_push(Msg::Post(p)) {
                 Push::Done => Ok(PostStep::Done(Value::Bool(true))),
                 Push::Full(_) => Err(err(format!(
@@ -1737,6 +1800,36 @@ pub fn post(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinErro
         PostStep::Done(v) => Ok(v),
         PostStep::Wait(w) => wait_here(w, session),
     }
+}
+
+/// The actor a value is, if it is an actor handle.
+pub(crate) fn actor_of(v: &Value) -> Option<Arc<ActorShared>> {
+    match v { Value::Handle(Handle::Actor(a)) => Some(a.clone()), _ => None }
+}
+
+pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
+
+/// Sends a region its part of one world tick (`tick(regions)`).
+pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
+    let reply = Arc::new(Reply {
+        id: next_id(),
+        slot: Mutex::new(ReplySlot { answer: None, waiters: Vec::new() }),
+        actor: a.id,
+    });
+    if current_actor_id() == a.id {
+        return Err(err("C0119: actor-self-wait: a region cannot tick a world it is part of; it would wait forever"));
+    }
+    match a.mailbox.try_push(Msg::Request(PValue::World(job), reply.clone())) {
+        Push::Done => Ok(reply),
+        Push::Full(_) => Err(err(format!(
+            "C0114: actor-mailbox-full: the region's mailbox is full ({} messages); it is not keeping up", a.mailbox.cap))),
+        Push::Closed(_) => Err(a.stopped_error()),
+    }
+}
+
+/// Waits until a region has finished its tick.
+pub(crate) fn wait_reply(r: Arc<Reply>, session: &mut Session) -> Result<(), GoblinError> {
+    wait_here(Wait::Future(r), session).map(|_| ())
 }
 
 /// `:request(handle, message)`: post, and get a future for the answer.

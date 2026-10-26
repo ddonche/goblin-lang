@@ -1,0 +1,5 @@
+/// A class method from an imported module reads that module's variable,
+/// not a variable of the importing program.
+import _support/modules/method_lim as ml
+g | ml::make_gauge(5)
+say(ml::run_check(g))

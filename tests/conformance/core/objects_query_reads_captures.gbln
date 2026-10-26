@@ -1,0 +1,20 @@
+/// :objects(pred) with a predicate that reads a captured variable, a
+/// global, and a field only some objects have: objects without the field
+/// do not match, as before.
+<>A |
+    x: 1
+    act same()
+        return :len(:objects(it >> x == self >> x))
+    xx
+xx
+<>B |
+    y: 2
+xx
+lim | 1
+a <> A | x: 1
+a2 <> A | x: 3
+b <> B | y: 2
+say(:len(:objects(it >> x >= lim)))
+say(:len(:objects(it >> y == 2)))
+say(a.same())
+say(a2.same())

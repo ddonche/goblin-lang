@@ -43,6 +43,18 @@ pub struct CallFrame {
     /// If this is a method call, the tether for `self` in the caller's frame.
     /// On return, if the result is an Object with same uuid, overwrite this tether.
     pub self_tether: Option<Tether>,
+    /// State of this call's `repeat` loops, by loop number (grown on use).
+    pub loops: Vec<LoopState>,
+}
+
+/// One running `repeat`: its kind (see builtins::repeat_plan), what it
+/// runs over, where it stops and the pass it is on.
+#[derive(Clone)]
+pub struct LoopState {
+    pub mode: i64,
+    pub iter: Value,
+    pub limit: i64,
+    pub counter: i64,
 }
 
 impl CallFrame {
@@ -50,13 +62,14 @@ impl CallFrame {
         let n = func.locals;
         CallFrame {
             locals: vec![None; n],
-            type_locks: vec![None; n],
-            hard_type_locks: vec![None; n],
-            upvalues, ip: 0, func, stack_base, self_tether: None,
+            // Grown on first use: most calls lock nothing.
+            type_locks: Vec::new(),
+            hard_type_locks: Vec::new(),
+            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(),
         }
     }
 
-    fn load_local(&self, slot: u8) -> Result<Tether, GoblinError> {
+    fn load_local(&self, slot: u16) -> Result<Tether, GoblinError> {
         match self.locals.get(slot as usize) {
             Some(Some(t)) => Ok(t.clone()),
             Some(None) => Err(GoblinError::Runtime(
@@ -68,7 +81,7 @@ impl CallFrame {
         }
     }
 
-    fn store_local(&mut self, slot: u8, t: Tether, _session: &mut crate::session::Session) {
+    fn store_local(&mut self, slot: u16, t: Tether, _session: &mut crate::session::Session) {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
@@ -78,21 +91,21 @@ impl CallFrame {
         self.locals[idx] = Some(t);
     }
 
-    fn get_type_lock(&self, slot: u8) -> Option<&str> {
+    fn get_type_lock(&self, slot: u16) -> Option<&str> {
         self.type_locks.get(slot as usize).and_then(|o| o.as_deref())
     }
 
-    fn get_hard_type_lock(&self, slot: u8) -> Option<&str> {
+    fn get_hard_type_lock(&self, slot: u16) -> Option<&str> {
         self.hard_type_locks.get(slot as usize).and_then(|o| o.as_deref())
     }
 
-    fn set_type_lock(&mut self, slot: u8, lock: String) {
+    fn set_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
         if idx >= self.type_locks.len() { self.type_locks.resize(idx + 1, None); }
         self.type_locks[idx] = Some(lock);
     }
 
-    fn set_hard_type_lock(&mut self, slot: u8, lock: String) {
+    fn set_hard_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
         if idx >= self.hard_type_locks.len() { self.hard_type_locks.resize(idx + 1, None); }
         self.hard_type_locks[idx] = Some(lock);
@@ -133,6 +146,9 @@ pub struct Vm {
     scratch: Vec<Operand>,
     /// Reused buffer for the resolved keys of an in-place path write.
     key_buf: Vec<Value>,
+    num_buf: Vec<Value>,
+    /// The error a step done in the run loop raised (`Step::Failed`).
+    step_err: Option<GoblinError>,
     /// DES formulas already compiled, by parameter names and expression, so
     /// a formula evaluated every tick is compiled once.
     /// Compiled DES formulas, with whether `run_formula` can run each one.
@@ -151,7 +167,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), tick_exprs: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -201,33 +217,26 @@ impl Vm {
     // ── Internal execution loop ──────────────────────────────────────────────
 
     fn run_loop(&mut self) -> Result<(), GoblinError> {
+        let mut steps = 0u32;
         loop {
             // Mark-sweep GC once the arena has doubled since the last one.
             if self.session.gc_due() { self.vm_gc(); }
 
-            // Fetch next opcode (avoid holding a mutable borrow across the match).
-            let op = {
-                let frame = match self.call_stack.last_mut() {
-                    Some(f) => f,
-                    None => break, // all frames returned
-                };
-                if frame.ip >= frame.func.bytecode.len() {
-                    // Implicit return Nil at end of bytecode.
-                    let stack_base = frame.stack_base;
-                    self.call_stack.pop();
-                    self.stack.truncate(stack_base);
-                    self.stack.push(Operand::Val(Value::Nil));
-                    if self.call_stack.is_empty() {
-                        break;
-                    }
-                    continue;
+            let Some(frame) = self.call_stack.last() else { break }; // all frames returned
+            if frame.ip >= frame.func.bytecode.len() {
+                // Implicit return Nil at end of bytecode.
+                let stack_base = frame.stack_base;
+                self.call_stack.pop();
+                self.stack.truncate(stack_base);
+                self.stack.push(Operand::Val(Value::Nil));
+                if self.call_stack.is_empty() {
+                    break;
                 }
-                let op = frame.func.bytecode[frame.ip];
-                frame.ip += 1;
-                op
-            };
-
-            match self.execute_op(op) {
+                continue;
+            }
+            let Some((step, op)) = self.run_fast(&mut steps) else { continue };
+            let r = if step == Step::Failed { Err(self.step_err.take().unwrap()) } else { self.execute_op(op) };
+            match r {
                 Ok(()) => {}
                 Err(e) => {
                     let e = match self.catch_error(e, 0) { Ok(()) => continue, Err(e) => e };
@@ -268,6 +277,183 @@ impl Vm {
         }
     }
 
+    /// Runs steps from the current frame while the fast way does them,
+    /// counting each one down in `left`. Returns a step that needs
+    /// `execute_op` (Slow) or failed, with its op; None at the end of the
+    /// frame's code, or when `left` reaches a multiple of 64, so the run
+    /// loop still collects garbage and yields on time.
+    #[inline(always)]
+    fn run_fast(&mut self, left: &mut u32) -> Option<(Step, Opcode)> {
+        loop {
+            let frame = self.call_stack.last_mut().unwrap();
+            let Some(&op) = frame.func.bytecode.get(frame.ip) else { return None };
+            frame.ip += 1;
+            *left = left.wrapping_sub(1);
+            match self.fast_step(op) {
+                Step::Done => if *left % 64 == 0 { return None },
+                step => return Some((step, op)),
+            }
+        }
+    }
+
+    /// Pops an operand known to be a plain number, bool, nil or reference,
+    /// which has nothing to free.
+    #[inline(always)]
+    fn pop_plain(&mut self) {
+        if let Some(op) = self.stack.pop() { std::mem::forget(op); }
+    }
+
+    /// Replaces the top operand, known to be plain (see `pop_plain`).
+    #[inline(always)]
+    fn set_top_plain(&mut self, v: Value) {
+        let top = self.stack.last_mut().unwrap();
+        std::mem::forget(std::mem::replace(top, Operand::Val(v)));
+    }
+
+    /// The common steps, done right in the run loops: Done when done
+    /// (exactly as `execute_op` would do it; Failed with the error in
+    /// `step_err`), Slow to run `execute_op`.
+    /// Keeps these steps out of `execute_op`, whose size makes every call
+    /// to it cost more than most of these steps themselves.
+    #[inline(always)]
+    fn fast_step(&mut self, op: Opcode) -> Step {
+        macro_rules! done { ($r:expr) => { match $r { Ok(_) => Step::Done, Err(e) => { self.step_err = Some(e); Step::Failed } } } }
+        match op {
+            Opcode::LoadConst(idx) => {
+                let v = self.call_stack.last().unwrap().func.constants[idx as usize].clone_fast();
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::LoadNil => self.stack.push(Operand::Val(Value::Nil)),
+            Opcode::LoadTrue => self.stack.push(Operand::Val(Value::Bool(true))),
+            Opcode::LoadFalse => self.stack.push(Operand::Val(Value::Bool(false))),
+            Opcode::LoadLocal(slot) => {
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
+            Opcode::LoadGlobal(idx) => {
+                let Some(t) = self.session.get_global(idx as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
+            Opcode::StoreLocal(slot) => return done!(self.store_local_op(slot, true)),
+            Opcode::BindLocal(slot) => return done!(self.store_local_op(slot, false)),
+            Opcode::Pop => {
+                // A reference that can't be read (handed to an actor) errors the slow way.
+                match self.stack.last() {
+                    Some(Operand::Ref(t)) if self.session.check_readable(t).is_err() => return Step::Slow,
+                    None => return Step::Slow,
+                    _ => match self.stack.pop() {
+                        Some(op @ (Operand::Ref(_) | Operand::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil))) => std::mem::forget(op),
+                        op => drop(op),
+                    },
+                }
+            }
+            Opcode::Jump(offset) => {
+                let frame = self.call_stack.last_mut().unwrap();
+                frame.ip = (frame.ip as isize + offset as isize) as usize;
+            }
+            Opcode::JumpIfFalse(offset) | Opcode::JumpIfTrue(offset) => {
+                let Some(Operand::Val(Value::Bool(c))) = self.stack.last() else { return Step::Slow };
+                let jump = *c == matches!(op, Opcode::JumpIfTrue(_));
+                self.pop_plain();
+                if jump {
+                    let frame = self.call_stack.last_mut().unwrap();
+                    frame.ip = (frame.ip as isize + offset as isize) as usize;
+                }
+            }
+            Opcode::Not => {
+                let Some(Operand::Val(Value::Bool(c))) = self.stack.last_mut() else { return Step::Slow };
+                *c = !*c;
+            }
+            Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
+                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let r = match op {
+                    Opcode::Add => Value::Int(a.wrapping_add(b)),
+                    Opcode::Sub => match a.checked_sub(b) { Some(r) => Value::Int(r), None => return Step::Slow },
+                    Opcode::Lt => Value::Bool(a < b),
+                    Opcode::Le => Value::Bool(a <= b),
+                    Opcode::Gt => Value::Bool(a > b),
+                    Opcode::Ge => Value::Bool(a >= b),
+                    Opcode::Eq => Value::Bool(a == b),
+                    _ => Value::Bool(a != b),
+                };
+                self.pop_plain();
+                self.set_top_plain(r);
+            }
+            Opcode::Mul | Opcode::MulInt | Opcode::Rem | Opcode::Div => {
+                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let r = match op {
+                    Opcode::Mul => match a.checked_mul(b) { Some(r) => Value::Int(r), None => return Step::Slow },
+                    Opcode::MulInt => Value::Int(a.wrapping_mul(b)),
+                    Opcode::Rem => match a.checked_rem(b) {
+                        Some(r) => Value::Int(if r != 0 && (r < 0) != (b < 0) { r + b } else { r }),
+                        None => return Step::Slow,
+                    },
+                    _ => match num_div(&Value::Int(a), &Value::Int(b)) {
+                        Ok(r) => r,
+                        Err(_) => return Step::Slow,
+                    },
+                };
+                self.pop_plain();
+                self.set_top_plain(r);
+            }
+            Opcode::Neg => {
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let Some(n) = self.operand_int(top).and_then(i64::checked_neg) else { return Step::Slow };
+                self.set_top_plain(Value::Int(n));
+            }
+            Opcode::Dup => {
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let top = top.clone();
+                self.stack.push(top);
+            }
+            Opcode::GuardRebindLocal(slot, _) => {
+                // Only an object can't be rebound; a plain local passes.
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
+                if matches!(stash.value, Value::Object(_) | Value::Ref(_) | Value::Frozen(_)) { return Step::Slow; }
+                if self.stack.is_empty() { return Step::Slow; }
+            }
+            Opcode::AppendLocal(slot) => {
+                // `x += n` on ints: the sum `op_add` would push.
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
+                let Value::Int(a) = stash.value else { return Step::Slow };
+                let Some(top) = self.stack.last() else { return Step::Slow };
+                let Some(b) = self.operand_int(top) else { return Step::Slow };
+                self.set_top_plain(Value::Int(a.wrapping_add(b)));
+            }
+            Opcode::RepeatNext(idx) => return done!(self.repeat_next(idx)),
+            Opcode::QuickSet(idx) => match self.quick_set(idx) {
+                Ok(Some(skip)) => self.call_stack.last_mut().unwrap().ip += skip as usize,
+                Ok(None) => {}
+                Err(e) => { self.step_err = Some(e); return Step::Failed; }
+            },
+            Opcode::Fused(idx) => return match self.fused_quick(idx) {
+                Ok(true) => Step::Done,
+                Ok(false) => done!(self.fused_steps(idx)),
+                Err(e) => { self.step_err = Some(e); Step::Failed }
+            },
+            _ => return Step::Slow,
+        }
+        Step::Done
+    }
+
+    /// A fused step the quick way didn't take: its original steps, in order.
+    fn fused_steps(&mut self, idx: u16) -> Result<(), GoblinError> {
+        let mut j = 0;
+        loop {
+            let op = match &self.call_stack.last().unwrap().func.op_data[idx as usize] {
+                crate::opcode::OpData::Fused(f) => match f.ops.get(j) { Some(op) => *op, None => break },
+                _ => unreachable!("Fused without its data"),
+            };
+            self.execute_op(op)?;
+            j += 1;
+        }
+        Ok(())
+    }
+
     fn execute_op(&mut self, op: Opcode) -> Result<(), GoblinError> {
         match op {
             // ── Literals ────────────────────────────────────────────────────
@@ -297,35 +483,23 @@ impl Vm {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 self.stack.push(Operand::Ref(t));
             }
-            Opcode::StoreLocal(slot) => {
-                // Storing a variable's own stash back into it (after an
-                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
-                if let Some(Operand::Ref(t)) = self.stack.last() {
-                    let frame = self.call_stack.last().unwrap();
-                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
-                        && frame.get_hard_type_lock(slot).is_none() {
-                        self.stack.pop();
+            Opcode::TakeLocal(slot) => {
+                let frame = self.call_stack.last().unwrap();
+                let t = frame.load_local(slot)?;
+                if frame.get_hard_type_lock(slot).is_none()
+                    && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) {
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if stash.tether_count == 1
+                        && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_) | Value::Object(_)) {
+                        let v = std::mem::replace(&mut stash.value, Value::Nil);
+                        self.stack.push(Operand::Val(v));
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop_raw()?;
-                // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
-                let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
-                    crate::builtins::cast_value_to_lock(val, &lock)?
-                } else {
-                    val
-                };
-                // Mirror interpreter: store Object in object_store, put Ref in slot.
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
-                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
-                } else {
-                    self.session.alloc_value(val)
-                };
-                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
+                self.stack.push(Operand::Ref(t));
             }
+            Opcode::StoreLocal(slot) => return self.store_local_op(slot, true),
+            Opcode::BindLocal(slot) => return self.store_local_op(slot, false),
 
             // Collect-loop fast path: append element to array in locals[slot]
             // without a full Vec clone when we have sole ownership.
@@ -398,8 +572,7 @@ impl Vm {
                 } else {
                     val
                 };
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -414,8 +587,7 @@ impl Vm {
                 let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = if let Value::Object(ref o) = cast {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -432,8 +604,7 @@ impl Vm {
                 let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = if let Value::Object(ref o) = cast {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -583,22 +754,30 @@ impl Vm {
                 self.stack.push(Operand::Ref(t));
             }
             Opcode::StoreUpvalue(idx) => {
+                // The variable belongs to the enclosing action too: change
+                // the value both hold.
                 let val = self.stack_pop_raw()?;
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
-                    self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
-                } else {
-                    self.session.alloc_value(val)
-                };
-                self.call_stack.last_mut().unwrap()
+                let cell = self.call_stack.last().unwrap()
                     .upvalues.get(idx as usize)
-                    .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?
-                    .set(t);
+                    .ok_or_else(|| GoblinError::Runtime(format!("upvalue {idx} out of range")))?;
+                let (t, lock) = (cell.get(), cell.1.clone());
+                let val = match lock {
+                    Some(lock) => crate::builtins::cast_value_to_lock(val, &lock)?,
+                    None => val,
+                };
+                self.write_shared(&t, val)?;
             }
 
             // ── Stack ────────────────────────────────────────────────────────
-            Opcode::Pop => { self.stack_pop()?; }
+            Opcode::Pop => {
+                // Nothing uses the value, so don't copy it; reading a name
+                // still fails where a read would (a value handed to an actor).
+                match self.stack.pop() {
+                    Some(Operand::Ref(t)) => self.session.check_readable(&t)?,
+                    Some(_) => {}
+                    None => return Err(GoblinError::Runtime("stack underflow".into())),
+                }
+            }
             Opcode::Dup => {
                 // Clone the Operand (cheap for Ref — just 8 bytes; no stash access).
                 let op = self.stack.last()
@@ -958,6 +1137,15 @@ impl Vm {
                 }
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_map(pairs)))));
             }
+            Opcode::RepeatNext(idx) => return self.repeat_next(idx),
+            Opcode::RepeatStart(idx) => return self.repeat_start(idx),
+            Opcode::RepeatIdx(idx) => {
+                let frame = self.call_stack.last().unwrap();
+                let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatIdx without its data") };
+                let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
+                self.stack.push(Operand::Val(Value::Int(n)));
+                return self.store_local_op(slot, false);
+            }
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
                     self.call_stack.last_mut().unwrap().ip += skip as usize;
@@ -966,15 +1154,7 @@ impl Vm {
             Opcode::Fused(idx) => {
                 if self.fused_quick(idx)? { return Ok(()); }
                 // The quick way didn't apply: run the original steps.
-                let mut j = 0;
-                loop {
-                    let op = match &self.call_stack.last().unwrap().func.op_data[idx as usize] {
-                        crate::opcode::OpData::Fused(f) => match f.ops.get(j) { Some(op) => *op, None => break },
-                        _ => unreachable!("Fused without its data"),
-                    };
-                    self.execute_op(op)?;
-                    j += 1;
-                }
+                return self.fused_steps(idx);
             }
             Opcode::GetIndex => {
                 let key = self.pop_value()?;
@@ -1002,18 +1182,27 @@ impl Vm {
                 let result = crate::collections::get_index(&coll_val, &key)?;
                 self.stack.push(Operand::Val(result));
             }
+            Opcode::GuardRebindLocal(slot, name_idx) => {
+                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let Some(new) = self.stack.last() else {
+                    return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into()));
+                };
+                if self.operand_is_obj(&Operand::Ref(t))? && !self.operand_is_obj(new)? {
+                    let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new().into(),
+                    };
+                    return Err(GoblinError::Runtime(format!(
+                        "R1300: '{name}' is an object and cannot be rebound to a non-object value")));
+                }
+            }
             Opcode::GuardObjRebind(name_idx) => {
-                let old = self.stack_pop()?;
-                let new = match self.stack.last() {
-                    Some(op) => self.resolve_op(op.clone())?,
-                    None => return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into())),
+                // Looks at both values where they are, copying neither.
+                let old = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow on GuardObjRebind".into()))?;
+                let Some(new) = self.stack.last() else {
+                    return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into()));
                 };
-                let is_obj = |v: &Value| match v {
-                    Value::Object(_) => true,
-                    Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()),
-                    _ => false,
-                };
-                if is_obj(&old) && !is_obj(&new) {
+                if self.operand_is_obj(&old)? && !self.operand_is_obj(new)? {
                     let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
                         Some(Value::Str(s)) => s.clone(),
                         _ => String::new().into(),
@@ -1150,6 +1339,7 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
+                crate::world::check_view_write(&self.session, &uuid)?;
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object(ref mut o) = obj {
@@ -1453,7 +1643,22 @@ impl Vm {
                 // Resolve to Value now — callee's frame is about to be popped, after
                 // which its locals are removed from the GC live set. Resolving here
                 // ensures we own the Value before the stash could theoretically be swept.
-                let ret_val = self.resolve_op(ret_op)?;
+                // A local of this call that only it holds is moved out, not
+                // copied: nothing can read it once the frame is gone, and a
+                // copy left behind would make the caller's next in-place
+                // change copy the whole value.
+                let ret_val = match ret_op {
+                    Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
+                        && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
+                        let stash = self.session.resolve_mut(t.addr)?;
+                        if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
+                            std::mem::replace(&mut stash.value, Value::Nil)
+                        } else {
+                            self.resolve_op(Operand::Ref(t))?
+                        }
+                    }
+                    other => self.resolve_op(other)?,
+                };
 
                 let frame = self.call_stack.pop().unwrap();
                 let _ = frame.self_tether;
@@ -1673,6 +1878,13 @@ impl Vm {
                     BuiltinId::CloneObject => {
                         let result = self.vm_clone_object(arg_vals)?;
                         self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Tick if arg_vals.len() == 1 => {
+                        // tick(regions): one tick of every region together.
+                        let list = arg_vals.into_iter().next().unwrap();
+                        let n = crate::world::tick_regions(self, list)?;
+                        self.stack.push(Operand::Val(n));
                         return Ok(());
                     }
                     BuiltinId::Tick => {
@@ -1954,24 +2166,25 @@ impl Vm {
                 let descriptors = func_rc.upvalue_descriptors.clone();
                 let mut upvalues = Vec::with_capacity(descriptors.len());
                 for desc in &descriptors {
-                    let tether = match desc {
+                    let (tether, lock) = match desc {
                         UpvalueDescriptor::Local(slot) => {
-                            self.call_stack.last().unwrap().load_local(*slot)?
+                            let frame = self.call_stack.last().unwrap();
+                            (frame.load_local(*slot)?, frame.get_hard_type_lock(*slot).map(Rc::from))
                         }
                         UpvalueDescriptor::Upvalue(uv_idx) => {
-                            self.call_stack.last().unwrap()
+                            let cell = self.call_stack.last().unwrap()
                                 .upvalues.get(*uv_idx as usize)
                                 .ok_or_else(|| GoblinError::Runtime(
                                     format!("upvalue forward {uv_idx} out of range")
-                                ))?
-                                .get()
+                                ))?;
+                            (cell.get(), cell.1.clone())
                         }
                     };
                     // A captured stash has a second holder, so it is never
                     // changed in place (see sole_ref_target).
                     self.session.inc_tether(&tether)?;
                     self.session.has_cells = true;
-                    upvalues.push(UpvalueCell::new(tether));
+                    upvalues.push(UpvalueCell::with_lock(tether, lock));
                 }
 
                 let closure = Closure { func: func_rc, upvalues };
@@ -2529,15 +2742,34 @@ impl Vm {
                 };
                 let self_tether = self.call_stack.last()
                     .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
-                let result = if let Some(t) = self_tether {
-                    match self.session.read_value(&t)? {
-                        Value::Object(ref o) => {
-                            o.fields.get(field_name.as_str()).cloned().unwrap_or(Value::Nil)
-                        }
-                        _ => Value::Nil,
+                // A name in a method that is not a local: the object's field
+                // if it has one, else the program's variable of that name
+                // (as the interpreter reads it), else nil.
+                let field = match self_tether {
+                    Some(t) => match self.session.read_value(&t)? {
+                        Value::Object(ref o) => o.fields.get(field_name.as_str()).cloned(),
+                        Value::Ref(ref u) => match self.session.object_store.get(u.as_str()) {
+                            Some(Value::Object(o)) => o.fields.get(field_name.as_str()).cloned(),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    None => None,
+                };
+                // A method from an imported module reads that module's
+                // variable first, as the interpreter does.
+                let result = match field {
+                    Some(v) => v,
+                    None => {
+                        let qualified = self.call_stack.last()
+                            .and_then(|f| f.func.global_prefix.as_ref().map(|p| format!("{p}{field_name}")));
+                        let names = &self.session.global_names;
+                        qualified.and_then(|q| names.iter().position(|n| *n == q))
+                            .or_else(|| names.iter().position(|n| n.as_str() == field_name.as_str()))
+                            .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+                            .and_then(|t| self.session.read_value(&t).ok())
+                            .unwrap_or(Value::Nil)
                     }
-                } else {
-                    Value::Nil
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -2696,8 +2928,12 @@ impl Vm {
         }
         // 3. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
+        //    A class method from an imported module looks in that module first.
         let global_tether = self.call_stack.last()
-            .and_then(|frame| frame.func.global_names().iter().position(|n| n == name))
+            .and_then(|frame| frame.func.global_prefix.as_ref().map(|p| format!("{p}{name}")))
+            .and_then(|q| self.session.global_names.iter().position(|n| *n == q))
+            .or_else(|| self.call_stack.last()
+                .and_then(|frame| frame.func.global_names().iter().position(|n| n == name)))
             .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
             .or_else(|| {
                 self.session.global_names.iter().position(|n| n == name)
@@ -2798,6 +3034,8 @@ impl Vm {
             for t in frame.locals.iter().flatten() { m.slot(t.addr.slot); }
             if let Some(t) = &frame.self_tether { m.slot(t.addr.slot); }
             for cell in &frame.upvalues { m.slot(cell.0.borrow().addr.slot); }
+            // What a running repeat walks over can be held nowhere else.
+            for st in &frame.loops { m.value(&st.iter); }
         }
         for t in self.session.globals.iter().flatten() { m.slot(t.addr.slot); }
         for op in &self.stack {
@@ -2909,6 +3147,23 @@ impl Vm {
         self.resolve_op(op)
     }
 
+    /// Whether an operand's value is an object (directly, by reference, or
+    /// frozen), as reading it would show, without copying it.
+    fn operand_is_obj(&self, op: &Operand) -> Result<bool, GoblinError> {
+        fn is_obj(s: &crate::session::Session, v: &Value) -> bool {
+            match v {
+                Value::Object(_) => true,
+                Value::Ref(uuid) => s.object_store.contains_key(uuid.as_str()),
+                Value::Frozen(f) => is_obj(s, &f.value),
+                _ => false,
+            }
+        }
+        Ok(match op {
+            Operand::Val(v) => is_obj(&self.session, v),
+            Operand::Ref(t) => is_obj(&self.session, &self.session.get_stash(t)?.value),
+        })
+    }
+
     /// Pop one operand, resolve it, and dereference Value::Ref through object_store.
     #[inline]
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
@@ -2996,6 +3251,152 @@ impl Vm {
         Ok(true)
     }
 
+    /// `StoreLocal` (`assign`: an update of the variable) and `BindLocal`
+    /// (a new binding: a declaration or a loop's name for this pass).
+    fn store_local_op(&mut self, slot: u16, assign: bool) -> Result<(), GoblinError> {
+                // Storing a variable's own stash back into it (after an
+                // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
+                if let Some(Operand::Ref(t)) = self.stack.last() {
+                    let frame = self.call_stack.last().unwrap();
+                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
+                        && frame.get_hard_type_lock(slot).is_none() {
+                        self.stack.pop();
+                        return Ok(());
+                    }
+                }
+                let val = self.stack_pop_raw()?;
+                // A variable nothing else holds (no closure, no pending
+                // operand) and no lock to cast for: overwrite its value
+                // instead of making a new stash. Nobody can tell the
+                // difference, and it saves an allocation per assignment.
+                if !matches!(val, Value::Object(_)) {
+                    let frame = self.call_stack.last().unwrap();
+                    if let Some(Some(t)) = frame.locals.get(slot as usize) {
+                        if frame.get_hard_type_lock(slot).is_none()
+                            && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
+                            let addr = t.addr;
+                            if let Ok(stash) = self.session.resolve_mut(addr) {
+                                if stash.tether_count == 1 {
+                                    stash.value = val;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
+                let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    crate::builtins::cast_value_to_lock(val, &lock)?
+                } else {
+                    val
+                };
+                // `x |=` on a variable a nested action also uses: change the
+                // one value they share, so each sees the other's writes.
+                if assign {
+                    if let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) {
+                        let t = t.clone();
+                        if self.session.get_stash(&t)?.tether_count > 1 {
+                            if let Some(uuid) = registered_uuid(&val) {
+                                self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                            }
+                            return self.write_shared(&t, val);
+                        }
+                    }
+                }
+                // Mirror interpreter: store Object in object_store, put Ref in slot.
+                let t = if let Some(uuid) = registered_uuid(&val) {
+                    self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.alloc_value(Value::Ref(uuid))
+                } else {
+                    self.session.alloc_value(val)
+                };
+                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
+                    Ok(())
+    }
+
+    /// Put `val` into a stash other holders (nested actions) share, so all
+    /// of them see it. Pending reads of the old value keep the old value.
+    fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
+        let val = if let Some(uuid) = registered_uuid(&val) {
+            self.session.object_store.insert(uuid.clone(), val);
+            Value::Ref(uuid)
+        } else { val };
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
+            // A frozen value stays frozen for the reads still pending.
+            let old = match &self.session.get_stash(t)?.value {
+                v @ Value::Frozen(_) => v.clone(),
+                _ => self.session.read_value(t)?,
+            };
+            for op in self.stack.iter_mut() {
+                if matches!(op, Operand::Ref(u) if u == t) { *op = Operand::Val(old.clone()); }
+            }
+        }
+        self.session.get_stash_mut(t)?.value = val;
+        Ok(())
+    }
+
+    /// `Opcode::RepeatStart`: work out how the loop runs over the value on
+    /// the stack and set its state in the frame, counter -1. A condition
+    /// loop's test can read idx before the first pass, so it starts at 0.
+    fn repeat_start(&mut self, idx: u16) -> Result<(), GoblinError> {
+        use crate::opcode::{OpData, Opcode};
+        let frame = self.call_stack.last().unwrap();
+        let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatStart without its data") };
+        let (id, idx_slot) = (r.id as usize, r.idx);
+        let v = self.pop_value()?;
+        let (mode, iter, limit) = crate::builtins::repeat_plan(v, &mut self.session)?;
+        let frame = self.call_stack.last_mut().unwrap();
+        if frame.loops.len() <= id { frame.loops.resize_with(id + 1, || LoopState { mode: 3, iter: Value::Nil, limit: 0, counter: 0 }); }
+        frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };
+        if mode == 4 {
+            self.stack.push(Operand::Val(Value::Int(0)));
+            self.store_local_op(idx_slot, false)?;
+        }
+        Ok(())
+    }
+
+    /// `Opcode::RepeatNext`: one pass of a `repeat`: counter + 1, out at the
+    /// limit, then by kind 0 count, 1 items (bind the item), 2 map (bind key
+    /// and value), 3 forever, 4 condition (run the test that follows, which
+    /// sets idx). idx = counter.
+    fn repeat_next(&mut self, idx: u16) -> Result<(), GoblinError> {
+        use crate::opcode::{OpData, Opcode};
+        let frame = self.call_stack.last_mut().unwrap();
+        let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatNext without its data") };
+        let (id, item_slot, key_slot, val_slot, idx_slot) = (r.id as usize, r.item, r.key, r.val, r.idx);
+        let (exit, cond_len) = (r.exit as usize, r.cond_len as usize);
+        let st = &mut frame.loops[id];
+        st.counter += 1;
+        let counter = st.counter;
+        if counter >= st.limit {
+            frame.ip += exit;
+            return Ok(());
+        }
+        match st.mode {
+            4 => return Ok(()),
+            1 => {
+                let v = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
+                self.stack.push(Operand::Val(v));
+                self.store_local_op(item_slot, false)?;
+            }
+            2 => {
+                let pair = crate::collections::get_index(&st.iter, &Value::Int(counter))?;
+                let k = crate::collections::get_index(&pair, &Value::Int(0))?;
+                self.stack.push(Operand::Val(k));
+                self.store_local_op(key_slot, false)?;
+                let v = crate::collections::get_index(&pair, &Value::Int(1))?;
+                self.stack.push(Operand::Val(v));
+                self.store_local_op(val_slot, false)?;
+            }
+            _ => {}
+        }
+        self.stack.push(Operand::Val(Value::Int(counter)));
+        self.store_local_op(idx_slot, false)?;
+        self.call_stack.last_mut().unwrap().ip += cond_len;
+        Ok(())
+    }
+
     /// `Opcode::QuickSet`: the whole `:update!(path, e)` statement, when the
     /// root is a variable nothing else holds, the path checks out, `e` comes
     /// out as a number the way its steps would compute it, and the write can
@@ -3016,26 +3417,86 @@ impl Vm {
             if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
         }
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
-        if !self.check_walk(f)? { return Ok(None); }
-        let Some(val) = self.quick_num(&func, &q.expr)? else { return Ok(None) };
-        let mut keys = std::mem::take(&mut self.key_buf);
-        keys.clear();
+        // `path + n` (or - or *) with n a number written in the code: the
+        // most common case, worked out straight from the old value.
+        let simple = match &q.expr {
+            crate::opcode::QExpr::Add(a, b) | crate::opcode::QExpr::Sub(a, b) | crate::opcode::QExpr::Mul(a, b) => match (&**a, &**b) {
+                (crate::opcode::QExpr::Target, crate::opcode::QExpr::Const(c)) => Some(func.constants[*c as usize].clone_fast()),
+                _ => None,
+            },
+            _ => None,
+        };
+        // The parts of the new value that don't need the old one, in order.
+        let mut nums = std::mem::take(&mut self.num_buf);
+        nums.clear();
+        if simple.is_none() && !self.quick_leaves(&func, &q.expr, &mut nums)? { self.num_buf = nums; return Ok(None); }
+        // The keys: constants straight from the code, variables' values
+        // copied (they live next to the root, which is about to change).
+        const MAX_KEYS: usize = 8;
+        if f.segs.len() > MAX_KEYS { self.num_buf = nums; return Ok(None); }
+        let mut owned = std::mem::take(&mut self.key_buf);
+        owned.clear();
         let frame = self.call_stack.last().unwrap();
         for seg in &f.segs {
-            let k = match seg.key {
-                FusedKey::Const(c) => func.constants[c as usize].clone_fast(),
-                FusedKey::Local(s) => match frame.locals.get(s as usize) {
-                    Some(Some(kt)) => self.session.read_value(kt)?,
-                    _ => { self.key_buf = keys; return Ok(None) }
-                },
-            };
-            keys.push(k);
+            if let FusedKey::Local(s) = seg.key {
+                let k = match frame.locals.get(s as usize) {
+                    Some(Some(kt)) => match &self.session.get_stash(kt)?.value {
+                        Value::Ref(_) => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
+                        Value::Frozen(fr) => fr.value.clone_fast(),
+                        v => v.clone_fast(),
+                    },
+                    _ => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
+                };
+                owned.push(k);
+            }
         }
+        let nil = Value::Nil;
+        let mut keys: [&Value; MAX_KEYS] = [&nil; MAX_KEYS];
+        let mut next_owned = 0;
+        for (i, seg) in f.segs.iter().enumerate() {
+            keys[i] = match seg.key {
+                FusedKey::Const(c) => &func.constants[c as usize],
+                FusedKey::Local(_) => { next_owned += 1; &owned[next_owned - 1] }
+            };
+        }
+        let keys = &keys[..f.segs.len()];
         let stash = self.session.resolve_mut(t.addr)?;
-        let done = crate::collections::update_path_in_place_hint(&mut stash.value, &keys, val, &f.segs);
-        keys.clear();
-        self.key_buf = keys;
+        let expr = &q.expr;
+        let done = match simple {
+            Some(c) => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+                &mut |old| quick_arith(expr, old, &c)),
+            None => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+                &mut |old| quick_eval(expr, &nums, &mut 0, old)),
+        };
+        owned.clear();
+        nums.clear();
+        self.key_buf = owned;
+        self.num_buf = nums;
         Ok(done.then_some(q.skip))
+    }
+
+    /// The leaves of a QuickSet value other than its target, in order, as
+    /// numbers; false if one isn't an int or a float.
+    fn quick_leaves(&self, func: &FunctionObject, e: &crate::opcode::QExpr, out: &mut Vec<Value>) -> Result<bool, GoblinError> {
+        use crate::opcode::{OpData, QExpr};
+        let leaf = |v: &Value, out: &mut Vec<Value>| match v {
+            Value::Int(_) | Value::Float(_) => { out.push(v.clone_fast()); true }
+            _ => false,
+        };
+        Ok(match e {
+            QExpr::Target => true,
+            QExpr::Const(c) => leaf(&func.constants[*c as usize], out),
+            QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
+                Some(Some(t)) => leaf(&self.session.get_stash(t)?.value, out),
+                _ => false,
+            },
+            QExpr::Read(i) => {
+                let OpData::Fused(f) = &func.op_data[*i as usize] else { return Ok(false) };
+                match self.fused_read_ref(func, f)? { Some(v) => leaf(v, out), None => false }
+            }
+            QExpr::Add(a, b) | QExpr::Sub(a, b) | QExpr::Mul(a, b) =>
+                self.quick_leaves(func, a, out)? && self.quick_leaves(func, b, out)?,
+        })
     }
 
     /// The bracket checks of a fused check, without errors: true when the
@@ -3111,6 +3572,7 @@ impl Vm {
         use crate::opcode::{OpData, QExpr};
         let leaf = |v: &Value| match v { Value::Int(_) | Value::Float(_) => Some(v.clone_fast()), _ => None };
         Ok(match e {
+            QExpr::Target => None,
             QExpr::Const(c) => leaf(&func.constants[*c as usize]),
             QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
                 Some(Some(t)) => leaf(&self.session.get_stash(t)?.value),
@@ -3359,7 +3821,15 @@ impl Vm {
         let mut budget = crate::actor::OP_BUDGET;
         while self.call_stack.len() > base {
             if self.session.gc_due() { self.vm_gc(); }
-            let op = {
+            if let Some((step, op)) = self.run_fast(&mut budget) {
+                let r = if step == Step::Failed { Err(self.step_err.take().unwrap()) } else { self.execute_op(op) };
+                if let Err(e) = r {
+                    self.raise_above(e, base)?;
+                }
+                if self.suspended.is_some() {
+                    return Ok(Slice::Waiting(self.suspended.take().unwrap()));
+                }
+            } else {
                 let frame = self.call_stack.last_mut().unwrap();
                 if frame.ip >= frame.func.bytecode.len() {
                     let stack_base = frame.stack_base;
@@ -3368,17 +3838,7 @@ impl Vm {
                     self.stack.push(Operand::Val(Value::Nil));
                     continue;
                 }
-                let op = frame.func.bytecode[frame.ip];
-                frame.ip += 1;
-                op
-            };
-            if let Err(e) = self.execute_op(op) {
-                self.raise_above(e, base)?;
             }
-            if let Some(w) = self.suspended.take() {
-                return Ok(Slice::Waiting(w));
-            }
-            budget -= 1;
             if budget == 0 && self.call_stack.len() > base {
                 return Ok(Slice::Yielded);
             }
@@ -3389,27 +3849,23 @@ impl Vm {
     }
 
     fn run_until_depth_inner(&mut self, target_depth: usize) -> Result<(), GoblinError> {
+        let mut steps = 0u32;
         while self.call_stack.len() > target_depth {
             // Nested runs (`:summon`, callbacks) collect too; the frames below
             // stay on `call_stack`, so they are still roots.
             if self.session.gc_due() { self.vm_gc(); }
-            let op = {
-                let frame = match self.call_stack.last_mut() {
-                    Some(f) => f,
-                    None => break,
-                };
+            let Some((step, op)) = self.run_fast(&mut steps) else {
+                let frame = self.call_stack.last_mut().unwrap();
                 if frame.ip >= frame.func.bytecode.len() {
                     let stack_base = frame.stack_base;
                     self.call_stack.pop();
                     self.stack.truncate(stack_base);
                     self.stack.push(Operand::Val(Value::Nil));
-                    continue;
                 }
-                let op = frame.func.bytecode[frame.ip];
-                frame.ip += 1;
-                op
+                continue;
             };
-            let result = match self.execute_op(op) {
+            let r = if step == Step::Failed { Err(self.step_err.take().unwrap()) } else { self.execute_op(op) };
+            let result = match r {
                 Ok(()) => Ok(()),
                 // An `attempt` opened inside this nested run catches the error here.
                 Err(e) => self.catch_error(e, target_depth),
@@ -3479,7 +3935,7 @@ impl Vm {
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
         self.tick_exprs.clear();
-        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums);
+        crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums, Some(&module_prefix));
 
         // Track the importing file's directory in base_dir so that GLAM files (which
         // have owner_glam set on their frames) can resolve sub-imports relative to the
@@ -4273,16 +4729,16 @@ impl Vm {
     fn compile_tick_expr(
         &mut self,
         expr: &goblin_ast::Expr,
-        locals: &[(&str, Value)],
+        param_names: &[&str],
     ) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
         // DES formulas live in shared (Rc) definitions, so a formula keeps
         // its address; the key is that address, checked against the
         // formula's span and kind, and the names it is called with.
-        let key = tick_expr_key(expr, locals);
+        let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
-        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
-        let f = Self::compile_expr_fn(expr, &param_names, crate::compiler::Compiler::new())?;
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), func: f });
+        let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
+        let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -4334,7 +4790,8 @@ impl Vm {
         expr: &goblin_ast::Expr,
         locals: Vec<(&str, Value)>,
     ) -> Result<Value, GoblinError> {
-        let formula = self.compile_tick_expr(expr, &locals)?;
+        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
+        let formula = self.compile_tick_expr(expr, &names)?;
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
@@ -4342,11 +4799,21 @@ impl Vm {
         // A formula that keeps needing the VM (it errors every time, say)
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, &locals) {
+            let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
+            match self.run_formula(&func_rc, &refs, &formula.hints) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
         }
+        self.run_tick_formula_vm(func_rc, locals)
+    }
+
+    /// Runs a compiled DES formula on the VM, with a call frame.
+    fn run_tick_formula_vm(
+        &mut self,
+        func_rc: std::rc::Rc<crate::value::FunctionObject>,
+        locals: Vec<(&str, Value)>,
+    ) -> Result<Value, GoblinError> {
         if self.call_stack.len() >= MAX_CALL_DEPTH {
             return Err(GoblinError::StackOverflow);
         }
@@ -4363,6 +4830,27 @@ impl Vm {
         let op = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
         self.resolve_op(op)
+    }
+
+    /// A DES formula compiled for these argument names, to run many times
+    /// with `run_tick_formula_ref`.
+    pub(crate) fn tick_formula(&mut self, expr: &goblin_ast::Expr, names: &[&str]) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
+        self.compile_tick_expr(expr, names)
+    }
+
+    /// Runs a compiled DES formula with borrowed arguments.
+    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)]) -> Result<Value, GoblinError> {
+        let func_rc = formula.func.clone();
+        if locals.len() != func_rc.params {
+            return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
+            match self.run_formula(&func_rc, locals, &formula.hints) {
+                Some(v) => { formula.misses.set(0); return Ok(v); }
+                None => formula.misses.set(formula.misses.get() + 1),
+            }
+        }
+        self.run_tick_formula_vm(func_rc, locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -4385,8 +4873,14 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, Value)]) -> Option<Value> {
-        enum Fv<'a> { Val(Value), Arg(&'a Value) }
+    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
+        self.run_formula_in(f, args, hints, &FormulaEnv::default())
+    }
+
+    /// `run_formula` for a closure: `env` holds the values its captured
+    /// variables and the globals it reads had when the run started.
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
+        enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
             match v {
@@ -4395,7 +4889,17 @@ impl Vm {
             }
         }
         let code = &f.bytecode;
-        let mut st: Vec<Fv> = Vec::with_capacity(8);
+        let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
+        // Where each argument that refers to a stored object sits in the
+        // store, looked up on first use (checked against its id when read).
+        const UNSEEN: usize = usize::MAX - 1;
+        // Arguments, then captured variables, then globals, in one list.
+        let mut vals: smallvec::SmallVec<[&Value; 8]> = args.iter().map(|(_, v)| *v).collect();
+        vals.extend(env.upvalues.iter());
+        vals.extend(env.globals.iter().map(|(_, v)| v));
+        let ups_at = args.len();
+        let globals_at = ups_at + env.upvalues.len();
+        let mut at: smallvec::SmallVec<[usize; 8]> = smallvec::smallvec![UNSEEN; vals.len()];
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4409,33 +4913,83 @@ impl Vm {
                 Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
-                Opcode::LoadLocal(slot) => {
-                    let a = &args.get(slot as usize)?.1;
+                Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
+                    let slot = match op {
+                        Opcode::LoadLocal(s) => { if s as usize >= ups_at { return None; } s as usize }
+                        Opcode::LoadUpvalue(i) => ups_at + i as usize,
+                        Opcode::LoadGlobal(g) => globals_at + env.globals.iter().position(|(n, _)| *n == g)?,
+                        _ => return None,
+                    };
+                    let a: &Value = vals.get(slot)?;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
-                        Value::Object(_) | Value::Ref(_) => st.push(Fv::Arg(a)),
+                        Value::Object(_) | Value::Ref(_) => {
+                            let pos = at.get_mut(slot)?;
+                            if *pos == UNSEEN {
+                                *pos = match a {
+                                    Value::Ref(uuid) => self.session.object_store.get_index_of(uuid.as_str()).unwrap_or(usize::MAX),
+                                    _ => usize::MAX,
+                                };
+                            }
+                            st.push(Fv::Arg(a, *pos))
+                        }
                         _ => return None,
                     }
                 }
                 Opcode::GetMember(idx) => {
-                    let Some(Fv::Arg(a)) = st.pop() else { return None };
+                    let Some(Fv::Arg(a, pos)) = st.pop() else { return None };
                     // `formula_runs_direct` ruled out names of member builtins.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
                     let obj = match a {
                         Value::Object(o) => o,
-                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
-                            Some(Value::Object(o)) => o,
-                            _ => return None,
+                        Value::Ref(uuid) => match self.session.object_store.get_index(pos) {
+                            Some((k, Value::Object(o))) if k == uuid => o,
+                            _ => match self.session.object_store.get(uuid.as_str()) {
+                                Some(Value::Object(o)) => o,
+                                _ => return None,
+                            },
                         },
                         _ => return None,
                     };
-                    let v = obj.fields.get(name.as_ref() as &str)?;
+                    let name: &str = name.as_ref();
+                    let hint = hints.get(ip - 1);
+                    let v = match hint.and_then(|h| obj.fields.get_index(h.get() as usize)) {
+                        Some((k, v)) if k.as_str() == name => v,
+                        _ => {
+                            // No such field is an error on the VM (R0403); an
+                            // `:objects` predicate that errors does not match.
+                            let Some((i, _, v)) = obj.fields.get_full(name) else {
+                                return if env.missing_field_is_false { Some(Value::Bool(false)) } else { None };
+                            };
+                            if let Some(h) = hint { h.set(i as u32); }
+                            v
+                        }
+                    };
                     if matches!(v, Value::Frozen(_)) { return None; }
                     st.push(Fv::Val(v.clone_fast()));
                 }
+                // In a query predicate, a bare name is `it`'s field when it
+                // has one (then skip the name's own load), as on the VM.
+                Opcode::LoadItFieldOrJump(idx, off) => {
+                    let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
+                    let it: &Value = vals.first()?;
+                    let obj = match it {
+                        Value::Object(o) => Some(&**o),
+                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                            Some(Value::Object(o)) => Some(&**o),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(v) = obj.and_then(|o| o.fields.get(name.as_ref() as &str)) {
+                        if matches!(v, Value::Frozen(_)) { return None; }
+                        st.push(Fv::Val(v.clone_fast()));
+                        ip = (ip as isize + off as isize) as usize;
+                    }
+                }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a) => Fv::Arg(a) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(a, *p) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
@@ -4600,7 +5154,8 @@ impl Vm {
                         fields: std::rc::Rc::new(fields),
                         readonly_fields: BTreeSet::new(),
                         trait_fields: BTreeSet::new(),
-                        uuid: inst.host_uuid.clone(),
+                        // Its own id: binding it must not replace its host.
+                        uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
                     })));
                 }
                 let _ = pred_fn;
@@ -4668,6 +5223,9 @@ impl Vm {
     }
 
     fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
+        if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p)) {
+            return Ok(Value::Array(found));
+        }
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
@@ -4681,10 +5239,61 @@ impl Vm {
         Ok(Value::Array(results))
     }
 
+    /// `:objects(pred)` for a predicate that only reads (fields, numbers,
+    /// comparisons, its captured variables and globals): it is run on each
+    /// object in place, without a call or a copy of every object. Gives what
+    /// the general path gives; None when the predicate needs the VM for some
+    /// object, and the general path then runs from the start (nothing here
+    /// changes anything).
+    fn objects_query_direct(&mut self, pred: &Value) -> Option<Vec<Value>> {
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 || !predicate_runs_direct(func) { return None; }
+        let mut env = FormulaEnv { missing_field_is_false: true, ..Default::default() };
+        for c in cells {
+            match &self.session.get_stash(&c.get()).ok()?.value {
+                Value::Frozen(_) => return None,
+                v => env.upvalues.push(v.clone_fast()),
+            }
+        }
+        for op in &func.bytecode {
+            if let Opcode::LoadGlobal(g) = op {
+                if env.globals.iter().any(|(n, _)| n == g) { continue; }
+                let t = self.session.get_global(*g as usize)?.clone();
+                match &self.session.get_stash(&t).ok()?.value {
+                    Value::Frozen(_) => return None,
+                    v => env.globals.push((*g, v.clone_fast())),
+                }
+            }
+        }
+        let func = func.clone();
+        let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let mut found = Vec::new();
+        for i in 0..self.session.object_store.len() {
+            let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &hints, &env) {
+                Some(v) => matches!(v, Value::Bool(true)),
+                // Something the direct run leaves to the VM (a missing field,
+                // which is an error there, say): the VM decides for this one.
+                // The predicate only reads, so this changes nothing.
+                None => {
+                    let obj = self.session.object_store.get_index(i)?.1.clone();
+                    self.query_predicate_holds(pred, &obj)
+                }
+            };
+            if holds { found.push(self.session.object_store.get_index(i)?.1.clone()); }
+        }
+        Some(found)
+    }
+
     fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
         use indexmap::IndexMap;
         use std::collections::BTreeSet;
-        let instances = self.session.overlay_instances.clone();
+        let mut instances = self.session.overlay_instances.clone();
+        if self.session.world.is_some() { instances.extend(crate::world::view_overlays(self)); }
         let mut results: Vec<Value> = Vec::new();
         for inst in &instances {
             let mut fields: IndexMap<String, Value> = IndexMap::new();
@@ -4712,7 +5321,8 @@ impl Vm {
                 fields: std::rc::Rc::new(fields),
                 readonly_fields: BTreeSet::new(),
                 trait_fields: BTreeSet::new(),
-                uuid: inst.host_uuid.clone(),
+                // Its own id: binding it must not replace its host.
+                uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
             }));
             let include = if let Some(ref pred_fn) = pred {
                 self.query_predicate_holds(pred_fn, &obj)
@@ -4750,7 +5360,7 @@ impl Vm {
     fn link_score_in(
         &mut self,
         args: &[Value],
-        direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>,
+        direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>,
     ) -> Result<Value, GoblinError> {
         if args.len() < 3 { return Ok(Value::Nil); }
         let s = |i: usize| -> Result<&str, GoblinError> {
@@ -4787,7 +5397,7 @@ impl Vm {
     /// A variable's value as `lookup_var` finds it, except that an object
     /// variable gives its `Value::Ref` (the object must exist) instead of a
     /// copy of the object.
-    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>) -> Option<Value> {
+    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>) -> Option<Value> {
         let deref = |v: &Value| -> Option<Value> {
             match v {
                 Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()).then(|| v.clone()),
@@ -4804,7 +5414,7 @@ impl Vm {
         };
         match direct {
             Some((func, args)) => match func.local_names.iter().position(|n| n == name) {
-                Some(slot) if slot < args.len() => deref(&args[slot].1),
+                Some(slot) if slot < args.len() => deref(args[slot].1),
                 _ => globals(func),
             },
             None => {
@@ -5040,6 +5650,7 @@ impl Vm {
             _ => None,
         };
         if let (Some(uuid), Value::Str(field)) = (container_uuid, key) {
+            crate::world::check_view_write(&self.session, uuid)?;
             if let Some(obj) = self.session.object_store.get(uuid) {
                 check_field_write(obj, field)?;
             }
@@ -5109,6 +5720,19 @@ impl Vm {
     }
 }
 
+/// The id prefix of an `:overlays()` result: a record of an overlay, not an
+/// object of a class, so it is never put in the object store.
+const OVERLAY_RECORD: &str = "overlay:";
+
+/// The id an object bound to a variable is stored under, or None for a
+/// value that stays as it is (not an object, or an overlay record).
+fn registered_uuid(v: &Value) -> Option<String> {
+    match v {
+        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) => Some(o.uuid.clone()),
+        _ => None,
+    }
+}
+
 /// A write to an object field: readonly fields (`name!:` and `id`) cannot
 /// change (P9001), and an object has only the fields its class declares (R0403).
 fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
@@ -5127,12 +5751,25 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 }
 
 /// A compiled DES formula.
+/// What a closure run directly reads besides its arguments.
+#[derive(Default)]
+struct FormulaEnv {
+    upvalues: Vec<Value>,
+    globals: Vec<(u16, Value)>,
+    /// A predicate whose error means "no match": a missing field ends the
+    /// run with false.
+    missing_field_is_false: bool,
+}
+
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
     /// Every opcode is one `Vm::run_formula` handles.
     direct: bool,
     /// Direct runs in a row that had to fall back to the VM.
     misses: std::cell::Cell<u32>,
+    /// Per opcode: where the field a `GetMember` read was found in the
+    /// object's field map last time (objects of one class share a layout).
+    hints: Vec<std::cell::Cell<u32>>,
 }
 
 impl TickFormula {
@@ -5155,6 +5792,23 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
         | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
         | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+    })
+}
+
+/// Whether an `:objects` predicate can run on `run_formula_in`: a DES
+/// formula's operations, plus reading captured variables and globals.
+fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
+    let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
+        Some(Value::Str(n)) if member_builtin(n).is_none());
+    f.locals == f.params && f.bytecode.iter().all(|op| match op {
+        Opcode::GetMember(idx) => plain_member(idx),
+        op => matches!(op,
+        Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
+        | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) | Opcode::LoadItFieldOrJump(..)
+        | Opcode::Pop | Opcode::Dup
+        | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
+        | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
+        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return),
     })
 }
 
@@ -5339,6 +5993,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         }
@@ -5401,7 +6056,8 @@ mod tests {
                     let mut vm = make_vm();
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
-                    if vm.run_formula(&f, &locals).is_some() { ran_direct += 1; }
+                    let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
+                    if vm.run_formula(&f, &refs, &[]).is_some() { ran_direct += 1; }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {
@@ -5462,6 +6118,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -5493,6 +6150,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -5522,6 +6180,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -5544,6 +6203,7 @@ mod tests {
             line_numbers: Vec::new(),
             local_names: Vec::new(),
             owner_glam: None,
+            global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
         };
@@ -5643,6 +6303,50 @@ fn floor_mod_adjust(r: Value, divisor: &Value) -> Value {
 /// takes a particular bracket.
 /// `bracket_error(v, brace, _).is_none()`, without building a message.
 #[inline(always)]
+/// A QuickSet value from its leaves (`quick_leaves`, taken in order from
+/// `*at`) and the target's old value, exactly as the steps would work it
+/// out (see `Vm::quick_num`); None otherwise.
+fn quick_eval(e: &crate::opcode::QExpr, nums: &[Value], at: &mut usize, old: &Value) -> Option<Value> {
+    use crate::opcode::QExpr;
+    match e {
+        QExpr::Target => match old { Value::Int(_) | Value::Float(_) => Some(old.clone_fast()), _ => None },
+        QExpr::Const(_) | QExpr::Local(_) | QExpr::Read(_) => {
+            let v = nums.get(*at)?.clone_fast();
+            *at += 1;
+            Some(v)
+        }
+        QExpr::Add(a, b) | QExpr::Sub(a, b) | QExpr::Mul(a, b) => {
+            let x = quick_eval(a, nums, at, old);
+            let y = quick_eval(b, nums, at, old);
+            let (x, y) = (x?, y?);
+            match (e, x, y) {
+                (QExpr::Add(..), Value::Int(x), Value::Int(y)) => Some(Value::Int(x.wrapping_add(y))),
+                (QExpr::Add(..), Value::Float(x), Value::Float(y)) => Some(Value::Float(x + y)),
+                (QExpr::Add(..), Value::Int(x), Value::Float(y)) => Some(Value::Float(x as f64 + y)),
+                (QExpr::Add(..), Value::Float(x), Value::Int(y)) => Some(Value::Float(x + y as f64)),
+                (QExpr::Sub(..), Value::Int(x), Value::Int(y)) => x.checked_sub(y).map(Value::Int),
+                (QExpr::Mul(..), Value::Int(x), Value::Int(y)) => x.checked_mul(y).map(Value::Int),
+                _ => None,
+            }
+        }
+    }
+}
+
+/// `quick_eval` for `target op c`: the same result, without the walk.
+#[inline]
+fn quick_arith(e: &crate::opcode::QExpr, old: &Value, c: &Value) -> Option<Value> {
+    use crate::opcode::QExpr;
+    match (e, old, c) {
+        (QExpr::Add(..), Value::Int(x), Value::Int(y)) => Some(Value::Int(x.wrapping_add(*y))),
+        (QExpr::Add(..), Value::Float(x), Value::Float(y)) => Some(Value::Float(x + y)),
+        (QExpr::Add(..), Value::Int(x), Value::Float(y)) => Some(Value::Float(*x as f64 + y)),
+        (QExpr::Add(..), Value::Float(x), Value::Int(y)) => Some(Value::Float(x + *y as f64)),
+        (QExpr::Sub(..), Value::Int(x), Value::Int(y)) => x.checked_sub(*y).map(Value::Int),
+        (QExpr::Mul(..), Value::Int(x), Value::Int(y)) => x.checked_mul(*y).map(Value::Int),
+        _ => None,
+    }
+}
+
 fn bracket_fits(v: &Value, brace: bool) -> bool {
     match v {
         Value::Collection(c) => c.is_map() == brace,
@@ -5673,6 +6377,10 @@ fn bracket_error(v: &Value, brace: bool, label: &str) -> Option<GoblinError> {
         None
     }
 }
+
+/// How a step done in the run loop went (see `Vm::fast_step`).
+#[derive(Clone, Copy, PartialEq)]
+enum Step { Done, Slow, Failed }
 
 /// Marking state for `Vm::collect_live_slots`.
 struct Marker {
@@ -5745,13 +6453,13 @@ fn concat_text(a: &str, b: &str) -> String {
 /// the parameter names. A freed formula's address could be reused, so the
 /// table is emptied whenever a definition holding formulas is replaced, and
 /// a reused address must also match span and kind.
-fn tick_expr_key(expr: &goblin_ast::Expr, params: &[(&str, Value)]) -> (usize, usize, usize, u32, u32, u64) {
+fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usize, u32, u32, u64) {
     use std::hash::{Hash, Hasher};
     let sp = expr.span();
     let mut h = rustc_hash::FxHasher::default();
     std::mem::discriminant(expr).hash(&mut h);
     params.len().hash(&mut h);
-    for (n, _) in params { n.hash(&mut h); }
+    for n in params { n.hash(&mut h); }
     sp.file.hash(&mut h);
     (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }

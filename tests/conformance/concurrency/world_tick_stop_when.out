@@ -1,0 +1,2 @@
+{ticks: 2}
+runtime error: C0111: actor-stopped: the actor has stopped and takes no more messages

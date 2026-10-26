@@ -1,0 +1,395 @@
+/// Town on DES: the town sim written with DES classes, decisions,
+/// `every N ticks` blocks and transitions. Each district is a region, and
+/// tick(districts) runs one day in all of them at once.
+///
+/// What runs where:
+///   Resident  ages every day, pays rent every 30 days to its district's
+///             fund, shops every day (decision `shop`), looks for work
+///             (decision `work`), and dies (transitions).
+///   Business  updates whether it is hiring every day, and pays its staff
+///             every 14 days (laying off the newest when short of cash,
+///             sharing spare cash as a bonus). Staff can live in any
+///             district; their pay reaches them the next day.
+///   Fund      one per district; pays a weekly benefit to adults without
+///             work, and spends what it holds above 20,000 at the
+///             district's open businesses, a thirtieth a day.
+/// Births, moving house and estates are not here yet; see GAPS.md.
+
+:rand_seed(42)
+n_districts | 4
+n_residents | 1000
+n_businesses | 50
+adult | 18 * 365
+days | 365
+if :env("TOWN_DAYS") != ""
+    days |= :int(:env("TOWN_DAYS"))
+xx
+if :env("TOWN_DISTRICTS") != ""
+    n_districts |= :int(:env("TOWN_DISTRICTS"))
+xx
+
+<>Fund |
+    ~fund_of: 0
+    ~cash: 0
+    /// The weekly benefit: 120 for each adult here without work, while
+    /// the fund has it.
+    every 7 ticks
+        repeat :objects(it >> job == -1)
+            if it >> district == self >> fund_of and it >> age >= adult and self >> cash >= 120
+                it >> money |= it >> money + 120
+                self >> cash |= self >> cash - 120
+            xx
+        xx
+    end
+    every 1 tick
+        if self >> cash > 20000
+            open_here | []
+            repeat :objects(it >> open == 1)
+                if it >> district == self >> fund_of
+                    :put_last!(open_here, it)
+                xx
+            xx
+            n | :len(open_here)
+            if n > 0
+                each | :floor((self >> cash - 20000) / 30 / n)
+                repeat open_here as b
+                    b >> cash |= b >> cash + each
+                    b >> sales |= b >> sales + each
+                xx
+                self >> cash |= self >> cash - each * n
+            xx
+        xx
+    end
+xx
+
+<>Business |
+    ~code: 0
+    ~district: 0
+    ~cash: 6000
+    ~price: 15
+    ~wage: 400
+    ~staff: 0
+    ~sales: 0
+    /// 1 or 0: open, and hiring. Traits, so decisions can score them.
+    open: 1
+    hiring: 0
+    /// 1 for the cheapest price (15), 0 for the dearest (25).
+    cheapness: 0
+    every 1 tick
+        wage | self >> wage
+        need | wage * (self >> staff + 1) / 2
+        if self >> open == 1 and self >> staff < 15 and self >> cash >= need
+            self >> hiring |= 1
+        else
+            self >> hiring |= 0
+        xx
+    end
+    every 14 ticks
+        if self >> open == 1
+            staff | :objects(it >> job == self >> code)
+            wage | self >> wage
+            cash | self >> cash
+            keep | :len(staff)
+            repeat keep > 0 and wage * keep > cash
+                keep |= keep - 1
+            xx
+            bill | wage * keep
+            bonus | 0
+            extra | cash - bill - (2 * bill + 2000)
+            if keep > 0 and extra > 0
+                bonus |= :floor(extra / 2 / keep)
+            xx
+            i | 0
+            repeat staff as w
+                if i < keep
+                    w >> money |= w >> money + wage + bonus
+                else
+                    w >> job |= -1
+                xx
+                i |= i + 1
+            xx
+            self >> staff |= keep
+            self >> cash |= cash - (wage + bonus) * keep
+            if keep == 0 and self >> cash < wage
+                self >> open |= 0
+            xx
+        xx
+    end
+xx
+
+<>Resident |
+    ~age: 0
+    ~money: 500
+    ~district: 0
+    ~job: -1
+    margin: .8
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+    every 30 ticks
+        if self >> age >= adult
+            pay | :min(self >> money, 150)
+            repeat :objects(it >> fund_of == self >> district)
+                it >> cash |= it >> cash + pay
+            xx
+            self >> money |= self >> money - pay
+        xx
+    end
+    /// Cheaper open shops score higher; `margin` spreads people over the
+    /// shops that score near the best.
+    shop | decision against Business by [
+        (target >> cheapness) * (target >> open)
+    ]
+    judge using shop
+        > 0: buy(target)
+    end
+    work | decision against Business by [
+        target >> hiring
+    ]
+    judge using work
+        >= .5: apply(target)
+    end
+    /// Death: rare until old age (one in 200,000 a day; 1 in 2,500 past 70).
+    transition erase when (self >> age) > 70 * 365 and (pick 1 from 1...2500) == 1
+    end
+    transition erase when (pick 1 from 1...200000) == 1
+    end
+xx
+
+/// Shopping, for adults: one item a day, more when there is money to
+/// spare (up to four), as many as they can afford.
+act buy(r, b)
+    if r >> age >= adult
+        price | b >> price
+        money | r >> money
+        units | :min(1 + :floor(money / 250), 4)
+        repeat units > 0 and price * units > money
+            units |= units - 1
+        xx
+        spend | price * units
+        r >> money |= money - spend
+        b >> cash |= b >> cash + spend
+        b >> sales |= b >> sales + spend
+    xx
+xx
+
+/// An unemployed adult takes a job at a business that is hiring. A
+/// business in another district learns of its new staff the next day, so
+/// on a busy day it can go a little over 15.
+act apply(r, b)
+    if r >> job == -1 and r >> age >= adult and b >> staff < 15
+        r >> job |= b >> code
+        b >> staff |= b >> staff + 1
+    xx
+xx
+
+/// One district: its fund, its businesses and its residents. `money` is
+/// what they hold between them, for the check at the end.
+act make_district(d)
+    things | []
+    total | 0
+    f <> Fund | fund_of: d
+    :put_last!(things, f)
+    b | d
+    repeat b < n_businesses
+        price | 15 + (pick 1 from 0...9)
+        wage | 380 + (pick 1 from 0...79)
+        cheap | (25 - price) / 10
+        biz <> Business | code: b, district: d, price: price, wage: wage, cheapness: cheap
+        :put_last!(things, biz)
+        total |= total + 6000
+        b |= b + n_districts
+    xx
+    repeat :range(0, n_residents / n_districts)
+        age | pick 1 from 0...(70 * 365)
+        money | 400 + (pick 1 from 0...299)
+        r <> Resident | age: age, money: money, district: d
+        :put_last!(things, r)
+        total |= total + money
+    xx
+    return {"d": d, "things": things, "money": total}
+xx
+
+/// A district's own code each day: nothing yet, DES does the rest.
+act district_day(st, msg)
+    return st
+xx
+
+districts | []
+start_money | 0
+repeat :range(0, n_districts) as d
+    town | make_district(d)
+    start_money |= start_money + town{"money"}
+    :put_last!(districts, :actor(town, district_day))
+xx
+
+act money_total()
+    total | 0
+    repeat :objects(it >> money > -1)
+        m | it >> money
+        total |= total + m
+    xx
+    repeat :objects(it >> cash > -1)
+        c | it >> cash
+        total |= total + c
+    xx
+    return total
+xx
+
+act pad(v, n)
+    s | :str(v)
+    repeat :len(s) < n
+        s |= " " + s
+    xx
+    return s
+xx
+
+act share(part, whole)
+    if whole == 0
+        return "0%"
+    xx
+    return :str(:round(part * 100 / whole)) + "%"
+xx
+
+say("town on DES: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days")
+say("money at the start: {start_money}")
+repeat :range(1, days + 1) as t
+    tick(districts)
+    if t % 30 == 0 or t == days
+        pop | :len(:objects(it >> age > -1))
+        adults | :len(:objects(it >> age >= adult))
+        working | :len(:objects(it >> job > -1))
+        open_b | :len(:objects(it >> open == 1))
+        money | money_total()
+        say("day {t}: population {pop}, adults {adults}, working {working}, open businesses {open_b}, money {money}")
+    xx
+xx
+
+/// --- End-of-run report ---
+people_money | 0
+wealth | []
+repeat :objects(it >> money > -1)
+    m | it >> money
+    people_money |= people_money + m
+    if it >> age >= adult
+        :put_last!(wealth, m)
+    xx
+xx
+biz_money | 0
+repeat :objects(it >> staff > -1)
+    c | it >> cash
+    biz_money |= biz_money + c
+xx
+funds | 0
+repeat :objects(it >> fund_of > -1)
+    c | it >> cash
+    funds |= funds + c
+xx
+total | people_money + biz_money + funds
+gone | start_money - total
+say("")
+say("=== End of run: day {days} ===")
+say("Where the money is (total {total}; {gone} left with the dead or is in flight):")
+m1 | pad(people_money, 8)
+m2 | pad(share(people_money, total), 4)
+say("  people          {m1}  {m2}")
+m1 |= pad(biz_money, 8)
+m2 |= pad(share(biz_money, total), 4)
+say("  businesses      {m1}  {m2}")
+m1 |= pad(funds, 8)
+m2 |= pad(share(funds, total), 4)
+say("  district funds  {m1}  {m2}")
+
+wealth |= :sort(wealth)
+n | :len(wealth)
+adult_total | :sum(wealth)
+say("")
+say("Wealth of the {n} adults, poorest fifth to richest:")
+say("  fifth   holds   average   lowest   highest")
+repeat :range(0, 5) as q
+    lo | :floor(n * q / 5)
+    hi | :floor(n * (q + 1) / 5)
+    tot | 0
+    repeat :range(lo, hi) as j
+        tot |= tot + wealth[j]
+    xx
+    avg | :floor(tot / (hi - lo))
+    lowest | wealth[lo]
+    highest | wealth[hi - 1]
+    fifth | q + 1
+    c1 | pad(share(tot, adult_total), 4)
+    c2 | pad(avg, 7)
+    c3 | pad(lowest, 6)
+    c4 | pad(highest, 7)
+    say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
+xx
+
+say("")
+say("Businesses by price:")
+say("  price  businesses  open  staff  avg cash  avg sales")
+repeat :range(15, 25) as p
+    nb | 0
+    op | 0
+    st | 0
+    cash | 0
+    sales | 0
+    repeat :objects(it >> price == p)
+        nb |= nb + 1
+        if it >> open == 1
+            op |= op + 1
+        xx
+        s1 | it >> staff
+        c1 | it >> cash
+        s2 | it >> sales
+        st |= st + s1
+        cash |= cash + c1
+        sales |= sales + s2
+    xx
+    if nb > 0
+        c1 | pad(p, 5)
+        c2 | pad(nb, 10)
+        c3 | pad(op, 4)
+        c4 | pad(st, 5)
+        c5 | pad(:floor(cash / nb), 8)
+        c6 | pad(:floor(sales / nb), 9)
+        say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
+    xx
+xx
+
+say("")
+say("Districts:")
+say("  district  people  adults  working  avg adult money    fund")
+repeat :range(0, n_districts) as d
+    pop | 0
+    ad | 0
+    emp | 0
+    am | 0
+    repeat :objects(it >> money > -1)
+        if it >> district == d
+            pop |= pop + 1
+            if it >> age >= adult
+                ad |= ad + 1
+                m | it >> money
+                am |= am + m
+                if it >> job > -1
+                    emp |= emp + 1
+                xx
+            xx
+        xx
+    xx
+    fund | 0
+    repeat :objects(it >> fund_of == d)
+        fund |= it >> cash
+    xx
+    avg_m | 0
+    if ad > 0
+        avg_m |= :floor(am / ad)
+    xx
+    c1 | pad(d, 8)
+    c2 | pad(pop, 6)
+    c3 | pad(ad, 6)
+    c4 | pad(share(emp, ad), 7)
+    c5 | pad(avg_m, 15)
+    c6 | pad(fund, 7)
+    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
+xx

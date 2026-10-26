@@ -1,0 +1,49 @@
+/// A nested action uses the enclosing action's actual variable: changes
+/// on either side are seen by the other (owner ruling 2026-10-24).
+act a()
+    n | 1
+    act get()
+        return n
+    xx
+    n |= 5
+    say(get())
+    act bump()
+        n |= n + 10
+    xx
+    bump()
+    say(n)
+    say(get())
+xx
+a()
+act total_of(xs)
+    total | 0
+    repeat xs as x
+        act add()
+            total |= total + x
+        xx
+        add()
+    xx
+    return total
+xx
+say(total_of([1, 2, 3]))
+act grow()
+    items | []
+    act more(v)
+        :put_last!(items, v)
+    xx
+    more(1)
+    more(2)
+    :put_last!(items, 3)
+    say(items)
+xx
+grow()
+act early()
+    n | 1
+    act step()
+        n |= n + 1
+        return 100
+    xx
+    say(n + step())
+    say(n)
+xx
+early()

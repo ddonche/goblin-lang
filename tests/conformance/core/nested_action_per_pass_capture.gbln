@@ -1,0 +1,18 @@
+/// known-gap: interp actions cannot be kept in a list and called later
+/// Each pass of a loop binds its name afresh: actions made in different
+/// passes each keep their own pass's value, while sharing an outer variable.
+act make()
+    fs | []
+    seen | 0
+    repeat [1, 2, 3] as x
+        act show()
+            seen |= seen + 1
+            return x * 10 + seen
+        xx
+        :put_last!(fs, show)
+    xx
+    return fs
+xx
+repeat make() as shower
+    say(shower())
+xx

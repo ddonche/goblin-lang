@@ -1,0 +1,58 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The same small world ticked inside an actor ends the same as when the
+/// starting program ticks it: overlays, spread through links, decisions and
+/// transitions all run there.
+:rand_seed(5)
+<>Person |
+    health: .9
+    hunger: .5
+    transition erase when (self >> health) < .3
+    end
+xx
+overlay Sick |
+    spreads through contact at .9
+    decays .02
+    modifies:
+        health - .08
+    end
+end
+link Person contact by [
+    self >> hunger * .5 + target >> hunger * .5
+]
+act world(n)
+    people | []
+    repeat :range(0, n) as i
+        p <> Person | health: .9 - i * .05, hunger: .6
+        :put_last!(people, p)
+    xx
+    return {"people": people}
+xx
+act report(label)
+    hs | []
+    repeat :objects(it >> health > 0)
+        h | it >> health
+        :put_last!(hs, :round(h * 1000))
+    xx
+    sick | :len(:overlays(it >> overlay_name == "Sick"))
+    say("{label}: {hs} sick {sick}")
+xx
+act run(st, msg)
+    first | st{"people"}[0]
+    overlay Sick on first at .9
+    repeat 8
+        tick()
+    xx
+    report("actor")
+    return st
+xx
+here | world(4)
+first | here{"people"}[0]
+overlay Sick on first at .9
+repeat 8
+    tick()
+xx
+report("main")
+:delete!(here, "people")
+r | :actor(world(4), run)
+:post(r, "go")
+:halt(r)

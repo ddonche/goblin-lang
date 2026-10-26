@@ -1,0 +1,45 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Changes to a trait (a 0..1 field) from several regions add up, and the
+/// result stays in 0..1, as a write inside one region does.
+:rand_seed(3)
+<>Sheep |
+    wool: .5
+xx
+<>Wolf |
+    hunger: .5
+    score | decision against Sheep by [
+        self >> hunger
+    ]
+    judge using score
+        >= .2: shear(target)
+    end
+xx
+act shear(w, s)
+    s >> wool |= s >> wool - .4
+xx
+act make_zone(wolves, sheep)
+    things | []
+    repeat :range(0, wolves)
+        w <> Wolf | hunger: .5
+        :put_last!(things, w)
+    xx
+    repeat :range(0, sheep)
+        s <> Sheep | wool: .5
+        :put_last!(things, s)
+    xx
+    return {"things": things}
+xx
+act zone_day(st, msg)
+    return st
+xx
+/// One wolf in each of two zones; the only sheep is in a third.
+a | :actor(make_zone(1, 0), zone_day)
+b | :actor(make_zone(1, 0), zone_day)
+c | :actor(make_zone(0, 1), zone_day)
+repeat :range(1, 3) as d
+    tick([a, b, c])
+    repeat :objects(it >> wool > -5)
+        w | it >> wool
+        say("tick {d}: wool {w}")
+    xx
+xx

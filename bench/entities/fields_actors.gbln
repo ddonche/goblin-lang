@@ -7,34 +7,31 @@ ticks | :int(ts)
 ws | :env("ENT_W") ?? "4"
 w | :int(ws)
 keys | []
-for k in :range(0, 20)
-    :put_last!(keys, "f{k}")
+repeat 20
+    :put_last!(keys, "f{idx}")
 xx
 act tick(st)
-    i | 0
-    m | :len(st{"es"})
-    while i < m
-        :update!(st{"es"}[i]{"f0"}, st{"es"}[i]{"f0"} + 1)
-        :update!(st{"es"}[i]{"f1"}, st{"es"}[i]{"f1"} + st{"es"}[i]{"f0"})
-        :update!(st{"es"}[i]{"f2"}, st{"es"}[i]{"f2"} + 2)
-        :update!(st{"es"}[i]{"f3"}, st{"es"}[i]{"f3"} + 3)
-        :update!(st{"es"}[i]{"f4"}, st{"es"}[i]{"f4"} + 4)
-        :update!(st{"es"}[i]{"f5"}, st{"es"}[i]{"f5"} + 5)
-        :update!(st{"es"}[i]{"f6"}, st{"es"}[i]{"f6"} + 6)
-        :update!(st{"es"}[i]{"f7"}, st{"es"}[i]{"f7"} + 7)
-        :update!(st{"es"}[i]{"f8"}, st{"es"}[i]{"f8"} + 8)
-        :update!(st{"es"}[i]{"f9"}, st{"es"}[i]{"f9"} + 9)
-        :update!(st{"es"}[i]{"f10"}, st{"es"}[i]{"f10"} + 1)
-        :update!(st{"es"}[i]{"f11"}, st{"es"}[i]{"f11"} + 1)
-        :update!(st{"es"}[i]{"f12"}, st{"es"}[i]{"f12"} + 1)
-        :update!(st{"es"}[i]{"f13"}, st{"es"}[i]{"f13"} + 1)
-        :update!(st{"es"}[i]{"f14"}, st{"es"}[i]{"f14"} + 1)
-        :update!(st{"es"}[i]{"f15"}, st{"es"}[i]{"f15"} + 1)
-        :update!(st{"es"}[i]{"f16"}, st{"es"}[i]{"f16"} + 1)
-        :update!(st{"es"}[i]{"f17"}, st{"es"}[i]{"f17"} + 1)
-        :update!(st{"es"}[i]{"f18"}, st{"es"}[i]{"f18"} + 1)
-        :update!(st{"es"}[i]{"f19"}, st{"es"}[i]{"f19"} + st{"es"}[i]{"f18"})
-        i |= i + 1
+    repeat :len(st{"es"})
+        :update!(st{"es"}[idx]{"f0"}, st{"es"}[idx]{"f0"} + 1)
+        :update!(st{"es"}[idx]{"f1"}, st{"es"}[idx]{"f1"} + st{"es"}[idx]{"f0"})
+        :update!(st{"es"}[idx]{"f2"}, st{"es"}[idx]{"f2"} + 2)
+        :update!(st{"es"}[idx]{"f3"}, st{"es"}[idx]{"f3"} + 3)
+        :update!(st{"es"}[idx]{"f4"}, st{"es"}[idx]{"f4"} + 4)
+        :update!(st{"es"}[idx]{"f5"}, st{"es"}[idx]{"f5"} + 5)
+        :update!(st{"es"}[idx]{"f6"}, st{"es"}[idx]{"f6"} + 6)
+        :update!(st{"es"}[idx]{"f7"}, st{"es"}[idx]{"f7"} + 7)
+        :update!(st{"es"}[idx]{"f8"}, st{"es"}[idx]{"f8"} + 8)
+        :update!(st{"es"}[idx]{"f9"}, st{"es"}[idx]{"f9"} + 9)
+        :update!(st{"es"}[idx]{"f10"}, st{"es"}[idx]{"f10"} + 1)
+        :update!(st{"es"}[idx]{"f11"}, st{"es"}[idx]{"f11"} + 1)
+        :update!(st{"es"}[idx]{"f12"}, st{"es"}[idx]{"f12"} + 1)
+        :update!(st{"es"}[idx]{"f13"}, st{"es"}[idx]{"f13"} + 1)
+        :update!(st{"es"}[idx]{"f14"}, st{"es"}[idx]{"f14"} + 1)
+        :update!(st{"es"}[idx]{"f15"}, st{"es"}[idx]{"f15"} + 1)
+        :update!(st{"es"}[idx]{"f16"}, st{"es"}[idx]{"f16"} + 1)
+        :update!(st{"es"}[idx]{"f17"}, st{"es"}[idx]{"f17"} + 1)
+        :update!(st{"es"}[idx]{"f18"}, st{"es"}[idx]{"f18"} + 1)
+        :update!(st{"es"}[idx]{"f19"}, st{"es"}[idx]{"f19"} + st{"es"}[idx]{"f18"})
     xx
     return st
 xx
@@ -45,12 +42,12 @@ act part(st, msg)
 xx
 done | :channel(w)
 hs | []
-for p in :range(0, w)
+repeat :range(0, w) as p
     es | []
     i | p
-    while i < n
+    repeat i < n
         e | {}
-        for k in keys
+        repeat keys as k
             :update!(e{k}, i % 7)
         xx
         :put_last!(es, e)
@@ -59,20 +56,18 @@ for p in :range(0, w)
     :put_last!(hs, :actor({"es": es, "done": done}, part))
 xx
 t0 | :epoch_ms()
-t | 0
-while t < ticks
-    for h in hs
+repeat ticks
+    repeat hs as h
         :post(h, 1)
     xx
-    for h in hs
+    repeat hs as h
         :receive(done)
     xx
-    t |= t + 1
 xx
 t1 | :epoch_ms()
 dt | t1 - t0
 per | dt / ticks
 say("{w} actors: {ticks} ticks in {dt} ms, {per} ms per tick")
-for h in hs
+repeat hs as h
     :halt(h)
 xx

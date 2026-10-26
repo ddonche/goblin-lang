@@ -40,6 +40,9 @@ pub(crate) struct Image {
     token_store: BTreeMap<String, BTreeMap<String, PValue>>,
     object_store: Vec<(String, PValue)>,
     box_store: Vec<(String, PValue)>,
+    /// Overlay, link and decision definitions, and for an actor the
+    /// overlays on the objects handed to it.
+    des: crate::des_image::DesImage,
     program: Arc<Program>,
     base_dir: std::path::PathBuf,
     project_root: std::path::PathBuf,
@@ -201,7 +204,14 @@ fn base_of(session: &Session) -> Rc<crate::reach::Base> {
 
 /// The session as an image. With `roots` (an actor's handler, state and
 /// stop condition), only the globals that code can reach are copied.
+/// With `handed` (an actor), the image carries none of the session's
+/// objects: the actor owns only the objects handed to it (its state) and
+/// the overlays on them, so a region never runs a copy of the whole world.
 pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&Value]>) -> Result<Image, GoblinError> {
+    image_for(session, tp, roots, None)
+}
+
+pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[&Value]>, handed: Option<&std::collections::HashSet<String>>) -> Result<Image, GoblinError> {
     let program = program_of(session, tp)?;
     let keep = roots.and_then(|r| crate::reach::reachable(&base_of(session), r, session));
     let mut globals = Vec::with_capacity(session.globals.len());
@@ -227,9 +237,14 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&
     fn pairs<'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a String, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
         m.map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
     }
-    let object_store = pairs(tp, session.object_store.iter())?;
+    let object_store = match handed {
+        Some(_) => Vec::new(),
+        None => pairs(tp, session.object_store.iter())?,
+    };
     let box_store = pairs(tp, session.box_store.iter())?;
+    let des = crate::des_image::des_image_of(session, tp, handed)?;
     Ok(Image {
+        des,
         globals,
         omitted,
         gc_mode: session.gc_mode,
@@ -322,6 +337,7 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
         let v = fp.value(v, &mut s);
         s.box_store.insert(k.clone(), v);
     }
+    crate::des_image::install(&img.des, fp, &mut s);
     for (ns, m) in &img.token_store {
         let m = m.iter().map(|(k, v)| (k.clone(), fp.value(v, &mut s))).collect();
         s.token_store.insert(ns.clone(), m);

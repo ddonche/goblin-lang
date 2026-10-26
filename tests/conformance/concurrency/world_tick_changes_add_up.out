@@ -1,0 +1,4 @@
+tick 1: the sheep has 10
+tick 2: the sheep has 8
+tick 3: the sheep has 6
+zone 1 heard from zone 0 on ticks [1, 2]

@@ -1,0 +1,33 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An overlay that spreads onto another region's object that already has
+/// it makes that overlay stronger (as it would inside one region), applied
+/// at the start of the next tick. Without that, both would only decay.
+<>Person |
+    health: 1
+    town: 0
+xx
+link Person contact by [
+    1 - abs((self >> town) - (target >> town)) * .5
+]
+overlay Flu |
+    hosts Person
+    spreads through contact at .6
+    decays .05
+end
+act make_one()
+    p <> Person | health: 1
+    overlay Flu on p at .9
+    return {"people": [p]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make_one(), day)
+b | :actor(make_one(), day)
+repeat :range(1, 5) as d
+    tick([a, b])
+    repeat :overlays(it >> overlay_name == "Flu")
+        s | :round((it >> strength) * 1000) / 1000
+        say("tick {d}: flu {s}")
+    xx
+xx

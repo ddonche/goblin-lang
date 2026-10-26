@@ -1,0 +1,34 @@
+/// Each call and each loop keeps its own repeat state: recursion inside a
+/// loop, leaving a loop early, a condition loop, nested loops.
+act walk(n)
+    out | 0
+    repeat [1, 2, 3] as x
+        if n > 0
+            out |= out + walk(n - 1)
+        xx
+        out |= out + x
+    xx
+    return out
+xx
+say(walk(2))
+act first_big(xs)
+    repeat xs as x
+        if x > 2
+            return x
+        xx
+    xx
+    return 0
+xx
+say(first_big([1, 5, 9]))
+say(first_big([7]))
+k | 0
+repeat k < 3
+    k |= k + 1
+xx
+say(k)
+repeat 2
+    repeat [10, 20] as y
+        say("{idx} {y}")
+        stop
+    xx
+xx

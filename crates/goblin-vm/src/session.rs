@@ -137,6 +137,13 @@ pub struct Session {
     /// Objects handed to an actor, and the variable each came from, so
     /// reading one says where it went.
     pub handed_off: HashMap<String, String>,
+    /// In an actor: objects that stayed with the program that started it
+    /// (uuid -> the variable that names them there), for a clear error.
+    pub kept_home: HashMap<String, String>,
+    /// The main program's world of regions (`tick(regions)`).
+    pub world: Option<crate::world::World>,
+    /// In a region, while it runs a world tick.
+    pub(crate) region: Option<crate::world::RegionCtx>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -168,7 +175,9 @@ pub struct Session {
     /// Object store: uuid → Value (for DES/overlay system).
     /// Objects in creation order, so DES passes and `:objects()` visit them
     /// the same way every run (the interpreter keeps creation order too).
-    pub object_store: indexmap::IndexMap<String, Value>,
+    /// Fx hashing: object ids are long strings looked up on every field
+    /// read through a reference; order is insertion order either way.
+    pub object_store: indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>,
     /// The variable each object was first stored in (uuid -> name, and
     /// whether that variable is top-level). DES
     /// overlays report their host by this name (`host_var`), as the
@@ -189,6 +198,8 @@ pub struct Session {
 
     /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
+    /// DES ticks run so far (`every N ticks` counts on it).
+    pub des_ticks: i64,
 
     /// Enum definitions registered at runtime.
     pub enums: Rc<HashMap<String, EnumDecl>>,
@@ -324,6 +335,9 @@ impl Session {
             plain_collections_kept: Default::default(),
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
+            kept_home: HashMap::new(),
+            world: None,
+            region: None,
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -332,13 +346,14 @@ impl Session {
             rng_state: seed,
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
-            object_store: indexmap::IndexMap::new(),
+            object_store: Default::default(),
             object_names: HashMap::new(),
             overlay_instances: Vec::new(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
             classes: Default::default(),
             compiled_methods: Default::default(),
+            des_ticks: 0,
             enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),
@@ -491,6 +506,17 @@ impl Session {
     }
 
     /// Clone the Value payload for read-only introspection.
+    /// The errors `read_value` would give, without copying the value: a
+    /// statement like a bare `den` must still fail when `den` was handed
+    /// to an actor.
+    pub fn check_readable(&self, t: &Tether) -> Result<(), GoblinError> {
+        match &self.get_stash(t)?.value {
+            Value::Ref(uuid) if !self.object_store.contains_key(uuid.as_str()) =>
+                Err(crate::actor::missing_object(self, uuid)),
+            _ => Ok(()),
+        }
+    }
+
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
         match &self.get_stash(t)?.value {
@@ -750,7 +776,7 @@ impl Session {
         if self.omitted_globals.get(idx).copied().unwrap_or(false) {
             let name = self.global_names.get(idx).map(|n| n.rsplit("::").next().unwrap_or(n)).unwrap_or("?");
             return GoblinError::Runtime(format!(
-                "C0121: actor-global-omitted: `{name}` was not copied into this actor, because none of its code uses it by name; pass the value in the actor's state or a message instead"));
+                "C0121: actor-global-omitted: `{name}` was not copied into this actor or swarm task, because none of its code uses it by name; pass the value in instead (an actor's state or message, a swarm task's item or context)"));
         }
         GoblinError::Runtime(format!("global slot {idx} is uninitialized"))
     }

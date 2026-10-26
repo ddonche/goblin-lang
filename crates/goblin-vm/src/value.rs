@@ -632,7 +632,7 @@ pub struct Stash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpvalueDescriptor {
     /// Capture the Tether currently in the enclosing frame's locals[slot].
-    Local(u8),
+    Local(u16),
     /// Forward upvalue[idx] from the enclosing closure.
     Upvalue(u8),
 }
@@ -660,6 +660,9 @@ pub struct FunctionObject {
     /// The GLAM namespace this function was defined in (top-level actions loaded
     /// via `use <namespace>` only), used by `:need()` to resolve action needs.
     pub owner_glam: Option<String>,
+    /// For a class method from an imported module: that module's global
+    /// prefix, so a name the method reads resolves in the module first.
+    pub global_prefix: Option<String>,
     /// Source file this function was compiled from (empty = unknown).
     pub source_file: String,
     /// Global slot names for this function's compilation unit — parallel to session.globals.
@@ -698,11 +701,16 @@ pub struct CompiledModule {
 /// (where inner and outer both see mutations) require full open/close upvalue
 /// cells; that is a planned future improvement.
 #[derive(Debug, Clone)]
-pub struct UpvalueCell(pub Rc<RefCell<Tether>>);
+pub struct UpvalueCell(pub Rc<RefCell<Tether>>, pub Option<Rc<str>>);
 
 impl UpvalueCell {
     pub fn new(t: Tether) -> Self {
-        UpvalueCell(Rc::new(RefCell::new(t)))
+        UpvalueCell(Rc::new(RefCell::new(t)), None)
+    }
+    /// A cell for a variable the enclosing action locked to a type: writes
+    /// from the nested action are cast to it, as the enclosing ones are.
+    pub fn with_lock(t: Tether, lock: Option<Rc<str>>) -> Self {
+        UpvalueCell(Rc::new(RefCell::new(t)), lock)
     }
     pub fn get(&self) -> Tether {
         self.0.borrow().clone()

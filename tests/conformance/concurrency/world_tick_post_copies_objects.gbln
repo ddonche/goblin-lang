@@ -1,0 +1,40 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object one region posts to another during a world tick arrives as an
+/// independent copy, like any message: both regions keep their own object.
+<>Item |
+    ~n: 0
+xx
+act make_sender()
+    i <> Item | n: 1
+    return {"things": [i], "peer": nil, "sent": false}
+xx
+act make_receiver()
+    return {"things": [], "got": []}
+xx
+act send(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick") and st{"sent"} == false
+        :post(st{"peer"}, st{"things"}[0])
+        :update!(st{"sent"}, true)
+    xx
+    return st
+xx
+act recv(st, msg)
+    if :is_map(msg) == false
+        msg >> n |= 2
+        :put_last!(st{"got"}, msg)
+    xx
+    return st
+xx
+a | :actor(make_sender(), send)
+b | :actor(make_receiver(), recv)
+:post(a, {"peer": b})
+repeat 3
+    tick([a, b])
+xx
+ns | []
+repeat :objects(it >> n > 0)
+    :put_last!(ns, it >> n)
+xx
+say(:sort(ns))

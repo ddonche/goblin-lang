@@ -1,0 +1,34 @@
+/// `x |= f(x)` hands x to f without a copy; other holders of the old value (y, a nested action) and a failed call inside attempt still see what they should.
+act bump(st)
+    :update!(st{"n"}, st{"n"} + 1)
+    return st
+xx
+act boom(st)
+    :update!(st{"n"}, st{"n"} + 100)
+    return 1 / 0
+xx
+act run()
+    x | {"n": 1}
+    y | x
+    x |= bump(x)
+    x |= bump(x)
+    say("{x} {y}")
+    attempt
+        x |= boom(x)
+    rescue e
+        say("failed")
+    xx
+    say(x)
+    z | {"n": 5}
+    act peek()
+        return z{"n"}
+    xx
+    z |= bump(z)
+    say(z)
+    say(peek())
+    w | {"n": 7}
+    w |= bump(w)
+    w |= bump(w)
+    return w
+xx
+say(run())
