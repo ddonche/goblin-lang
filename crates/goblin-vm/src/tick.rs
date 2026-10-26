@@ -871,6 +871,7 @@ fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
 fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
     let self_uuid = self_uuid.to_string();
     let margin = match vm.session.object_store.get(&self_uuid) {
+        Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
         Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
             Value::Float(f) => Some(*f),
             Value::Int(i) => Some(*i as f64),

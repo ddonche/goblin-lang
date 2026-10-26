@@ -1,0 +1,44 @@
+/// known-gap: interp has no `margin` on a decision (it reads the object's `margin` field only)
+/// `margin N` on a decision sets how far below the best score a target may
+/// be and still be picked, for that decision only. Here buying spreads over
+/// both shops (stock 10 and 6 score 1 and .6, margin .5), while visiting,
+/// with no margin of its own, uses the object's `margin` (0): only the best.
+:rand_seed(3)
+<>Shop |
+    ~stock: 0
+    ~sold: 0
+    ~visits: 0
+xx
+<>Buyer |
+    margin: 0
+    buy | decision against Shop margin .5 by [
+        target >> stock
+    ]
+    judge using buy
+        > 0: purchase(target)
+    end
+    visit | decision against Shop by [
+        target >> stock
+    ]
+    judge using visit
+        > 0: drop_in(target)
+    end
+xx
+act purchase(b, s)
+    s >> sold |= s >> sold + 1
+xx
+act drop_in(b, s)
+    s >> visits |= s >> visits + 1
+xx
+a <> Shop | stock: 10
+c <> Shop | stock: 6
+repeat 20
+    x <> Buyer | margin: 0
+xx
+tick()
+repeat :objects(it >> stock > 0)
+    st | it >> stock
+    bought | it >> sold > 0
+    v | it >> visits
+    say("stock {st}: has buyers {bought}, visits {v}")
+xx

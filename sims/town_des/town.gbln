@@ -120,7 +120,6 @@ xx
     ~money: 500
     ~district: 0
     ~job: -1
-    margin: .8
     every 1 tick
         self >> age |= self >> age + 1
     end
@@ -134,10 +133,10 @@ xx
         xx
     end
     /// Cheaper open shops score higher (prices run 15 to 24; a closed shop
-    /// scores 0). `price` is a `~` field, so the scores are spread over the
-    /// shops: the cheapest open one scores 1. `margin` spreads people over
-    /// the shops that score near the best.
-    shop | decision against Business by [
+    /// scores 0). `price` is a `~` field, so the scores are measured against
+    /// the shops: the cheapest open one scores 1. `margin .8` spreads people
+    /// over the shops that score near the best.
+    shop | decision against Business margin .8 by [
         (30 - target >> price) * (target >> open)
     ]
     judge using shop

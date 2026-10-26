@@ -37,10 +37,9 @@ money is in flight between districts) the money total never changes.
   read `adult` inside a method as a field of `self` and got nil. The
   interpreter reads the program's variable.
 - **Fixed: looping over `:overlays()` deleted the overlays' hosts** (PR #67).
-- **`margin` is one number for all of a class's decisions.** The town wants
-  a wide spread for shopping (`.8`) and none for work. Proposed: `margin`
-  per decision, e.g. `shop | decision against Business margin .8 by [...]`.
-  Needs Daniel's OK.
+- **Fixed: `margin` was one number for all of a class's decisions.** A
+  decision can now carry its own: `shop | decision against Business margin .8 by [...]`;
+  without one it uses the object's `margin` field, as before.
 - **A decision's action fails silently.** An error inside `buy` or `apply`
   is ignored, so a typo there shows up only as "nothing happens".
   `every` blocks stop the tick on an error instead. Proposed: decision

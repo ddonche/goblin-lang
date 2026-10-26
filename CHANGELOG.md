@@ -9,6 +9,8 @@ in parentheses are the pull requests that made each change.
   the candidates: the best scores 1 and the others in proportion (spread
   worst-to-best when some score is below 0). Before, every such score
   collapsed to 0. The DES town now scores shops on `price`.
+- DES: `margin N` on a decision (`shop | decision against Business margin .8 by [...]`)
+  sets that decision's margin; without it the object's `margin` field is used.
 
 ## 0.49.0 — 2026-10-26
 

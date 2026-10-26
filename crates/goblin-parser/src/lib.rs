@@ -232,6 +232,7 @@ struct PAction {
 struct PDecisionDef {
     target_class: String,
     formula: Box<PExpr>,
+    margin: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -4236,6 +4237,7 @@ impl<'t> Parser<'t> {
                     ));
                 };
                 self.skip_layout();
+                let margin = self.parse_decision_margin()?;
                 if self.peek_ident() != Some("by") {
                     return Err(s_help_site!(
                         "P1404",
@@ -4269,7 +4271,7 @@ impl<'t> Parser<'t> {
                         "Give each decision its own name: shop | decision against Shop by [ ... ], work | decision against Shop by [ ... ]",
                     ));
                 }
-                let d = PDecisionDef { target_class, formula: Box::new(formula) };
+                let d = PDecisionDef { target_class, formula: Box::new(formula), margin };
                 if decision.is_none() { decision = Some(d.clone()); }
                 let first = named.is_empty();
                 let early = waiting.iter().position(|(u, _)| match u {
@@ -6970,6 +6972,7 @@ impl<'t> Parser<'t> {
                         formula,
                         formula_min,
                         formula_max,
+                        margin: d.margin,
                         span: sp.clone(),
                     }
                 });
@@ -6978,7 +6981,7 @@ impl<'t> Parser<'t> {
                     let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
                     ast::NamedDecision {
                         name,
-                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, span: sp.clone() },
+                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, span: sp.clone() },
                         judge,
                     }
                 }).collect();
@@ -7524,6 +7527,19 @@ impl<'t> Parser<'t> {
     }
 
     /// Eat a numeric token and return it as u32.
+    /// `margin N` between a decision's target class and `by`.
+    fn parse_decision_margin(&mut self) -> Result<Option<f64>, String> {
+        if self.peek_ident() != Some("margin") { return Ok(None); }
+        let _ = self.eat_ident();
+        self.skip_layout_inline();
+        let Some(m) = self.eat_number_f64() else {
+            return Err(s_help_site!("P1409", "Expected a number after 'margin'",
+                "Write: shop | decision against Business margin .8 by [ formula ]"));
+        };
+        self.skip_layout();
+        Ok(Some(m))
+    }
+
     fn eat_number_u32(&mut self) -> Option<u32> {
         self.eat_number_f64().map(|f| f as u32)
     }
@@ -7733,6 +7749,7 @@ impl<'t> Parser<'t> {
                 "Write: Germany score | decision against Nation by [ formula ]"));
         };
         self.skip_layout();
+        let margin = self.parse_decision_margin()?;
         if self.peek_ident() != Some("by") {
             return Err(s_help_site!("P1414", "Expected 'by'",
                 "Write: Germany score | decision against Nation by [ formula ]"));
@@ -7757,6 +7774,7 @@ impl<'t> Parser<'t> {
             formula,
             formula_min: 0.0,
             formula_max: 1.0,
+            margin,
             span: span.clone(),
         };
         Ok(ast::Stmt::ObjectDecision(var_name, def))
