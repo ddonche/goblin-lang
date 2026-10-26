@@ -1,0 +1,41 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object on its way between regions still arrives when the main
+/// program ticks the same regions in another order: west moves a walker on
+/// tick 2, and from tick 3 the list is [east, west]. Nothing is lost.
+<>Walker |
+    ~age: 0
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+xx
+act make_region(name, n)
+    things | []
+    repeat :range(0, n)
+        w <> Walker | age: 0
+        :put_last!(things, w)
+    xx
+    return {"name": name, "things": things, "peer": nil, "moved": 0}
+xx
+act region_day(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick")
+        if msg{"tick"} == 2 and st{"name"} == "west" and st{"moved"} == 0
+            :move!(st{"things"}[0], st{"peer"})
+            :update!(st{"moved"}, 1)
+        xx
+    xx
+    return st
+xx
+west | :actor(make_region("west", 3), region_day)
+east | :actor(make_region("east", 2), region_day)
+:post(west, {"peer": east})
+repeat :range(1, 6) as d
+    if d < 3
+        tick([west, east])
+    else
+        tick([east, west])
+    xx
+    all | :len(:objects(it >> age >= 0))
+    say("tick {d}: all {all}")
+xx
