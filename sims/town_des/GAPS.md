@@ -40,11 +40,11 @@ money is in flight between districts) the money total never changes.
 - **Fixed: `margin` was one number for all of a class's decisions.** A
   decision can now carry its own: `shop | decision against Business margin .8 by [...]`;
   without one it uses the object's `margin` field, as before.
-- **A decision's action fails silently.** An error inside `buy` or `apply`
-  is ignored, so a typo there shows up only as "nothing happens".
-  `every` blocks stop the tick on an error instead. Proposed: decision
-  actions should do the same. Needs Daniel's OK, because it changes how
-  existing programs behave.
+- **Fixed: a decision's action failed silently.** An error inside `buy` or
+  `apply` was ignored, so a typo there showed up only as "nothing happens".
+  It now stops the tick, as an error in an `every` block does. This also
+  showed that the VM never ran an action written inside the class
+  (`act govern(target)`); it does now.
 - **`and` inside call parentheses doesn't parse**, so
   `:objects(it >> district == d and it >> age > 18)` has to be a loop
   with an `if`.

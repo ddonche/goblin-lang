@@ -13,6 +13,10 @@ in parentheses are the pull requests that made each change.
   sets that decision's margin; without it the object's `margin` field is used.
 - DES (VM): a decision written for one object (`x score | decision against ...`)
   now applies; the VM looked it up by object id instead of variable name and never found it.
+- DES: an error inside a decision's action stops the tick (it was ignored), as
+  in an `every` block.
+- DES (VM): a decision's judge can call an action written inside the class
+  (`act govern(target)`); the VM only found program-level actions and silently did nothing.
 
 ## 0.49.0 — 2026-10-26
 

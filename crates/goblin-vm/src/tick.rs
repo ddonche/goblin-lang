@@ -985,8 +985,16 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             vm.session.object_store.get(&self_uuid).cloned(),
             vm.session.object_store.get(&best_target_uuid).cloned(),
         ) else { return Ok(()) };
-        let _ = vm.call_named(&action_name, vec![self_val, target_val]);
-        // Ignore errors — decisions are best-effort
+        // The class's own action of that name (`act govern(target)` in the
+        // class, run with `self`), else a program action taking both.
+        // An error in the action stops the tick, as one in an `every`
+        // block does: a mistake there must not pass as "nothing happened".
+        let class_name = match &self_val { Value::Object(o) => o.class_name.clone(), _ => String::new() };
+        let method = vm.session.compiled_methods.get(&(class_name, action_name.clone())).cloned();
+        match method {
+            Some(f) => { vm.call_callable(Value::Function(f), vec![Value::Ref(self_uuid.clone()), target_val])?; }
+            None => { vm.call_named(&action_name, vec![self_val, target_val])?; }
+        }
     }
     Ok(())
 }
