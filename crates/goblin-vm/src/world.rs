@@ -64,6 +64,8 @@ pub struct Arrival {
     overlays: Vec<POverlay>,
     name: Option<(String, bool)>,
     links: Vec<((String, String, String), Vec<crate::session::LinkOffset>)>,
+    /// The object's own link formulas (`obj link trade by [ ... ]`).
+    link_defs: Vec<((String, String), crate::session::LinkDef)>,
     decision: Option<goblin_ast::DecisionDef>,
 }
 
@@ -656,10 +658,17 @@ fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let mut overlays = Vec::new();
     for i in s.overlay_instances.iter().filter(|i| i.host_uuid == uuid) { overlays.push(overlay_to_p(i, &mut tp)?); }
     let name = s.object_names.get(uuid).cloned();
+    // Its own links go with it (links go one way); links other objects
+    // have to it stay with them.
     let mut links: Vec<_> = s.link_offsets.iter()
-        .filter(|((from, to, _), _)| from == uuid || to == uuid)
+        .filter(|((from, _, _), _)| from == uuid)
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    let mut link_defs: Vec<_> = s.object_link_defs.iter()
+        .filter(|((obj, _), _)| obj == uuid)
+        .map(|(k, v)| (k.clone(), (**v).clone()))
+        .collect();
+    link_defs.sort_by(|a, b| a.0.cmp(&b.0));
     links.sort_by(|a, b| a.0.cmp(&b.0));
     let decision = s.object_decisions.get(uuid).map(|d| (**d).clone());
     drop(tp);
@@ -667,10 +676,11 @@ fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     s.object_store.shift_remove(uuid);
     s.overlay_instances.retain(|i| i.host_uuid != uuid);
     for (k, _) in &links { s.link_offsets.remove(k); }
+    for (k, _) in &link_defs { s.object_link_defs.remove(k); }
     s.object_decisions.remove(uuid);
     let var = name.as_ref().map(|(n, _)| n.clone()).unwrap_or_else(|| "this object".to_string());
     s.moved_away.insert(uuid.to_string(), var);
-    let a = Arrival { uuid: uuid.to_string(), object, overlays, name, links, decision };
+    let a = Arrival { uuid: uuid.to_string(), object, overlays, name, links, link_defs, decision };
     if let Some(c) = s.region.as_mut() { c.sent.push((Dest::Actor(to), Item::Arrive(Box::new(a)))); }
     Ok(())
 }
@@ -683,6 +693,7 @@ fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
     s.moved_away.remove(&a.uuid);
     if let Some(n) = &a.name { s.object_names.insert(a.uuid.clone(), n.clone()); }
     for (k, v) in &a.links { s.link_offsets.insert(k.clone(), v.clone()); }
+    for (k, v) in &a.link_defs { s.object_link_defs.insert(k.clone(), std::rc::Rc::new(v.clone())); }
     if let Some(d) = &a.decision { s.object_decisions.insert(a.uuid.clone(), std::rc::Rc::new(d.clone())); }
     for o in &a.overlays {
         let inst = overlay_from_p(o, fp, &mut vm.session);

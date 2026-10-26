@@ -1029,7 +1029,8 @@ impl Vm {
         if !graph.is_empty() {
             self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
             if !self.session.link_offsets.is_empty() {
-                self.session.link_offsets.retain(|(from, to, _), _| !graph.contains(from) && !graph.contains(to));
+                // Their own links went with them; links others have to them stay.
+                self.session.link_offsets.retain(|(from, _, _), _| !graph.contains(from));
                 self.session.object_link_defs.retain(|(obj, _), _| !graph.contains(obj));
             }
         }

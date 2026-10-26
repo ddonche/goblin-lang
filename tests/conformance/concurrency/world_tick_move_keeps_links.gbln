@@ -1,0 +1,46 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object that moves to another region takes its own links with it
+/// (its changes and its own link formula); links other objects have to it
+/// stay with them. West moves `a` on tick 2; on tick 4 a (now in east)
+/// still has its link to b (7 + 3), and b (in west) its link to a (5).
+<>P |
+    ~n: 0
+    ~age: 0
+    every 1 tick
+        self >> age |= self >> age + 1
+        if self >> age == 4
+            repeat :objects(it >> n != self >> n) as o
+                v | :link_score(self, o, "trust")
+                say("{self >> n} to {o >> n}: {v}")
+            xx
+        xx
+    end
+xx
+link P trust -100...100
+act make_west()
+    a <> P | n: 1
+    b <> P | n: 2
+    a link trust by [ 7 ]
+    a link to b on trust offset +3
+    b link to a on trust offset +5
+    return {"name": "west", "things": [a, b], "a": a, "peer": nil}
+xx
+act make_east()
+    return {"name": "east", "things": [], "peer": nil}
+xx
+act region_day(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick")
+        if msg{"tick"} == 2 and st{"name"} == "west"
+            :move!(st{"a"}, st{"peer"})
+        xx
+    xx
+    return st
+xx
+west | :actor(make_west(), region_day)
+east | :actor(make_east(), region_day)
+:post(west, {"peer": east})
+repeat :range(1, 5)
+    tick([west, east])
+xx

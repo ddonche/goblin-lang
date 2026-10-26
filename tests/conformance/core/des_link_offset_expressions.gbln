@@ -1,0 +1,18 @@
+/// known-gap: interp takes only a plain number after `offset`
+/// The change after `offset` is any number expression, read whole with the
+/// usual precedence.
+<>P |
+    ~n: 0
+xx
+link P trust -100...100
+a <> P | n: 1
+b <> P | n: 2
+amount | 4
+a link to b on trust offset 2 * amount
+say(:link_score(a, b, "trust"))
+a link to b on trust offset -amount + 1
+say(:link_score(a, b, "trust"))
+a link to b on trust offset +.5
+say(:link_score(a, b, "trust"))
+a link to b on trust offset -10 for 3 ticks
+say(:link_score(a, b, "trust"))

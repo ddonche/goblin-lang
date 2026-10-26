@@ -102,7 +102,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
         img.object_names.sort();
         if !session.link_offsets.is_empty() {
             img.link_offsets = session.link_offsets.iter()
-                .filter(|((from, to, _), _)| objs.contains(from) || objs.contains(to))
+                .filter(|((from, _, _), _)| objs.contains(from))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             img.link_offsets.sort_by(|a, b| a.0.cmp(&b.0));

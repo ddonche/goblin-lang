@@ -7951,20 +7951,25 @@ impl<'t> Parser<'t> {
             }
             let _ = self.eat_ident(); // consume 'offset'
             self.skip_layout_inline();
-            // Parse offset value (may have + or - prefix): a number, or
-            // any expression (`offset row{"canada"}`, `offset -amount`).
-            let negative = self.eat_op("-");
-            let positive = if !negative { self.eat_op("+") } else { false };
-            let (offset, offset_expr) = if let Some(offset_abs) = self.eat_number_f64() {
-                (if negative { -offset_abs } else { offset_abs }, None)
-            } else {
-                let Ok(pe) = self.parse_coalesce() else {
-                    return Err(s_help_site!("P1324", "Expected an offset value",
-                        "Write: Rome link to Carthage on trust offset -.6"));
-                };
-                let e = self.lower_expr(pe);
-                let e = if negative { ast::Expr::Prefix("-".to_string(), Box::new(e.clone()), e.span().clone()) } else { e };
-                (0.0, Some(e))
+            // The offset is any number expression (`+.3`, `-amount + 1`,
+            // `row{"canada"}`), parsed whole; a plain number is kept as one.
+            let _ = self.eat_op("+");
+            let Ok(pe) = self.parse_coalesce() else {
+                return Err(s_help_site!("P1324", "Expected an offset value",
+                    "Write: Rome link to Carthage on trust offset -.6"));
+            };
+            let e = self.lower_expr(pe);
+            let literal = |e: &ast::Expr| match e {
+                ast::Expr::Number(n, _) => n.replace('_', "").parse::<f64>().ok(),
+                ast::Expr::Prefix(op, x, _) if op == "-" => match x.as_ref() {
+                    ast::Expr::Number(n, _) => n.replace('_', "").parse::<f64>().ok().map(|v| -v),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let (offset, offset_expr) = match literal(&e) {
+                Some(v) => (v, None),
+                None => (0.0, Some(e)),
             };
             self.skip_layout_inline();
             // Optional: for N ticks
