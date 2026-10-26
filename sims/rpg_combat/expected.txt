@@ -1,0 +1,79 @@
+1000 battles: the party wins 524, the monsters 476
+average length: 9.6 rounds
+party members lost: none 385, one 112, two 27, all 476
+
+battle 7, round by round:
+round 1
+  Knight hits Shaman for 6 (14 left)
+  Archer hits Shaman for 7 (7 left)
+  Cleric hits Shaman for 5 (2 left)
+  Goblin 1 hits Knight for 4 (36 left)
+  Goblin 2 hits Knight for 3 (33 left)
+  Goblin 3 hits Knight for 4 (29 left)
+  Ogre hits Knight for 6 (23 left)
+  Shaman hits Knight for 2 (21 left)
+  Knight is poisoned
+round 2
+  Knight takes 2 from poison
+  Knight hits Shaman for 6 (0 left)
+  Archer hits Goblin 1 for 7 (8 left)
+  Cleric heals Knight for 7
+  Goblin 1 hits Knight for 4 (22 left)
+  Goblin 2 hits Knight for 3 (19 left)
+  Knight raises a shield
+  Goblin 3 hits Knight for 1 (18 left)
+  Ogre hits Knight for 3 (15 left)
+  Shaman falls
+round 3
+  Knight takes 2 from poison
+  Knight hits Goblin 1 for 8 (0 left)
+  Archer hits Goblin 3 for 8 (7 left)
+  Cleric heals Knight for 9
+  Goblin 2 hits Knight for 1 (21 left)
+  Goblin 3 hits Knight for 1 (20 left)
+  Ogre hits Knight for 5 (15 left)
+  Goblin 1 falls
+round 4
+  Knight lowers the shield
+  Knight takes 2 from poison
+  Knight hits Goblin 3 for 7 (0 left)
+  Archer hits Goblin 2 for 8 (7 left)
+  Cleric heals Knight for 7
+  Goblin 2 hits Knight for 3 (17 left)
+  Knight raises a shield
+  Ogre hits Knight for 4 (13 left)
+  Goblin 3 falls
+round 5
+  Knight hits Goblin 2 for 8 (0 left)
+  Archer hits Ogre for 6 (44 left)
+  Cleric heals Knight for 6
+  Ogre hits Knight for 4 (15 left)
+  Goblin 2 falls
+round 6
+  Knight lowers the shield
+  Knight hits Ogre for 6 (38 left)
+  Archer hits Ogre for 7 (31 left)
+  Cleric heals Knight for 6
+  Ogre hits Knight for 8 (13 left)
+  Knight raises a shield
+round 7
+  Knight hits Ogre for 6 (25 left)
+  Archer hits Ogre for 6 (19 left)
+  Cleric heals Knight for 9
+  Ogre hits Knight for 4 (18 left)
+round 8
+  Knight lowers the shield
+  Knight hits Ogre for 6 (13 left)
+  Archer hits Ogre for 6 (7 left)
+  Cleric heals Knight for 8
+  Ogre hits Knight for 7 (19 left)
+  Knight raises a shield
+round 9
+  Knight hits Ogre for 6 (1 left)
+  Archer hits Ogre for 7 (0 left)
+  Cleric heals Knight for 6
+  Ogre falls
+the party wins in 9 rounds
+  Knight: 25 hp
+  Archer: 28 hp
+  Cleric: 30 hp

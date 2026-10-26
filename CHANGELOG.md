@@ -46,6 +46,8 @@ in parentheses are the pull requests that made each change.
 - DES town (`sims/town_des`): babies are born (overlay `Pregnant` with
   `on end:`), a resident's money goes to their district's fund when they die
   (`on erase:`), and adults now and then move district (`:move!`).
+- New sim `sims/rpg_combat`: a party against monsters on DES, 1,000 battles
+  over `:swarm`; `FINDINGS.md` lists what got in the way.
 
 ## 0.49.0 — 2026-10-26
 
