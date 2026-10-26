@@ -36,7 +36,7 @@ pub(crate) struct POverlay {
     age: u32,
     ticks_remaining: Option<u32>,
     count: u64,
-    original_values: Vec<(String, PValue)>,
+    applied: Vec<(String, f64)>,
     extra_fields: Vec<(String, PValue)>,
     des_id: u32,
 }
@@ -166,9 +166,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
         age: inst.age,
         ticks_remaining: inst.ticks_remaining,
         count: inst.count,
-        original_values: inst.original_values.iter()
-            .map(|(k, v)| Ok((k.clone(), tp.value(v)?)))
-            .collect::<Result<_, GoblinError>>()?,
+        applied: inst.applied.clone(),
         extra_fields: pfields(tp, &inst.extra_fields)?,
         des_id: inst.des_id.0,
     })
@@ -184,7 +182,7 @@ pub(crate) fn overlay_from_p(o: &POverlay, fp: &mut FromPortable, s: &mut Sessio
         age: o.age,
         ticks_remaining: o.ticks_remaining,
         count: o.count,
-        original_values: o.original_values.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
+        applied: o.applied.clone(),
         extra_fields: o.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
         des_id: OverlayInstanceId(o.des_id),
     }

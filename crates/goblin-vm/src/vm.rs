@@ -2547,14 +2547,6 @@ impl Vm {
                 let strength = strength.clamp(0.0, 1.0);
                 // The overlay's own `lasts N ticks` applies when the statement has no `for`.
                 let duration = duration_override.or(def.default_duration);
-                let is_temporary = duration.is_some();
-                let original_values: Vec<(String, Value)> = if is_temporary {
-                    if let Some(Value::Object(o)) = self.session.object_store.get(&host_uuid) {
-                        def.modifiers.iter().filter_map(|(fname, _)| {
-                            o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                        }).collect()
-                    } else { Vec::new() }
-                } else { Vec::new() };
                 let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
                 self.session.des_overlay_id_counter += 1;
                 let inst = OverlayInstance {
@@ -2565,7 +2557,7 @@ impl Vm {
                     age: 0,
                     ticks_remaining: duration,
                     count: 1,
-                    original_values,
+                    applied: Vec::new(),
                     extra_fields: def.extra_fields.clone(),
                     des_id,
                 };

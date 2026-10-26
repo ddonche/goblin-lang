@@ -48,6 +48,9 @@ in parentheses are the pull requests that made each change.
   (`on erase:`), and adults now and then move district (`:move!`).
 - New sim `sims/rpg_combat`: a party against monsters on DES, 1,000 battles
   over `:swarm`; `FINDINGS.md` lists what got in the way.
+- DES: when a timed overlay ends, it takes back only what its `modifies:` added.
+  Before, every field it modified went back to its value from before the
+  overlay, so other changes meanwhile (damage taken, a second overlay) were lost.
 
 ## 0.49.0 — 2026-10-26
 

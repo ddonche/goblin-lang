@@ -44,7 +44,10 @@ pub struct OverlayInstance {
     pub age: u32,
     pub ticks_remaining: Option<u32>,
     pub count: u64,
-    pub original_values: Vec<(String, Value)>,
+    /// What this overlay's `modifies:` has added to each field. A timed
+    /// overlay takes exactly that back when it ends, so other changes to
+    /// the field meanwhile stay.
+    pub applied: Vec<(String, f64)>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
     pub des_id: OverlayInstanceId,
 }

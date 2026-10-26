@@ -187,8 +187,8 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 if let Some(action) = vm.session.overlay_defs.get(&inst.overlay_name).and_then(|d| d.on_end.clone()) {
                     ended.push((action, inst.host_uuid.clone()));
                 }
-                if !inst.original_values.is_empty() {
-                    restore_originals(vm, &inst.host_uuid, &inst.original_values);
+                if inst.ticks_remaining.is_some() {
+                    undo_modifiers(vm, &inst.host_uuid, &inst.applied);
                 }
                 if let Some(hh) = vm.session.des_store.handle_for_name(&inst.host_var) {
                     vm.session.des_index.remove_overlay(hh, &inst.overlay_name, inst.des_id);
@@ -379,15 +379,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         if let Some(def) = defs.get(&ov_name).cloned() {
             let host_var = host_name(vm, &host_uuid);
             let duration = def.default_duration;
-            let is_temporary = duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
-            let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
-                    def.modifiers.iter().filter_map(|(fname, _)| {
-                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                    }).collect()
-                } else { Vec::new() }
-            } else { Vec::new() };
             let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
@@ -398,7 +390,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 age: 0,
                 ticks_remaining: duration,
                 count: 1,
-                original_values,
+                applied: Vec::new(),
                 extra_fields: def.extra_fields.clone(),
                 des_id,
             });
@@ -441,15 +433,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
     for (ov_name, host_uuid, host_var, strength) in to_spawn {
         if let Some(def) = defs.get(&ov_name).cloned() {
-            let is_temporary = def.default_duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
-            let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
-                    def.modifiers.iter().filter_map(|(fname, _)| {
-                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                    }).collect()
-                } else { Vec::new() }
-            } else { Vec::new() };
             let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
@@ -460,7 +444,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 age: 0,
                 ticks_remaining: def.default_duration,
                 count: 1,
-                original_values,
+                applied: Vec::new(),
                 extra_fields: def.extra_fields.clone(),
                 des_id,
             });
@@ -555,7 +539,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                             age: 0,
                             ticks_remaining: cdef.default_duration,
                             count: 1,
-                            original_values: Vec::new(),
+                            applied: Vec::new(),
                             extra_fields: cdef.extra_fields.clone(),
                             des_id,
                         });
@@ -585,7 +569,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                             age: 0,
                             ticks_remaining: fdef.default_duration,
                             count: 1,
-                            original_values: Vec::new(),
+                            applied: Vec::new(),
                             extra_fields: fdef.extra_fields.clone(),
                             des_id,
                         });
@@ -623,7 +607,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                 age: 0,
                                 ticks_remaining: sdef.default_duration,
                                 count: 1,
-                                original_values: Vec::new(),
+                                applied: Vec::new(),
                                 extra_fields: sdef.extra_fields.clone(),
                                 des_id,
                             });
@@ -666,7 +650,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                     age: 0,
                                     ticks_remaining: mdef.default_duration,
                                     count: 1,
-                                    original_values: Vec::new(),
+                                    applied: Vec::new(),
                                     extra_fields: mdef.extra_fields.clone(),
                                     des_id,
                                 });
@@ -1200,7 +1184,9 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
             let exists = vm.session.overlay_instances.iter()
                 .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
             if !exists {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
         }
@@ -1209,20 +1195,23 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
                 i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
             });
             if let Some(pos) = existing_pos {
-                let old_originals = vm.session.overlay_instances[pos].original_values.clone();
+                // The old copy's change goes, the new one's comes.
+                let old = std::mem::take(&mut vm.session.overlay_instances[pos].applied);
                 let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
-                if !old_originals.is_empty() {
-                    restore_originals(vm, &host_uuid, &old_originals);
+                if vm.session.overlay_instances[pos].ticks_remaining.is_some() {
+                    undo_modifiers(vm, &host_uuid, &old);
                 }
                 vm.session.overlay_instances[pos].strength = inst.strength;
                 vm.session.overlay_instances[pos].age = inst.age;
                 vm.session.overlay_instances[pos].count = 1;
                 vm.session.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
-                vm.session.overlay_instances[pos].original_values = inst.original_values;
                 vm.session.overlay_instances[pos].extra_fields = inst.extra_fields.clone();
-                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields);
+                let done = apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields);
+                add_applied(&mut vm.session.overlay_instances[pos].applied, done);
             } else {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
         }
@@ -1238,11 +1227,24 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
                 }
                 let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
                 let extra = vm.session.overlay_instances[pos].extra_fields.clone();
-                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &extra);
+                let done = apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &extra);
+                add_applied(&mut vm.session.overlay_instances[pos].applied, done);
             } else {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
+        }
+    }
+}
+
+/// Adds what one application of `modifies:` changed to an overlay's total.
+fn add_applied(total: &mut Vec<(String, f64)>, done: Vec<(String, f64)>) {
+    for (f, d) in done {
+        match total.iter_mut().find(|(n, _)| *n == f) {
+            Some((_, t)) => *t += d,
+            None => total.push((f, d)),
         }
     }
 }
@@ -1254,10 +1256,11 @@ pub fn apply_overlay_modifiers(
     strength: f64,
     count: u64,
     extra_fields: &indexmap::IndexMap<String, Value>,
-) {
+) -> Vec<(String, f64)> {
+    let mut done = Vec::new();
     let def = match vm.session.overlay_defs.get(overlay_name) {
         Some(d) if !d.modifiers.is_empty() => d.clone(),
-        _ => return,
+        _ => return done,
     };
     let modifiers = &def.modifiers;
 
@@ -1286,7 +1289,7 @@ pub fn apply_overlay_modifiers(
         deltas.push((fname.clone(), delta));
     }
 
-    if deltas.is_empty() { return; }
+    if deltas.is_empty() { return done; }
 
     if let Some(obj) = vm.session.object_store.get_mut(host_uuid) {
         if let Value::Object(ref mut o) = obj {
@@ -1307,17 +1310,25 @@ pub fn apply_overlay_modifiers(
                         new_val
                     };
                     *field_val = Value::Float(new_val);
+                    done.push((field_name, new_val - current));
                 }
             }
         }
     }
+    done
 }
 
-fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]) {
+/// Takes back what an overlay's `modifies:` added (a trait stays in 0..1).
+fn undo_modifiers(vm: &mut Vm, host_uuid: &str, applied: &[(String, f64)]) {
+    if applied.is_empty() { return; }
     if let Some(Value::Object(ref mut o)) = vm.session.object_store.get_mut(host_uuid) {
+        let is_trait: Vec<bool> = applied.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
         let fields = std::rc::Rc::make_mut(&mut o.fields);
-        for (fname, fval) in originals {
-            fields.insert(fname.clone(), fval.clone());
+        for ((fname, d), t) in applied.iter().zip(is_trait) {
+            let Some(v) = fields.get_mut(fname) else { continue };
+            let cur = match v { Value::Float(f) => *f, Value::Int(i) => *i as f64, _ => continue };
+            let back = cur - d;
+            *v = Value::Float(if t { back.clamp(0.0, 1.0) } else { back });
         }
     }
 }
