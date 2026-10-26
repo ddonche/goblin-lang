@@ -916,6 +916,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             Ok(_) => 0.5,
             Err(_) => continue,
         };
+        // A score that overflowed (inf) or is not a number can't be ranked.
+        if !raw.is_finite() { continue; }
         scored.push((k, raw));
     }
     if scored.is_empty() { return Ok(()); }
@@ -946,11 +948,12 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
+    if pool.is_empty() { return Ok(()); }
     let chosen_idx = if pool.len() == 1 { 0 } else {
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let (best_k, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(()) };
     let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(()) };
     let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
@@ -1323,12 +1326,18 @@ fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]
 /// (`act give_birth()` in the class, run with `self`), else a program
 /// action, given the object first. `args` follow.
 fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<(), GoblinError> {
-    let Some(obj) = vm.session.object_store.get(uuid).cloned() else { return Ok(()) };
-    let class_name = match &obj { Value::Object(o) => o.class_name.clone(), _ => String::new() };
+    let class_name = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        Some(_) => String::new(),
+        None => return Ok(()),
+    };
     let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
     match method {
         Some(f) => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_callable(Value::Function(f), args)?; }
-        None => { args.insert(0, obj); vm.call_named(action, args)?; }
+        // A reference, as a class action gets: if the action moves or
+        // erases the object, reading it afterwards fails instead of reading
+        // a stale copy.
+        None => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_named(action, args)?; }
     }
     Ok(())
 }
