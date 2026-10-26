@@ -26,10 +26,10 @@ money is in flight between districts) the money total never changes.
 |---|-----|--------|
 | 1 | A class can't run a rule every tick | **Built**: `every N ticks ... end` (PR #68) |
 | 2 | A class can have only one decision | **Built**: several named decisions, `judge using <name>` (PR #69) |
-| 3 | Scores on real-value (`~`) fields collapse to 0 | Open. The town uses a 0..1 trait, `cheapness`, set when a business is made |
-| 4 | Nothing happens when an overlay ends | Open. Stops births (pregnancy, then a baby) |
-| 5 | An erased object takes its fields with it | Open. A death takes the person's money out of the town |
-| 6 | Objects can't move between regions | Open, later. Stops households moving district |
+| 3 | Scores on real-value (`~`) fields collapse to 0 | **Fixed**: they are measured against the candidates; the town scores shops on `price` |
+| 4 | Nothing happens when an overlay ends | **Built**: `on end: action` on an overlay; the town has births (overlay `Pregnant`, 270 days, then a baby) |
+| 5 | An erased object takes its fields with it | **Built**: `on erase: action` on a class; a resident's money goes to their district's fund when they die |
+| 6 | Objects can't move between regions | **Built**: `:move!(obj, region)`; now and then an adult moves district |
 
 ## Found while building this
 
@@ -37,80 +37,84 @@ money is in flight between districts) the money total never changes.
   read `adult` inside a method as a field of `self` and got nil. The
   interpreter reads the program's variable.
 - **Fixed: looping over `:overlays()` deleted the overlays' hosts** (PR #67).
-- **`margin` is one number for all of a class's decisions.** The town wants
-  a wide spread for shopping (`.8`) and none for work. Proposed: `margin`
-  per decision, e.g. `shop | decision against Business margin .8 by [...]`.
-  Needs Daniel's OK.
-- **A decision's action fails silently.** An error inside `buy` or `apply`
-  is ignored, so a typo there shows up only as "nothing happens".
-  `every` blocks stop the tick on an error instead. Proposed: decision
-  actions should do the same. Needs Daniel's OK, because it changes how
-  existing programs behave.
-- **`and` inside call parentheses doesn't parse**, so
-  `:objects(it >> district == d and it >> age > 18)` has to be a loop
+- **Fixed: `margin` was one number for all of a class's decisions.** A
+  decision can now carry its own: `shop | decision against Business margin .8 by [...]`;
+  without one it uses the object's `margin` field, as before.
+- **Fixed: a decision's action failed silently.** An error inside `buy` or
+  `apply` was ignored, so a typo there showed up only as "nothing happens".
+  It now stops the tick, as an error in an `every` block does. This also
+  showed that the VM never ran an action written inside the class
+  (`act govern(target)`); it does now.
+- **Fixed: `and` inside `:builtin(...)` parentheses didn't parse**, so
+  `:objects(it >> district == d and it >> age > 18)` had to be a loop
   with an `if`.
+- **Open: `overlay X on r for N ticks` takes only a number**, not an
+  expression, so residents who are already pregnant on day 1 all start
+  halfway (135 days) instead of at a random point.
 
 ## The 365-day run
 
 Nearly every adult has a job, all 50 businesses stay open, and the
-poorest fifth averages 137. The money total moves only by what is in flight between
-districts. It drops most on paydays (day 210 is one), because wages to
-staff in other districts arrive the next day. One person died, and their
-money left with them (gap 5).
+poorest fifth averages 123. Ten babies were born (eight to mothers who were
+already pregnant on day 1), nobody died this year, and adults moved district
+93 times. No money leaves the town: the total is short only by what is in
+flight between districts. It drops most on paydays (day 210 is one), because
+wages to staff in other districts arrive the next day.
 
 ```
 town on DES: 1000 residents, 50 businesses, 4 districts, 365 days
-money at the start: 850500
-day 30: population 1000, adults 737, working 737, open businesses 50, money 830370
-day 60: population 1000, adults 739, working 739, open businesses 50, money 839967
-day 90: population 1000, adults 742, working 742, open businesses 50, money 840666
-day 120: population 1000, adults 744, working 744, open businesses 50, money 840527
-day 150: population 999, adults 745, working 745, open businesses 50, money 846308
-day 180: population 999, adults 745, working 745, open businesses 50, money 850265
-day 210: population 999, adults 746, working 746, open businesses 50, money 801764
-day 240: population 999, adults 748, working 739, open businesses 50, money 834136
-day 270: population 999, adults 749, working 742, open businesses 50, money 840378
-day 300: population 999, adults 751, working 751, open businesses 50, money 840753
-day 330: population 999, adults 752, working 752, open businesses 50, money 840811
-day 360: population 999, adults 752, working 752, open businesses 50, money 846623
-day 365: population 999, adults 753, working 745, open businesses 50, money 830958
+money at the start: 853247
+day 30: population 1000, adults 736, working 736, open businesses 50, money 833350; born 0, died 0, moved 9
+day 60: population 1000, adults 740, working 740, open businesses 50, money 842634; born 0, died 0, moved 18
+day 90: population 1000, adults 741, working 741, open businesses 50, money 842824; born 0, died 0, moved 26
+day 120: population 1000, adults 744, working 744, open businesses 50, money 843436; born 0, died 0, moved 33
+day 150: population 1008, adults 745, working 745, open businesses 50, money 848905; born 8, died 0, moved 41
+day 180: population 1008, adults 746, working 746, open businesses 50, money 853127; born 8, died 0, moved 48
+day 210: population 1008, adults 747, working 747, open businesses 50, money 793967; born 8, died 0, moved 53
+day 240: population 1008, adults 748, working 737, open businesses 50, money 835519; born 8, died 0, moved 61
+day 270: population 1008, adults 749, working 740, open businesses 50, money 843524; born 8, died 0, moved 72
+day 300: population 1010, adults 753, working 753, open businesses 50, money 843402; born 10, died 0, moved 83
+day 330: population 1010, adults 755, working 755, open businesses 50, money 843789; born 10, died 0, moved 90
+day 360: population 1010, adults 755, working 755, open businesses 50, money 848919; born 10, died 0, moved 93
+day 365: population 1010, adults 755, working 746, open businesses 50, money 833395; born 10, died 0, moved 93
 
 === End of run: day 365 ===
-Where the money is (total 830958; 19542 left with the dead or is in flight):
-  people            372156   45%
-  businesses        243537   29%
-  district funds    215265   26%
+Where the money is (total 833395; 19852 in flight between districts):
+  people            372500   45%
+  businesses        244922   29%
+  district funds    215973   26%
 
-Wealth of the 753 adults, poorest fifth to richest:
+Wealth of the 755 adults, poorest fifth to richest:
   fifth   holds   average   lowest   highest
-  1         9%       137        0       315
-  2        21%       326      316       336
-  3        22%       344      337       352
-  4        23%       361      352       369
-  5        25%       384      369       424
+  1         8%       123        0       316
+  2        21%       331      316       345
+  3        23%       354      346       362
+  4        23%       369      362       377
+  5        25%       392      377       443
 
 Businesses by price:
   price  businesses  open  staff  avg cash  avg sales
-     15           5     5     58       662     123885
-     16           9     9    105       696     131238
-     17           5     5     63       763     136231
-     18           5     5     63       872     144649
-     19           4     4     58      2307     151288
-     20           3     3     40      1713     158196
-     21           5     5     76     10068     164710
-     22           5     5     76     12268     171060
-     23           9     9    141     11079     179408
+     15           6     6     70       762     125803
+     16           6     6     72       844     131061
+     17           3     3     40       906     139807
+     18           8     8     98       799     144415
+     19           5     5     65      1422     151928
+     20           4     4     56      3912     160559
+     21           6     6     89      8720     164137
+     22           4     4     62     13276     173584
+     23           8     8    122     12247     176764
 
 Districts:
   district  people  adults  working  avg adult money    fund
-         0     250     203      99%              302    56901
-         1     249     184     100%              317    53270
-         2     250     184      98%              316    52538
-         3     250     182      99%              306    52556
+         0     251     201      98%              324    57411
+         1     257     191     100%              311    54694
+         2     245     176      98%              303    50815
+         3     257     187      99%              315    53053
 ```
 
-Speed: a year takes about 15 seconds on 4 threads (about 41 ms a day) with
-PRs #71 and #72; it took about 2 minutes 12 seconds before them, with the
+Speed: a year takes about 10 seconds on 4 threads (about 27 ms a day; 9 s
+before births and moving house). It took about 15 seconds with PRs #71
+and #72; it took about 2 minutes 12 seconds before them, with the
 same output. #71 stops `pick 1 from 1...200000` from building the whole
 range on every call. #72 speeds up decision scoring and `:objects(...)`
 queries. The plain-map town takes about 8 ms a day. What is left: copying

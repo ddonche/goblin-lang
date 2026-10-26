@@ -1,0 +1,26 @@
+/// known-gap: interp runs the class action but its field writes do not stick (prints 0, 0)
+/// A decision's judge can call an action written inside the class: it runs
+/// with `self` as the deciding object and the arm's `target`.
+<>Shop |
+    ~stock: 0
+    ~sold: 0
+xx
+<>Buyer |
+    ~spent: 0
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        > 0: purchase(target)
+    end
+    act purchase(target)
+        target >> sold |= target >> sold + 1
+        self >> spent |= self >> spent + 5
+    end
+xx
+a <> Shop | stock: 10
+b <> Buyer | spent: 0
+tick()
+tick()
+say(a >> sold)
+say(b >> spent)

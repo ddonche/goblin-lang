@@ -80,6 +80,9 @@ enum PExpr {
         capacity: Option<ast::CapacityDecl>,
         every: Vec<(u64, String)>,
         named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
+        on_erase: Option<String>,
+        one_of: Vec<Vec<String>>,
+        order_by: Option<(ast::Expr, bool)>,
     },
     EnumVariant {
         enum_name: String,
@@ -232,6 +235,8 @@ struct PAction {
 struct PDecisionDef {
     target_class: String,
     formula: Box<PExpr>,
+    margin: Option<f64>,
+    filter: Option<Box<PExpr>>,
 }
 
 #[derive(Debug, Clone)]
@@ -250,7 +255,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -4011,6 +4016,24 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
+                // `order by [ ... ]` (a field named `order` is followed by ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("order")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+                {
+                    break;
+                }
+                // `one of a, b` (a field named `one` is followed by ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("one")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("of"))
+                {
+                    break;
+                }
+                // `on erase: action` (a field named `on` is followed by ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("on")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
+                {
+                    break;
+                }
             }
 
             // Check if this is a relation keyword first (BEFORE eating ident)
@@ -4114,7 +4137,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4126,6 +4149,11 @@ impl<'t> Parser<'t> {
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
         let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
+        // `on erase: action`: run on an object before an erase transition removes it.
+        let mut on_erase: Option<String> = None;
+        let mut one_of: Vec<Vec<String>> = Vec::new();
+        // `order by [ expr ] desc`: the order the class's objects decide in.
+        let mut order_by: Option<(ast::Expr, bool)> = None;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
 
@@ -4145,7 +4173,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                 }
             }
 
@@ -4169,7 +4197,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
             }
 
             if self.is_eof() {
@@ -4236,6 +4264,9 @@ impl<'t> Parser<'t> {
                     ));
                 };
                 self.skip_layout();
+                let mut margin = self.parse_decision_margin()?;
+                let filter = self.parse_decision_where()?;
+                if margin.is_none() { margin = self.parse_decision_margin()?; }
                 if self.peek_ident() != Some("by") {
                     return Err(s_help_site!(
                         "P1404",
@@ -4269,7 +4300,7 @@ impl<'t> Parser<'t> {
                         "Give each decision its own name: shop | decision against Shop by [ ... ], work | decision against Shop by [ ... ]",
                     ));
                 }
-                let d = PDecisionDef { target_class, formula: Box::new(formula) };
+                let d = PDecisionDef { target_class, formula: Box::new(formula), margin, filter: filter.map(Box::new) };
                 if decision.is_none() { decision = Some(d.clone()); }
                 let first = named.is_empty();
                 let early = waiting.iter().position(|(u, _)| match u {
@@ -4324,6 +4355,107 @@ impl<'t> Parser<'t> {
                         }
                     }
                 }
+                continue;
+            }
+
+            // `on erase: action`: the action runs on an object (with `self`,
+            // fields still readable) just before an erase transition removes it.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("on")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
+            {
+                self.i += 2; // 'on' 'erase'
+                if !self.eat_op(":") {
+                    return Err(s_help_site!(
+                        "P1561",
+                        "Expected ':' after 'on erase'",
+                        "Write: on erase: settle_estate",
+                    ));
+                }
+                let Some(action) = self.eat_ident() else {
+                    return Err(s_help_site!(
+                        "P1562",
+                        "Expected an action name after 'on erase:'",
+                        "Write: on erase: settle_estate  (runs on the object just before it is erased)",
+                    ));
+                };
+                on_erase = Some(action);
+                self.skip_stmt_separators();
+                continue;
+            }
+
+            // `order by [ self >> speed ] desc`: the class's objects make
+            // their decisions in this order (ascending unless `desc`).
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("order")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+            {
+                self.i += 2; // 'order' 'by'
+                self.skip_layout_inline();
+                if !self.eat_op("[") {
+                    return Err(s_help_site!(
+                        "P1566",
+                        "Expected '[' after 'order by'",
+                        "Write: order by [ self >> speed ] desc  (the value each object is ordered by)",
+                    ));
+                }
+                self.skip_layout();
+                let key_pe = self.parse_coalesce()?;
+                self.skip_layout();
+                if !self.eat_op("]") {
+                    return Err(s_help_site!(
+                        "P1567",
+                        "Expected ']' to close 'order by ['",
+                        "Write: order by [ self >> speed ] desc",
+                    ));
+                }
+                self.skip_layout_inline();
+                let desc = match self.peek_ident() {
+                    Some("desc") => { let _ = self.eat_ident(); true }
+                    Some("asc") => { let _ = self.eat_ident(); false }
+                    _ => false,
+                };
+                if order_by.is_some() {
+                    return Err(s_help_site!(
+                        "P1568",
+                        "A class can have only one 'order by'",
+                        "Order by one value: order by [ self >> speed ] desc",
+                    ));
+                }
+                order_by = Some((self.lower_expr(key_pe), desc));
+                self.skip_stmt_separators();
+                continue;
+            }
+
+            // `one of heal, attack`: these decisions are alternatives. They
+            // are tried in this order and the first whose judge runs an
+            // action is the object's only one of them this tick.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("one")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("of"))
+            {
+                self.i += 2; // 'one' 'of'
+                self.skip_layout_inline();
+                let mut group = Vec::new();
+                loop {
+                    let Some(n) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1563",
+                            "Expected a decision name after 'one of'",
+                            "Write: one of heal, attack  (the names of decisions in this class)",
+                        ));
+                    };
+                    group.push(n);
+                    self.skip_layout_inline();
+                    if !self.eat_op(",") { break; }
+                    self.skip_layout_inline();
+                }
+                if group.len() < 2 {
+                    return Err(s_help_site!(
+                        "P1564",
+                        "'one of' needs at least two decisions",
+                        "Write: one of heal, attack",
+                    ));
+                }
+                one_of.push(group);
+                self.skip_stmt_separators();
                 continue;
             }
 
@@ -4450,7 +4582,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4526,7 +4658,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4675,8 +4807,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                     }
                 }
 
@@ -6783,6 +6915,9 @@ impl<'t> Parser<'t> {
             capacity: None,
             every: vec![],
             decisions: vec![],
+            on_erase: None,
+            one_of: Vec::new(),
+            order_by: None,
             span: sp.clone(),
         }));
 
@@ -6923,7 +7058,17 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } => {
+                // Each name in `one of` must be a named decision of the class.
+                for n in one_of.iter().flatten() {
+                    if !named.iter().any(|(d, _, _)| d == n) {
+                        return Err(s_help_site!(
+                            "P1565",
+                            &format!("'one of' names `{n}`, which is not a decision of {name}"),
+                            "Name the class's decisions: heal | decision against ...  then  one of heal, attack",
+                        ));
+                    }
+                }
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -6970,15 +7115,18 @@ impl<'t> Parser<'t> {
                         formula,
                         formula_min,
                         formula_max,
+                        margin: d.margin,
+                        filter: d.filter.map(|f| self.lower_expr(*f)),
                         span: sp.clone(),
                     }
                 });
                 let decisions_ast: Vec<ast::NamedDecision> = named.into_iter().map(|(name, d, judge)| {
                     let formula = self.lower_expr(*d.formula);
                     let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                    let filter = d.filter.map(|f| self.lower_expr(*f));
                     ast::NamedDecision {
                         name,
-                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, span: sp.clone() },
+                        decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
                         judge,
                     }
                 }).collect();
@@ -6993,6 +7141,9 @@ impl<'t> Parser<'t> {
                     capacity,
                     every: every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
                     decisions: decisions_ast,
+                    on_erase,
+                    one_of,
+                    order_by,
                     span: sp,
                 }))
             }
@@ -7038,6 +7189,87 @@ impl<'t> Parser<'t> {
     }
 
     /// Parse overlay definition body after `overlay Name |`
+
+    /// The `field + expr` / `field - expr` lines of an overlay's
+    /// `modifies:` or `each tick:` block, up to its `end`.
+    fn parse_overlay_changes(&mut self) -> Vec<(String, ast::Expr)> {
+        use goblin_lexer::TokenKind;
+        let mut changes: Vec<(String, ast::Expr)> = Vec::new();
+        self.skip_layout();
+        loop {
+            self.skip_layout();
+            if self.is_eof() { break; }
+            if let Some(tok) = self.peek() {
+                if matches!(tok.kind, TokenKind::Ident)
+                    && matches!(tok.value.as_deref(), Some("end") | Some("xx")
+                        | Some("conflicts") | Some("spawns") | Some("hosts")
+                        | Some("spreads") | Some("decays") | Some("lasts")
+                        | Some("transition") | Some("stacks") | Some("replaces")
+                        | Some("caps"))
+                {
+                    break;
+                }
+                // `on end:` and `each tick:` start the next clause; a field
+                // named `on` or `each` is still a change (`on + 1`).
+                let next = self.toks.get(self.i + 1).and_then(|t| t.value.as_deref());
+                if matches!((tok.value.as_deref(), next), (Some("on"), Some("end")) | (Some("each"), Some("tick"))) {
+                    break;
+                }
+            }
+            let Some(field_name) = self.eat_ident() else { break; };
+            self.skip_layout_inline();
+            // expect + or -
+            let negative = if self.eat_op("+") {
+                false
+            } else if self.eat_op("-") {
+                true
+            } else {
+                break;
+            };
+            self.skip_layout_inline();
+            // parse full expression (supports self >> count * .0000003 etc)
+            let val_pe = self.parse_coalesce().unwrap_or(PExpr::Int("0".to_string()));
+            let val_expr = self.lower_expr(val_pe);
+            let modifier_expr = if negative {
+                ast::Expr::Prefix(
+                    "-".to_string(),
+                    Box::new(val_expr),
+                    goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0),
+                )
+            } else {
+                val_expr
+            };
+            changes.push((field_name, modifier_expr));
+        }
+        // consume optional 'end' closing modifies block
+        if let Some(tok) = self.peek() {
+            if matches!(tok.kind, TokenKind::Ident)
+                && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
+            {
+                let saved = self.i;
+                self.i += 1;
+                self.skip_layout();
+                if let Some(next) = self.peek() {
+                    if matches!(next.kind, TokenKind::Ident)
+                        && matches!(next.value.as_deref(),
+                            Some("conflicts") | Some("spawns") | Some("hosts")
+                            | Some("spreads") | Some("decays") | Some("lasts")
+                            | Some("transition") | Some("stacks") | Some("replaces")
+                            | Some("caps") | Some("on") | Some("each") | Some("modifies")
+                            | Some("end") | Some("xx"))
+                    {
+                        // consumed ok
+                    } else {
+                        self.i = saved; // restore — this end closes the overlay
+                    }
+                } else {
+                    self.i = saved;
+                }
+            }
+        }
+        changes
+    }
+
     fn parse_overlay_def(&mut self, name: String, start_i: usize) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -7051,6 +7283,8 @@ impl<'t> Parser<'t> {
         let mut default_duration: Option<u32> = None;
         let mut apply_behavior: ast::OverlayApplyBehavior = ast::OverlayApplyBehavior::Caps;
         let mut extra_fields: Vec<(String, ast::Expr)> = Vec::new();
+        let mut on_end: Option<String> = None;
+        let mut each_tick: Vec<(String, ast::Expr)> = Vec::new();
 
         self.skip_layout();
 
@@ -7156,6 +7390,36 @@ impl<'t> Parser<'t> {
                         if self.peek_ident() == Some("tick") { let _ = self.eat_ident(); }
                     }
                 }
+                "on" => {
+                    // on end: action — called with the host when the overlay
+                    // runs out (its time is up or its strength reaches 0)
+                    self.skip_layout_inline();
+                    if self.peek_ident() != Some("end") {
+                        return Err(s_help_site!(
+                            "P1240",
+                            "Expected 'end' after 'on' in an overlay",
+                            "Write: on end: give_birth  (called with the host when the overlay runs out)"
+                        ));
+                    }
+                    let _ = self.eat_ident();
+                    self.skip_layout_inline();
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1241",
+                            "Expected ':' after 'on end'",
+                            "Write: on end: give_birth"
+                        ));
+                    }
+                    self.skip_layout_inline();
+                    let Some(action) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1242",
+                            "Expected an action name after 'on end:'",
+                            "Write: on end: give_birth  (an action that takes the host)"
+                        ));
+                    };
+                    on_end = Some(action);
+                }
                 "lasts" => {
                     // lasts N ticks
                     self.skip_layout_inline();
@@ -7171,72 +7435,28 @@ impl<'t> Parser<'t> {
                     // modifies: field +/- expr ... end
                     self.skip_layout_inline();
                     self.eat_op(":");
-                    self.skip_layout();
-                    loop {
-                        self.skip_layout();
-                        if self.is_eof() { break; }
-                        if let Some(tok) = self.peek() {
-                            if matches!(tok.kind, TokenKind::Ident)
-                                && matches!(tok.value.as_deref(), Some("end") | Some("xx")
-                                    | Some("conflicts") | Some("spawns") | Some("hosts")
-                                    | Some("spreads") | Some("decays") | Some("lasts")
-                                    | Some("transition") | Some("stacks") | Some("replaces")
-                                    | Some("caps"))
-                            {
-                                break;
-                            }
-                        }
-                        let Some(field_name) = self.eat_ident() else { break; };
-                        self.skip_layout_inline();
-                        // expect + or -
-                        let negative = if self.eat_op("+") {
-                            false
-                        } else if self.eat_op("-") {
-                            true
-                        } else {
-                            break;
-                        };
-                        self.skip_layout_inline();
-                        // parse full expression (supports self >> count * .0000003 etc)
-                        let val_pe = self.parse_coalesce().unwrap_or(PExpr::Int("0".to_string()));
-                        let val_expr = self.lower_expr(val_pe);
-                        let modifier_expr = if negative {
-                            ast::Expr::Prefix(
-                                "-".to_string(),
-                                Box::new(val_expr),
-                                goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0),
-                            )
-                        } else {
-                            val_expr
-                        };
-                        modifiers.push((field_name, modifier_expr));
+                    modifiers.extend(self.parse_overlay_changes());
+                }
+                "each" => {
+                    // each tick: field +/- expr ... end — made every tick, kept
+                    self.skip_layout_inline();
+                    if !matches!(self.peek_ident(), Some("tick")) {
+                        return Err(s_help_site!(
+                            "P1243",
+                            "Expected 'tick' after 'each' in an overlay",
+                            "Write: each tick:  hp - 2  end  (changes made to the host every tick, never taken back)"
+                        ));
                     }
-                    // consume optional 'end' closing modifies block
-                    if let Some(tok) = self.peek() {
-                        if matches!(tok.kind, TokenKind::Ident)
-                            && matches!(tok.value.as_deref(), Some("end") | Some("xx"))
-                        {
-                            let saved = self.i;
-                            self.i += 1;
-                            self.skip_layout();
-                            if let Some(next) = self.peek() {
-                                if matches!(next.kind, TokenKind::Ident)
-                                    && matches!(next.value.as_deref(),
-                                        Some("conflicts") | Some("spawns") | Some("hosts")
-                                        | Some("spreads") | Some("decays") | Some("lasts")
-                                        | Some("transition") | Some("stacks") | Some("replaces")
-                                        | Some("caps")
-                                        | Some("end") | Some("xx"))
-                                {
-                                    // consumed ok
-                                } else {
-                                    self.i = saved; // restore — this end closes the overlay
-                                }
-                            } else {
-                                self.i = saved;
-                            }
-                        }
+                    let _ = self.eat_ident();
+                    self.skip_layout_inline();
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1244",
+                            "Expected ':' after 'each tick'",
+                            "Write: each tick:  hp - 2  end"
+                        ));
                     }
+                    each_tick.extend(self.parse_overlay_changes());
                 }
                 "stacks" => {
                     // stacks  OR  stacks as label
@@ -7407,6 +7627,8 @@ impl<'t> Parser<'t> {
             default_duration,
             apply_behavior,
             extra_fields,
+            on_end,
+            each_tick,
             span,
         }))
     }
@@ -7419,13 +7641,24 @@ impl<'t> Parser<'t> {
 
         self.skip_layout_inline();
 
+        // A number on its own (`at .8`, `for 3 ticks`) is kept as written;
+        // anything else (`at power / 10`, `for rounds ticks`) is an expression.
+        let lone_number = |p: &Self| {
+            p.peek().is_some_and(|t| matches!(t.kind, goblin_lexer::TokenKind::Int | goblin_lexer::TokenKind::Float))
+                && !p.toks.get(p.i + 1).is_some_and(|t| matches!(t.kind, goblin_lexer::TokenKind::Op(_)))
+        };
+
         // optional: at strength
         let mut strength = 1.0f64;
+        let mut strength_expr: Option<ast::Expr> = None;
         if self.peek_ident() == Some("at") {
             let _ = self.eat_ident();
             self.skip_layout_inline();
-            if let Some(n) = self.eat_number_f64() {
-                strength = n;
+            if lone_number(self) {
+                if let Some(n) = self.eat_number_f64() { strength = n; }
+            } else {
+                let pe = self.parse_coalesce()?;
+                strength_expr = Some(self.lower_expr(pe));
             }
         }
 
@@ -7433,11 +7666,15 @@ impl<'t> Parser<'t> {
 
         // optional: for N ticks
         let mut duration_override: Option<u32> = None;
+        let mut duration_expr: Option<ast::Expr> = None;
         if self.peek_ident() == Some("for") {
             let _ = self.eat_ident();
             self.skip_layout_inline();
-            if let Some(n) = self.eat_number_u32() {
-                duration_override = Some(n);
+            if lone_number(self) {
+                if let Some(n) = self.eat_number_u32() { duration_override = Some(n); }
+            } else {
+                let pe = self.parse_coalesce()?;
+                duration_expr = Some(self.lower_expr(pe));
             }
             self.skip_layout_inline();
             // consume 'ticks' / 'tick'
@@ -7452,6 +7689,8 @@ impl<'t> Parser<'t> {
             host_expr,
             strength,
             duration_override,
+            strength_expr,
+            duration_expr,
             span,
         }))
     }
@@ -7524,6 +7763,39 @@ impl<'t> Parser<'t> {
     }
 
     /// Eat a numeric token and return it as u32.
+    /// `where [ condition ]` between a decision's target class and `by`.
+    fn parse_decision_where(&mut self) -> Result<Option<PExpr>, String> {
+        if self.peek_ident() != Some("where") { return Ok(None); }
+        let _ = self.eat_ident();
+        self.skip_layout();
+        if !self.eat_op("[") {
+            return Err(s_help_site!("P1417", "Expected '[' after 'where'",
+                "Write: heal | decision against Fighter where [ target >> side == self >> side ] by [ formula ]"));
+        }
+        self.skip_layout();
+        let cond = self.parse_coalesce()?;
+        self.skip_layout();
+        if !self.eat_op("]") {
+            return Err(s_help_site!("P1418", "Expected ']' to close the 'where' condition",
+                "Write: heal | decision against Fighter where [ target >> hp > 0 ] by [ formula ]"));
+        }
+        self.skip_layout();
+        Ok(Some(cond))
+    }
+
+    /// `margin N` between a decision's target class and `by`.
+    fn parse_decision_margin(&mut self) -> Result<Option<f64>, String> {
+        if self.peek_ident() != Some("margin") { return Ok(None); }
+        let _ = self.eat_ident();
+        self.skip_layout_inline();
+        let Some(m) = self.eat_number_f64() else {
+            return Err(s_help_site!("P1409", "Expected a number after 'margin'",
+                "Write: shop | decision against Business margin .8 by [ formula ]"));
+        };
+        self.skip_layout();
+        Ok(Some(m))
+    }
+
     fn eat_number_u32(&mut self) -> Option<u32> {
         self.eat_number_f64().map(|f| f as u32)
     }
@@ -7545,19 +7817,67 @@ impl<'t> Parser<'t> {
 
         // Optional channel name: link Nation border by [...]
         //                        link Nation by [...]  (no channel)
-        let channel = if self.peek_ident() != Some("by") {
+        let channel = if self.peek_ident() != Some("by") && self.peek_ident() != Some("bool") {
             self.eat_ident()
         } else {
             None
         };
+
+        // The range: `bool`, or `lo...hi` (either may be negative).
+        self.skip_layout_inline();
+        let mut range = None;
+        if self.peek_ident() == Some("bool") {
+            let _ = self.eat_ident();
+            range = Some(ast::LinkRange::Bool);
+        } else {
+            let save = self.i;
+            let neg_lo = self.eat_op("-");
+            if let Some(lo) = self.eat_number_f64() {
+                let lo = if neg_lo { -lo } else { lo };
+                if !self.eat_op("...") {
+                    return Err(s_help_site!(
+                        "P1304",
+                        "Expected '...' between the two ends of a link's range",
+                        "Write: link Nation trade 0...1",
+                    ));
+                }
+                let neg_hi = self.eat_op("-");
+                let Some(hi) = self.eat_number_f64() else {
+                    return Err(s_help_site!(
+                        "P1304",
+                        "Expected a number after '...' in a link's range",
+                        "Write: link Nation trade 0...1",
+                    ));
+                };
+                let hi = if neg_hi { -hi } else { hi };
+                if hi < lo {
+                    return Err(s_help_site!(
+                        "P1305",
+                        "A link's range must go from low to high",
+                        "Write: link Nation respect -100...100",
+                    ));
+                }
+                range = Some(ast::LinkRange::Between(lo, hi));
+            } else {
+                self.i = save;
+            }
+        }
+
+        self.skip_layout_inline();
+        if range.is_some() && self.peek_ident() != Some("by") {
+            let lo = match range { Some(ast::LinkRange::Between(lo, _)) => lo, _ => 0.0 };
+            let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+            let formula = ast::Expr::Number(format!("{lo}"), span.clone());
+            return Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: false, range, span }));
+        }
 
         self.skip_layout();
 
         if self.peek_ident() != Some("by") {
             return Err(s_help_site!(
                 "P1301",
-                "Expected 'by' after class name in link declaration",
-                "Write: link Nation border by [ formula ]",
+                "Expected a range or 'by' after the link's name",
+                "Write: link Nation trade 0...1, or link Nation trade 0...1 by [ formula ]",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
@@ -7585,7 +7905,7 @@ impl<'t> Parser<'t> {
         }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, span }))
+        Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: true, range, span }))
     }
 
     /// Parse `ObjectName link [channel] by [ formula ]`
@@ -7631,14 +7951,26 @@ impl<'t> Parser<'t> {
             }
             let _ = self.eat_ident(); // consume 'offset'
             self.skip_layout_inline();
-            // Parse offset value (may have + or - prefix)
-            let negative = self.eat_op("-");
-            let positive = if !negative { self.eat_op("+") } else { false };
-            let Some(offset_abs) = self.eat_number_f64() else {
-                return Err(s_help_site!("P1324", "Expected numeric offset value",
+            // The offset is any number expression (`+.3`, `-amount + 1`,
+            // `row{"canada"}`), parsed whole; a plain number is kept as one.
+            let _ = self.eat_op("+");
+            let Ok(pe) = self.parse_coalesce() else {
+                return Err(s_help_site!("P1324", "Expected an offset value",
                     "Write: Rome link to Carthage on trust offset -.6"));
             };
-            let offset: f64 = if negative { -offset_abs } else { offset_abs };
+            let e = self.lower_expr(pe);
+            let literal = |e: &ast::Expr| match e {
+                ast::Expr::Number(n, _) => n.replace('_', "").parse::<f64>().ok(),
+                ast::Expr::Prefix(op, x, _) if op == "-" => match x.as_ref() {
+                    ast::Expr::Number(n, _) => n.replace('_', "").parse::<f64>().ok().map(|v| -v),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let (offset, offset_expr) = match literal(&e) {
+                Some(v) => (v, None),
+                None => (0.0, Some(e)),
+            };
             self.skip_layout_inline();
             // Optional: for N ticks
             let ticks = if self.peek_ident() == Some("for") {
@@ -7655,6 +7987,7 @@ impl<'t> Parser<'t> {
                 to_var,
                 channel,
                 offset,
+                offset_expr,
                 ticks,
                 span,
             }));
@@ -7733,6 +8066,9 @@ impl<'t> Parser<'t> {
                 "Write: Germany score | decision against Nation by [ formula ]"));
         };
         self.skip_layout();
+        let mut margin = self.parse_decision_margin()?;
+        let filter = self.parse_decision_where()?.map(|f| self.lower_expr(f));
+        if margin.is_none() { margin = self.parse_decision_margin()?; }
         if self.peek_ident() != Some("by") {
             return Err(s_help_site!("P1414", "Expected 'by'",
                 "Write: Germany score | decision against Nation by [ formula ]"));
@@ -7757,6 +8093,8 @@ impl<'t> Parser<'t> {
             formula,
             formula_min: 0.0,
             formula_max: 1.0,
+            margin,
+            filter,
             span: span.clone(),
         };
         Ok(ast::Stmt::ObjectDecision(var_name, def))
@@ -8425,7 +8763,9 @@ impl<'t> Parser<'t> {
                         self.skip_layout();
                         while !self.peek_op(")") {
                             if self.i >= self.toks.len() { break; }
-                            args.push(self.parse_compare()?);
+                            // A whole expression, `and`/`or`/`??` included,
+                            // as in any other call.
+                            args.push(self.parse_coalesce()?);
                             self.skip_layout_inline();
                             if !self.eat_op(",") { break; }
                             self.skip_layout();

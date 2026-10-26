@@ -1029,8 +1029,9 @@ impl Vm {
         if !graph.is_empty() {
             self.session.overlay_instances.retain(|i| !graph.contains(&i.host_uuid));
             if !self.session.link_offsets.is_empty() {
-                let names = crate::des_image::handed_names(&self.session, &graph);
-                self.session.link_offsets.retain(|(from, to, _), _| !names.contains(from) && !names.contains(to));
+                // Their own links went with them; links others have to them stay.
+                self.session.link_offsets.retain(|(from, _, _), _| !graph.contains(from));
+                self.session.object_link_defs.retain(|(obj, _), _| !graph.contains(obj));
             }
         }
         for u in &graph {
@@ -1065,6 +1066,11 @@ pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
         let what = if var == "this object" { var.clone() } else { format!("`{var}`") };
         return err(format!(
             "C0122: actor-not-owned: {what} belongs to the program that started this actor; an actor only has the objects handed to it in its state. Hand it over in the state, or send the actor what it needs in a message"));
+    }
+    if let Some(var) = session.moved_away.get(uuid) {
+        let what = if var == "this object" { var.clone() } else { format!("`{var}`") };
+        return err(format!(
+            "C0125: object-moved: {what} moved to another region and can no longer be used here; send that region a message instead"));
     }
     match session.handed_off.get(uuid) {
         Some(var) if var == "this object" => err(

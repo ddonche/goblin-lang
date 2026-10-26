@@ -173,8 +173,10 @@ impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == o.0.
 pub struct ObjectVal {
     pub class_name: String,
     pub fields: Rc<indexmap::IndexMap<String, Value>>,
-    pub readonly_fields: std::collections::BTreeSet<String>,
-    pub trait_fields: std::collections::BTreeSet<String>,
+    /// Shared by the copies of an object (they never change after it is
+    /// made), so copying an object doesn't copy them.
+    pub readonly_fields: Rc<std::collections::BTreeSet<String>>,
+    pub trait_fields: Rc<std::collections::BTreeSet<String>>,
     pub uuid: String,
 }
 
@@ -738,6 +740,8 @@ pub enum BuiltinId {
     Freeze,
     Swarm,
     SwarmBang,
+    /// `:move!(obj, region)`: an object moves to another region of a world.
+    MoveObject,
     Actor,
     /// `:actor(x, ...)` where `x` is a variable: that variable may refer to the state.
     ActorFromVar,

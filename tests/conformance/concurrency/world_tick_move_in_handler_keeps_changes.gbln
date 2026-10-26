@@ -1,0 +1,69 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region's handler can move an object while it takes in what other
+/// regions sent: what was sent to that object after the message follows it
+/// to its new region. Here a shop tells the workers' town to move a worker
+/// and pays the worker in the same tick; no pay is lost. On tick 4, the
+/// tick it arrives, the shop still sees it and pays it (the pay is in transit).
+<>Shop |
+    ~cash: 100
+    every 2 ticks
+        if homes != nil
+            :post(homes, {"move": 1})
+        xx
+        repeat :objects(it >> money > -1)
+            it >> money |= it >> money + 10
+            self >> cash |= self >> cash - 10
+        xx
+    end
+xx
+<>Worker |
+    ~money: 0
+xx
+homes | nil
+away | nil
+act make_shop()
+    s <> Shop | cash: 100
+    return {"things": [s]}
+xx
+act make_workers(n)
+    things | []
+    repeat :range(0, n)
+        w <> Worker | money: 0
+        :put_last!(things, w)
+    xx
+    return {"things": things, "have": n}
+xx
+act day(st, msg)
+    if :has(msg, "homes")
+        homes |= msg{"homes"}
+    elif :has(msg, "away")
+        away |= msg{"away"}
+    elif :has(msg, "move") and away != nil
+        repeat :objects(it >> money > -1)
+            :move!(it, away)
+        xx
+    elif :has(msg, "tick")
+        :update!(st{"have"}, :len(:objects(it >> money > -1)))
+    xx
+    return st
+xx
+shops | :actor(make_shop(), day)
+old_town | :actor(make_workers(1), day)
+new_town | :actor(make_workers(0), day)
+:post(shops, {"homes": old_town})
+:post(old_town, {"away": new_town})
+repeat :range(1, 5) as t
+    tick([shops, old_town, new_town])
+    total | 0
+    repeat :objects(it >> cash > -1)
+        total |= total + (it >> cash)
+    xx
+    repeat :objects(it >> money > -1)
+        total |= total + (it >> money)
+    xx
+    o | :await(:request(old_town, {"ask": 1}))
+    n | :await(:request(new_town, {"ask": 1}))
+    oh | o{"have"}
+    nh | n{"have"}
+    say("tick {t}: total {total}; old town {oh}, new town {nh}")
+xx

@@ -1,0 +1,26 @@
+/// known-gap: interp takes only a number after `at` and `for`
+/// `overlay X on host at s for n ticks` takes expressions for the strength
+/// and the number of ticks, worked out when the statement runs. A number
+/// on its own works as before.
+<>F |
+    ~hp: 10
+    ~power: 6
+xx
+overlay Stunned |
+end
+a <> F | hp: 10, power: 6
+rounds | 2
+overlay Stunned on a at a >> power / 10 for rounds + 1 ticks
+s | :overlay_strength("Stunned", a)
+say("strength {s}")
+repeat :range(1, 5) as d
+    tick()
+    left | :overlays_of(a)
+    say("tick {d}: {left}")
+xx
+act stun(f, n)
+    overlay Stunned on f at .5 for n ticks
+xx
+stun(a, 1)
+tick()
+say(:overlays_of(a))

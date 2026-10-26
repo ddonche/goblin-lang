@@ -1014,11 +1014,15 @@ impl Compiler {
                     goblin_ast::Expr::Ident(name, _) => name.clone(),
                     _ => String::new(),
                 };
+                if let Some(e) = &apply.strength_expr { self.compile_expr(e)?; }
+                if let Some(e) = &apply.duration_expr { self.compile_expr(e)?; }
                 let i = self.op_data(crate::opcode::OpData::OverlayApply {
                     overlay_name: apply.overlay_name.clone(),
                     host_var_name,
                     strength: apply.strength,
                     duration_override: apply.duration_override,
+                    strength_on_stack: apply.strength_expr.is_some(),
+                    duration_on_stack: apply.duration_expr.is_some(),
                 });
                 self.emit(Opcode::OverlayApply(i));
             }
@@ -1034,16 +1038,30 @@ impl Compiler {
             Stmt::LinkDef(def) => {
                 let i = self.op_data(crate::opcode::OpData::LinkDef(Box::new(def.clone()))); self.emit(Opcode::LinkDef(i));
             }
+            // Links belong to the objects the variables hold now, so the
+            // objects are loaded first (`self link to target` in an action
+            // reaches the two objects it was called with).
             Stmt::ObjectLinkDef(def) => {
+                self.compile_expr(&Expr::Ident(def.object_var.clone(), def.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ObjectLinkDef(Box::new(def.clone()))); self.emit(Opcode::ObjectLinkDef(i));
             }
             Stmt::LinkOffset(s) => {
+                self.compile_expr(&Expr::Ident(s.from_var.clone(), s.span.clone()))?;
+                self.compile_expr(&Expr::Ident(s.to_var.clone(), s.span.clone()))?;
+                match &s.offset_expr {
+                    Some(e) => self.compile_expr(e)?,
+                    None => self.compile_expr(&Expr::Number(format!("{}", s.offset), s.span.clone()))?,
+                }
                 let i = self.op_data(crate::opcode::OpData::LinkOffset(Box::new(s.clone()))); self.emit(Opcode::LinkOffset(i));
             }
             Stmt::ClearLink(s) => {
+                self.compile_expr(&Expr::Ident(s.from_var.clone(), s.span.clone()))?;
+                self.compile_expr(&Expr::Ident(s.to_var.clone(), s.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ClearLink(Box::new(s.clone()))); self.emit(Opcode::ClearLink(i));
             }
             Stmt::ObjectDecision(var_name, def) => {
+                // The object the variable holds now: the decision is its own.
+                self.compile_expr(&Expr::Ident(var_name.clone(), def.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ObjectDecision {
                     var_name: var_name.clone(),
                     def: Box::new(def.clone()),
@@ -1284,20 +1302,51 @@ impl Compiler {
                     // Resolve `{name}` placeholders to the variables in scope here
                     // (locals, captured upvalues, globals) so shadowed and
                     // block-local names interpolate the right binding.
+                    // Placeholders are worked out in the order they are written,
+                    // so `{bump(n)} {n}` reads `n` after the call changed it.
                     let mut names: Vec<String> = Vec::new();
-                    for name in interp_placeholder_names(s) {
-                        let ok = match self.scope().find_local_entry(&name) {
-                            Some((i, _)) => self.scope().local_meta[i].bound,
-                            None => true,
-                        };
-                        if !ok { continue; }
-                        match self.resolve_load(&name) {
-                            Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
-                                self.emit(op);
-                                names.push(name);
+                    for (text, e) in interp_placeholders(s) {
+                        if names.iter().any(|n| *n == text) { continue; }
+                        let Some(e) = e else {
+                            let name = text;
+                            let ok = match self.scope().find_local_entry(&name) {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => true,
+                            };
+                            if !ok { continue; }
+                            match self.resolve_load(&name) {
+                                Ok(op @ (Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_))) => {
+                                    self.emit(op);
+                                    names.push(name);
+                                }
+                                _ => {}
                             }
-                            _ => {}
-                        }
+                            continue;
+                        };
+                        // `{n - wins}`, `{lost[0]}`, `{self >> hp}`: an expression whose
+                        // names are all variables in scope, and whose calls are to
+                        // actions or builtins that exist, is worked out here and
+                        // filled in. Anything else in braces stays as written.
+                        let mut idents = Vec::new();
+                        let mut callees = Vec::new();
+                        // A name or a call in it: `{1,3}` in a regex is not an expression to fill in.
+                        if !interp_expr_idents(&e, &mut idents, &mut callees) || (idents.is_empty() && !interp_has_call(&e)) { continue; }
+                        let all_known = idents.iter().all(|name| {
+                            match self.scope().find_local_entry(name) {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => self.scopes.len() > 1 && self.scopes[..self.scopes.len() - 1].iter().any(|sc| sc.find_local(name).is_some())
+                                    || self.global_index(name).is_some(),
+                            }
+                        }) && callees.iter().all(|name| {
+                            let bare = name.trim_start_matches(':');
+                            self.user_actions.contains(bare) || builtin_by_name(name).is_some()
+                                || builtin_by_name(bare).is_some()
+                                || self.scope().find_local_entry(bare).is_some_and(|(i, _)| self.scope().local_meta[i].bound)
+                                || self.global_index(bare).is_some()
+                        });
+                        if !all_known { continue; }
+                        self.compile_expr(&e)?;
+                        names.push(text);
                     }
                     if names.is_empty() {
                         self.emit(Opcode::StringInterp(idx));
@@ -2838,7 +2887,7 @@ impl Compiler {
                 let val_slot = self.scope_mut().declare_local(val_name.as_deref().unwrap_or("val"));
                 let idx_slot = self.scope_mut().declare_local("idx");
                 let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
-                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                    id: loop_id, item: item_slot, key: key_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0, named: as_name.is_some(),
                 }));
                 // RepeatStart sets the loop up from the value on the stack.
                 self.emit(Opcode::RepeatStart(rep));
@@ -2901,7 +2950,7 @@ impl Compiler {
                 let loop_id = self.scope().repeat_loops;
                 self.scope_mut().repeat_loops += 1;
                 let rep = self.op_data(crate::opcode::OpData::Repeat(crate::opcode::RepeatSlots {
-                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0,
+                    id: loop_id, item: var_slot, key: var_slot, val: val_slot, idx: idx_slot, cond_len: 0, exit: 0, named: false,
                 }));
                 self.emit(Opcode::RepeatStart(rep));
                 let loop_start = self.scope_mut().bytecode.len();
@@ -3709,6 +3758,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "freeze"                         => BuiltinId::Freeze,
         "swarm"                          => BuiltinId::Swarm,
         "swarm!"                         => BuiltinId::SwarmBang,
+        "move!"                          => BuiltinId::MoveObject,
         "actor"                          => BuiltinId::Actor,
         "post"                           => BuiltinId::Post,
         "receive"                        => BuiltinId::Receive,
@@ -3943,7 +3993,7 @@ fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
         "write_text!", "write_json!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-        "delete_object!", "delete_overlays_on!", "swarm!",
+        "delete_object!", "delete_overlays_on!", "swarm!", "move!",
     ];
     bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }
@@ -3997,11 +4047,13 @@ fn reap_bang_position(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The `{name}` placeholders of an interpolated string, in order, without
-/// duplicates (escaped `\{`, `{{{…}}}` tokens and `{#…}` box keys skipped).
-fn interp_placeholder_names(s: &str) -> Vec<String> {
+/// The `{...}` placeholders of an interpolated string, in the order they are
+/// written, without duplicates: a plain name with None, anything else with
+/// the expression it parses as (text that isn't one expression is left
+/// out). Escapes, `{{{…}}}` tokens and `{#…}` box keys are skipped.
+fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
     let chars: Vec<char> = s.chars().collect();
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, Option<Expr>)> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '\\' { i += 2; continue; }
@@ -4016,11 +4068,13 @@ fn interp_placeholder_names(s: &str) -> Vec<String> {
             while j < chars.len() && chars[j] != '}' { j += 1; }
             if j >= chars.len() { break; }
             let inner: String = chars[i + 1..j].iter().collect();
-            let inner = inner.trim();
-            if !inner.is_empty() && inner.chars().all(|c| c.is_alphanumeric() || c == '_')
-                && !out.iter().any(|n| n == inner)
-            {
-                out.push(inner.to_string());
+            let text = inner.trim();
+            if !text.is_empty() && !out.iter().any(|(t, _)| t == text) {
+                if text.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                    out.push((text.to_string(), None));
+                } else if !text.starts_with('#') && !text.contains(['{', '\n']) {
+                    if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), Some(e))); }
+                }
             }
             i = j + 1;
             continue;
@@ -4028,6 +4082,49 @@ fn interp_placeholder_names(s: &str) -> Vec<String> {
         i += 1;
     }
     out
+}
+
+/// `text` as one expression, or None.
+fn parse_interp_expr(text: &str) -> Option<Expr> {
+    let toks = goblin_lexer::lex(text, "<interpolation>").ok()?;
+    let module = goblin_parser::Parser::new(&toks).parse_module().ok()?;
+    match module.items.as_slice() {
+        [Stmt::Expr(e)] => Some(e.clone()),
+        _ => None,
+    }
+}
+
+/// Whether an interpolated expression calls something (`{:len(xs)}`).
+fn interp_has_call(e: &Expr) -> bool {
+    match e {
+        Expr::FreeCall(..) | Expr::Call(..) | Expr::OptCall(..) => true,
+        Expr::Binary(l, _, r, _) => interp_has_call(l) || interp_has_call(r),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_has_call(x),
+        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_has_call(a) || interp_has_call(b),
+        _ => false,
+    }
+}
+
+/// The variable names an interpolated expression reads. False when it holds
+/// something other than names, literals, operators, `>>` fields, indexes
+/// and calls: then it is not filled in.
+fn interp_expr_idents(e: &Expr, out: &mut Vec<String>, calls: &mut Vec<String>) -> bool {
+    let all = |xs: &[Expr], out: &mut Vec<String>, calls: &mut Vec<String>| xs.iter().all(|x| interp_expr_idents(x, out, calls));
+    match e {
+        Expr::Ident(n, _) => { out.push(n.clone()); true }
+        Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
+        Expr::Str(t, _) => !t.contains('{'),
+        Expr::Binary(l, _, r, _) => interp_expr_idents(l, out, calls) && interp_expr_idents(r, out, calls),
+        Expr::Prefix(_, x, _) => interp_expr_idents(x, out, calls),
+        Expr::Array(xs, _) => all(xs, out, calls),
+        Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out, calls),
+        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out, calls) && interp_expr_idents(b, out, calls),
+        // The name called must exist too (checked by the caller).
+        Expr::FreeCall(name, args, _) => { calls.push(name.clone()); all(args, out, calls) }
+        Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) =>
+            interp_expr_idents(r, out, calls) && all(args, out, calls),
+        _ => false,
+    }
 }
 
 /// How an indexed expression reads in the source, for bracket errors.

@@ -26,6 +26,10 @@ pub struct OverlayDef {
     pub spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
     pub transitions: Vec<goblin_ast::TransitionDef>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
+    /// `on end: action`: called with the host when the overlay runs out.
+    pub on_end: Option<String>,
+    /// `each tick:` changes, made every tick and never taken back.
+    pub each_tick: Vec<(String, goblin_ast::Expr)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +46,10 @@ pub struct OverlayInstance {
     pub age: u32,
     pub ticks_remaining: Option<u32>,
     pub count: u64,
-    pub original_values: Vec<(String, Value)>,
+    /// What this overlay's `modifies:` has added to each field. A timed
+    /// overlay takes exactly that back when it ends, so other changes to
+    /// the field meanwhile stay.
+    pub applied: Vec<(String, f64)>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
     pub des_id: OverlayInstanceId,
 }
@@ -54,8 +61,12 @@ pub struct LinkDef {
     pub class_name: String,
     pub channel: String,
     pub formula: goblin_ast::Expr,
-    pub formula_min: f64,
-    pub formula_max: f64,
+    /// Whether `by [ formula ]` was written (else the link starts at 0,
+    /// kept inside its range).
+    pub has_formula: bool,
+    /// The values the link can take (None only for an object's own
+    /// formula, which takes its class's range).
+    pub range: Option<goblin_ast::LinkRange>,
 }
 
 /// The smallest arena size that triggers a collection.
@@ -140,10 +151,21 @@ pub struct Session {
     /// In an actor: objects that stayed with the program that started it
     /// (uuid -> the variable that names them there), for a clear error.
     pub kept_home: HashMap<String, String>,
+    /// Objects this region moved to another one (`:move!`), and the
+    /// variable each was stored under, so reading one says where it went.
+    pub(crate) moved_away: HashMap<String, String>,
+    /// While a DES action runs: the objects it changed, so their erase
+    /// transitions are checked as soon as it finishes.
+    pub(crate) des_touched: Option<Vec<String>>,
+    /// Objects whose `on erase:` action is running: not erased again.
+    pub(crate) des_erasing: Vec<String>,
     /// The main program's world of regions (`tick(regions)`).
     pub world: Option<crate::world::World>,
     /// In a region, while it runs a world tick.
     pub(crate) region: Option<crate::world::RegionCtx>,
+    /// In a region: its copies of the other regions' objects, kept between
+    /// ticks so the next tick rebuilds only the fields that changed.
+    pub(crate) remote_copies: HashMap<String, crate::value::Value>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -276,6 +298,12 @@ pub struct Session {
 }
 
 impl Session {
+    /// Notes that the object `uuid` changed, when a DES action is running.
+    #[inline]
+    pub(crate) fn touch(&mut self, uuid: &str) {
+        if let Some(t) = &mut self.des_touched { t.push(uuid.to_string()); }
+    }
+
     /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.
     /// A GLAM's top-level code writes only into its own namespace (B0102)
     /// and only names its `[provides]` lists (B0105); a tether to a name
@@ -335,9 +363,13 @@ impl Session {
             plain_collections_kept: Default::default(),
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
+            moved_away: HashMap::new(),
+            des_touched: None,
+            des_erasing: Vec::new(),
             kept_home: HashMap::new(),
             world: None,
             region: None,
+            remote_copies: HashMap::new(),
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,

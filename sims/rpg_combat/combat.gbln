@@ -1,0 +1,186 @@
+/// RPG combat on DES: a party of three against a band of monsters.
+/// Every tick is one round. Each fighter picks a target with a decision
+/// and acts on it; a fighter at 0 hp falls (transition erase, `on erase:`).
+///
+///   attack   every fighter strikes an enemy, the most hurt one first
+///   heal     the cleric mends the most hurt ally instead, when one is
+///            below half health
+///   Poisoned the shaman's bite poisons: 2 damage a round for 3 rounds
+///   Guarded  the knight raises a shield when hurt: +3 defence, 2 rounds
+
+/// Messages are printed only for the battle that is shown.
+loud | false
+
+<>Fighter |
+    ~name: ""
+    /// 0: the party, 1: the monsters.
+    ~side: 0
+    ~role: ""
+    ~hp: 10
+    ~max_hp: 10
+    ~atk: 4
+    ~def: 1
+    ~speed: 3
+    on erase: fall
+    /// The cleric mends the most hurt ally below half health; everyone
+    /// else (and the cleric, when nobody needs healing) strikes the most
+    /// hurt enemy. `one of`: a fighter that heals doesn't also strike.
+    heal | decision against Fighter where [
+        self >> role == "cleric" and target >> side == self >> side and target >> hp * 2 < target >> max_hp
+    ] by [
+        (target >> max_hp - target >> hp) / target >> max_hp
+    ]
+    judge using heal
+        >= 0: mend(target)
+    end
+    attack | decision against Fighter where [ target >> side != self >> side ] by [
+        (target >> max_hp - target >> hp) / target >> max_hp
+    ]
+    judge using attack
+        >= 0: strike(target)
+    end
+    one of heal, attack
+    /// The fastest act first.
+    order by [ self >> speed ] desc
+    transition erase when (self >> hp) <= 0
+    end
+xx
+
+/// 2 damage a round for 3 rounds; a new bite starts it again.
+overlay Poisoned |
+    lasts 3 ticks
+    replaces
+    each tick:
+        hp - 2
+    end
+end
+
+/// +3 defence for 2 rounds, taken back when it ends.
+overlay Guarded |
+    lasts 2 ticks
+    on end: lower_shield
+    modifies:
+        def + 3
+    end
+end
+
+act lower_shield(f)
+    if loud
+        say("  {f >> name} lowers the shield")
+    xx
+xx
+
+act mend(f, t)
+    amount | :min(6 + (pick 1 from 0...4), t >> max_hp - t >> hp)
+    t >> hp |= t >> hp + amount
+    if loud
+        say("  {f >> name} heals {t >> name} for {amount}")
+    xx
+xx
+
+act strike(f, t)
+    dmg | :max(1, f >> atk - t >> def + (pick 1 from 0...3))
+    t >> hp |= t >> hp - dmg
+    if loud
+        say("  {f >> name} hits {t >> name} for {dmg} ({:max(0, t >> hp)} left)")
+    xx
+    if t >> hp > 0 and f >> role == "shaman" and (pick 1 from 1...2) == 1
+        overlay Poisoned on t at 1
+        if loud
+            say("  {t >> name} is poisoned")
+        xx
+    xx
+    if t >> hp > 0 and t >> role == "knight" and t >> hp * 2 < t >> max_hp and :overlay_strength("Guarded", t) == nil
+        overlay Guarded on t at 1
+        if loud
+            say("  {t >> name} raises a shield")
+        xx
+    xx
+xx
+
+act fall(f)
+    if loud
+        say("  {f >> name} falls")
+    xx
+xx
+
+act fighter(name, side, role, hp, atk, def, speed)
+    f <> Fighter | name: name, side: side, role: role, hp: hp, max_hp: hp, atk: atk, def: def, speed: speed
+    return f
+xx
+
+/// One battle from a seed: the winner, how many rounds it took, and the
+/// party's hp left.
+act battle(seed)
+    :rand_seed(seed)
+    /// Start from an empty field: the last battle's survivors go.
+    repeat :objects() as o
+        delete_object!(o)
+    xx
+    fighter("Knight", 0, "knight", 40, 7, 4, 3)
+    fighter("Archer", 0, "archer", 28, 8, 2, 6)
+    fighter("Cleric", 0, "cleric", 30, 4, 3, 4)
+    fighter("Goblin 1", 1, "goblin", 15, 6, 1, 5)
+    fighter("Goblin 2", 1, "goblin", 15, 6, 1, 5)
+    fighter("Goblin 3", 1, "goblin", 15, 6, 1, 5)
+    fighter("Ogre", 1, "ogre", 50, 10, 3, 2)
+    fighter("Shaman", 1, "shaman", 20, 5, 1, 4)
+    round | 0
+    party | 3
+    monsters | 5
+    repeat party > 0 and monsters > 0 and round < 50
+        round |= round + 1
+        if loud
+            say("round {round}")
+        xx
+        tick()
+        party |= :len(:objects(it >> side == 0))
+        monsters |= :len(:objects(it >> side == 1))
+    xx
+    left | 0
+    repeat :objects(it >> side == 0)
+        left |= left + (it >> hp)
+    xx
+    winner | "the monsters win"
+    if party > 0
+        winner |= "the party wins"
+    xx
+    return {"winner": winner, "rounds": round, "party": party, "hp": left}
+xx
+
+/// 1,000 battles, spread over the cores: each one starts from this state.
+n | 1000
+if :env("BATTLES") != ""
+    n |= :int(:env("BATTLES"))
+xx
+workers | 4
+if :env("WORKERS") != ""
+    workers |= :int(:env("WORKERS"))
+xx
+results | :swarm(:range(1, n + 1), battle, workers)
+wins | 0
+rounds | 0
+lost | [0, 0, 0, 0]
+repeat results as r
+    if r{"winner"} == "the party wins"
+        wins |= wins + 1
+    xx
+    rounds |= rounds + r{"rounds"}
+    k | 3 - r{"party"}
+    :update!(lost[k], lost[k] + 1)
+xx
+say("{n} battles: the party wins {wins}, the monsters {n - wins}")
+say("average length: {:round(rounds / n, 1)} rounds")
+say("party members lost: none {lost[0]}, one {lost[1]}, two {lost[2]}, all {lost[3]}")
+
+say("")
+say("battle 7, round by round:")
+loud |= true
+r | battle(7)
+/// A map read can't go inside `{}` in a string (FINDINGS.md, 9).
+w | r{"winner"}
+rr | r{"rounds"}
+say("{w} in {rr} rounds")
+repeat :objects(it >> hp > -100) as f
+    say("  {f >> name}: {f >> hp} hp")
+xx

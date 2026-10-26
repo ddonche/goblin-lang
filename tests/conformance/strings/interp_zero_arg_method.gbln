@@ -1,3 +1,4 @@
-/// Docs disagree; decided 2026-10-06 that the implementation is canonical (DECISIONS.md, "Docs vs both engines"). The docs need updating.
+/// known-gap: interp leaves an expression in braces as written
+/// `{name.slug}` is an expression (a zero-argument method), filled in like `{x + 1}` (approved 2026-10-26).
 name | "Hello World"
 say("/users/{name.slug}")

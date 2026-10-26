@@ -1,0 +1,89 @@
+/// An epidemic on DES: a sickness spreads between people in the same town,
+/// lasts a while, and either kills or leaves its host immune. Each town is
+/// a region; tick(towns) runs one day in all of them at once, and people
+/// now and then travel to the next town (`:move!`), carrying it with them.
+///
+///   Sick    overlay: costs 1 health a day for 8 days; when it ends the
+///           host is immune.
+///           Each day each healthy person in a sick person's town catches
+///           it with a chance of 4 in 1,000 (`spreads ... at .004`).
+///   Person  dies at 0 health (transition erase).
+
+:rand_seed(11)
+n_towns | 4
+people_per_town | 100
+days | 120
+if :env("DAYS") != ""
+    days |= :int(:env("DAYS"))
+xx
+
+all_towns | []
+
+<>Person |
+    ~kind: "person"
+    ~town: 0
+    ~health: 10
+    ~immune: 0
+    every 1 tick
+        if n_towns > 1 and (pick 1 from 1...30) == 1
+            to | (self >> town + 1) % n_towns
+            self >> town |= to
+            :move!(self, all_towns[to])
+        xx
+    end
+    transition erase when (self >> health) <= 0
+    end
+xx
+
+overlay Sick |
+    hosts Person
+    lasts 8 ticks
+    spreads where target >> town == self >> town and target >> immune == 0 at .004 per tick
+    each tick:
+        health - 1
+    end
+    on end: recover
+end
+
+act recover(p)
+    p >> immune |= 1
+xx
+
+act make_town(t)
+    things | []
+    repeat :range(0, people_per_town)
+        p <> Person | town: t, health: 6 + (pick 1 from 0...8)
+        /// Patient zero, in town 0.
+        if t == 0 and :len(things) == 0
+            overlay Sick on p at 1
+        xx
+        :put_last!(things, p)
+    xx
+    return {"t": t, "things": things}
+xx
+
+act town_day(st, msg)
+    if :has(msg, "towns")
+        all_towns |= msg{"towns"}
+    xx
+    return st
+xx
+
+towns | []
+repeat :range(0, n_towns) as t
+    :put_last!(towns, :actor(make_town(t), town_day))
+xx
+repeat towns as tw
+    :post(tw, {"towns": towns})
+xx
+
+say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
+repeat :range(1, days + 1) as d
+    tick(towns)
+    if d % 5 == 0 or d == days
+        alive | :len(:objects(it >> kind == "person"))
+        sick | :len(:overlays(it >> overlay_name == "Sick"))
+        immune | :len(:objects(it >> immune == 1))
+        say("day {d}: alive {alive}, sick {sick}, immune {immune}, dead {n_towns * people_per_town - alive}")
+    xx
+xx

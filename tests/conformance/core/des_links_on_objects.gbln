@@ -1,0 +1,57 @@
+/// known-gap: interp keeps link changes under variable names, so `self link to target` in an action never reaches the two objects
+/// Links belong to the objects. `self link to target` in an action changes
+/// the link between the two objects it was called with; objects made in a
+/// loop each have their own; the change can be any number expression; a
+/// `bool` link is true or false; the program's formula decides what a link
+/// means (here, in a decision's `where`).
+<>Nation |
+    ~name: ""
+    ~gold: 0
+    act praise(target)
+        self link to target on respect offset +3
+    xx
+    ally | decision against Nation where [ :link_score(self, target, "respect") >= 5 ] by [ :link_score(self, target, "respect") ]
+    judge using ally
+        >= 0: send_gold(target)
+    end
+xx
+link Nation respect -10...10
+link Nation border bool
+act send_gold(n, to)
+    to >> gold |= to >> gold + 1
+xx
+names | ["usa", "canada", "mexico"]
+all | []
+repeat names as nm
+    n <> Nation | name: nm
+    :put_last!(all, n)
+xx
+usa | all[0]
+canada | all[1]
+mexico | all[2]
+/// A table of starting links, set by a loop.
+start | {"usa": {"canada": 6, "mexico": 2}, "canada": {"usa": 1}}
+repeat all as a
+    repeat all as b
+        row | start{a >> name} ?? {}
+        if :has(row, b >> name)
+            a link to b on respect offset row{b >> name}
+        xx
+    xx
+xx
+say(:link_score(usa, canada, "respect"))
+say(:link_score(canada, usa, "respect"))
+say(:link_score(usa, mexico, "respect"))
+usa >> praise(mexico)
+say(:link_score(usa, mexico, "respect"))
+say(:link_score(mexico, usa, "respect"))
+say(:link_score(usa, canada, "border"))
+usa link to canada on border offset 1
+say(:link_score(usa, canada, "border"))
+tick()
+say("{canada >> gold} {mexico >> gold} {usa >> gold}")
+attempt
+    say(:link_score(usa, canada, "trade"))
+rescue e
+    say(:has("{e}", "R1228"))
+xx

@@ -1,0 +1,25 @@
+/// known-gap: interp skips a target whose score fails, so the decision silently does nothing
+/// A decision formula that fails, or gives something other than a number,
+/// stops the tick with an error that names the decision. Here a comparison
+/// gives a bool, and a bool times a number is a type error.
+<>F |
+    ~side: 0
+    ~hp: 10
+    attack | decision against F by [
+        (target >> side != self >> side) * (target >> hp)
+    ]
+    judge using attack
+        > 0: hit(target)
+    end
+xx
+act hit(f, t)
+    say("hit")
+xx
+a <> F | side: 0
+b <> F | side: 1
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "R1220: decision-formula: decision `attack` of F"))
+    say(:has("{e}", "got bool"))
+xx

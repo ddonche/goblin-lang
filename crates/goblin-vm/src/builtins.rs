@@ -237,6 +237,31 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             })
         }
         BuiltinId::Round => {
+            // `:round(x)` gives a whole number; `:round(x, n)` keeps n digits
+            // after the point (a float), and a negative n rounds to tens,
+            // hundreds, ... (a whole number).
+            if args.len() == 2 {
+                let digits = match read(1)? {
+                    Value::Int(d) if (-18..=15).contains(&d) => d,
+                    Value::Int(d) => return Err(GoblinError::Runtime(format!(
+                        "R0200: round: {d} digits is out of range (use -18 to 15)"))),
+                    other => return Err(GoblinError::type_error("int (digits)", other.type_name(), "round")),
+                };
+                let x = match read(0)? {
+                    Value::Int(n) => n as f64,
+                    Value::Float(f) => f,
+                    other => return Err(GoblinError::type_error("number", other.type_name(), "round")),
+                };
+                let scale = 10f64.powi(digits.unsigned_abs() as i32);
+                return Ok(if digits >= 0 {
+                    match read(0)? {
+                        Value::Int(n) => Value::Int(n),
+                        _ => Value::Float((x * scale).round() / scale),
+                    }
+                } else {
+                    Value::Int(((x / scale).round() * scale) as i64)
+                });
+            }
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Int(n)   => Value::Int(n),
@@ -3826,6 +3851,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::CloneObject => {
             Err(GoblinError::Runtime("clone_object: must be called through VM dispatch".to_string()))
         }
+        BuiltinId::MoveObject => {
+            Err(GoblinError::Runtime("move!: must be called through VM dispatch".to_string()))
+        }
         BuiltinId::DeleteObject if args.len() == 3 => {
             // delete_object!(x): [x's value, "x", argc] from the compiler.
             let var_name = bang_object_target(&args, "delete_object!")?;
@@ -3867,9 +3895,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
-            let host_var = match read(0)? { Value::Str(s) => s, _ => return Ok(Value::Array(vec![])) };
+            // The host: the object itself, or the name of its variable.
+            let host = read(0)?;
+            let on_host = |oi: &crate::session::OverlayInstance| match &host {
+                Value::Ref(u) => *oi.host_uuid == **u,
+                Value::Object(o) => *oi.host_uuid == *o.uuid,
+                Value::Str(v) => *oi.host_var == **v,
+                _ => false,
+            };
             let overlays: Vec<Value> = session.overlay_instances.iter()
-                .filter(|oi| oi.host_var == host_var)
+                .filter(|oi| on_host(oi))
                 .map(|oi| Value::Str(oi.overlay_name.clone().into()))
                 .collect();
             Ok(Value::Array(overlays))
@@ -3879,8 +3914,18 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::Runtime(format!("overlay_strength: expected 2 args, got {}", args.len())));
             }
             let overlay = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            let host_var = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "overlay_strength")) };
-            match session.overlay_instances.iter().find(|oi| oi.host_var == host_var && oi.overlay_name == overlay) {
+            // The host: the object itself, or the name of its variable.
+            let host = read(1)?;
+            let on_host = |oi: &crate::session::OverlayInstance| match &host {
+                Value::Ref(u) => *oi.host_uuid == **u,
+                Value::Object(o) => *oi.host_uuid == *o.uuid,
+                Value::Str(v) => *oi.host_var == **v,
+                _ => false,
+            };
+            if !matches!(host, Value::Ref(_) | Value::Object(_) | Value::Str(_)) {
+                return Err(GoblinError::type_error("object or str", host.type_name(), "overlay_strength"));
+            }
+            match session.overlay_instances.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay) {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
             }
@@ -5361,21 +5406,9 @@ fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
         session.des_store.erase(handle);
     }
     session.object_decisions.remove(var_name);
-    session.object_link_defs.retain(|(obj, _), _| obj != var_name);
-    let dropped_keys: Vec<(String, String, String)> = session.link_offsets.keys()
-        .filter(|(from, to, _)| from == var_name || to == var_name)
-        .cloned()
-        .collect();
-    for key in &dropped_keys {
-        if let Some(link_id) = session.des_link_ids.remove(key) {
-            let from_h = session.des_store.handle_for_name(&key.0);
-            let to_h = session.des_store.handle_for_name(&key.1);
-            if let (Some(fh), Some(th)) = (from_h, to_h) {
-                session.des_index.remove_link(fh, th, link_id);
-            }
-        }
-    }
-    session.link_offsets.retain(|(from, to, _), _| from != var_name && to != var_name);
+    session.object_decisions.remove(uuid);
+    session.object_link_defs.retain(|(obj, _), _| obj != uuid);
+    session.link_offsets.retain(|(from, to, _), _| from != uuid && to != uuid);
 }
 
 pub fn fmt_value_raw(v: &Value) -> String {
@@ -5583,7 +5616,7 @@ fn rng_bounded(session: &mut Session, bound: u64) -> u64 {
     }
 }
 
-fn rng_u01(session: &mut Session) -> f64 {
+pub(crate) fn rng_u01(session: &mut Session) -> f64 {
     let x = (session.next_u128() >> 64) as u64;
     (x as f64) / (u64::MAX as f64)
 }

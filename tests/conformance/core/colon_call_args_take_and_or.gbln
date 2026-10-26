@@ -1,0 +1,13 @@
+/// A `:builtin(...)` argument is a whole expression: `and`, `or` and `??`
+/// work there as in any other call.
+a | 3
+say(:str(a > 1 and a < 5))
+say(:str(a > 5 or a == 3))
+say(:max(nil ?? 4, 2))
+<>Thing |
+    ~n: 0
+xx
+p <> Thing | n: 1
+q <> Thing | n: 2
+r <> Thing | n: 3
+say(:len(:objects(it >> n > 1 and it >> n < 4)))

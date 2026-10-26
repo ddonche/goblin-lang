@@ -1,0 +1,151 @@
+/// Predator and prey on DES: rabbits eat grass, foxes eat rabbits, and both
+/// starve without food. Each meadow is a region; tick(meadows) runs one day
+/// in all of them at once, and animals now and then wander to the next
+/// meadow (`:move!`).
+///
+///   Grass   one patch per meadow; grows back 80 a day, up to 400.
+///   Rabbit  burns 1 energy a day; grazes (decision `graze`); has a kit
+///           when well fed; starves at 0.
+///   Fox     burns 1 energy a day; when hungry, hunts a rabbit in its
+///           meadow (decision `hunt`; the more rabbits there, the likelier
+///           it succeeds); has a cub when well fed; starves at 0.
+///
+/// The two populations rise and fall in turn, about every 90 days.
+///
+/// A rabbit that is caught is set to 0 energy, and erased as soon as the
+/// hunt is over: it can't graze or be hunted again that day.
+
+:rand_seed(7)
+n_meadows | 4
+days | 360
+if :env("DAYS") != ""
+    days |= :int(:env("DAYS"))
+xx
+if :env("MEADOWS") != ""
+    n_meadows |= :int(:env("MEADOWS"))
+xx
+
+/// The meadows, for wandering: each learns the list once all exist.
+all_meadows | []
+
+<>Grass |
+    ~meadow: 0
+    ~amount: 400
+    every 1 tick
+        self >> amount |= :min(400, self >> amount + 80)
+    end
+xx
+
+<>Rabbit |
+    /// Only for counting: nothing can ask an object its class (FINDINGS.md, 1).
+    ~kind: "rabbit"
+    ~meadow: 0
+    ~energy: 6
+    ~born: 0
+    every 1 tick
+        self >> energy |= self >> energy - 1
+        if self >> energy >= 10 and (pick 1 from 1...4) == 1
+            self >> energy |= self >> energy - 5
+            kit <> Rabbit | meadow: self >> meadow, energy: 4, born: 1
+        xx
+        wander(self)
+    end
+    graze | decision against Grass where [
+        target >> meadow == self >> meadow and target >> amount >= 1
+    ] by [ target >> amount ]
+    judge using graze
+        >= 0: eat_grass(target)
+    end
+    transition erase when (self >> energy) <= 0
+    end
+xx
+
+<>Fox |
+    ~kind: "fox"
+    ~meadow: 0
+    ~energy: 12
+    ~born: 0
+    every 1 tick
+        self >> energy |= self >> energy - 1
+        if self >> energy >= 25 and (pick 1 from 1...4) == 1
+            self >> energy |= self >> energy - 12
+            cub <> Fox | meadow: self >> meadow, energy: 10, born: 1
+        xx
+        wander(self)
+    end
+    /// A fox hunts only when it is hungry.
+    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ] by [ 1 ]
+    judge using hunt
+        >= 0: catch(target)
+    end
+    transition erase when (self >> energy) <= 0
+    end
+xx
+
+act eat_grass(r, g)
+    g >> amount |= g >> amount - 1
+    r >> energy |= :min(14, r >> energy + 2)
+xx
+
+/// The more rabbits in the meadow, the likelier a hunt succeeds: a few
+/// rabbits hide well. Counting them takes a scan (FINDINGS.md, 2).
+act catch(f, r)
+    here | :len(:objects(it >> kind == "rabbit" and it >> meadow == f >> meadow))
+    if (pick 1 from 1...(here + 400)) <= here
+        r >> energy |= 0
+        f >> energy |= :min(40, f >> energy + 8)
+    xx
+xx
+
+/// One animal in twenty a day wanders to the next meadow.
+act wander(a)
+    if n_meadows > 1 and (pick 1 from 1...20) == 1
+        to | (a >> meadow + 1) % n_meadows
+        a >> meadow |= to
+        :move!(a, all_meadows[to])
+    xx
+xx
+
+act make_meadow(m)
+    things | []
+    g <> Grass | meadow: m
+    :put_last!(things, g)
+    repeat :range(0, 100)
+        r <> Rabbit | meadow: m, energy: 4 + (pick 1 from 0...6)
+        :put_last!(things, r)
+    xx
+    repeat :range(0, 5)
+        f <> Fox | meadow: m, energy: 8 + (pick 1 from 0...8)
+        :put_last!(things, f)
+    xx
+    return {"m": m, "things": things}
+xx
+
+act meadow_day(st, msg)
+    if :has(msg, "meadows")
+        all_meadows |= msg{"meadows"}
+    xx
+    return st
+xx
+
+meadows | []
+repeat :range(0, n_meadows) as m
+    :put_last!(meadows, :actor(make_meadow(m), meadow_day))
+xx
+repeat meadows as md
+    :post(md, {"meadows": meadows})
+xx
+
+say("predator and prey: {n_meadows} meadows, {days} days")
+repeat :range(1, days + 1) as t
+    tick(meadows)
+    if t % 10 == 0 or t == days
+        grass | 0
+        repeat :objects(it >> amount > -1) as g
+            grass |= grass + g >> amount
+        xx
+        rabbits | :len(:objects(it >> kind == "rabbit"))
+        foxes | :len(:objects(it >> kind == "fox"))
+        say("day {t}: rabbits {rabbits}, foxes {foxes}, grass {grass}")
+    xx
+xx

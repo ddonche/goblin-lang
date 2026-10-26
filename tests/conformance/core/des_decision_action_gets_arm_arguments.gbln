@@ -1,0 +1,54 @@
+/// known-gap: interp runs the class action but its field writes do not stick, and calls no program action
+/// The action a judge arm picks gets `self`, then the arguments the arm
+/// writes: `purchase(target, 3)` gives the class action the shop and 3,
+/// `rest()` gives it nothing, and `tip(target, score > .5)` gives the
+/// program action the buyer, the shop and a value worked out from `score`.
+<>Shop |
+    ~stock: 0
+    ~sold: 0
+    ~tips: 0
+xx
+<>Buyer |
+    ~spent: 0
+    ~rests: 0
+    want: 1
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        >= .5: purchase(target, 3)
+        else: rest()
+    end
+    act purchase(target, n)
+        target >> sold |= target >> sold + n
+        self >> spent |= self >> spent + 5 * n
+    end
+    act rest()
+        self >> rests |= self >> rests + 1
+    end
+xx
+<>Tipper |
+    kind: 1
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        else: tip(target, score > .5)
+    end
+xx
+act tip(t, s, generous)
+    if generous
+        s >> tips |= s >> tips + 2
+    xx
+xx
+a <> Shop | stock: 10
+b <> Buyer | spent: 0
+t <> Tipper | kind: 1
+tick()
+tick()
+say(a >> sold)
+say(b >> spent)
+say(a >> tips)
+a >> stock |= 0
+tick()
+say(b >> rests)

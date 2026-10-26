@@ -24,6 +24,8 @@ pub(crate) struct POverlayDef {
     spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
     transitions: Vec<goblin_ast::TransitionDef>,
     extra_fields: Vec<(String, PValue)>,
+    on_end: Option<String>,
+    each_tick: Vec<(String, goblin_ast::Expr)>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +37,7 @@ pub(crate) struct POverlay {
     age: u32,
     ticks_remaining: Option<u32>,
     count: u64,
-    original_values: Vec<(String, PValue)>,
+    applied: Vec<(String, f64)>,
     extra_fields: Vec<(String, PValue)>,
     des_id: u32,
 }
@@ -56,10 +58,6 @@ pub(crate) struct DesImage {
 }
 
 /// The names the handed objects were stored under.
-pub(crate) fn handed_names(session: &Session, objs: &HashSet<String>) -> HashSet<String> {
-    objs.iter().filter_map(|u| session.object_names.get(u).map(|(n, _)| n.clone())).collect()
-}
-
 fn pfields(tp: &mut ToPortable, m: &indexmap::IndexMap<String, crate::value::Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
     m.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
 }
@@ -85,6 +83,8 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
             spawn_rules: d.spawn_rules.clone(),
             transitions: d.transitions.clone(),
             extra_fields: pfields(tp, &d.extra_fields)?,
+            on_end: d.on_end.clone(),
+            each_tick: d.each_tick.clone(),
         });
     }
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
@@ -101,9 +101,8 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
         }
         img.object_names.sort();
         if !session.link_offsets.is_empty() {
-            let names = handed_names(session, objs);
             img.link_offsets = session.link_offsets.iter()
-                .filter(|((from, to, _), _)| names.contains(from) || names.contains(to))
+                .filter(|((from, _, _), _)| objs.contains(from))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             img.link_offsets.sort_by(|a, b| a.0.cmp(&b.0));
@@ -129,6 +128,8 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
             spawn_rules: d.spawn_rules.clone(),
             transitions: d.transitions.clone(),
             extra_fields,
+            on_end: d.on_end.clone(),
+            each_tick: d.each_tick.clone(),
         }));
     }
     s.overlay_defs = defs;
@@ -163,9 +164,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
         age: inst.age,
         ticks_remaining: inst.ticks_remaining,
         count: inst.count,
-        original_values: inst.original_values.iter()
-            .map(|(k, v)| Ok((k.clone(), tp.value(v)?)))
-            .collect::<Result<_, GoblinError>>()?,
+        applied: inst.applied.clone(),
         extra_fields: pfields(tp, &inst.extra_fields)?,
         des_id: inst.des_id.0,
     })
@@ -181,7 +180,7 @@ pub(crate) fn overlay_from_p(o: &POverlay, fp: &mut FromPortable, s: &mut Sessio
         age: o.age,
         ticks_remaining: o.ticks_remaining,
         count: o.count,
-        original_values: o.original_values.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
+        applied: o.applied.clone(),
         extra_fields: o.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect(),
         des_id: OverlayInstanceId(o.des_id),
     }

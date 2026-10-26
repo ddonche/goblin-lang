@@ -165,6 +165,11 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
     }
 
+    // ── Pass 3b: `each tick:` changes, kept ─────────────────────────────────
+    // A host its `each tick:` changes bring to an erase condition goes now,
+    // before anything acts this tick.
+    with_erase_check(vm, each_tick_pass)?;
+
     // ── Pass 4: Spawn ─────────────────────────────────────────────────────────
     spawn_pass(vm)?;
 
@@ -173,8 +178,9 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
     // ── Pass 6: Remove dead / expired overlays ────────────────────────────────
     {
-        let defs = vm.session.overlay_defs.clone();
         let mut to_remove: Vec<usize> = Vec::new();
+        // Overlays with `on end: action` that run out now: (action, host).
+        let mut ended: Vec<(String, String)> = Vec::new();
         for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
             if inst.strength <= 0.0 || inst.ticks_remaining == Some(0) {
                 to_remove.push(idx);
@@ -183,15 +189,24 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for idx in to_remove.iter().rev() {
             if *idx < vm.session.overlay_instances.len() {
                 let inst = vm.session.overlay_instances.remove(*idx);
-                if !inst.original_values.is_empty() {
-                    restore_originals(vm, &inst.host_uuid, &inst.original_values);
+                if let Some(action) = vm.session.overlay_defs.get(&inst.overlay_name).and_then(|d| d.on_end.clone()) {
+                    ended.push((action, inst.host_uuid.clone()));
+                }
+                if inst.ticks_remaining.is_some() {
+                    undo_modifiers(vm, &inst.host_uuid, &inst.applied);
                 }
                 if let Some(hh) = vm.session.des_store.handle_for_name(&inst.host_var) {
                     vm.session.des_index.remove_overlay(hh, &inst.overlay_name, inst.des_id);
                 }
             }
         }
-        let _ = defs; // suppress unused warning
+        // In the order the overlays were applied, once they are gone. An
+        // error in the action stops the tick, as one in an `every` block does.
+        for (action, host) in ended.into_iter().rev() {
+            if vm.session.object_store.contains_key(&host) {
+                call_object_action(vm, &host, &action, Vec::new())?;
+            }
+        }
     }
 
     // ── Pass 7: Remove orphaned overlays ─────────────────────────────────────
@@ -219,7 +234,97 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     Ok(())
 }
 
+/// Each overlay that is on (strength above 0) makes its `each tick:`
+/// changes to its host, including on the tick its time runs out. They are
+/// lasting: unlike `modifies:`, nothing is taken back when it ends. The
+/// expressions see `self` (the host), `strength`, `count` and the overlay's
+/// own fields. One that fails or gives no number stops the tick (R1221).
+fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
+    if !vm.session.overlay_defs.values().any(|d| !d.each_tick.is_empty()) { return Ok(()); }
+    // Each instance with its own fields (`rate: 2` given when it was put on).
+    let live: Vec<(String, String, f64, u64, indexmap::IndexMap<String, Value>)> = vm.session.overlay_instances.iter()
+        .filter(|i| i.strength > 0.0)
+        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.each_tick.is_empty()))
+        .filter(|i| !crate::world::is_remote(vm, &i.host_uuid))
+        .map(|i| (i.overlay_name.clone(), i.host_uuid.clone(), i.strength, i.count, i.extra_fields.clone()))
+        .collect();
+    for (name, host, strength, count, extra_fields) in live {
+        let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
+        let count_label = match &def.apply_behavior {
+            crate::session::OverlayApplyBehavior::Stacks { label: Some(l) } => Some(l.clone()),
+            _ => None,
+        };
+        let mut deltas: Vec<(String, Value)> = Vec::with_capacity(def.each_tick.len());
+        for (field, expr) in &def.each_tick {
+            let mut bind: Vec<(&str, Value)> = vec![
+                ("self", Value::Ref(host.clone())),
+                ("strength", Value::Float(strength)),
+                ("count", Value::Int(count as i64)),
+            ];
+            if let Some(ref l) = count_label { bind.push((l.as_str(), Value::Int(count as i64))); }
+            for (k, v) in &extra_fields { bind.push((k.as_str(), v.clone())); }
+            let fail = |what: String| GoblinError::Runtime(format!(
+                "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {what}"));
+            match vm.eval_tick_expr(expr, bind) {
+                Ok(v @ (Value::Float(_) | Value::Int(_))) => deltas.push((field.clone(), v)),
+                Ok(other) => return Err(fail(format!("gave {}, not a number", other.type_name()))),
+                Err(e) => return Err(fail(format!("failed: {e}"))),
+            }
+        }
+        vm.session.touch(&host);
+        let Some(Value::Object(o)) = vm.session.object_store.get_mut(&host) else { continue };
+        let is_trait: Vec<bool> = deltas.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
+        let class = o.class_name.clone();
+        let fields = std::rc::Rc::make_mut(&mut o.fields);
+        for ((field, d), t) in deltas.into_iter().zip(is_trait) {
+            let Some(v) = fields.get_mut(&field) else {
+                return Err(GoblinError::Runtime(format!(
+                    "R1221: overlay-each-tick: overlay {name} changes `{field}`, which {class} has no field named")));
+            };
+            let d = match d {
+                // A whole-number field stays whole while the change is whole.
+                Value::Int(n) if !t && matches!(v, Value::Int(_)) => {
+                    let Value::Int(i) = v else { unreachable!() };
+                    *v = Value::Int(i.checked_add(n).ok_or_else(|| GoblinError::Runtime(format!(
+                        "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {i} + {n} is past the largest whole number")))?);
+                    continue;
+                }
+                Value::Int(n) => n as f64,
+                Value::Float(f) => f,
+                _ => unreachable!(),
+            };
+            *v = match v {
+                Value::Int(i) if d.fract() == 0.0 && !t => match i.checked_add(d as i64) {
+                    Some(n) => Value::Int(n),
+                    None => return Err(GoblinError::Runtime(format!(
+                        "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {i} + {d} is past the largest whole number"))),
+                },
+                Value::Int(i) if t => Value::Float((*i as f64 + d).clamp(0.0, 1.0)),
+                Value::Int(i) => Value::Float(*i as f64 + d),
+                Value::Float(f) if t => Value::Float((*f + d).clamp(0.0, 1.0)),
+                Value::Float(f) => Value::Float(*f + d),
+                other => return Err(GoblinError::Runtime(format!(
+                    "R1221: overlay-each-tick: overlay {name} changes `{field}`, which holds {}, not a number", other.type_name()))),
+            };
+        }
+    }
+    Ok(())
+}
+
 // ── Spread pass ───────────────────────────────────────────────────────────────
+
+/// `spreads ... at rate`: each tick, every object the rule reaches that
+/// doesn't carry the overlay yet catches it with chance `rate` times the
+/// spreader's strength (times the link score for `through`), drawn from
+/// the program's seeded random numbers like `pick`. `at .004` with a
+/// full-strength overlay is 4 in 1,000 a tick; `at 1` always. The new host
+/// gets the spreader's strength. (The interpreter instead spreads to every
+/// target once strength * rate passes 0.15, and never below it.)
+fn catches(vm: &mut Vm, chance: f64) -> bool {
+    if chance >= 1.0 { return true; }
+    if chance <= 0.0 { return false; }
+    crate::builtins::rng_u01(&mut vm.session) < chance
+}
 
 fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     use goblin_ast::SpreadRule;
@@ -240,25 +345,29 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         for rule in &def.spread_rules {
             match rule {
                 SpreadRule::Channel { channel, rate } => {
+                    // To the objects the host has a link to on that channel;
+                    // each catches it with chance rate x strength.
                     let host_class = match vm.session.object_store.get(&inst.host_uuid) {
                         Some(Value::Object(o)) => o.class_name.clone(),
                         _ => continue,
                     };
-                    let link_def = vm.session.link_defs.get(&(host_class.clone(), channel.clone())).cloned()
-                        .or_else(|| vm.session.link_defs.get(&(host_class.clone(), "default".to_string())).cloned());
-                    let link_def = match link_def { Some(d) => d, None => continue };
-                    let self_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
-                        Some(v) => v, None => continue,
-                    };
-                    let candidates: Vec<(String, Value)> = vm.session.object_store.iter()
+                    let candidates: Vec<String> = vm.session.object_store.iter()
                         .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if o.class_name == host_class))
-                        .map(|(uuid, v)| (uuid.clone(), v.clone()))
+                        .map(|(uuid, _)| uuid.clone())
                         .collect();
-                    for (target_uuid, target_val) in candidates {
+                    for target_uuid in candidates {
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
-                        let link_score = eval_link_score(vm, self_val.clone(), target_val, &link_def.formula, link_def.formula_min, link_def.formula_max)?;
-                        if link_score < 0.3 { continue; }
-                        let amount = inst.strength * inst.strength * rate * link_score;
+                        // Only along a link above the bottom of its range (a
+                        // `bool` link that is true).
+                        let (lo, _) = link_bounds(vm, &inst.host_uuid, channel)?;
+                        let linked = match link_value(vm, &inst.host_uuid, &target_uuid, channel)? {
+                            Value::Bool(b) => b,
+                            Value::Float(f) => f > lo,
+                            _ => false,
+                        };
+                        if !linked { continue; }
+                        let amount = inst.strength * inst.strength * rate;
+                        let chance = inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
@@ -268,8 +377,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -281,6 +390,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         .collect();
                     for target_uuid in candidates {
                         let amount = inst.strength * inst.strength * rate;
+                        let chance = inst.strength * rate;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
@@ -291,8 +401,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -310,6 +420,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         .collect();
                     for target_uuid in candidates {
                         let amount = inst.strength * rate;
+                        let chance = amount;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
@@ -320,8 +431,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -343,6 +454,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         );
                         if !fires { continue; }
                         let amount = inst.strength * rate;
+                        let chance = amount;
                         if amount <= 0.0 { continue; }
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
@@ -353,8 +465,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
                                 }
                             }
-                        } else if amount > 0.15 {
-                            spread_buf.push((inst.overlay_name.clone(), target_uuid, amount));
+                        } else if catches(vm, chance) {
+                            spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
                         }
                     }
                 }
@@ -369,15 +481,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         if let Some(def) = defs.get(&ov_name).cloned() {
             let host_var = host_name(vm, &host_uuid);
             let duration = def.default_duration;
-            let is_temporary = duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
-            let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
-                    def.modifiers.iter().filter_map(|(fname, _)| {
-                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                    }).collect()
-                } else { Vec::new() }
-            } else { Vec::new() };
             let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
@@ -388,7 +492,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 age: 0,
                 ticks_remaining: duration,
                 count: 1,
-                original_values,
+                applied: Vec::new(),
                 extra_fields: def.extra_fields.clone(),
                 des_id,
             });
@@ -431,15 +535,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
     for (ov_name, host_uuid, host_var, strength) in to_spawn {
         if let Some(def) = defs.get(&ov_name).cloned() {
-            let is_temporary = def.default_duration.is_some();
             let clamped = strength.clamp(0.0, 1.0);
-            let original_values: Vec<(String, Value)> = if is_temporary {
-                if let Some(Value::Object(o)) = vm.session.object_store.get(&host_uuid) {
-                    def.modifiers.iter().filter_map(|(fname, _)| {
-                        o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                    }).collect()
-                } else { Vec::new() }
-            } else { Vec::new() };
             let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
             vm.session.des_overlay_id_counter += 1;
             overlay_push(vm, OverlayInstance {
@@ -450,7 +546,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 age: 0,
                 ticks_remaining: def.default_duration,
                 count: 1,
-                original_values,
+                applied: Vec::new(),
                 extra_fields: def.extra_fields.clone(),
                 des_id,
             });
@@ -488,8 +584,8 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let self_val = Value::Object(Box::new(crate::value::ObjectVal {
             class_name: inst.overlay_name.clone(),
             fields: std::rc::Rc::new(self_fields),
-            readonly_fields: BTreeSet::new(),
-            trait_fields: BTreeSet::new(),
+            readonly_fields: Default::default(),
+            trait_fields: Default::default(),
             uuid: inst.host_uuid.clone(),
         }));
 
@@ -545,7 +641,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                             age: 0,
                             ticks_remaining: cdef.default_duration,
                             count: 1,
-                            original_values: Vec::new(),
+                            applied: Vec::new(),
                             extra_fields: cdef.extra_fields.clone(),
                             des_id,
                         });
@@ -575,7 +671,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                             age: 0,
                             ticks_remaining: fdef.default_duration,
                             count: 1,
-                            original_values: Vec::new(),
+                            applied: Vec::new(),
                             extra_fields: fdef.extra_fields.clone(),
                             des_id,
                         });
@@ -613,7 +709,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                 age: 0,
                                 ticks_remaining: sdef.default_duration,
                                 count: 1,
-                                original_values: Vec::new(),
+                                applied: Vec::new(),
                                 extra_fields: sdef.extra_fields.clone(),
                                 des_id,
                             });
@@ -656,7 +752,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                                     age: 0,
                                     ticks_remaining: mdef.default_duration,
                                     count: 1,
-                                    original_values: Vec::new(),
+                                    applied: Vec::new(),
                                     extra_fields: mdef.extra_fields.clone(),
                                     des_id,
                                 });
@@ -739,7 +835,8 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             // Erased by an earlier block this tick: nothing to run.
             if !vm.session.object_store.contains_key(&uuid) { break; }
             let Some(f) = vm.session.compiled_methods.get(&(class_name.clone(), e.action.clone())).cloned() else { continue };
-            vm.call_callable(Value::Function(f), vec![Value::Ref(uuid.clone())])?;
+            let me = Value::Ref(uuid.clone());
+            with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), vec![me]).map(|_| ()))?;
         }
     }
     Ok(())
@@ -755,7 +852,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 let has_decision = vm.session.classes.get(class_name)
                     .map(|c| c.decision.is_some())
                     .unwrap_or(false)
-                    || vm.session.object_decisions.contains_key(uuid.as_str());
+                    || object_decision(&vm.session, uuid).is_some();
                 // Another region's object decides in its own region.
                 if has_decision && !crate::world::is_remote(vm, uuid) {
                     out.push((uuid.clone(), class_name.clone()));
@@ -764,6 +861,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
         out
     };
+    let candidates = order_candidates(vm, candidates)?;
 
     let mut targets = Targets::default();
     for (self_uuid, class_name) in candidates {
@@ -772,7 +870,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         // object, so a class an earlier action installed is seen here.
         let classes = vm.session.classes.clone();
         let Some(class) = classes.get(&class_name) else { continue };
-        let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
+        let obj_decision = object_decision(&vm.session, &self_uuid);
         // The object's decisions in order, each with its judge and the name
         // its score goes by. An object-level decision replaces the first.
         let mut list: Vec<(&str, &goblin_ast::DecisionDef, &goblin_ast::JudgeStmt)> = Vec::new();
@@ -791,14 +889,76 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 list.push((nd.name.as_str(), d, judge));
             }
         }
-        for (name, decision, judge) in list {
+        // `one of heal, attack`: those decisions are tried in that order
+        // and the first whose judge runs an action ends the group, so the
+        // others in it don't run this tick.
+        let group_of = |n: &str| class.one_of.iter().position(|g| g.iter().any(|m| m == n));
+        let mut done_groups: Vec<usize> = Vec::new();
+        for &(name, decision, judge) in &list {
             // Erased by an earlier decision's action: nothing more to decide.
             if !vm.session.object_store.contains_key(&self_uuid) { break; }
-            decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
+            let Some(g) = group_of(name) else {
+                decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
+                continue;
+            };
+            if done_groups.contains(&g) { continue; }
+            done_groups.push(g);
+            for member in &class.one_of[g] {
+                if !vm.session.object_store.contains_key(&self_uuid) { break; }
+                let Some(&(n, d, j)) = list.iter().find(|(n, _, _)| n == member) else { continue };
+                if decide(vm, &mut targets, &self_uuid, n, d, j)? { break; }
+            }
         }
     }
 
     Ok(())
+}
+
+/// `order by [ expr ] desc`: the objects of such a class decide in that
+/// order (ascending unless `desc`; ties keep the order they were made in).
+/// They take the places the class's objects had in the pass, so other
+/// classes keep theirs. Keys are worked out once, at the start of the pass.
+fn order_candidates(vm: &mut Vm, mut candidates: Vec<(String, String)>) -> Result<Vec<(String, String)>, GoblinError> {
+    let classes = vm.session.classes.clone();
+    let mut ordered: Vec<String> = Vec::new();
+    for (_, c) in &candidates {
+        if !ordered.contains(c) && classes.get(c).is_some_and(|d| d.order_by.is_some()) { ordered.push(c.clone()); }
+    }
+    for class_name in &ordered {
+        let Some((key, desc)) = classes.get(class_name).and_then(|d| d.order_by.as_ref()) else { continue };
+        let slots: Vec<usize> = candidates.iter().enumerate()
+            .filter(|(_, (_, c))| c == class_name).map(|(i, _)| i).collect();
+        let fail = |what: String| GoblinError::Runtime(format!("R1222: decision-order: `order by` of {class_name}: {what}"));
+        let mut keyed: Vec<(Value, String)> = Vec::with_capacity(slots.len());
+        for &i in &slots {
+            let uuid = candidates[i].0.clone();
+            let k = vm.eval_tick_expr(key, vec![("self", Value::Ref(uuid.clone()))])
+                .map_err(|e| fail(format!("failed: {e}")))?;
+            match k {
+                Value::Int(_) | Value::Float(_) | Value::Str(_) => keyed.push((k, uuid)),
+                other => return Err(fail(format!("gave {}, not a number or a string", other.type_name()))),
+            }
+        }
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
+        if keyed.iter().any(|(k, _)| num(k).is_some()) && keyed.iter().any(|(k, _)| num(k).is_none()) {
+            return Err(fail("gave numbers for some objects and strings for others".into()));
+        }
+        // A stable sort, so equal keys keep the order the objects were made in.
+        keyed.sort_by(|(a, _), (b, _)| {
+            let o = match (num(a), num(b), a, b) {
+                // Whole numbers compare exactly (past 2^53 a float can't tell them apart).
+                (_, _, Value::Int(x), Value::Int(y)) => x.cmp(y),
+                (Some(x), Some(y), _, _) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                (_, _, Value::Str(x), Value::Str(y)) => AsRef::<str>::as_ref(x).cmp(AsRef::<str>::as_ref(y)),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if *desc { o.reverse() } else { o }
+        });
+        for (slot, (_, uuid)) in slots.into_iter().zip(keyed) {
+            candidates[slot].0 = uuid;
+        }
+    }
+    Ok(candidates)
 }
 
 /// One decision of one object: score the targets, pick the best (within
@@ -810,12 +970,14 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 #[derive(Default)]
 struct Targets {
     seen: Option<(usize, String)>,
-    /// A `Value::Ref` to each object.
-    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<Value>>>,
+    /// A `Value::Ref` to each object, with where it sits in the store.
+    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<(Value, usize)>>>,
+    /// Per decision (by address): whether its formula reads a `~` field.
+    real: std::collections::HashMap<usize, bool>,
 }
 
 impl Targets {
-    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<Value>> {
+    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<(Value, usize)>> {
         let store = &vm.session.object_store;
         let now = (store.len(), store.last().map(|(k, _)| k.clone()).unwrap_or_default());
         if self.seen.as_ref() != Some(&now) {
@@ -823,47 +985,160 @@ impl Targets {
             self.seen = Some(now);
         }
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
-            store.iter()
-                .filter(|(_, v)| matches!(v, Value::Object(o) if o.class_name == class))
-                .map(|(u, _)| Value::Ref(u.clone()))
+            store.iter().enumerate()
+                .filter(|(_, (_, v))| matches!(v, Value::Object(o) if o.class_name == class))
+                .map(|(i, (u, _))| (Value::Ref(u.clone()), i))
                 .collect()
         )).clone()
     }
+
+    /// Whether `decision`'s formula reads a field declared with `~` (an
+    /// actual value, not a 0..1 trait) on `self` or `target`.
+    fn reads_real(&mut self, vm: &Vm, self_class: &str, decision: &goblin_ast::DecisionDef) -> bool {
+        let key = decision as *const _ as usize;
+        if let Some(&r) = self.real.get(&key) { return r; }
+        let is_real = |class: &str, field: &str| vm.session.classes.get(class)
+            .map(|c| c.fields.iter().any(|f| f.name == field && f.raw))
+            .unwrap_or(false);
+        let mut fields = Vec::new();
+        member_reads(&decision.formula, &mut fields);
+        // A link is an actual value too (on the scale it was declared
+        // with), so a formula that reads one is scored the same way.
+        let r = fields.iter().any(|(who, field)| match who.as_str() {
+            "self" => is_real(self_class, field),
+            _ => is_real(&decision.target_class, field),
+        }) || calls_link_score(&decision.formula);
+        self.real.insert(key, r);
+        r
+    }
 }
 
-fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
+/// The decision written for one object (`x score | decision against ...`),
+/// kept under the id of the object `x` held when it was declared.
+fn object_decision(session: &crate::session::Session, uuid: &str) -> Option<std::rc::Rc<goblin_ast::DecisionDef>> {
+    session.object_decisions.get(uuid).cloned()
+}
+
+/// Whether a formula reads a link (`:link_score(...)`).
+fn calls_link_score(e: &goblin_ast::Expr) -> bool {
+    use goblin_ast::Expr as E;
+    match e {
+        E::FreeCall(n, args, _) | E::NsCall(_, n, args, _) =>
+            n.trim_start_matches(':') == "link_score" || args.iter().any(calls_link_score),
+        E::Member(o, _, _) | E::OptMember(o, _, _) | E::Prefix(_, o, _) | E::Postfix(o, _, _) => calls_link_score(o),
+        E::Binary(l, _, r, _) | E::Index(l, r, _) | E::IndexMap(l, r, _) => calls_link_score(l) || calls_link_score(r),
+        E::Call(r, _, args, _) | E::OptCall(r, _, args, _) => calls_link_score(r) || args.iter().any(calls_link_score),
+        E::Array(xs, _) => xs.iter().any(calls_link_score),
+        E::Object(kv, _) => kv.iter().any(|(_, v)| calls_link_score(v)),
+        _ => false,
+    }
+}
+
+/// The `self >> field` / `target >> field` reads in a formula.
+fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
+    use goblin_ast::Expr as E;
+    match e {
+        E::Member(obj, field, _) | E::OptMember(obj, field, _) => match obj.as_ref() {
+            E::Ident(who, _) if who == "self" || who == "target" => out.push((who.clone(), field.clone())),
+            other => member_reads(other, out),
+        },
+        E::Binary(l, _, r, _) => { member_reads(l, out); member_reads(r, out); }
+        E::Prefix(_, x, _) | E::Postfix(x, _, _) => member_reads(x, out),
+        E::FreeCall(_, args, _) | E::NsCall(_, _, args, _) | E::Array(args, _) => args.iter().for_each(|a| member_reads(a, out)),
+        E::Call(recv, _, args, _) | E::OptCall(recv, _, args, _) => { member_reads(recv, out); args.iter().for_each(|a| member_reads(a, out)) }
+        E::Index(a, b, _) | E::IndexMap(a, b, _) => { member_reads(a, out); member_reads(b, out) }
+        E::Object(kv, _) => kv.iter().for_each(|(_, v)| member_reads(v, out)),
+        _ => {}
+    }
+}
+
+fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
     let self_uuid = self_uuid.to_string();
     let margin = match vm.session.object_store.get(&self_uuid) {
+        Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
         Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
             Value::Float(f) => Some(*f),
             Value::Int(i) => Some(*i as f64),
             _ => None,
         }).unwrap_or(0.0),
         Some(_) => 0.0,
-        None => return Ok(()),
+        None => return Ok(false),
     };
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
     let self_ref = Value::Ref(self_uuid.clone());
+    let self_at = vm.session.object_store.get_index_of(self_uuid.as_str()).unwrap_or(usize::MAX);
 
     let target_candidates = targets.of(vm, &decision.target_class);
     let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
 
     // Score all targets (by position in the list), the formula compiled once.
-    // (A formula that does not compile scores no target, as before.)
-    let Ok(formula) = vm.tick_formula(&decision.formula, &["self", "target"]) else { return Ok(()) };
+    // A formula that fails, or gives something other than a number, stops
+    // the tick with an error: a decision never does nothing silently.
+    let formula_error = |vm: &Vm, what: String| {
+        let class = match vm.session.object_store.get(&self_uuid) {
+            Some(Value::Object(o)) => o.class_name.clone(),
+            _ => String::new(),
+        };
+        GoblinError::Runtime(format!("R1220: decision-formula: decision `{name}` of {class} (against {}): {what}", decision.target_class))
+    };
+    let formula = match vm.tick_formula(&decision.formula, &["self", "target"]) {
+        Ok(f) => f,
+        Err(e) => return Err(formula_error(vm, format!("the formula can't be compiled: {e}"))),
+    };
+    // `where [ ... ]`: the targets that qualify; the others are not scored.
+    let filter = match &decision.filter {
+        Some(f) => match vm.tick_formula(f, &["self", "target"]) {
+            Ok(c) => Some(c),
+            Err(e) => return Err(formula_error(vm, format!("the `where` condition can't be compiled: {e}"))),
+        },
+        None => None,
+    };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
-    for (k, target) in target_candidates.iter().enumerate() {
+    for (k, (target, target_at)) in target_candidates.iter().enumerate() {
         if is_self(target) { continue; }
-        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)]) {
+        if let Some(c) = &filter {
+            match vm.run_tick_formula_ref(c, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
+                Ok(Value::Bool(true)) => {}
+                Ok(Value::Bool(false)) => continue,
+                Ok(other) => return Err(formula_error(vm, format!(
+                    "the `where` condition gave {}, not true or false", other.type_name()))),
+                Err(e) => return Err(formula_error(vm, format!("the `where` condition failed: {e}"))),
+            }
+        }
+        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
             Ok(Value::Float(f)) => f,
             Ok(Value::Int(i)) => i as f64,
-            Ok(_) => 0.5,
-            Err(_) => continue,
+            Ok(other) => return Err(formula_error(vm, format!(
+                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where [ ... ]` to leave targets out)",
+                if other.type_name().starts_with(['a','e','i','o','u']) { "an" } else { "a" }, other.type_name()))),
+            Err(e) => return Err(formula_error(vm, format!("the formula failed: {e}"))),
         };
-        scored.push((k, normalize_score(raw, decision.formula_min, decision.formula_max)));
+        // A score that overflowed (inf) or is not a number can't be ranked.
+        if !raw.is_finite() { continue; }
+        scored.push((k, raw));
     }
-    if scored.is_empty() { return Ok(()); }
+    if scored.is_empty() { return Ok(false); }
+    // A formula on `~` fields (prices, money, ...) has no fixed range, so
+    // its scores are measured against the candidates: the best scores 1
+    // and the others in proportion to it (0 stays 0). When some score is
+    // below 0 they are spread from the worst (0) to the best (1) instead.
+    // A formula on 0..1 traits keeps its own range.
+    let self_class = match vm.session.object_store.get(&self_uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        _ => String::new(),
+    };
+    if targets.reads_real(vm, &self_class, decision) {
+        let lo = scored.iter().map(|(_, r)| *r).fold(f64::INFINITY, f64::min);
+        let hi = scored.iter().map(|(_, r)| *r).fold(f64::NEG_INFINITY, f64::max);
+        for (_, r) in scored.iter_mut() {
+            *r = if lo >= 0.0 {
+                if hi <= 0.0 { 0.0 } else { *r / hi }
+            } else if hi - lo < 1e-12 { 1.0 } else { (*r - lo) / (hi - lo) };
+        }
+    } else {
+        for (_, r) in scored.iter_mut() { *r = normalize_score(*r, decision.formula_min, decision.formula_max); }
+    }
 
     let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 
@@ -871,25 +1146,26 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
+    if pool.is_empty() { return Ok(false); }
     let chosen_idx = if pool.len() == 1 { 0 } else {
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let (best_k, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
-    let Value::Ref(best_target_uuid) = &target_candidates[best_k] else { return Ok(()) };
+    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(false) };
+    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(false) };
     let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
     let target_ref = Value::Ref(best_target_uuid.clone());
 
     // Run judge to find selected action
-    let mut selected_action: Option<String> = None;
-    let mut else_action: Option<String> = None;
+    let mut selected_action: Option<(String, &[goblin_ast::Expr])> = None;
+    let mut else_action: Option<(String, &[goblin_ast::Expr])> = None;
 
     for arm in &judge.arms {
         match &arm.condition {
             None => {
-                if let Some(name) = extract_action_call_name(&arm.body) {
-                    else_action = Some(name);
+                if let Some(call) = extract_action_call(&arm.body) {
+                    else_action = Some(call);
                 }
             }
             Some(cond) => {
@@ -901,8 +1177,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
                 if name != "score" { bind.push((name, Value::Float(final_score))); }
                 let fires = vm.eval_tick_expr_bool(cond, bind);
                 if fires {
-                    if let Some(name) = extract_action_call_name(&arm.body) {
-                        selected_action = Some(name);
+                    if let Some(call) = extract_action_call(&arm.body) {
+                        selected_action = Some(call);
                         break;
                     }
                 }
@@ -910,18 +1186,44 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         }
     }
 
-    let action_name = selected_action.or(else_action).unwrap_or_default();
+    let (action_name, arg_exprs) = selected_action.or(else_action).unwrap_or((String::new(), &[]));
     if !action_name.is_empty() {
         // The action gets the objects as they are now (nothing above
         // changes them), the same values it was given before.
-        let (Some(self_val), Some(target_val)) = (
+        let (Some(self_val), Some(_)) = (
             vm.session.object_store.get(&self_uuid).cloned(),
             vm.session.object_store.get(&best_target_uuid).cloned(),
-        ) else { return Ok(()) };
-        let _ = vm.call_named(&action_name, vec![self_val, target_val]);
-        // Ignore errors — decisions are best-effort
+        ) else { return Ok(false) };
+        // The class's own action of that name (`act govern(target)` in the
+        // class, run with `self`), else a program action taking both.
+        // An error in the action stops the tick, as one in an `every`
+        // block does: a mistake there must not pass as "nothing happened".
+        // Either way it gets `self` first, then the arguments the arm wrote
+        // (`purchase(target, 5)`), worked out with `score`, `self` and
+        // `target` in view.
+        let mut args = Vec::with_capacity(arg_exprs.len() + 1);
+        for e in arg_exprs {
+            args.push(match e {
+                // Objects go by reference, as in an ordinary call: an action
+                // written `strike(target, target)` changes one object.
+                goblin_ast::Expr::Ident(n, _) if n == "target" => target_ref.clone(),
+                other => {
+                    let mut bind = vec![
+                        ("score", Value::Float(final_score)),
+                        ("self", self_ref.clone()),
+                        ("target", target_ref.clone()),
+                    ];
+                    if name != "score" { bind.push((name, Value::Float(final_score))); }
+                    let v = vm.eval_tick_expr(other, bind)?;
+                    vm.arg_ref(v)
+                }
+            });
+        }
+        let _ = self_val;
+        call_object_action(vm, &self_uuid, &action_name, args)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 // ── Object transition tick ────────────────────────────────────────────────────
@@ -962,7 +1264,10 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
             match tdef.kind {
                 TransitionKind::Erase => {
-                    vm.session.object_store.shift_remove(self_uuid);
+                    // `on erase: action` runs first, while the object and its
+                    // fields are still there. An error in it stops the tick.
+                    let on_erase = classes.get(class_name).and_then(|c| c.on_erase.clone());
+                    erase_object(vm, self_uuid, on_erase.as_deref())?;
                     erased.insert(self_uuid.clone());
                     break;
                 }
@@ -986,8 +1291,8 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                         let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
                             class_name: child_class.clone(),
                             fields: std::rc::Rc::new(fields),
-                            readonly_fields: BTreeSet::new(),
-                            trait_fields: BTreeSet::new(),
+                            readonly_fields: Default::default(),
+                            trait_fields: Default::default(),
                             uuid: new_uuid.clone(),
                         }));
                         vm.session.object_store.insert(new_uuid, child_obj);
@@ -1055,24 +1360,57 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
     }
 }
 
-pub(crate) fn eval_link_score(
-    vm: &mut Vm,
-    self_val: Value,
-    target_val: Value,
-    formula: &goblin_ast::Expr,
-    formula_min: f64,
-    formula_max: f64,
-) -> Result<f64, GoblinError> {
-    let raw = match vm.eval_tick_expr(formula, vec![("self", self_val), ("target", target_val)])? {
-        Value::Float(f) => f,
-        Value::Int(i) => i as f64,
-        _ => return Ok(0.5),
+/// The class declaration of A's link on `channel` (`link Nation trade 0...1`).
+fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
+    let class = match vm.session.object_store.get(from) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        _ => return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into())),
     };
-    let range = formula_max - formula_min;
-    let normalized = if range.abs() < 1e-12 { 0.5 } else {
-        ((raw - formula_min) / range).clamp(0.0, 1.0)
-    };
-    Ok(normalized)
+    vm.session.link_defs.get(&(class.clone(), channel.to_string())).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+        "R1228: link-undeclared: {class} has no `{channel}` link; declare it with its range first: `link {class} {channel} 0...1` or `link {class} {channel} bool`")))
+}
+
+/// The two ends of A's link range on `channel` (`bool` is 0 to 1).
+pub(crate) fn link_bounds(vm: &Vm, from: &str, channel: &str) -> Result<(f64, f64), GoblinError> {
+    Ok(match link_decl(vm, from, channel)?.range {
+        Some(goblin_ast::LinkRange::Between(lo, hi)) => (lo, hi),
+        _ => (0.0, 1.0),
+    })
+}
+
+/// Where A's link to B starts before any change: its formula (the
+/// object's own, else its class's), else 0 (kept inside the range).
+pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
+    let decl = link_decl(vm, from, channel)?;
+    let formula = vm.session.object_link_defs.get(&(from.to_string(), channel.to_string())).map(|d| d.formula.clone())
+        .or_else(|| decl.has_formula.then(|| decl.formula.clone()));
+    // No formula: 0, or the nearer end of the range when 0 is outside it,
+    // so a first `offset` gives the number written.
+    let Some(formula) = formula else { let (lo, hi) = link_bounds(vm, from, channel)?; return Ok(0f64.clamp(lo, hi)) };
+    match vm.eval_tick_expr(&formula, vec![("self", Value::Ref(from.into())), ("target", Value::Ref(to.into()))]) {
+        Ok(Value::Int(i)) => Ok(i as f64),
+        Ok(Value::Float(f)) => Ok(f),
+        Ok(Value::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
+        Ok(other) => Err(GoblinError::Runtime(format!(
+            "R1226: link-formula: the {channel} link formula gave {}, not a number", other.type_name()))),
+        Err(e) => Err(GoblinError::Runtime(format!("R1226: link-formula: the {channel} link formula failed: {e}"))),
+    }
+}
+
+/// A's link to B on `channel`: where it starts plus every change made to
+/// the pair, kept inside the declared range. A `bool` link gives true or
+/// false. Links go one way: B's link to A is its own.
+pub(crate) fn link_value(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<Value, GoblinError> {
+    let decl = link_decl(vm, from, channel)?;
+    let (lo, hi) = link_bounds(vm, from, channel)?;
+    let base = link_base(vm, from, to, channel)?;
+    let changes: f64 = vm.session.link_offsets.get(&(from.to_string(), to.to_string(), channel.to_string()))
+        .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
+    let v = (base + changes).clamp(lo, hi);
+    Ok(match decl.range {
+        Some(goblin_ast::LinkRange::Bool) => Value::Bool(v >= 1.0),
+        _ => Value::Float(v),
+    })
 }
 
 /// A raw formula value scaled to 0..1 over the formula's range, as
@@ -1095,7 +1433,9 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
             let exists = vm.session.overlay_instances.iter()
                 .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
             if !exists {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
         }
@@ -1104,20 +1444,23 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
                 i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
             });
             if let Some(pos) = existing_pos {
-                let old_originals = vm.session.overlay_instances[pos].original_values.clone();
+                // The old copy's change goes, the new one's comes.
+                let old = std::mem::take(&mut vm.session.overlay_instances[pos].applied);
                 let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
-                if !old_originals.is_empty() {
-                    restore_originals(vm, &host_uuid, &old_originals);
+                if vm.session.overlay_instances[pos].ticks_remaining.is_some() {
+                    undo_modifiers(vm, &host_uuid, &old);
                 }
                 vm.session.overlay_instances[pos].strength = inst.strength;
                 vm.session.overlay_instances[pos].age = inst.age;
                 vm.session.overlay_instances[pos].count = 1;
                 vm.session.overlay_instances[pos].ticks_remaining = inst.ticks_remaining;
-                vm.session.overlay_instances[pos].original_values = inst.original_values;
                 vm.session.overlay_instances[pos].extra_fields = inst.extra_fields.clone();
-                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields);
+                let done = apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields);
+                add_applied(&mut vm.session.overlay_instances[pos].applied, done);
             } else {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
         }
@@ -1133,11 +1476,24 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
                 }
                 let host_uuid = vm.session.overlay_instances[pos].host_uuid.clone();
                 let extra = vm.session.overlay_instances[pos].extra_fields.clone();
-                apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &extra);
+                let done = apply_overlay_modifiers(vm, &host_uuid, &inst.overlay_name, inst.strength, 1, &extra);
+                add_applied(&mut vm.session.overlay_instances[pos].applied, done);
             } else {
-                apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                let mut inst = inst;
+                let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, 1, &inst.extra_fields.clone());
+                add_applied(&mut inst.applied, done);
                 vm.session.overlay_instances.push(inst);
             }
+        }
+    }
+}
+
+/// Adds what one application of `modifies:` changed to an overlay's total.
+fn add_applied(total: &mut Vec<(String, f64)>, done: Vec<(String, f64)>) {
+    for (f, d) in done {
+        match total.iter_mut().find(|(n, _)| *n == f) {
+            Some((_, t)) => *t += d,
+            None => total.push((f, d)),
         }
     }
 }
@@ -1149,10 +1505,11 @@ pub fn apply_overlay_modifiers(
     strength: f64,
     count: u64,
     extra_fields: &indexmap::IndexMap<String, Value>,
-) {
+) -> Vec<(String, f64)> {
+    let mut done = Vec::new();
     let def = match vm.session.overlay_defs.get(overlay_name) {
         Some(d) if !d.modifiers.is_empty() => d.clone(),
-        _ => return,
+        _ => return done,
     };
     let modifiers = &def.modifiers;
 
@@ -1181,8 +1538,9 @@ pub fn apply_overlay_modifiers(
         deltas.push((fname.clone(), delta));
     }
 
-    if deltas.is_empty() { return; }
+    if deltas.is_empty() { return done; }
 
+    vm.session.touch(host_uuid);
     if let Some(obj) = vm.session.object_store.get_mut(host_uuid) {
         if let Value::Object(ref mut o) = obj {
             let trait_fields = o.trait_fields.clone();
@@ -1202,37 +1560,147 @@ pub fn apply_overlay_modifiers(
                         new_val
                     };
                     *field_val = Value::Float(new_val);
+                    done.push((field_name, new_val - current));
                 }
             }
         }
     }
+    done
 }
 
-fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]) {
+/// Takes back what an overlay's `modifies:` added (a trait stays in 0..1).
+fn undo_modifiers(vm: &mut Vm, host_uuid: &str, applied: &[(String, f64)]) {
+    if applied.is_empty() { return; }
     if let Some(Value::Object(ref mut o)) = vm.session.object_store.get_mut(host_uuid) {
+        let is_trait: Vec<bool> = applied.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
         let fields = std::rc::Rc::make_mut(&mut o.fields);
-        for (fname, fval) in originals {
-            fields.insert(fname.clone(), fval.clone());
+        for ((fname, d), t) in applied.iter().zip(is_trait) {
+            let Some(v) = fields.get_mut(fname) else { continue };
+            let cur = match v { Value::Float(f) => *f, Value::Int(i) => *i as f64, _ => continue };
+            let back = cur - d;
+            *v = Value::Float(if t { back.clamp(0.0, 1.0) } else { back });
         }
     }
 }
 
-fn extract_action_call_name(body: &goblin_ast::JudgeArmBody) -> Option<String> {
+/// Runs `action` for the object `uuid`: the class's own action of that name
+/// (`act give_birth()` in the class, run with `self`), else a program
+/// action, given the object first. `args` follow.
+fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<(), GoblinError> {
+    let class_name = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        Some(_) => String::new(),
+        None => return Ok(()),
+    };
+    let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
+    args.insert(0, Value::Ref(uuid.to_string()));
+    with_erase_check(vm, |vm| match method {
+        Some(f) => vm.call_callable(Value::Function(f), args).map(|_| ()),
+        // A reference, as a class action gets: if the action moves or
+        // erases the object, reading it afterwards fails instead of reading
+        // a stale copy.
+        None => vm.call_named(action, args).map(|_| ()),
+    })
+}
+
+/// Runs an action, then the erase transitions of the objects it changed:
+/// an object whose erase condition now holds goes right away (after its
+/// `on erase:` action), not at the end of the tick, so it neither acts nor
+/// is chosen again this tick. Never in the middle of an action.
+fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinError>) -> Result<(), GoblinError> {
+    let outer = vm.session.des_touched.replace(Vec::new());
+    let r = f(vm);
+    let touched = std::mem::replace(&mut vm.session.des_touched, outer);
+    r?;
+    match touched {
+        Some(t) if !t.is_empty() => erase_changed(vm, t),
+        _ => Ok(()),
+    }
+}
+
+fn erase_changed(vm: &mut Vm, mut touched: Vec<String>) -> Result<(), GoblinError> {
+    use goblin_ast::TransitionKind;
+    let mut seen = std::collections::HashSet::with_capacity(touched.len());
+    touched.retain(|u| seen.insert(u.clone()));
+    let classes = vm.session.classes.clone();
+    for uuid in touched {
+        let class_name = match vm.session.object_store.get(&uuid) {
+            Some(Value::Object(o)) => &o.class_name,
+            _ => continue,
+        };
+        let Some(class) = classes.get(class_name) else { continue };
+        if !class.transitions.iter().any(|t| matches!(t.kind, TransitionKind::Erase)) { continue; }
+        if vm.session.des_erasing.contains(&uuid) || crate::world::is_remote(vm, &uuid) { continue; }
+        // A condition that rolls dice (`pick 1 from 1...200000`) is a chance
+        // per tick: it is checked once, at the end of the tick, as before.
+        let fires = class.transitions.iter()
+            .filter(|t| matches!(t.kind, TransitionKind::Erase) && !uses_chance(&t.trigger))
+            .any(|t| vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(uuid.clone()))]));
+        if fires { erase_object(vm, &uuid, class.on_erase.as_deref())?; }
+    }
+    Ok(())
+}
+
+/// Whether an expression draws a random number (`pick`, `:roll`, ...).
+fn uses_chance(e: &goblin_ast::Expr) -> bool {
+    use goblin_ast::Expr as E;
+    let random_name = |n: &str| {
+        let n = n.trim_end_matches('!');
+        matches!(n, "pick" | "reap" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str"
+            | "shuffle" | "sample_weighted" | "uuid_v4" | "uuid_v7")
+            || n.starts_with("secure_") || n.ends_with("_random") || n.ends_with("_sample")
+    };
+    // A call to the program's own code (an action, a method, `:invoke`)
+    // may roll dice inside, so it counts as chance too: checked once a tick.
+    let own_code = |n: &str| {
+        let n = n.trim_end_matches('!');
+        matches!(n, "invoke" | "summon" | "provoke") || crate::compiler::builtin_by_name(n).is_none()
+    };
+    match e {
+        E::FreeCall(n, args, _) => random_name(n) || own_code(n) || args.iter().any(uses_chance),
+        E::NsCall(_, n, args, _) => random_name(n) || own_code(n) || args.iter().any(uses_chance),
+        E::Call(r, n, args, _) | E::OptCall(r, n, args, _) => random_name(n) || own_code(n) || uses_chance(r) || args.iter().any(uses_chance),
+        E::Binary(l, _, r, _) => uses_chance(l) || uses_chance(r),
+        E::Prefix(_, x, _) | E::Postfix(x, _, _) => uses_chance(x),
+        E::Member(x, _, _) | E::OptMember(x, _, _) => uses_chance(x),
+        E::Index(a, b, _) | E::IndexMap(a, b, _) => uses_chance(a) || uses_chance(b),
+        E::Array(xs, _) => xs.iter().any(uses_chance),
+        E::Object(kv, _) => kv.iter().any(|(_, v)| uses_chance(v)),
+        _ => false,
+    }
+}
+
+/// Erases an object for its erase transition, after its `on erase:`
+/// action (which sees the object and its fields; an error in it stops the tick).
+fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), GoblinError> {
+    if let Some(action) = on_erase {
+        vm.session.des_erasing.push(uuid.to_string());
+        let r = call_object_action(vm, uuid, action, Vec::new());
+        vm.session.des_erasing.retain(|u| u != uuid);
+        r?;
+    }
+    vm.session.object_store.shift_remove(uuid);
+    Ok(())
+}
+
+/// The action a judge arm calls, and the arguments it writes (none for a
+/// bare name).
+fn extract_action_call(body: &goblin_ast::JudgeArmBody) -> Option<(String, &[goblin_ast::Expr])> {
     use goblin_ast::{JudgeArmBody, Expr};
-    match body {
-        JudgeArmBody::Expr(Expr::FreeCall(name, _, _)) => Some(name.clone()),
-        JudgeArmBody::Expr(Expr::Ident(name, _)) => Some(name.clone()),
-        JudgeArmBody::Stmts(stmts) => {
-            for s in stmts {
-                if let goblin_ast::Stmt::Expr(Expr::FreeCall(name, _, _)) = s {
-                    return Some(name.clone());
-                }
-                if let goblin_ast::Stmt::Expr(Expr::Ident(name, _)) = s {
-                    return Some(name.clone());
-                }
-            }
-            None
+    fn call(e: &Expr) -> Option<(String, &[Expr])> {
+        match e {
+            Expr::FreeCall(name, args, _) => Some((name.clone(), args.as_slice())),
+            Expr::Ident(name, _) => Some((name.clone(), &[])),
+            _ => None,
         }
+    }
+    match body {
+        JudgeArmBody::Expr(e) => call(e),
+        JudgeArmBody::Stmts(stmts) => stmts.iter().find_map(|s| match s {
+            goblin_ast::Stmt::Expr(e) => call(e),
+            _ => None,
+        }),
+        #[allow(unreachable_patterns)]
         _ => None,
     }
 }

@@ -1,0 +1,26 @@
+/// known-gap: interp ignores an error inside a decision's action
+/// An error inside a decision's action stops the tick, as one in an `every`
+/// block does, so a mistake there is not mistaken for "nothing happened".
+<>Shop |
+    ~stock: 0
+xx
+<>Buyer |
+    margin: 0
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        > 0: purchase(target)
+    end
+xx
+act purchase(b, s)
+    s >> stok |= s >> stock + 1
+xx
+a <> Shop | stock: 10
+x <> Buyer | margin: 0
+attempt
+    tick()
+    say("no error")
+rescue e
+    say(:has("{e}", "no field 'stok'"))
+xx

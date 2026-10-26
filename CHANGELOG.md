@@ -3,6 +3,105 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## Unreleased
+
+- DES: a decision formula on `~` fields (prices, money) is scored against
+  the candidates: the best scores 1 and the others in proportion (spread
+  worst-to-best when some score is below 0). Before, every such score
+  collapsed to 0. The DES town now scores shops on `price`.
+- DES: `margin N` on a decision (`shop | decision against Business margin .8 by [...]`)
+  sets that decision's margin; without it the object's `margin` field is used.
+- DES (VM): a decision written for one object (`x score | decision against ...`)
+  now applies, to the object `x` holds when it is written (also through another
+  name for it, or for objects made inside an action); before, the VM never found it.
+- DES: an error inside a decision's action stops the tick (it was ignored), as
+  in an `every` block.
+- DES (VM): a decision's judge can call an action written inside the class
+  (`act govern(target)`); the VM only found program-level actions and silently did nothing.
+  The action gets `self`, then the arguments the arm writes (`purchase(target, 3)`,
+  `rest()`); before, it always got just the target.
+- VM: `repeat 3 as d` gives a clear error (a count has no items to name; use `idx`
+  or `repeat :range(0, 3) as d`) instead of "local slot 0 is uninitialized".
+- Parser: a `:builtin(...)` argument can use `and`, `or` and `??`
+  (`:objects(it >> age > 18 and it >> district == d)`); it stopped at comparisons.
+- DES (VM): scoring a decision does less work per candidate (no per-score
+  lists, no id lookup for objects the tick already knows): about 14% fewer
+  instructions for the DES town, same output.
+- DES (VM): in `tick(regions)`, each region (and the main program's view)
+  keeps its copies of the other regions' objects between ticks and rebuilds
+  only the fields that changed, instead of every object every tick. DES town
+  30 days: 1 thread 2.35 -> 1.78 s, 4 threads 0.80 -> 0.65 s; same output.
+- DES: an overlay can say `on end: action`; when it runs out (its time is up or
+  its strength reaches 0) the action runs with the host (`give_birth(mom)`, or the
+  host class's own `act give_birth()`). Taking it off with `detach` runs nothing.
+- DES: a class can say `on erase: action`; it runs on the object just before an
+  erase transition removes it, while its fields can still be read (an estate
+  goes to the heirs before the person is gone).
+- DES: `:move!(obj, region)` moves an object to another region of
+  `tick(regions)`. In a region it leaves at once (reading it there afterwards
+  is C0125) and arrives at the start of the next tick with its overlays, link
+  offsets and decision; what other regions send it meanwhile follows it. The
+  main program sees it the whole time and can move an object too: its region
+  moves it at the start of the next tick.
+- DES town (`sims/town_des`): babies are born (overlay `Pregnant` with
+  `on end:`), a resident's money goes to their district's fund when they die
+  (`on erase:`), and adults now and then move district (`:move!`).
+- New sim `sims/rpg_combat`: a party against monsters on DES, 1,000 battles
+  over `:swarm`; `FINDINGS.md` lists what got in the way.
+- DES: when a timed overlay ends, it takes back only what its `modifies:` added.
+  Before, every field it modified went back to its value from before the
+  overlay, so other changes meanwhile (damage taken, a second overlay) were lost.
+- DES: a decision formula that fails, or gives something other than a number,
+  stops the tick with R1220 naming the decision. Before, the target was
+  skipped (or scored 0.5) and the decision silently did nothing. A type error
+  on `*`, `-` and the like now names the side that is not a number.
+- DES: a decision can leave targets out before scoring with `where [ condition ]`:
+  `heal | decision against Fighter where [ target >> side == self >> side ] by [ ... ]`.
+- DES: `one of heal, attack` in a class makes decisions alternatives: they are tried in
+  that order each tick and the first whose judge runs an action ends the group.
+- DES: overlays take `each tick:` changes (`hp - 2`), made to the host every tick the
+  overlay is on and never taken back; `modifies:` stays temporary. A failing change is R1221.
+- DES: `order by [ self >> speed ] desc` in a class sets the order its objects make their
+  decisions in (ascending by default; other classes keep their places). A bad key is R1222.
+- DES: erase transitions are checked as soon as an action that changed the object finishes
+  (decision actions, `every` blocks, `on end:`, `each tick:` changes), so the dead don't act or get chosen again that
+  tick. A condition that draws a random number stays a once-per-tick check at the end.
+- DES: `:overlay_strength(name, host)` and `:overlays_of(host)` take the host object itself
+  (the variable's name still works), so they work on objects made inside actions.
+- Strings fill in expressions: `"{n - wins} left"`, `"{lost[0]}"`, `"{p >> hp * 2}"`, when every name in
+  them is a variable in scope and it reads one or calls something. Anything else in braces (CSS, unknown names,
+  regex `{1,3}`) stays as written.
+- `:round(x, n)` keeps n digits after the point (`:round(3.14159, 2)` is 3.14); a negative n
+  rounds to tens, hundreds, ... `:round(x)` is unchanged.
+- DES: `overlay X on host at s for n ticks` takes expressions for the strength and the ticks
+  (`at a >> power / 10 for rounds + 1 ticks`); a bad value is R1223.
+- `sims/rpg_combat` uses the new DES features (`where`, `one of`, `order by`, `each tick:`, erase after
+  actions, overlay builtins on objects, `{expr}`, `:round(x, n)`); FINDINGS.md has the status.
+- Faster: `:objects(...)` predicates and DES formulas compare strings on the fast path
+  (`it >> kind == "rabbit"` no longer runs the predicate as a call per object), and copying an
+  object no longer copies its read-only and trait field sets.
+- `sims/predator_prey`: rabbits, foxes and grass over four meadows (regions); the populations
+  cycle. `check.sh` and FINDINGS.md.
+- `sims/epidemic`: a sickness spreading through four towns (regions), with death, immunity and
+  travel. `check.sh` and FINDINGS.md.
+- `sims/civilization`: four villages (regions) whose people farm, cut wood, build huts, have
+  children, die, move on when crowded, and send food to a hungry neighbour. `check.sh` and
+  FINDINGS.md.
+- DES: `spreads ... at rate` treats the rate as a chance. Each tick, each object the rule
+  reaches catches the overlay with chance rate times the spreader's strength (times the link
+  score for `through`), from the seeded random numbers. Before, a hidden 0.15 cutoff made it
+  spread to every target at once or to none, and links below 0.3 never spread. The epidemic
+  sim now uses `spreads ... at .004`.
+- DES links: a link is one number, one way, from one object to another, under a name the
+  program makes up. It is declared with its range (`link Nation trade 0...1`,
+  `link Nation respect -100...100`, `link Nation border bool`), kept inside it, and starts at 0
+  (or a `by [ formula ]`). Changes belong to the real objects, so `self link to target on trade
+  offset +.3` works in actions and loops, and the change can be any number expression.
+  `:link_score(a, b, "trade")` takes the two objects. The runtime reads no meaning into a link:
+  `spreads through trade` is now an error that says to write `spreads where` with the formula.
+  Before, links were stored under variable names (changes made in actions never reached the
+  objects) and scaled into 0..1 over a range guessed from the formula.
+
 ## 0.49.0 — 2026-10-26
 
 Everything merged since 0.48.0 (2026-10-06).

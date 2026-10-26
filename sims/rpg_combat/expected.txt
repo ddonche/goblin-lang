@@ -1,0 +1,91 @@
+1000 battles: the party wins 431, the monsters 569
+average length: 9.3 rounds
+party members lost: none 309, one 120, two 2, all 569
+
+battle 7, round by round:
+round 1
+  Archer hits Shaman for 9 (11 left)
+  Goblin 1 hits Knight for 3 (37 left)
+  Goblin 2 hits Knight for 2 (35 left)
+  Goblin 3 hits Knight for 4 (31 left)
+  Cleric hits Shaman for 5 (6 left)
+  Shaman hits Knight for 1 (30 left)
+  Knight is poisoned
+  Knight hits Shaman for 8 (0 left)
+  Shaman falls
+  Ogre hits Knight for 7 (23 left)
+round 2
+  Archer hits Ogre for 5 (45 left)
+  Goblin 1 hits Knight for 4 (17 left)
+  Knight raises a shield
+  Goblin 2 hits Knight for 1 (16 left)
+  Goblin 3 hits Knight for 1 (15 left)
+  Cleric heals Knight for 6
+  Knight hits Ogre for 4 (41 left)
+  Ogre hits Knight for 3 (18 left)
+round 3
+  Archer hits Ogre for 5 (36 left)
+  Goblin 1 hits Knight for 1 (15 left)
+  Goblin 2 hits Knight for 1 (14 left)
+  Goblin 3 hits Knight for 1 (13 left)
+  Cleric heals Knight for 6
+  Knight hits Ogre for 4 (32 left)
+  Ogre hits Knight for 5 (14 left)
+round 4
+  Knight lowers the shield
+  Archer hits Ogre for 6 (26 left)
+  Goblin 1 hits Knight for 3 (9 left)
+  Knight raises a shield
+  Goblin 2 hits Knight for 1 (8 left)
+  Goblin 3 hits Knight for 1 (7 left)
+  Cleric heals Knight for 8
+  Knight hits Ogre for 6 (20 left)
+  Ogre hits Knight for 3 (12 left)
+round 5
+  Archer hits Ogre for 6 (14 left)
+  Goblin 1 hits Knight for 1 (11 left)
+  Goblin 2 hits Knight for 1 (10 left)
+  Goblin 3 hits Knight for 1 (9 left)
+  Cleric heals Knight for 8
+  Knight hits Ogre for 5 (9 left)
+  Ogre hits Knight for 5 (12 left)
+round 6
+  Knight lowers the shield
+  Archer hits Ogre for 7 (2 left)
+  Goblin 1 hits Knight for 3 (9 left)
+  Knight raises a shield
+  Goblin 2 hits Knight for 1 (8 left)
+  Goblin 3 hits Knight for 1 (7 left)
+  Cleric heals Knight for 9
+  Knight hits Ogre for 6 (0 left)
+  Ogre falls
+round 7
+  Archer hits Goblin 3 for 7 (8 left)
+  Goblin 1 hits Knight for 1 (15 left)
+  Goblin 2 hits Knight for 1 (14 left)
+  Goblin 3 hits Knight for 1 (13 left)
+  Cleric heals Knight for 9
+  Knight hits Goblin 3 for 7 (1 left)
+round 8
+  Knight lowers the shield
+  Archer hits Goblin 3 for 9 (0 left)
+  Goblin 3 falls
+  Goblin 1 hits Knight for 4 (18 left)
+  Knight raises a shield
+  Goblin 2 hits Knight for 1 (17 left)
+  Cleric heals Knight for 8
+  Knight hits Goblin 2 for 7 (8 left)
+round 9
+  Archer hits Goblin 2 for 8 (0 left)
+  Goblin 2 falls
+  Goblin 1 hits Knight for 1 (24 left)
+  Cleric hits Goblin 1 for 4 (11 left)
+  Knight hits Goblin 1 for 8 (3 left)
+round 10
+  Knight lowers the shield
+  Archer hits Goblin 1 for 9 (0 left)
+  Goblin 1 falls
+the party wins in 10 rounds
+  Knight: 24 hp
+  Archer: 28 hp
+  Cleric: 30 hp

@@ -2,7 +2,7 @@
 # Deterministic checks for the town on DES. Usage: sims/town_des/check.sh [goblin-binary]
 # Runs 60 days and checks: the output matches expected-60.txt, two runs match,
 # 1 thread matches 4 threads, and with one district (nothing in flight between
-# districts, nobody dies in 60 days) the money total never changes.
+# districts) the money total never changes.
 set -u
 B=${1:-goblin}
 D=$(cd "$(dirname "$0")" && pwd)
@@ -18,5 +18,5 @@ check() { if "$@" >/dev/null; then echo "ok   $LABEL"; else echo "FAIL $LABEL"; 
 LABEL="matches expected-60.txt";     check diff "$T/a" "$D/expected-60.txt"
 LABEL="two runs are identical";      check diff "$T/a" "$T/b"
 LABEL="1 thread = 4 threads";        check diff "$T/a" "$T/c"
-LABEL="one district keeps every coin"; check bash -c "grep -q '; 0 left with the dead or is in flight' '$T/one'"
+LABEL="one district keeps every coin"; check bash -c "grep -q '; 0 in flight between districts' '$T/one'"
 exit $fail

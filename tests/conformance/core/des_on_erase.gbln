@@ -1,0 +1,48 @@
+/// known-gap: interp has no `on erase:` in classes
+/// `on erase: action` runs on an object just before an erase transition
+/// removes it, with its fields still readable: here the old man's money
+/// goes to the town fund before he is gone. A class action of that name
+/// runs with `self`; otherwise a program action gets the object.
+<>Fund |
+    ~cash: 0
+xx
+<>Person |
+    ~age: 0
+    ~money: 0
+    on erase: settle_estate
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+    transition erase when (self >> age) > 3
+    end
+xx
+<>Dog |
+    ~age: 0
+    on erase: bury
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+    transition erase when (self >> age) > 2
+    end
+    act bury()
+        a | self >> age
+        say("the dog is buried at age {a}")
+    end
+xx
+act settle_estate(p)
+    repeat :objects(it >> cash >= 0)
+        it >> cash |= it >> cash + (p >> money)
+    xx
+    a | p >> age
+    say("estate settled at age {a}")
+xx
+fund <> Fund | cash: 0
+old <> Person | age: 2, money: 500
+young <> Person | age: 0, money: 40
+rex <> Dog | age: 1
+repeat :range(1, 4) as d
+    tick()
+    c | fund >> cash
+    n | :len(:objects(it >> age >= 0))
+    say("tick {d}: fund {c}, {n} people")
+xx

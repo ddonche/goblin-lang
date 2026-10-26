@@ -109,7 +109,22 @@ pub struct LinkDefStmt {
     pub channel: Option<String>,
     /// The formula expression. May reference `self` and `target` as identifiers.
     pub formula: Expr,
+    /// Whether `by [ formula ]` was written; without it, a link starts at
+    /// 0 (or the nearer end of its range when 0 is outside it).
+    pub has_formula: bool,
+    /// `link Nation trade 0...1` / `link Nation border bool`: the values
+    /// the link can take.
+    pub range: Option<LinkRange>,
     pub span: Span,
+}
+
+/// The values a link can take, written when it is declared.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkRange {
+    /// `bool`: true or false.
+    Bool,
+    /// `lo...hi`: a number from lo to hi.
+    Between(f64, f64),
 }
 
 /// `ObjectName link [channel] by [ formula ]` — defines an object-level link formula override.
@@ -130,6 +145,9 @@ pub struct LinkOffsetStmt {
     pub to_var: String,
     pub channel: String,
     pub offset: f64,
+    /// The change when it is written as an expression (`offset row{"canada"}`)
+    /// rather than a number; then `offset` is 0.
+    pub offset_expr: Option<Expr>,
     /// None = permanent. Some(N) = expires after N ticks.
     pub ticks: Option<u32>,
     pub span: Span,
@@ -149,7 +167,7 @@ pub struct ClearLinkStmt {
 /// How an overlay propagates to new hosts each tick.
 #[derive(Debug, Clone)]
 pub enum SpreadRule {
-    /// `spreads through channel at rate` — only to hosts with link score > threshold on channel.
+    /// `spreads through channel at rate` — to hosts linked on channel; the chance scales with the link score.
     Channel { channel: String, rate: f64 },
     /// `spreads to all ClassName at rate` — broadcasts to all live objects of that class.
     All { class_name: String, rate: f64 },
@@ -203,6 +221,12 @@ pub struct OverlayDefStmt {
     pub apply_behavior: OverlayApplyBehavior,
     /// User-defined fields declared on the overlay (e.g. kind: "language")
     pub extra_fields: Vec<(String, Expr)>,
+    /// `on end: action` — called with the host when the overlay runs out
+    /// (time up or strength 0), not when it is removed by hand.
+    pub on_end: Option<String>,
+    /// `each tick:` — changes made to the host on every tick the overlay
+    /// is on. Unlike `modifies:` they are lasting: nothing is taken back.
+    pub each_tick: Vec<(String, Expr)>,
     pub span: Span,
 }
 
@@ -230,6 +254,10 @@ pub struct OverlayApplyStmt {
     pub strength: f64,
     /// Override duration in ticks. None = use overlay default.
     pub duration_override: Option<u32>,
+    /// `at s` / `for n ticks` written as an expression rather than a
+    /// number: worked out when the statement runs (VM).
+    pub strength_expr: Option<Expr>,
+    pub duration_expr: Option<Expr>,
     pub span: Span,
 }
 
@@ -262,6 +290,14 @@ pub struct ClassDecl {
     /// `shop | decision against Business by [ ... ]` / `judge using shop`.
     /// `decision` and `judge` above hold the first of them.
     pub decisions: Vec<NamedDecision>,
+    /// `on erase: action`: run on an object (with `self`) just before an
+    /// erase transition removes it.
+    pub on_erase: Option<String>,
+    /// `one of heal, attack`: groups of decisions that are alternatives.
+    pub one_of: Vec<Vec<String>>,
+    /// `order by [ expr ] desc`: the order the class's objects make their
+    /// decisions in; true = descending.
+    pub order_by: Option<(Expr, bool)>,
     pub span: Span,
 }
 
@@ -355,6 +391,11 @@ pub struct DecisionDef {
     pub formula_min: f64,
     /// Derived theoretical maximum (computed at registration).
     pub formula_max: f64,
+    /// `margin N` written on the decision: how far below the best score a
+    /// target may be and still be picked. None = the object's `margin` field.
+    pub margin: Option<f64>,
+    /// `where [ condition ]`: only targets for which it is true are scored.
+    pub filter: Option<Expr>,
     pub span: Span,
 }
 

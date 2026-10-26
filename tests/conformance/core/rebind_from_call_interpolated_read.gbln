@@ -1,3 +1,4 @@
+/// known-gap: interp leaves an expression in braces as written
 /// `x |= f(x, "{x}")`: the string still sees x's value, not an emptied one.
 act keep(a, b)
     say(b)

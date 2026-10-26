@@ -51,12 +51,12 @@ xx
 act rest(w, s)
     return nil
 xx
-link Person contact by [
+link Person contact 0...1 by [
     1 - abs((self >> town) - (target >> town)) * .5
 ]
 overlay Flu |
     hosts Person
-    spreads through contact at .5
+    spreads where :link_score(self, target, "contact") > .3 at .5
     decays .04
     modifies:
         health - .01

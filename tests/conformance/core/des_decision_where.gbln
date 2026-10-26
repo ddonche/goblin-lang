@@ -1,0 +1,40 @@
+/// known-gap: interp has no `where [ ... ]` on decisions
+/// `where [ condition ]` leaves targets out of a decision before scoring:
+/// only those for which it is true are scored. With none left, the
+/// decision does nothing. It sits between the target class and `by`, and
+/// can go before or after `margin`.
+<>F |
+    ~name: ""
+    ~side: 0
+    ~hp: 10
+    ~max_hp: 10
+    attack | decision against F where [
+        target >> side != self >> side and target >> hp > 0
+    ] by [
+        1 - target >> hp / target >> max_hp
+    ]
+    judge using attack
+        >= 0: hit(target)
+    end
+    heal | decision against F margin 0 where [ target >> side == self >> side and target >> hp * 2 < target >> max_hp ] by [
+        1 - target >> hp / target >> max_hp
+    ]
+    judge using heal
+        >= 0: mend(target)
+    end
+xx
+act hit(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} hits {b}")
+xx
+act mend(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} heals {b}")
+xx
+x <> F | name: "x", side: 0, hp: 4
+y <> F | name: "y", side: 0, hp: 10
+z <> F | name: "z", side: 1, hp: 0
+w <> F | name: "w", side: 1, hp: 6
+tick()

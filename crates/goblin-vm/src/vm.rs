@@ -151,7 +151,7 @@ pub struct Vm {
     step_err: Option<GoblinError>,
     /// DES formulas already compiled, by parameter names and expression, so
     /// a formula evaluated every tick is compiled once.
-    /// Compiled DES formulas, with whether `run_formula` can run each one.
+    /// Compiled DES formulas, with whether `run_formula_in` can run each one.
     tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<TickFormula>, rustc_hash::FxBuildHasher>,
 }
 
@@ -574,6 +574,7 @@ impl Vm {
                 };
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -589,6 +590,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -606,6 +608,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -811,6 +814,7 @@ impl Vm {
                 let target = self.stack_pop()?;
                 match target {
                     Value::Ref(uuid) => {
+                        self.session.touch(&uuid);
                         if let Some(slot_val) = self.session.object_store.get_mut(&uuid) {
                             *slot_val = new_val;
                         }
@@ -1340,6 +1344,7 @@ impl Vm {
                 };
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 crate::world::check_view_write(&self.session, &uuid)?;
+                self.session.touch(&uuid);
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
                     if let Value::Object(ref mut o) = obj {
@@ -1471,7 +1476,7 @@ impl Vm {
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
-                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: class_name.to_string(), fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid }));
+                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: class_name.to_string(), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid }));
                 self.stack.push(Operand::Val(obj));
             }
 
@@ -1878,6 +1883,14 @@ impl Vm {
                     BuiltinId::CloneObject => {
                         let result = self.vm_clone_object(arg_vals)?;
                         self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::MoveObject => {
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "move!".into() });
+                        }
+                        crate::world::move_object(self, &arg_vals[0], &arg_vals[1])?;
+                        self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
                     BuiltinId::Tick if arg_vals.len() == 1 => {
@@ -2473,6 +2486,16 @@ impl Vm {
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
             Opcode::OverlayDef(i) => {
                 let crate::opcode::OpData::OverlayDef(def) = self.op_data_at(i) else { unreachable!() };
+                // The runtime reads no meaning into a link: what a link does
+                // is the formula the program writes.
+                if let Some(ch) = def.spread_rules.iter().find_map(|r| match r {
+                    goblin_ast::SpreadRule::Channel { channel, .. } => Some(channel.clone()),
+                    _ => None,
+                }) {
+                    return Err(GoblinError::Runtime(format!(
+                        "R1229: spreads-through: overlay {} spreads through {ch}; write the condition yourself: `spreads where :link_score(self, target, \"{ch}\") > 0 at RATE per tick`",
+                        def.name)));
+                }
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
                 let vm_def = OverlayDef {
                     name: def.name.clone(),
@@ -2489,6 +2512,8 @@ impl Vm {
                     spread_rules: def.spread_rules.clone(),
                     spawn_rules: def.spawn_rules.clone(),
                     transitions: def.transitions.clone(),
+                    on_end: def.on_end.clone(),
+                    each_tick: def.each_tick.clone(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
@@ -2506,8 +2531,25 @@ impl Vm {
             }
 
             Opcode::OverlayApply(i) => {
-                let crate::opcode::OpData::OverlayApply { overlay_name, host_var_name, strength, duration_override } = self.op_data_at(i) else { unreachable!() };
+                let crate::opcode::OpData::OverlayApply { overlay_name, host_var_name, strength, duration_override, strength_on_stack, duration_on_stack } = self.op_data_at(i) else { unreachable!() };
                 use crate::session::{OverlayInstance, OverlayInstanceId};
+                let bad = |what: &str, v: &Value| GoblinError::Runtime(format!(
+                    "R1223: overlay-apply: overlay {overlay_name} {what}, got {}", v.type_name()));
+                let duration_override = if duration_on_stack {
+                    match self.pop_value()? {
+                        Value::Int(n) if n >= 0 && n <= u32::MAX as i64 => Some(n as u32),
+                        Value::Float(f) if f >= 0.0 && f.fract() == 0.0 && f <= u32::MAX as f64 => Some(f as u32),
+                        v => return Err(bad("`for N ticks` needs a whole number of ticks, 0 or more", &v)),
+                    }
+                } else { duration_override };
+                let strength = if strength_on_stack {
+                    match self.pop_value()? {
+                        Value::Int(n) => n as f64,
+                        Value::Float(f) => f,
+                        Value::Pct(p) => p,
+                        v => return Err(bad("`at` needs a number", &v)),
+                    }
+                } else { strength };
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
                     // A statement naming a top-level variable names the host
@@ -2538,14 +2580,6 @@ impl Vm {
                 let strength = strength.clamp(0.0, 1.0);
                 // The overlay's own `lasts N ticks` applies when the statement has no `for`.
                 let duration = duration_override.or(def.default_duration);
-                let is_temporary = duration.is_some();
-                let original_values: Vec<(String, Value)> = if is_temporary {
-                    if let Some(Value::Object(o)) = self.session.object_store.get(&host_uuid) {
-                        def.modifiers.iter().filter_map(|(fname, _)| {
-                            o.fields.get(fname).map(|v| (fname.clone(), v.clone()))
-                        }).collect()
-                    } else { Vec::new() }
-                } else { Vec::new() };
                 let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
                 self.session.des_overlay_id_counter += 1;
                 let inst = OverlayInstance {
@@ -2556,7 +2590,7 @@ impl Vm {
                     age: 0,
                     ticks_remaining: duration,
                     count: 1,
-                    original_values,
+                    applied: Vec::new(),
                     extra_fields: def.extra_fields.clone(),
                     des_id,
                 };
@@ -2580,67 +2614,102 @@ impl Vm {
                 let crate::opcode::OpData::LinkDef(def) = self.op_data_at(i) else { unreachable!() };
                 use crate::session::LinkDef;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
-                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
+                let Some(range) = def.range.clone() else {
+                    return Err(GoblinError::Runtime(format!(
+                        "R1227: link-no-range: `link {} {channel}` needs its range: `link {} {channel} 0...1` (any two numbers) or `link {} {channel} bool`",
+                        def.class_name, def.class_name, def.class_name)));
+                };
                 let link_def = LinkDef {
                     class_name: def.class_name.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min,
-                    formula_max,
+                    has_formula: def.has_formula,
+                    range: Some(range),
                 };
                 self.tick_exprs.clear();
                 self.session.link_defs.insert((def.class_name.clone(), channel), std::rc::Rc::new(link_def));
             }
 
+            // `Rome link trust by [ formula ]`: that object's own formula,
+            // kept under its id.
             Opcode::ObjectLinkDef(i) => {
                 let crate::opcode::OpData::ObjectLinkDef(def) = self.op_data_at(i) else { unreachable!() };
+                let def = def.clone();
                 use crate::session::LinkDef;
+                let obj = self.stack_pop()?;
+                let uuid = self.link_end(&obj, &def.object_var)?;
                 let channel = def.channel.clone().unwrap_or_else(|| "default".to_string());
-                let (formula_min, formula_max) = crate::tick::derive_link_formula_range(&def.formula);
                 let link_def = LinkDef {
                     class_name: def.object_var.clone(),
                     channel: channel.clone(),
                     formula: def.formula.clone(),
-                    formula_min,
-                    formula_max,
+                    has_formula: true,
+                    range: None,
                 };
                 self.tick_exprs.clear();
-                self.session.object_link_defs.insert((def.object_var.clone(), channel), std::rc::Rc::new(link_def));
+                self.session.object_link_defs.insert((uuid, channel), std::rc::Rc::new(link_def));
             }
 
+            // `a link to b on trade offset +.3 [for N ticks]`: a change to
+            // a's link to b (b's link to a is its own).
             Opcode::LinkOffset(i) => {
                 let crate::opcode::OpData::LinkOffset(s) = self.op_data_at(i) else { unreachable!() };
+                let s = s.clone();
                 use crate::session::LinkOffset;
-                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
-                let new_offset = LinkOffset { value: s.offset, ticks_remaining: s.ticks };
-                let offsets = self.session.link_offsets.entry(key).or_default();
-                let existing = offsets.iter_mut().find(|o| o.ticks_remaining == new_offset.ticks_remaining);
-                if let Some(existing) = existing {
-                    if new_offset.value.abs() >= existing.value.abs() {
-                        *existing = new_offset;
-                    } else {
-                        existing.ticks_remaining = new_offset.ticks_remaining;
-                    }
+                let value = self.stack_pop()?;
+                let to = self.stack_pop()?;
+                let from = self.stack_pop()?;
+                let value = match value {
+                    Value::Int(n) => n as f64,
+                    Value::Float(f) => f,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R1224: link-offset: `{} link to {} on {} offset ...` needs a number, got {}",
+                        s.from_var, s.to_var, s.channel, other.type_name()))),
+                };
+                let (from_id, to_id) = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?);
+                let (lo, hi) = crate::tick::link_bounds(self, &from_id, &s.channel)?;
+                let key = (from_id.clone(), to_id.clone(), s.channel.clone());
+                if s.ticks.is_none() {
+                    // A lasting change moves the link, and keeps it inside its
+                    // range: past the top, a later drop starts from the top.
+                    let base = crate::tick::link_base(self, &from_id, &to_id, &s.channel)?;
+                    let offsets = self.session.link_offsets.entry(key).or_default();
+                    let lasting: f64 = offsets.iter().filter(|o| o.ticks_remaining.is_none()).map(|o| o.value).sum();
+                    let kept = (base + lasting + value).clamp(lo, hi) - base;
+                    offsets.retain(|o| o.ticks_remaining.is_some());
+                    offsets.push(LinkOffset { value: kept, ticks_remaining: None });
                 } else {
-                    offsets.push(new_offset);
+                    // A timed change is taken back when its ticks run out.
+                    self.session.link_offsets.entry(key).or_default().push(LinkOffset { value, ticks_remaining: s.ticks });
                 }
             }
 
             Opcode::ClearLink(i) => {
                 let crate::opcode::OpData::ClearLink(s) = self.op_data_at(i) else { unreachable!() };
-                let key = (s.from_var.clone(), s.to_var.clone(), s.channel.clone());
+                let s = s.clone();
+                let to = self.stack_pop()?;
+                let from = self.stack_pop()?;
+                let key = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?, s.channel.clone());
                 self.session.link_offsets.remove(&key);
                 self.session.des_link_ids.remove(&key);
             }
 
             Opcode::ObjectDecision(i) => {
                 let crate::opcode::OpData::ObjectDecision { var_name, def } = self.op_data_at(i) else { unreachable!() };
-                let mut d = *def.clone();
+                let (var_name, def) = (var_name.clone(), def.clone());
+                // Kept under the object's id, so it is that object's decision
+                // only, whatever other variables hold it or held it before.
+                let key = match self.stack_pop()? {
+                    Value::Ref(uuid) => uuid,
+                    Value::Object(o) => o.uuid.clone(),
+                    _ => var_name,
+                };
+                let mut d = *def;
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
                 self.tick_exprs.clear();
-                self.session.object_decisions.insert(var_name.clone(), std::rc::Rc::new(d));
+                self.session.object_decisions.insert(key, std::rc::Rc::new(d));
             }
 
             Opcode::UnitDecl(i) => {
@@ -2887,6 +2956,12 @@ impl Vm {
                             out.push_str(&self.resolve_box_template_from_store(val));
                         } else {
                             out.push_str(val);
+                        }
+                    } else if let Some((_, v)) = self.interp_overrides.iter().find(|(n, _)| n.as_str() == inner) {
+                        // An expression (`{n - wins}`) the compiler worked out.
+                        match v {
+                            Value::Str(t) => out.push_str(t),
+                            v => out.push_str(&crate::builtins::fmt_value_raw(v)),
                         }
                     } else {
                         out.push('{'); out.push_str(raw); out.push('}');
@@ -3306,6 +3381,7 @@ impl Vm {
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
+                    self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
                 } else {
@@ -3319,7 +3395,8 @@ impl Vm {
     /// of them see it. Pending reads of the old value keep the old value.
     fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
         let val = if let Some(uuid) = registered_uuid(&val) {
-            self.session.object_store.insert(uuid.clone(), val);
+            self.session.touch(&uuid);
+                    self.session.object_store.insert(uuid.clone(), val);
             Value::Ref(uuid)
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
@@ -3343,9 +3420,15 @@ impl Vm {
         use crate::opcode::{OpData, Opcode};
         let frame = self.call_stack.last().unwrap();
         let OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatStart without its data") };
-        let (id, idx_slot) = (r.id as usize, r.idx);
+        let (id, idx_slot, named) = (r.id as usize, r.idx, r.named);
         let v = self.pop_value()?;
         let (mode, iter, limit) = crate::builtins::repeat_plan(v, &mut self.session)?;
+        // A count, a condition or a forever loop has no item for `as` to name.
+        if named && !matches!(mode, 1 | 2) {
+            let what = match mode { 0 => "a count", 4 => "a condition", _ => "a loop with nothing to walk" };
+            return Err(GoblinError::Runtime(format!(
+                "'repeat ... as name' needs items or a map to walk; {what} has none to name. Read the pass number from `idx` (0, 1, 2, ...), or write `repeat :range(0, n) as name`")));
+        }
         let frame = self.call_stack.last_mut().unwrap();
         if frame.loops.len() <= id { frame.loops.resize_with(id + 1, || LoopState { mode: 3, iter: Value::Nil, limit: 0, counter: 0 }); }
         frame.loops[id] = LoopState { mode, iter, limit, counter: -1 };
@@ -4233,7 +4316,9 @@ impl Vm {
         upvalues: Vec<UpvalueCell>,
         args: Vec<Value>,
     ) -> Result<Value, GoblinError> {
-        if args.len() != func_rc.params {
+        // Trailing parameters with defaults may be left out, as in a call
+        // from Goblin code; the callee fills them in.
+        if args.len() < func_rc.required_params || args.len() > func_rc.params {
             return Err(GoblinError::ArityMismatch {
                 expected: func_rc.params,
                 got: args.len(),
@@ -4738,7 +4823,7 @@ impl Vm {
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
         let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f });
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default() });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -4800,7 +4885,7 @@ impl Vm {
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
             let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
-            match self.run_formula(&func_rc, &refs, &formula.hints) {
+            match self.run_formula_in(&func_rc, &refs, &[], &formula.hints, &formula.env) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -4839,18 +4924,18 @@ impl Vm {
     }
 
     /// Runs a compiled DES formula with borrowed arguments.
-    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)]) -> Result<Value, GoblinError> {
-        let func_rc = formula.func.clone();
-        if locals.len() != func_rc.params {
+    /// `known`: per argument, where its object sits in the store, if known.
+    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)], known: &[usize]) -> Result<Value, GoblinError> {
+        if locals.len() != formula.func.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, locals, &formula.hints) {
+            match self.run_formula_in(&formula.func, locals, known, &formula.hints, &formula.env) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
         }
-        self.run_tick_formula_vm(func_rc, locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
+        self.run_tick_formula_vm(formula.func.clone(), locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -4873,13 +4958,11 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
-        self.run_formula_in(f, args, hints, &FormulaEnv::default())
-    }
-
-    /// `run_formula` for a closure: `env` holds the values its captured
-    /// variables and the globals it reads had when the run started.
-    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
+    /// `known` gives, per argument, where the object it refers to sits in
+    /// the store when the caller already knows (empty when not). For a
+    /// closure, `env` holds the values its captured variables and the
+    /// globals it reads had when the run started.
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], known: &[usize], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
         enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
@@ -4888,18 +4971,31 @@ impl Vm {
                 _ => None,
             }
         }
+        fn plain_or_str(v: Fv<'_>) -> Option<Value> {
+            match v {
+                Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => Some(v),
+                _ => None,
+            }
+        }
         let code = &f.bytecode;
         let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
-        // Where each argument that refers to a stored object sits in the
-        // store, looked up on first use (checked against its id when read).
+        // Where each value that refers to a stored object sits in the
+        // store: given by the caller for arguments it already knows,
+        // otherwise looked up on first use (checked against its id when read).
         const UNSEEN: usize = usize::MAX - 1;
-        // Arguments, then captured variables, then globals, in one list.
-        let mut vals: smallvec::SmallVec<[&Value; 8]> = args.iter().map(|(_, v)| *v).collect();
-        vals.extend(env.upvalues.iter());
-        vals.extend(env.globals.iter().map(|(_, v)| v));
+        // Slots: arguments, then captured variables, then globals.
         let ups_at = args.len();
         let globals_at = ups_at + env.upvalues.len();
-        let mut at: smallvec::SmallVec<[usize; 8]> = smallvec::smallvec![UNSEEN; vals.len()];
+        let slots = globals_at + env.globals.len();
+        let mut at_small = [UNSEEN; 8];
+        let mut at_big: Vec<usize> = Vec::new();
+        let at: &mut [usize] = if slots <= at_small.len() { &mut at_small[..slots] } else { at_big.resize(slots, UNSEEN); &mut at_big[..] };
+        for (i, p) in known.iter().enumerate().take(ups_at) { at[i] = *p; }
+        let value_at = |slot: usize| -> Option<&Value> {
+            if slot < ups_at { Some(args[slot].1) }
+            else if slot < globals_at { env.upvalues.get(slot - ups_at) }
+            else { env.globals.get(slot - globals_at).map(|(_, v)| v) }
+        };
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4920,7 +5016,7 @@ impl Vm {
                         Opcode::LoadGlobal(g) => globals_at + env.globals.iter().position(|(n, _)| *n == g)?,
                         _ => return None,
                     };
-                    let a: &Value = vals.get(slot)?;
+                    let a: &Value = value_at(slot)?;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
                         Value::Object(_) | Value::Ref(_) => {
@@ -4972,7 +5068,7 @@ impl Vm {
                 // has one (then skip the name's own load), as on the VM.
                 Opcode::LoadItFieldOrJump(idx, off) => {
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
-                    let it: &Value = vals.first()?;
+                    let it: &Value = value_at(0)?;
                     let obj = match it {
                         Value::Object(o) => Some(&**o),
                         Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
@@ -5013,6 +5109,9 @@ impl Vm {
                             num_div(&a, &b).ok()?,
                         _ => return None,
                     };
+                    // Plain numbers own nothing: skip their drop calls.
+                    std::mem::forget(a);
+                    std::mem::forget(b);
                     st.push(Fv::Val(r));
                 }
                 Opcode::Neg => {
@@ -5037,8 +5136,9 @@ impl Vm {
                     st.push(Fv::Val(Value::Bool(test(c))));
                 }
                 Opcode::Eq | Opcode::Ne => {
-                    let b = plain(st.pop()?)?;
-                    let a = plain(st.pop()?)?;
+                    // Strings compare here too (`it >> kind == "rabbit"`).
+                    let b = plain_or_str(st.pop()?)?;
+                    let a = plain_or_str(st.pop()?)?;
                     let eq = values_equal(&a, &b);
                     st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
                 }
@@ -5055,7 +5155,7 @@ impl Vm {
                     let start = st.len().checked_sub(argc as usize)?;
                     let mut largs = Vec::with_capacity(argc as usize);
                     for v in st.drain(start..) {
-                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_) | Value::Ref(_)) => largs.push(v), _ => return None }
+                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v), _ => return None }
                     }
                     st.push(Fv::Val(self.link_score_in(&largs, Some((f, args))).ok()?));
                 }
@@ -5152,8 +5252,8 @@ impl Vm {
                     results.push(Value::Object(Box::new(crate::value::ObjectVal {
                         class_name: inst.overlay_name.clone(),
                         fields: std::rc::Rc::new(fields),
-                        readonly_fields: BTreeSet::new(),
-                        trait_fields: BTreeSet::new(),
+                        readonly_fields: Default::default(),
+                        trait_fields: Default::default(),
                         // Its own id: binding it must not replace its host.
                         uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
                     })));
@@ -5191,7 +5291,7 @@ impl Vm {
     /// An argument as the callee holds it: an object that lives in the
     /// object store is passed by reference, as in the interpreter, so the
     /// callee reads the object's current fields, not a copy taken at the call.
-    fn arg_ref(&self, v: Value) -> Value {
+    pub(crate) fn arg_ref(&self, v: Value) -> Value {
         match v {
             // Same class as the stored object: an overlay record carries its
             // host's uuid but is not the host.
@@ -5274,7 +5374,7 @@ impl Vm {
         let mut found = Vec::new();
         for i in 0..self.session.object_store.len() {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
-            let holds = match self.run_formula_in(&func, &[("it", &it)], &hints, &env) {
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env) {
                 Some(v) => matches!(v, Value::Bool(true)),
                 // Something the direct run leaves to the VM (a missing field,
                 // which is an error there, say): the VM decides for this one.
@@ -5319,8 +5419,8 @@ impl Vm {
             let obj = Value::Object(Box::new(crate::value::ObjectVal {
                 class_name: inst.overlay_name.clone(),
                 fields: std::rc::Rc::new(fields),
-                readonly_fields: BTreeSet::new(),
-                trait_fields: BTreeSet::new(),
+                readonly_fields: Default::default(),
+                trait_fields: Default::default(),
                 // Its own id: binding it must not replace its host.
                 uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
             }));
@@ -5348,50 +5448,60 @@ impl Vm {
         self.session.read_value(&t).ok()
     }
 
-    /// link_score(class, [channel,] a_var, b_var): the link formula for the pair,
-    /// normalised to 0..1, plus the pair's offsets (the interpreter's `link_score`).
+    /// `:link_score(a, b, "trade")`: a's link to b (one way), as
+    /// `crate::tick::link_value` works it out. The older form names the
+    /// class and the two variables: `:link_score("Nation", "trade", "a", "b")`.
     fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
         self.link_score_in(&args, None)
     }
 
-    /// `link_score` with its variable names looked up in the running
-    /// formula: the current call frame, or, for a formula run by
-    /// `run_formula`, that formula's parameter names and arguments.
+    /// `link_score`, with variable names (the older form) looked up in the
+    /// running formula: the current call frame, or, for a formula run by
+    /// `run_formula_in`, that formula's parameter names and arguments.
     fn link_score_in(
         &mut self,
         args: &[Value],
         direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>,
     ) -> Result<Value, GoblinError> {
-        if args.len() < 3 { return Ok(Value::Nil); }
+        let is_obj = |v: &Value| matches!(v, Value::Ref(_) | Value::Object(_));
+        if args.len() == 3 && is_obj(&args[0]) && is_obj(&args[1]) {
+            let Value::Str(ch) = &args[2] else {
+                return Err(GoblinError::type_error("str", args[2].type_name(), "link_score"));
+            };
+            let from = self.link_end(&args[0], "the first object")?;
+            let to = self.link_end(&args[1], "the second object")?;
+            return crate::tick::link_value(self, &from, &to, ch.as_ref());
+        }
+        if args.len() < 3 {
+            return Err(GoblinError::Runtime("R1225: link-not-object: write :link_score(a, b, \"trade\") with the two objects and the link's name".into()));
+        }
         let s = |i: usize| -> Result<&str, GoblinError> {
             match &args[i] {
                 Value::Str(s) => Ok(s.as_ref()),
                 other => Err(GoblinError::type_error("str", other.type_name(), "link_score")),
             }
         };
-        let (class_name, channel, a_var, b_var) = if args.len() >= 4 {
-            (s(0)?, s(1)?, s(2)?, s(3)?)
+        let (channel, a_var, b_var) = if args.len() >= 4 {
+            (s(1)?, s(2)?, s(3)?)
         } else {
-            (s(0)?, "default", s(1)?, s(2)?)
+            ("default", s(1)?, s(2)?)
         };
-        // The objects stay in the object store: the formula reads their
-        // fields through the reference instead of a copy of each object.
-        let (self_val, target_val) = match (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Ok(Value::Nil),
+        let (Some(a), Some(b)) = (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) else {
+            return Ok(Value::Nil);
         };
-        let def = (!self.session.object_link_defs.is_empty())
-            .then(|| self.session.object_link_defs.get(&(a_var.to_string(), channel.to_string())).cloned())
-            .flatten()
-            .or_else(|| self.session.link_defs.get(&(class_name.to_string(), channel.to_string())).cloned());
-        let Some(d) = def else { return Ok(Value::Nil) };
-        let mut score = crate::tick::eval_link_score(self, self_val, target_val, &d.formula, d.formula_min, d.formula_max)?;
-        if !self.session.link_offsets.is_empty() {
-            if let Some(offsets) = self.session.link_offsets.get(&(a_var.to_string(), b_var.to_string(), channel.to_string())) {
-                for o in offsets { score += o.value; }
-            }
+        let from = self.link_end(&a, a_var)?;
+        let to = self.link_end(&b, b_var)?;
+        crate::tick::link_value(self, &from, &to, channel)
+    }
+
+    /// The object at one end of a link, by id.
+    pub(crate) fn link_end(&self, v: &Value, name: &str) -> Result<String, GoblinError> {
+        match v {
+            Value::Ref(u) => Ok(u.to_string()),
+            Value::Object(o) => Ok(o.uuid.clone()),
+            other => Err(GoblinError::Runtime(format!(
+                "R1225: link-not-object: `{name}` in a link holds {}, not an object", other.type_name()))),
         }
-        Ok(Value::Float(score.clamp(0.0, 1.0)))
     }
 
     /// A variable's value as `lookup_var` finds it, except that an object
@@ -5533,7 +5643,12 @@ impl Vm {
                 Ok(Value::Big(d))
             }
             (Value::Pct(x), Value::Pct(y))     => Ok(Value::Pct(flt_fn(*x, *y))),
-            _ => Err(GoblinError::type_error("number", b.type_name(), op)),
+            // Name the side that is not a number (`true * 3` names the bool).
+            _ => {
+                let numeric = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_));
+                let bad = if numeric(&a) { &b } else { &a };
+                Err(GoblinError::type_error("number", bad.type_name(), op))
+            }
         }
     }
 
@@ -5693,6 +5808,7 @@ impl Vm {
                 let Value::Str(field) = key else {
                     return Err(GoblinError::Runtime(format!("update!: object field name must be a string, got {}", key.type_name())));
                 };
+                self.session.touch(&uuid);
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;
@@ -5763,20 +5879,22 @@ struct FormulaEnv {
 
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
-    /// Every opcode is one `Vm::run_formula` handles.
+    /// Every opcode is one `Vm::run_formula_in` handles.
     direct: bool,
     /// Direct runs in a row that had to fall back to the VM.
     misses: std::cell::Cell<u32>,
     /// Per opcode: where the field a `GetMember` read was found in the
     /// object's field map last time (objects of one class share a layout).
     hints: Vec<std::cell::Cell<u32>>,
+    /// An empty environment, kept so a run does not build and drop one.
+    env: FormulaEnv,
 }
 
 impl TickFormula {
     const MAX_MISSES: u32 = 32;
 }
 
-/// Whether every opcode in a compiled DES formula is one `Vm::run_formula`
+/// Whether every opcode in a compiled DES formula is one `Vm::run_formula_in`
 /// handles, so it is worth trying before the VM.
 fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
     // `obj >> name` where name is also a member builtin (`size`, ...) is
@@ -6034,7 +6152,7 @@ mod tests {
     #[test]
     fn direct_formulas_match_the_vm() {
         // Every formula gives the same value (or fails the same way) through
-        // `run_formula` as through a call frame on the VM.
+        // `run_formula_in` as through a call frame on the VM.
         let formulas = [
             "a * 2 + b", "a - b * 3", "a / b", "a / 4", "-a", "a * 1.5 - b",
             "a < b and b >= 3", "a > 2 or b <= 1", "a == b", "a != 6",
@@ -6057,7 +6175,7 @@ mod tests {
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
                     let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
-                    if vm.run_formula(&f, &refs, &[]).is_some() { ran_direct += 1; }
+                    if vm.run_formula_in(&f, &refs, &[], &[], &FormulaEnv::default()).is_some() { ran_direct += 1; }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {
