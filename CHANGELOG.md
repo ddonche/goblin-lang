@@ -64,7 +64,7 @@ in parentheses are the pull requests that made each change.
 - DES: `order by [ self >> speed ] desc` in a class sets the order its objects make their
   decisions in (ascending by default; other classes keep their places). A bad key is R1222.
 - DES: erase transitions are checked as soon as an action that changed the object finishes
-  (decision actions, `every` blocks, `on end:`), so the dead don't act or get chosen again that
+  (decision actions, `every` blocks, `on end:`, `each tick:` changes), so the dead don't act or get chosen again that
   tick. A condition that draws a random number stays a once-per-tick check at the end.
 
 ## 0.49.0 — 2026-10-26
