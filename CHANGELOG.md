@@ -37,6 +37,12 @@ in parentheses are the pull requests that made each change.
 - DES: a class can say `on erase: action`; it runs on the object just before an
   erase transition removes it, while its fields can still be read (an estate
   goes to the heirs before the person is gone).
+- DES: `:move!(obj, region)` moves an object to another region of
+  `tick(regions)`. In a region it leaves at once (reading it there afterwards
+  is C0125) and arrives at the start of the next tick with its overlays, link
+  offsets and decision; what other regions send it meanwhile follows it. The
+  main program sees it the whole time and can move an object too: its region
+  moves it at the start of the next tick.
 
 ## 0.49.0 — 2026-10-26
 

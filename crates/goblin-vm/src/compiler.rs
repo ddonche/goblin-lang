@@ -3711,6 +3711,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "freeze"                         => BuiltinId::Freeze,
         "swarm"                          => BuiltinId::Swarm,
         "swarm!"                         => BuiltinId::SwarmBang,
+        "move!"                          => BuiltinId::MoveObject,
         "actor"                          => BuiltinId::Actor,
         "post"                           => BuiltinId::Post,
         "receive"                        => BuiltinId::Receive,
@@ -3945,7 +3946,7 @@ fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
         "write_text!", "write_json!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
-        "delete_object!", "delete_overlays_on!", "swarm!",
+        "delete_object!", "delete_overlays_on!", "swarm!", "move!",
     ];
     bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }

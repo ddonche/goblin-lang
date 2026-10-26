@@ -1,0 +1,4 @@
+tick 1: shop 100, workers 0, total 100; old town 2, new town 1
+tick 2: shop 70, workers 0, total 70; old town 1, new town 1
+tick 3: shop 70, workers 30, total 100; old town 1, new town 2
+tick 4: shop 40, workers 30, total 70; old town 1, new town 2

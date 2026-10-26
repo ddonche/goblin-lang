@@ -1880,6 +1880,14 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::MoveObject => {
+                        if arg_vals.len() != 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "move!".into() });
+                        }
+                        crate::world::move_object(self, &arg_vals[0], &arg_vals[1])?;
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
                     BuiltinId::Tick if arg_vals.len() == 1 => {
                         // tick(regions): one tick of every region together.
                         let list = arg_vals.into_iter().next().unwrap();

@@ -1,0 +1,77 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :move!(obj, region) moves an object to another region of tick(regions).
+/// In a region it leaves at once (reading it there afterwards is C0125) and
+/// arrives at the start of the next tick with its overlays, so its rules
+/// keep running there. The main program sees it the whole time. The main
+/// program can move an object too: its region moves it at the start of the
+/// next tick, so it arrives a tick later (one tick it is in flight).
+<>Walker |
+    ~age: 0
+    ~marked: 0
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+xx
+overlay Tired |
+    lasts 10 ticks
+end
+act make_region(name, n)
+    things | []
+    repeat :range(0, n)
+        w <> Walker | age: 0
+        :put_last!(things, w)
+    xx
+    return {"name": name, "things": things, "peer": nil, "have": n, "tired": 0, "err": ""}
+xx
+act region_day(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick")
+        if msg{"tick"} == 2 and st{"name"} == "west"
+            w | st{"things"}[0]
+            w >> marked |= 1
+            overlay Tired on w at 1
+            :move!(w, st{"peer"})
+            attempt
+                a | w >> age
+            rescue e
+                :update!(st{"err"}, "{e}")
+            xx
+        xx
+        :update!(st{"have"}, :len(:objects(it >> age >= 0)))
+        :update!(st{"tired"}, :len(:overlays(it >> overlay_name == "Tired")))
+    xx
+    return st
+xx
+west | :actor(make_region("west", 3), region_day)
+east | :actor(make_region("east", 2), region_day)
+:post(west, {"peer": east})
+:post(east, {"peer": west})
+repeat :range(1, 7) as d
+    tick([west, east])
+    w | :await(:request(west, {"ask": 1}))
+    e | :await(:request(east, {"ask": 1}))
+    wh | w{"have"}
+    eh | e{"have"}
+    wt | w{"tired"}
+    et | e{"tired"}
+    all | :len(:objects(it >> age >= 0))
+    age | -1
+    repeat :objects(it >> marked == 1)
+        age |= it >> age
+    xx
+    say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}")
+    if d == 2
+        say(:has(w{"err"}, "C0125: object-moved"))
+    xx
+    if d == 4
+        repeat :objects(it >> marked == 1)
+            :move!(it, west)
+        xx
+    xx
+xx
+attempt
+    :move!(1, west)
+rescue e
+    say(:has("{e}", "C0125"))
+xx

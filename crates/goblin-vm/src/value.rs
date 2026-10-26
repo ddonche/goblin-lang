@@ -738,6 +738,8 @@ pub enum BuiltinId {
     Freeze,
     Swarm,
     SwarmBang,
+    /// `:move!(obj, region)`: an object moves to another region of a world.
+    MoveObject,
     Actor,
     /// `:actor(x, ...)` where `x` is a variable: that variable may refer to the state.
     ActorFromVar,

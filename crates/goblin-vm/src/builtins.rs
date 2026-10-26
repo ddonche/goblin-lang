@@ -3826,6 +3826,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::CloneObject => {
             Err(GoblinError::Runtime("clone_object: must be called through VM dispatch".to_string()))
         }
+        BuiltinId::MoveObject => {
+            Err(GoblinError::Runtime("move!: must be called through VM dispatch".to_string()))
+        }
         BuiltinId::DeleteObject if args.len() == 3 => {
             // delete_object!(x): [x's value, "x", argc] from the compiler.
             let var_name = bang_object_target(&args, "delete_object!")?;

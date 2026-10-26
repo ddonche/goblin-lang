@@ -142,6 +142,9 @@ pub struct Session {
     /// In an actor: objects that stayed with the program that started it
     /// (uuid -> the variable that names them there), for a clear error.
     pub kept_home: HashMap<String, String>,
+    /// Objects this region moved to another one (`:move!`), and the
+    /// variable each was stored under, so reading one says where it went.
+    pub(crate) moved_away: HashMap<String, String>,
     /// The main program's world of regions (`tick(regions)`).
     pub world: Option<crate::world::World>,
     /// In a region, while it runs a world tick.
@@ -340,6 +343,7 @@ impl Session {
             plain_collections_kept: Default::default(),
             omitted_globals: Vec::new(),
             handed_off: HashMap::new(),
+            moved_away: HashMap::new(),
             kept_home: HashMap::new(),
             world: None,
             region: None,

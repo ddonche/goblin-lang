@@ -66,6 +66,8 @@ pub enum PValue {
     /// An object that stays with the session that started an actor (it was
     /// not handed over); the name it was stored under.
     KeptHome { uuid: String, var: String },
+    /// A reference to an object that moved to another region (`:move!`).
+    Moved { uuid: String, var: String },
     /// A collection or long string holding no session state, converted once
     /// and shared: every actor on one worker reads the same copy.
     Shared(Arc<PValue>),
@@ -198,7 +200,10 @@ impl<'s> ToPortable<'s> {
                 Some(obj) => self.value(&obj.clone())?,
                 None => match self.session.handed_off.get(uuid.as_str()) {
                     Some(var) => PValue::HandedOff { uuid: uuid.clone(), var: var.clone() },
-                    None => return Err(crate::actor::missing_object(self.session, uuid)),
+                    None => match self.session.moved_away.get(uuid.as_str()) {
+                        Some(var) => PValue::Moved { uuid: uuid.clone(), var: var.clone() },
+                        None => return Err(crate::actor::missing_object(self.session, uuid)),
+                    },
                 },
             },
             Value::GridRef { .. } => return Err(unsupported("a grid reference")),
@@ -456,6 +461,10 @@ impl FromPortable {
                 session.kept_home.insert(uuid.clone(), var.clone());
                 Value::Ref(uuid.clone())
             }
+            PValue::Moved { uuid, var } => {
+                session.moved_away.insert(uuid.clone(), var.clone());
+                Value::Ref(uuid.clone())
+            }
             PValue::Shared(inner) => self.shared_value(inner, session),
             PValue::World(_) => Value::Nil,
         }
@@ -639,7 +648,7 @@ pub(crate) fn inert(p: &PValue) -> bool {
             PLayout::SmallMap(p) | PLayout::HashMapBackend(p) => p.iter().all(|(k, v)| inert(k) && inert(v)),
         },
         PValue::Object { .. } | PValue::Closure(..) | PValue::Frozen(_) | PValue::Handle(_)
-        | PValue::HandedOff { .. } | PValue::KeptHome { .. } | PValue::World(_) => false,
+        | PValue::HandedOff { .. } | PValue::KeptHome { .. } | PValue::Moved { .. } | PValue::World(_) => false,
     }
 }
 
