@@ -870,6 +870,7 @@ fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
         E::FreeCall(_, args, _) | E::NsCall(_, _, args, _) | E::Array(args, _) => args.iter().for_each(|a| member_reads(a, out)),
         E::Call(recv, _, args, _) | E::OptCall(recv, _, args, _) => { member_reads(recv, out); args.iter().for_each(|a| member_reads(a, out)) }
         E::Index(a, b, _) | E::IndexMap(a, b, _) => { member_reads(a, out); member_reads(b, out) }
+        E::Object(kv, _) => kv.iter().for_each(|(_, v)| member_reads(v, out)),
         _ => {}
     }
 }
@@ -982,7 +983,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     if !action_name.is_empty() {
         // The action gets the objects as they are now (nothing above
         // changes them), the same values it was given before.
-        let (Some(self_val), Some(target_val)) = (
+        let (Some(self_val), Some(_)) = (
             vm.session.object_store.get(&self_uuid).cloned(),
             vm.session.object_store.get(&best_target_uuid).cloned(),
         ) else { return Ok(()) };
@@ -996,7 +997,9 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         let mut args = Vec::with_capacity(arg_exprs.len() + 1);
         for e in arg_exprs {
             args.push(match e {
-                goblin_ast::Expr::Ident(n, _) if n == "target" => target_val.clone(),
+                // Objects go by reference, as in an ordinary call: an action
+                // written `strike(target, target)` changes one object.
+                goblin_ast::Expr::Ident(n, _) if n == "target" => target_ref.clone(),
                 other => {
                     let mut bind = vec![
                         ("score", Value::Float(final_score)),
@@ -1004,7 +1007,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
                         ("target", target_ref.clone()),
                     ];
                     if name != "score" { bind.push((name, Value::Float(final_score))); }
-                    vm.eval_tick_expr(other, bind)?
+                    let v = vm.eval_tick_expr(other, bind)?;
+                    vm.arg_ref(v)
                 }
             });
         }
