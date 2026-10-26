@@ -2489,6 +2489,7 @@ impl Vm {
                     spread_rules: def.spread_rules.clone(),
                     spawn_rules: def.spawn_rules.clone(),
                     transitions: def.transitions.clone(),
+                    on_end: def.on_end.clone(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {

@@ -31,6 +31,9 @@ in parentheses are the pull requests that made each change.
   keeps its copies of the other regions' objects between ticks and rebuilds
   only the fields that changed, instead of every object every tick. DES town
   30 days: 1 thread 2.35 -> 1.78 s, 4 threads 0.80 -> 0.65 s; same output.
+- DES: an overlay can say `on end: action`; when it runs out (its time is up or
+  its strength reaches 0) the action runs with the host (`give_birth(mom)`, or the
+  host class's own `act give_birth()`). Taking it off with `detach` runs nothing.
 
 ## 0.49.0 — 2026-10-26
 

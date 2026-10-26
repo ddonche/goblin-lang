@@ -203,6 +203,9 @@ pub struct OverlayDefStmt {
     pub apply_behavior: OverlayApplyBehavior,
     /// User-defined fields declared on the overlay (e.g. kind: "language")
     pub extra_fields: Vec<(String, Expr)>,
+    /// `on end: action` — called with the host when the overlay runs out
+    /// (time up or strength 0), not when it is removed by hand.
+    pub on_end: Option<String>,
     pub span: Span,
 }
 

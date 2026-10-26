@@ -7054,6 +7054,7 @@ impl<'t> Parser<'t> {
         let mut default_duration: Option<u32> = None;
         let mut apply_behavior: ast::OverlayApplyBehavior = ast::OverlayApplyBehavior::Caps;
         let mut extra_fields: Vec<(String, ast::Expr)> = Vec::new();
+        let mut on_end: Option<String> = None;
 
         self.skip_layout();
 
@@ -7159,6 +7160,36 @@ impl<'t> Parser<'t> {
                         if self.peek_ident() == Some("tick") { let _ = self.eat_ident(); }
                     }
                 }
+                "on" => {
+                    // on end: action — called with the host when the overlay
+                    // runs out (its time is up or its strength reaches 0)
+                    self.skip_layout_inline();
+                    if self.peek_ident() != Some("end") {
+                        return Err(s_help_site!(
+                            "P1240",
+                            "Expected 'end' after 'on' in an overlay",
+                            "Write: on end: give_birth  (called with the host when the overlay runs out)"
+                        ));
+                    }
+                    let _ = self.eat_ident();
+                    self.skip_layout_inline();
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!(
+                            "P1241",
+                            "Expected ':' after 'on end'",
+                            "Write: on end: give_birth"
+                        ));
+                    }
+                    self.skip_layout_inline();
+                    let Some(action) = self.eat_ident() else {
+                        return Err(s_help_site!(
+                            "P1242",
+                            "Expected an action name after 'on end:'",
+                            "Write: on end: give_birth  (an action that takes the host)"
+                        ));
+                    };
+                    on_end = Some(action);
+                }
                 "lasts" => {
                     // lasts N ticks
                     self.skip_layout_inline();
@@ -7184,7 +7215,7 @@ impl<'t> Parser<'t> {
                                     | Some("conflicts") | Some("spawns") | Some("hosts")
                                     | Some("spreads") | Some("decays") | Some("lasts")
                                     | Some("transition") | Some("stacks") | Some("replaces")
-                                    | Some("caps"))
+                                    | Some("caps") | Some("on"))
                             {
                                 break;
                             }
@@ -7410,6 +7441,7 @@ impl<'t> Parser<'t> {
             default_duration,
             apply_behavior,
             extra_fields,
+            on_end,
             span,
         }))
     }

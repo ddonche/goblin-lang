@@ -26,6 +26,8 @@ pub struct OverlayDef {
     pub spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
     pub transitions: Vec<goblin_ast::TransitionDef>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
+    /// `on end: action`: called with the host when the overlay runs out.
+    pub on_end: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

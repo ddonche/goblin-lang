@@ -173,8 +173,9 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
     // ── Pass 6: Remove dead / expired overlays ────────────────────────────────
     {
-        let defs = vm.session.overlay_defs.clone();
         let mut to_remove: Vec<usize> = Vec::new();
+        // Overlays with `on end: action` that run out now: (action, host).
+        let mut ended: Vec<(String, String)> = Vec::new();
         for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
             if inst.strength <= 0.0 || inst.ticks_remaining == Some(0) {
                 to_remove.push(idx);
@@ -183,6 +184,9 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for idx in to_remove.iter().rev() {
             if *idx < vm.session.overlay_instances.len() {
                 let inst = vm.session.overlay_instances.remove(*idx);
+                if let Some(action) = vm.session.overlay_defs.get(&inst.overlay_name).and_then(|d| d.on_end.clone()) {
+                    ended.push((action, inst.host_uuid.clone()));
+                }
                 if !inst.original_values.is_empty() {
                     restore_originals(vm, &inst.host_uuid, &inst.original_values);
                 }
@@ -191,7 +195,13 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
             }
         }
-        let _ = defs; // suppress unused warning
+        // In the order the overlays were applied, once they are gone. An
+        // error in the action stops the tick, as one in an `every` block does.
+        for (action, host) in ended.into_iter().rev() {
+            if vm.session.object_store.contains_key(&host) {
+                call_object_action(vm, &host, &action, Vec::new())?;
+            }
+        }
     }
 
     // ── Pass 7: Remove orphaned overlays ─────────────────────────────────────
@@ -1005,12 +1015,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
                 }
             });
         }
-        let class_name = match &self_val { Value::Object(o) => o.class_name.clone(), _ => String::new() };
-        let method = vm.session.compiled_methods.get(&(class_name, action_name.clone())).cloned();
-        match method {
-            Some(f) => { args.insert(0, Value::Ref(self_uuid.clone())); vm.call_callable(Value::Function(f), args)?; }
-            None => { args.insert(0, self_val); vm.call_named(&action_name, args)?; }
-        }
+        let _ = self_val;
+        call_object_action(vm, &self_uuid, &action_name, args)?;
     }
     Ok(())
 }
@@ -1306,6 +1312,20 @@ fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]
             fields.insert(fname.clone(), fval.clone());
         }
     }
+}
+
+/// Runs `action` for the object `uuid`: the class's own action of that name
+/// (`act give_birth()` in the class, run with `self`), else a program
+/// action, given the object first. `args` follow.
+fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<(), GoblinError> {
+    let Some(obj) = vm.session.object_store.get(uuid).cloned() else { return Ok(()) };
+    let class_name = match &obj { Value::Object(o) => o.class_name.clone(), _ => String::new() };
+    let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
+    match method {
+        Some(f) => { args.insert(0, Value::Ref(uuid.to_string())); vm.call_callable(Value::Function(f), args)?; }
+        None => { args.insert(0, obj); vm.call_named(action, args)?; }
+    }
+    Ok(())
 }
 
 /// The action a judge arm calls, and the arguments it writes (none for a
