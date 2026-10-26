@@ -1,0 +1,18 @@
+/// known-gap: interp has no `on end:` on overlays (it ignores the line)
+/// An action called by DES (here `on end:`) may leave out parameters that
+/// have defaults, as a call written in Goblin may.
+<>P |
+    ~n: 0
+    act finish(k | 5)
+        self >> n |= self >> n + k
+    end
+xx
+overlay Short |
+    lasts 1 tick
+    on end: finish
+end
+p <> P | n: 0
+overlay Short on p at 1
+tick()
+tick()
+say(p >> n)
