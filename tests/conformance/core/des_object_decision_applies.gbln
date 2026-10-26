@@ -1,0 +1,53 @@
+/// known-gap: interp has no `margin` on a decision (it reads the object's `margin` field only)
+/// A decision written for one object (`x score | decision against ...`)
+/// replaces its class's first decision for that object only, and can carry
+/// its own `margin`. Ann's own decision picks the shop with the least stock;
+/// Bob keeps the class's (the most stock); Cy's own one spreads over both.
+:rand_seed(5)
+<>Shop |
+    ~stock: 0
+    ~ann: 0
+    ~bob: 0
+    ~cy: 0
+xx
+<>Buyer |
+    who: 0
+    margin: 0
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        > 0: purchase(target)
+        else: purchase(target)
+    end
+xx
+act purchase(b, s)
+    if b >> who == 1
+        s >> ann |= s >> ann + 1
+    elif b >> who == 2
+        s >> bob |= s >> bob + 1
+    else
+        s >> cy |= s >> cy + 1
+    xx
+xx
+big <> Shop | stock: 10
+small <> Shop | stock: 6
+ann <> Buyer | who: 1
+bob <> Buyer | who: 2
+cy <> Buyer | who: 3
+ann score | decision against Shop by [
+    0 - target >> stock
+]
+cy score | decision against Shop margin .5 by [
+    target >> stock
+]
+repeat 20
+    tick()
+xx
+repeat :objects(it >> stock > 0)
+    st | it >> stock
+    a | it >> ann
+    b | it >> bob
+    spread | it >> cy > 0
+    say("stock {st}: ann {a}, bob {b}, cy came {spread}")
+xx

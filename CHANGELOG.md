@@ -11,6 +11,8 @@ in parentheses are the pull requests that made each change.
   collapsed to 0. The DES town now scores shops on `price`.
 - DES: `margin N` on a decision (`shop | decision against Business margin .8 by [...]`)
   sets that decision's margin; without it the object's `margin` field is used.
+- DES (VM): a decision written for one object (`x score | decision against ...`)
+  now applies; the VM looked it up by object id instead of variable name and never found it.
 
 ## 0.49.0 — 2026-10-26
 

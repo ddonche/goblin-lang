@@ -755,7 +755,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 let has_decision = vm.session.classes.get(class_name)
                     .map(|c| c.decision.is_some())
                     .unwrap_or(false)
-                    || vm.session.object_decisions.contains_key(uuid.as_str());
+                    || object_decision(&vm.session, uuid).is_some();
                 // Another region's object decides in its own region.
                 if has_decision && !crate::world::is_remote(vm, uuid) {
                     out.push((uuid.clone(), class_name.clone()));
@@ -772,7 +772,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         // object, so a class an earlier action installed is seen here.
         let classes = vm.session.classes.clone();
         let Some(class) = classes.get(&class_name) else { continue };
-        let obj_decision = vm.session.object_decisions.get(&self_uuid).cloned();
+        let obj_decision = object_decision(&vm.session, &self_uuid);
         // The object's decisions in order, each with its judge and the name
         // its score goes by. An object-level decision replaces the first.
         let mut list: Vec<(&str, &goblin_ast::DecisionDef, &goblin_ast::JudgeStmt)> = Vec::new();
@@ -849,6 +849,15 @@ impl Targets {
         self.real.insert(key, r);
         r
     }
+}
+
+/// The decision written for one object (`x score | decision against ...`).
+/// It is registered under the variable's name; the object goes by the name
+/// of the variable that holds it.
+fn object_decision(session: &crate::session::Session, uuid: &str) -> Option<std::rc::Rc<goblin_ast::DecisionDef>> {
+    session.object_decisions.get(uuid)
+        .or_else(|| session.object_names.get(uuid).and_then(|(n, _)| session.object_decisions.get(n)))
+        .cloned()
 }
 
 /// The `self >> field` / `target >> field` reads in a formula.
