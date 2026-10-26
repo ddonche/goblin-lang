@@ -237,6 +237,31 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             })
         }
         BuiltinId::Round => {
+            // `:round(x)` gives a whole number; `:round(x, n)` keeps n digits
+            // after the point (a float), and a negative n rounds to tens,
+            // hundreds, ... (a whole number).
+            if args.len() == 2 {
+                let digits = match read(1)? {
+                    Value::Int(d) if (-18..=15).contains(&d) => d,
+                    Value::Int(d) => return Err(GoblinError::Runtime(format!(
+                        "R0200: round: {d} digits is out of range (use -18 to 15)"))),
+                    other => return Err(GoblinError::type_error("int (digits)", other.type_name(), "round")),
+                };
+                let x = match read(0)? {
+                    Value::Int(n) => n as f64,
+                    Value::Float(f) => f,
+                    other => return Err(GoblinError::type_error("number", other.type_name(), "round")),
+                };
+                let scale = 10f64.powi(digits.unsigned_abs() as i32);
+                return Ok(if digits >= 0 {
+                    match read(0)? {
+                        Value::Int(n) => Value::Int(n),
+                        _ => Value::Float((x * scale).round() / scale),
+                    }
+                } else {
+                    Value::Int(((x / scale).round() * scale) as i64)
+                });
+            }
             expect_n(1)?;
             Ok(match read(0)? {
                 Value::Int(n)   => Value::Int(n),

@@ -71,6 +71,8 @@ in parentheses are the pull requests that made each change.
 - Strings fill in expressions: `"{n - wins} left"`, `"{lost[0]}"`, `"{p >> hp * 2}"`, when every name in
   them is a variable in scope (at least one). Anything else in braces (CSS, unknown names,
   regex `{1,3}`) stays as written.
+- `:round(x, n)` keeps n digits after the point (`:round(3.14159, 2)` is 3.14); a negative n
+  rounds to tens, hundreds, ... `:round(x)` is unchanged.
 
 ## 0.49.0 — 2026-10-26
 

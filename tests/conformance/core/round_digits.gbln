@@ -1,0 +1,11 @@
+/// known-gap: interp takes no digits argument to round
+/// `:round(x, n)` keeps n digits after the point and gives a float; a
+/// negative n rounds to tens, hundreds, ... and gives a whole number. A
+/// whole number with n >= 0 stays as it is. `:round(x)` is unchanged.
+say(:round(3.14159, 2))
+say(:round(2.5, 0))
+say(:round(-1.005, 1))
+say(:round(1234.5, -2))
+say(:round(7, 2))
+say(:round(3.7))
+say(:round(25%, 1))
