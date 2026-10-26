@@ -1580,10 +1580,16 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
             | "shuffle" | "sample_weighted" | "uuid_v4" | "uuid_v7")
             || n.starts_with("secure_") || n.ends_with("_random") || n.ends_with("_sample")
     };
+    // A call to the program's own code (an action, a method, `:invoke`)
+    // may roll dice inside, so it counts as chance too: checked once a tick.
+    let own_code = |n: &str| {
+        let n = n.trim_end_matches('!');
+        matches!(n, "invoke" | "summon" | "provoke") || crate::compiler::builtin_by_name(n).is_none()
+    };
     match e {
-        E::FreeCall(n, args, _) => random_name(n) || args.iter().any(uses_chance),
-        E::NsCall(_, n, args, _) => random_name(n) || args.iter().any(uses_chance),
-        E::Call(r, n, args, _) | E::OptCall(r, n, args, _) => random_name(n) || uses_chance(r) || args.iter().any(uses_chance),
+        E::FreeCall(n, args, _) => random_name(n) || own_code(n) || args.iter().any(uses_chance),
+        E::NsCall(_, n, args, _) => random_name(n) || own_code(n) || args.iter().any(uses_chance),
+        E::Call(r, n, args, _) | E::OptCall(r, n, args, _) => random_name(n) || own_code(n) || uses_chance(r) || args.iter().any(uses_chance),
         E::Binary(l, _, r, _) => uses_chance(l) || uses_chance(r),
         E::Prefix(_, x, _) | E::Postfix(x, _, _) => uses_chance(x),
         E::Member(x, _, _) | E::OptMember(x, _, _) => uses_chance(x),
