@@ -1710,6 +1710,26 @@ impl Vm {
                 let updated = self.update_path(root, &segs, result)?;
                 self.stack.push(Operand::Val(updated));
             }
+            Opcode::UpdatePathHint(n, idx) => {
+                if let Some(t) = self.sole_ref_target(n as usize + 2) {
+                    let start = self.stack.len() - (n as usize + 1);
+                    let mut vals = std::mem::take(&mut self.key_buf);
+                    vals.clear();
+                    self.drain_operands_into(start, &mut vals)?;
+                    let new_val = vals.pop().unwrap();
+                    let func = self.call_stack.last().unwrap().func.clone();
+                    let crate::opcode::OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("UpdatePathHint without its data") };
+                    let stash = self.session.resolve_mut(t.addr)?;
+                    if crate::collections::update_path_in_place_hint(&mut stash.value, &vals, new_val.clone(), &f.segs) {
+                        vals.clear();
+                        self.key_buf = vals;
+                        return Ok(());
+                    }
+                    self.stack.extend(vals.into_iter().map(Operand::Val));
+                    self.stack.push(Operand::Val(new_val));
+                }
+                return self.execute_op(Opcode::UpdatePath(n, 0));
+            }
             Opcode::AgendaCall(id, argc, n) => {
                 let n = n as usize;
                 let rest = argc as usize - 1;
@@ -1734,26 +1754,6 @@ impl Vm {
                 let result = crate::agenda::call(id, q, &args)?;
                 self.stack.push(Operand::Val(root));
                 self.stack.push(Operand::Val(result));
-            }
-            Opcode::UpdatePathHint(n, idx) => {
-                if let Some(t) = self.sole_ref_target(n as usize + 2) {
-                    let start = self.stack.len() - (n as usize + 1);
-                    let mut vals = std::mem::take(&mut self.key_buf);
-                    vals.clear();
-                    self.drain_operands_into(start, &mut vals)?;
-                    let new_val = vals.pop().unwrap();
-                    let func = self.call_stack.last().unwrap().func.clone();
-                    let crate::opcode::OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("UpdatePathHint without its data") };
-                    let stash = self.session.resolve_mut(t.addr)?;
-                    if crate::collections::update_path_in_place_hint(&mut stash.value, &vals, new_val.clone(), &f.segs) {
-                        vals.clear();
-                        self.key_buf = vals;
-                        return Ok(());
-                    }
-                    self.stack.extend(vals.into_iter().map(Operand::Val));
-                    self.stack.push(Operand::Val(new_val));
-                }
-                return self.execute_op(Opcode::UpdatePath(n, 0));
             }
             Opcode::UpdatePathMut(n, mask) => {
                 // Stack: [root, key1, …, keyN, new_val]. Field segments go
