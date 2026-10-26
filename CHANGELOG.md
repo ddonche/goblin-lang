@@ -84,6 +84,9 @@ in parentheses are the pull requests that made each change.
   cycle. `check.sh` and FINDINGS.md.
 - `sims/epidemic`: a sickness spreading through four towns (regions), with death, immunity and
   travel. `check.sh` and FINDINGS.md.
+- `sims/civilization`: four villages (regions) whose people farm, cut wood, build huts, have
+  children, die, move on when crowded, and send food to a hungry neighbour. `check.sh` and
+  FINDINGS.md.
 
 ## 0.49.0 — 2026-10-26
 

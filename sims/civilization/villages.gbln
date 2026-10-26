@@ -1,0 +1,210 @@
+/// A small civilization on DES: villages of people who farm, cut wood,
+/// build huts, have children, grow old, and leave for the next village
+/// when there is no room. Each village is a region; tick(villages) runs
+/// one month in all of them at once.
+///
+///   Village  one per region: its food, wood, huts and land. Counts its
+///            people each month; a child is born when there is food and
+///            room. Winter (overlay, 3 months a year) cuts the harvest.
+///   Person   eats 1 food a month; each month does one job (`one of`):
+///            build a hut, farm when food is
+///            short, else cut wood. Dies after 3 hungry months or of old
+///            age (transition erase); the village counts its graves
+///            (`on erase:`).
+///
+/// Farming yields less as a village fills its land, so each village
+/// levels off; a crowded village sends its homeless on.
+
+:rand_seed(5)
+n_villages | 4
+months | 600
+if :env("MONTHS") != ""
+    months |= :int(:env("MONTHS"))
+xx
+
+all_villages | []
+
+<>Village |
+    ~kind: "village"
+    ~village: 0
+    ~food: 200
+    ~wood: 0
+    ~huts: 6
+    ~land: 80
+    ~harvest: 4
+    ~pop: 0
+    ~born: 0
+    ~graves: 0
+    ~sent: 0
+    ~month: 0
+    every 1 tick
+        self >> month |= self >> month + 1
+        self >> pop |= :len(:objects(it >> kind == "person" and it >> village == self >> village))
+        send_away(self)
+        send_food(self)
+        if self >> month % 12 == 11
+            overlay Winter on self at 1
+        xx
+        if self >> food > self >> pop * 3 and self >> pop < self >> huts * 4 and (pick 1 from 1...3) == 1
+            kid <> Person | village: self >> village
+            self >> born |= self >> born + 1
+        xx
+    end
+xx
+
+/// Three months of short harvests, given back when it ends.
+overlay Winter |
+    hosts Village
+    lasts 3 ticks
+    modifies:
+        harvest - 2
+    end
+end
+
+<>Person |
+    ~kind: "person"
+    ~village: 0
+    ~age: 0
+    ~hungry: 0
+    ~dead: 0
+    on erase: bury
+    every 1 tick
+        self >> age |= self >> age + 1
+        if self >> age > 600 and (pick 1 from 1...60) == 1
+            self >> dead |= 1
+        xx
+    end
+    /// Every job is a decision against the person's own village.
+    eat | decision against Village where [ target >> village == self >> village ] by [ 1 ]
+    judge using eat
+        >= 0: eat_food(target)
+    end
+    build | decision against Village where [
+        target >> village == self >> village and target >> wood >= 10 and target >> pop + 4 > target >> huts * 4
+    ] by [ 1 ]
+    judge using build
+        >= 0: build_hut(target)
+    end
+    farm | decision against Village where [
+        self >> age >= 120 and target >> village == self >> village and target >> food < target >> pop * 12
+    ] by [ 1 ]
+    judge using farm
+        >= 0: farm(target)
+    end
+    chop | decision against Village where [ self >> age >= 120 and target >> village == self >> village ] by [ 1 ]
+    judge using chop
+        >= 0: chop(target)
+    end
+    one of build, farm, chop
+    transition erase when (self >> hungry) >= 3 or (self >> dead) == 1
+    end
+xx
+
+act eat_food(p, v)
+    if v >> food >= 1
+        v >> food |= v >> food - 1
+        p >> hungry |= 0
+    else
+        p >> hungry |= p >> hungry + 1
+    xx
+xx
+
+/// When there are more people than room in the huts, each homeless
+/// adult has a chance in six a month to set off for the next village.
+act send_away(v)
+    homeless | v >> pop - v >> huts * 4
+    if homeless > 0 and n_villages > 1
+        repeat :objects(it >> kind == "person" and it >> village == v >> village and it >> age >= 180) as p
+            if homeless > 0 and (pick 1 from 1...6) == 1
+                to | (p >> village + 1) % n_villages
+                p >> village |= to
+                :move!(p, all_villages[to])
+                homeless |= homeless - 1
+                v >> pop |= v >> pop - 1
+            xx
+        xx
+    xx
+xx
+
+/// When the next village is down to three months of food and this one
+/// has more than six, this one sends it a fifth of its store. The next
+/// village's object here is a read-only copy (as of the last month), so
+/// the food goes as a message to that village's region.
+act send_food(v)
+    if n_villages > 1 and v >> food > v >> pop * 6
+        to | (v >> village + 1) % n_villages
+        repeat :objects(it >> kind == "village" and it >> village == to) as w
+            if w >> food < w >> pop * 3
+                give | :floor(v >> food / 5)
+                v >> food |= v >> food - give
+                v >> sent |= v >> sent + give
+                :post(all_villages[to], {"food": give})
+            xx
+        xx
+    xx
+xx
+
+act build_hut(p, v)
+    v >> wood |= v >> wood - 10
+    v >> huts |= v >> huts + 1
+xx
+
+/// The more people on the land, the less each farmer brings in.
+act farm(p, v)
+    v >> food |= v >> food + :max(0, :floor(v >> harvest * v >> land / (v >> land + v >> pop)))
+xx
+
+act chop(p, v)
+    v >> wood |= v >> wood + 1
+xx
+
+act bury(p)
+    repeat :objects(it >> kind == "village" and it >> village == p >> village) as v
+        v >> graves |= v >> graves + 1
+    xx
+xx
+
+act make_village(n)
+    things | []
+    v <> Village | village: n
+    :put_last!(things, v)
+    repeat :range(0, 20)
+        p <> Person | village: n, age: pick 1 from 0...480
+        :put_last!(things, p)
+    xx
+    return {"n": n, "things": things}
+xx
+
+act village_month(st, msg)
+    if :has(msg, "villages")
+        all_villages |= msg{"villages"}
+    xx
+    if :has(msg, "food")
+        repeat :objects(it >> kind == "village" and it >> village == st{"n"}) as v
+            v >> food |= v >> food + msg{"food"}
+        xx
+    xx
+    return st
+xx
+
+villages | []
+repeat :range(0, n_villages) as n
+    :put_last!(villages, :actor(make_village(n), village_month))
+xx
+repeat villages as vl
+    :post(vl, {"villages": villages})
+xx
+
+say("civilization: {n_villages} villages, {months} months")
+repeat :range(1, months + 1) as m
+    tick(villages)
+    if m % 60 == 0 or m == months
+        line | "year {:floor(m / 12)}:"
+        total | 0
+        repeat :objects(it >> kind == "village") as v
+            total |= total + v >> pop
+            line |= line + " [{v >> pop} people, {v >> huts} huts, {v >> food} food, {v >> sent} food sent, {v >> born} born, {v >> graves} dead]"
+        xx
+        say("{line} total {total}")
+    xx
+xx
