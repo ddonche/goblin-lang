@@ -113,39 +113,27 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // ── Pass 3: Conflict suppression/boost ───────────────────────────────────
     {
         let defs = vm.session.overlay_defs.clone();
-        let mut host_index: HashMap<String, Vec<usize>> = HashMap::new();
-        for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
-            host_index.entry(inst.host_var.clone()).or_default().push(idx);
-        }
-        let mut overlay_host_idx: HashMap<(String, String), usize> = HashMap::new();
-        for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
-            overlay_host_idx.insert((inst.overlay_name.clone(), inst.host_var.clone()), idx);
-        }
-
         let mut suppress: Vec<(usize, f64)> = Vec::new();
         let mut boost:    Vec<(usize, f64)> = Vec::new();
 
-        for indices in host_index.values() {
-            for &i in indices {
-                let (ov_a, str_a) = {
-                    let inst = &vm.session.overlay_instances[i];
-                    (inst.overlay_name.clone(), inst.strength)
-                };
-                if let Some(def_a) = defs.get(&ov_a) {
-                    let decay_a = def_a.decay_rate;
-                    for rule in &def_a.conflict_rules {
-                        let host_var = vm.session.overlay_instances[i].host_var.clone();
-                        if let Some(&j) = overlay_host_idx.get(&(rule.0.clone(), host_var)) {
-                            if i == j { continue; }
-                            let str_b = vm.session.overlay_instances[j].strength;
-                            let gap = (str_a - str_b).abs();
-                            if str_a >= str_b {
-                                suppress.push((j, decay_a * rule.1 * (1.0 + gap)));
-                                boost.push((i, decay_a * 0.1 * gap));
-                            } else {
-                                suppress.push((i, decay_a * rule.1 * (1.0 + gap)));
-                                boost.push((j, decay_a * 0.1 * gap));
-                            }
+        // Each overlay against the ones it conflicts with on the same host
+        // (found in the host's own list), in the order they were put on.
+        let list = &vm.session.overlay_instances;
+        for i in 0..list.len() {
+            let (ov_a, str_a) = (&list[i].overlay_name, list[i].strength);
+            if let Some(def_a) = defs.get(ov_a) {
+                let decay_a = def_a.decay_rate;
+                for rule in &def_a.conflict_rules {
+                    if let Some(j) = list.find(&list[i].host_uuid, &rule.0) {
+                        if i == j { continue; }
+                        let str_b = list[j].strength;
+                        let gap = (str_a - str_b).abs();
+                        if str_a >= str_b {
+                            suppress.push((j, decay_a * rule.1 * (1.0 + gap)));
+                            boost.push((i, decay_a * 0.1 * gap));
+                        } else {
+                            suppress.push((i, decay_a * rule.1 * (1.0 + gap)));
+                            boost.push((j, decay_a * 0.1 * gap));
                         }
                     }
                 }
@@ -186,9 +174,8 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 to_remove.push(idx);
             }
         }
-        for idx in to_remove.iter().rev() {
-            if *idx < vm.session.overlay_instances.len() {
-                let inst = vm.session.overlay_instances.remove(*idx);
+        for inst in vm.session.overlay_instances.take_at(&to_remove).into_iter().rev() {
+            {
                 if let Some(action) = vm.session.overlay_defs.get(&inst.overlay_name).and_then(|d| d.on_end.clone()) {
                     ended.push((action, inst.host_uuid.clone()));
                 }
@@ -220,8 +207,10 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 vm.session.des_index.remove_overlay(hh, overlay_name, *des_id);
             }
         }
-        let live: std::collections::HashSet<String> = vm.session.object_store.keys().cloned().collect();
-        vm.session.overlay_instances.retain(|inst| live.contains(&inst.host_uuid));
+        if !orphans.is_empty() {
+            let store = &vm.session.object_store;
+            vm.session.overlay_instances.retain(|inst| store.contains_key(&inst.host_uuid));
+        }
     }
 
     // ── Pass 8: `every N ticks` blocks, then decisions ────────────────────────
@@ -329,13 +318,8 @@ fn catches(vm: &mut Vm, chance: f64) -> bool {
 fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     use goblin_ast::SpreadRule;
     let defs = vm.session.overlay_defs.clone();
-    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.clone();
+    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.to_vec();
 
-    // Build (overlay_name, host_uuid) → idx
-    let mut ov_host_idx: HashMap<(String, String), usize> = HashMap::new();
-    for (idx, inst) in vm.session.overlay_instances.iter().enumerate() {
-        ov_host_idx.insert((inst.overlay_name.clone(), inst.host_uuid.clone()), idx);
-    }
 
     let mut spread_buf: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, strength)
 
@@ -356,7 +340,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         .map(str::to_string)
                         .collect();
                     for target_uuid in candidates {
-                        let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name).is_some();
                         // Only along a link above the bottom of its range (a
                         // `bool` link that is true).
                         let (lo, _) = link_bounds(vm, &inst.host_uuid, channel)?;
@@ -371,7 +355,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         if amount <= 0.0 { continue; }
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
-                            if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
+                            if let Some(eidx) = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name) {
                                 if eidx < vm.session.overlay_instances.len() {
                                     vm.session.overlay_instances[eidx].strength =
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
@@ -392,10 +376,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * inst.strength * rate;
                         let chance = inst.strength * rate;
                         if amount <= 0.0 { continue; }
-                        let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name).is_some();
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount * 0.5) { continue; }
                         if already {
-                            if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
+                            if let Some(eidx) = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name) {
                                 if eidx < vm.session.overlay_instances.len() {
                                     vm.session.overlay_instances[eidx].strength =
                                         (vm.session.overlay_instances[eidx].strength + amount * 0.5).min(1.0);
@@ -422,10 +406,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * rate;
                         let chance = amount;
                         if amount <= 0.0 { continue; }
-                        let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name).is_some();
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
                         if already {
-                            if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
+                            if let Some(eidx) = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name) {
                                 if eidx < vm.session.overlay_instances.len() {
                                     vm.session.overlay_instances[eidx].strength =
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
@@ -456,10 +440,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         let amount = inst.strength * rate;
                         let chance = amount;
                         if amount <= 0.0 { continue; }
-                        let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
+                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name).is_some();
                         if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
                         if already {
-                            if let Some(&eidx) = ov_host_idx.get(&(inst.overlay_name.clone(), target_uuid)) {
+                            if let Some(eidx) = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name) {
                                 if eidx < vm.session.overlay_instances.len() {
                                     vm.session.overlay_instances[eidx].strength =
                                         (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
@@ -506,7 +490,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
 fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     let defs = vm.session.overlay_defs.clone();
-    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.clone();
+    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.to_vec();
     let mut to_spawn: Vec<(String, String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, host_var, strength)
 
     for inst in &instances_snap {
@@ -523,9 +507,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 ],
             );
             if fires {
-                let already = vm.session.overlay_instances.iter().any(|i| {
-                    i.overlay_name == rule.spawn_overlay && i.host_uuid == inst.host_uuid
-                });
+                let already = vm.session.overlay_instances.find(&inst.host_uuid, &rule.spawn_overlay).is_some();
                 if !already {
                     to_spawn.push((rule.spawn_overlay.clone(), inst.host_uuid.clone(), inst.host_var.clone(), rule.spawn_strength));
                 }
@@ -560,7 +542,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     use goblin_ast::TransitionKind;
     let defs = vm.session.overlay_defs.clone();
-    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.clone();
+    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.to_vec();
 
     let mut to_erase: Vec<usize> = Vec::new();
     let mut to_mutate: Vec<(usize, String, IndexMap<String, Value>)> = Vec::new();
@@ -784,7 +766,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     // Apply mutations
     for (idx, new_name, carries) in to_mutate {
         if idx < vm.session.overlay_instances.len() {
-            vm.session.overlay_instances[idx].overlay_name = new_name;
+            vm.session.overlay_instances.rename(idx, new_name);
             for (k, v) in carries {
                 if k == "strength" {
                     if let Value::Float(f) = v {
@@ -802,11 +784,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     let mut to_erase_dedup = to_erase;
     to_erase_dedup.sort_unstable();
     to_erase_dedup.dedup();
-    for idx in to_erase_dedup.iter().rev() {
-        if *idx < vm.session.overlay_instances.len() {
-            vm.session.overlay_instances.remove(*idx);
-        }
-    }
+    vm.session.overlay_instances.take_at(&to_erase_dedup);
 
     Ok(())
 }
@@ -1431,8 +1409,7 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
 
     match behavior {
         OverlayApplyBehavior::Caps => {
-            let exists = vm.session.overlay_instances.iter()
-                .any(|i| i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid);
+            let exists = vm.session.overlay_instances.find(&inst.host_uuid, &inst.overlay_name).is_some();
             if !exists {
                 let mut inst = inst;
                 let done = apply_overlay_modifiers(vm, &inst.host_uuid, &inst.overlay_name, inst.strength, inst.count, &inst.extra_fields.clone());
@@ -1441,9 +1418,7 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
             }
         }
         OverlayApplyBehavior::Replaces => {
-            let existing_pos = vm.session.overlay_instances.iter().position(|i| {
-                i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
-            });
+            let existing_pos = vm.session.overlay_instances.find(&inst.host_uuid, &inst.overlay_name);
             if let Some(pos) = existing_pos {
                 // The old copy's change goes, the new one's comes.
                 let old = std::mem::take(&mut vm.session.overlay_instances[pos].applied);
@@ -1466,9 +1441,7 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) {
             }
         }
         OverlayApplyBehavior::Stacks { .. } => {
-            let existing_pos = vm.session.overlay_instances.iter().position(|i| {
-                i.overlay_name == inst.overlay_name && i.host_uuid == inst.host_uuid
-            });
+            let existing_pos = vm.session.overlay_instances.find(&inst.host_uuid, &inst.overlay_name);
             if let Some(pos) = existing_pos {
                 vm.session.overlay_instances[pos].strength = (vm.session.overlay_instances[pos].strength + inst.strength).min(1.0);
                 vm.session.overlay_instances[pos].count += 1;

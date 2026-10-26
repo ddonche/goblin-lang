@@ -3907,10 +3907,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(v) => *oi.host_var == **v,
                 _ => false,
             };
-            let overlays: Vec<Value> = session.overlay_instances.iter()
-                .filter(|oi| on_host(oi))
-                .map(|oi| Value::Str(oi.overlay_name.clone().into()))
-                .collect();
+            let list = &session.overlay_instances;
+            let overlays: Vec<Value> = match &host {
+                // An object's overlays are kept in its own list.
+                Value::Ref(u) => list.on_host(u).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
+                Value::Object(o) => list.on_host(&o.uuid).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
+                _ => list.iter().filter(|oi| on_host(oi)).map(|oi| Value::Str(oi.overlay_name.clone().into())).collect(),
+            };
             Ok(Value::Array(overlays))
         }
         BuiltinId::OverlayStrength => {
@@ -3929,7 +3932,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if !matches!(host, Value::Ref(_) | Value::Object(_) | Value::Str(_)) {
                 return Err(GoblinError::type_error("object or str", host.type_name(), "overlay_strength"));
             }
-            match session.overlay_instances.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay) {
+            let list = &session.overlay_instances;
+            let found = match &host {
+                Value::Ref(u) => list.find(u, &overlay).map(|p| &list[p]),
+                Value::Object(o) => list.find(&o.uuid, &overlay).map(|p| &list[p]),
+                _ => list.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay),
+            };
+            match found {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
             }
@@ -5384,16 +5393,16 @@ fn bang_object_target(args: &[Value], name: &str) -> Result<String, GoblinError>
 
 /// Remove every overlay instance on the host (the interpreter's `drop_overlays_for`).
 fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
-    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = session.overlay_instances.iter()
-        .filter(|i| i.host_uuid == host_uuid)
-        .map(|i| (i.overlay_name.clone(), i.des_id))
+    let places = session.overlay_instances.on_host(host_uuid).to_vec();
+    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = places.iter()
+        .map(|&p| (session.overlay_instances[p].overlay_name.clone(), session.overlay_instances[p].des_id))
         .collect();
     if let Some(host_handle) = session.des_store.handle_for_name(host_var) {
         for (overlay_name, id) in &to_remove {
             session.des_index.remove_overlay(host_handle, overlay_name, *id);
         }
     }
-    session.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
+    session.overlay_instances.take_at(&places);
 }
 
 /// Erase an object and the runtime state attached to it (the interpreter's

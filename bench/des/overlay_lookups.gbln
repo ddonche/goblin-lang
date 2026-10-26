@@ -1,0 +1,25 @@
+/// Overlay lookups at scale: 5,000 objects, half of them Sick; each tick
+/// every object asks for its own Sick strength. Before the overlay lists
+/// (one per host, one per name) each ask looked at every overlay.
+/// Change 5000 to 20000 for the larger run.
+<>P |
+    ~n: 0
+    ~sick: 0
+    every 1 tick
+        if :overlay_strength("Sick", self) ?? 0 > 0
+            self >> sick |= self >> sick + 1
+        xx
+    end
+xx
+overlay Sick |
+end
+repeat :range(0, 5000) as i
+    p <> P | n: i
+    if i % 2 == 0
+        overlay Sick on p at 1
+    xx
+xx
+repeat :range(0, 10)
+    tick()
+xx
+say(:len(:overlays("Sick")))

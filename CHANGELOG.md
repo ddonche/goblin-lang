@@ -5,6 +5,15 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Overlays (VM): every overlay is kept in one list with its host's and its
+  name's places, updated as overlays are put on, renamed and taken off.
+  `:overlays("Sick")` gives one overlay's instances and `:overlays("Sick", pred)`
+  those the predicate holds for (an unknown name is R1231); `repeat Sick`,
+  `:overlays_of`, `:overlay_strength` and the DES tick's overlay lookups
+  (spreading, conflicts, spawning, stacking) read those lists instead of every
+  overlay or tables rebuilt each tick. Conflicts between overlays now go by the
+  host object, not the name of its variable. bench/des/overlay_lookups.gbln at
+  20,000 objects: 16.1 s to 0.67 s.
 - Objects (VM): the object store keeps each class's objects in one place,
   updated as objects are made and erased. `:objects("Rabbit")` gives a class's
   objects and `:objects("Rabbit", pred)` those the predicate holds for, without

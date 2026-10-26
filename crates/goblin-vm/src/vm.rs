@@ -1922,8 +1922,8 @@ impl Vm {
                         return Ok(());
                     }
                     BuiltinId::Overlays => {
-                        let pred = arg_vals.into_iter().next();
-                        let result = self.vm_overlays_query(pred)?;
+                        let (name, pred) = query_args(arg_vals, "overlays")?;
+                        let result = self.vm_overlays_query(name.as_deref(), pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -5220,48 +5220,11 @@ impl Vm {
         // Check if it's an overlay def name
         let is_all_overlays = matches!(lower.as_str(), "overlay" | "overlays");
         if is_all_overlays {
-            return self.vm_overlays_query(None);
+            return self.vm_overlays_query(None, None);
         }
         for candidate in &candidates {
             if !candidate.is_empty() && self.session.overlay_defs.contains_key(candidate.as_str()) {
-                // Iterate overlay instances of this overlay
-                let cand = candidate.clone();
-                let pred_fn: Option<Value> = None;
-                // filter to this overlay name
-                let instances = self.session.overlay_instances.clone();
-                use indexmap::IndexMap;
-                use std::collections::BTreeSet;
-                let mut results: Vec<Value> = Vec::new();
-                for inst in instances.iter().filter(|i| i.overlay_name == cand) {
-                    let mut fields: IndexMap<String, Value> = IndexMap::new();
-                    fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
-                    fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
-                    fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
-                    fields.insert("strength".to_string(), Value::Float(inst.strength));
-                    fields.insert("age".to_string(), Value::Int(inst.age as i64));
-                    fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
-                        Some(t) => Value::Int(t as i64),
-                        None => Value::Nil,
-                    });
-                    use crate::session::OverlayApplyBehavior;
-                    let count_key = self.session.overlay_defs.get(&inst.overlay_name)
-                        .and_then(|d| if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None })
-                        .unwrap_or_else(|| "count".to_string());
-                    fields.insert(count_key, Value::Int(inst.count as i64));
-                    for (k, v) in &inst.extra_fields {
-                        fields.insert(k.clone(), v.clone());
-                    }
-                    results.push(Value::Object(Box::new(crate::value::ObjectVal {
-                        class_name: inst.overlay_name.clone(),
-                        fields: std::rc::Rc::new(fields),
-                        readonly_fields: Default::default(),
-                        trait_fields: Default::default(),
-                        // Its own id: binding it must not replace its host.
-                        uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
-                    })));
-                }
-                let _ = pred_fn;
-                return Ok(Value::Array(results));
+                return self.vm_overlays_query(Some(candidate.as_str()), None);
             }
         }
         // Check object_store for objects with matching class_name
@@ -5408,47 +5371,64 @@ impl Vm {
         Some(found)
     }
 
-    fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
+    /// What `:overlays(...)` shows for one overlay: a record of its name,
+    /// host, strength, age, time left, count and own fields.
+    fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
         use indexmap::IndexMap;
-        use std::collections::BTreeSet;
-        let mut instances = self.session.overlay_instances.clone();
-        if self.session.world.is_some() { instances.extend(crate::world::view_overlays(self)); }
-        let mut results: Vec<Value> = Vec::new();
-        for inst in &instances {
-            let mut fields: IndexMap<String, Value> = IndexMap::new();
-            fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
-            fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
-            fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
-            fields.insert("strength".to_string(), Value::Float(inst.strength));
-            fields.insert("age".to_string(), Value::Int(inst.age as i64));
-            fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
-                Some(t) => Value::Int(t as i64),
-                None => Value::Nil,
-            });
-            let count_key = self.session.overlay_defs.get(&inst.overlay_name)
-                .and_then(|d| {
-                    use crate::session::OverlayApplyBehavior;
-                    if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
-                })
-                .unwrap_or_else(|| "count".to_string());
-            fields.insert(count_key, Value::Int(inst.count as i64));
-            for (k, v) in &inst.extra_fields {
-                fields.insert(k.clone(), v.clone());
+        let mut fields: IndexMap<String, Value> = IndexMap::new();
+        fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
+        fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
+        fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
+        fields.insert("strength".to_string(), Value::Float(inst.strength));
+        fields.insert("age".to_string(), Value::Int(inst.age as i64));
+        fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
+            Some(t) => Value::Int(t as i64),
+            None => Value::Nil,
+        });
+        let count_key = self.session.overlay_defs.get(&inst.overlay_name)
+            .and_then(|d| {
+                use crate::session::OverlayApplyBehavior;
+                if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
+            })
+            .unwrap_or_else(|| "count".to_string());
+        fields.insert(count_key, Value::Int(inst.count as i64));
+        for (k, v) in &inst.extra_fields {
+            fields.insert(k.clone(), v.clone());
+        }
+        Value::Object(Box::new(crate::value::ObjectVal {
+            class_name: inst.overlay_name.clone(),
+            fields: std::rc::Rc::new(fields),
+            readonly_fields: Default::default(),
+            trait_fields: Default::default(),
+            // Its own id: binding it must not replace its host.
+            uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
+        }))
+    }
+
+    /// `:overlays(...)`: every overlay, or one overlay's instances (read
+    /// from the overlay list's own index), those `pred` holds for when there
+    /// is one. In a region, other regions' overlays are included.
+    fn vm_overlays_query(&mut self, name: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
+        if let Some(n) = name {
+            if !self.session.overlay_defs.contains_key(n) {
+                return Err(GoblinError::Runtime(format!(
+                    "R1231: unknown-overlay: no overlay named '{n}'; :overlays(\"Name\") takes an overlay declared with `overlay Name`")));
             }
-            let obj = Value::Object(Box::new(crate::value::ObjectVal {
-                class_name: inst.overlay_name.clone(),
-                fields: std::rc::Rc::new(fields),
-                readonly_fields: Default::default(),
-                trait_fields: Default::default(),
-                // Its own id: binding it must not replace its host.
-                uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
-            }));
-            let include = if let Some(ref pred_fn) = pred {
-                self.query_predicate_holds(pred_fn, &obj)
-            } else {
-                true
-            };
-            if include { results.push(obj); }
+        }
+        let mut records: Vec<Value> = match name {
+            None => self.session.overlay_instances.iter().map(|i| self.overlay_record(i)).collect(),
+            Some(n) => self.session.overlay_instances.named(n).iter()
+                .map(|&p| self.overlay_record(&self.session.overlay_instances[p])).collect(),
+        };
+        if self.session.world.is_some() {
+            for inst in crate::world::view_overlays(self) {
+                if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+            }
+        }
+        let Some(pred_fn) = pred else { return Ok(Value::Array(records)) };
+        let mut results = Vec::new();
+        for r in records {
+            if self.query_predicate_holds(&pred_fn, &r) { results.push(r); }
         }
         Ok(Value::Array(results))
     }

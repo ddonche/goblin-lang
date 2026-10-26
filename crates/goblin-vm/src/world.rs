@@ -413,8 +413,8 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
                 }
             }
             Item::Reinforce { host, overlay, amount } => {
-                if let Some(i) = vm.session.overlay_instances.iter_mut()
-                    .find(|i| &i.host_uuid == host && &i.overlay_name == overlay) {
+                if let Some(p) = vm.session.overlay_instances.find(host, overlay) {
+                    let i = &mut vm.session.overlay_instances[p];
                     i.strength = (i.strength + amount).min(1.0);
                 }
             }
@@ -656,7 +656,7 @@ fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let mut tp = ToPortable::new(s);
     let object = tp.value(v)?;
     let mut overlays = Vec::new();
-    for i in s.overlay_instances.iter().filter(|i| i.host_uuid == uuid) { overlays.push(overlay_to_p(i, &mut tp)?); }
+    for &p in s.overlay_instances.on_host(uuid) { overlays.push(overlay_to_p(&s.overlay_instances[p], &mut tp)?); }
     let name = s.object_names.get(uuid).cloned();
     // Its own links go with it (links go one way); links other objects
     // have to it stay with them.
@@ -674,7 +674,8 @@ fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     drop(tp);
     let s = &mut vm.session;
     s.object_store.shift_remove(uuid);
-    s.overlay_instances.retain(|i| i.host_uuid != uuid);
+    let places = s.overlay_instances.on_host(uuid).to_vec();
+    s.overlay_instances.take_at(&places);
     for (k, _) in &links { s.link_offsets.remove(k); }
     for (k, _) in &link_defs { s.object_link_defs.remove(k); }
     s.object_decisions.remove(uuid);
