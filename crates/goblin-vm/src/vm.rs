@@ -2521,8 +2521,25 @@ impl Vm {
             }
 
             Opcode::OverlayApply(i) => {
-                let crate::opcode::OpData::OverlayApply { overlay_name, host_var_name, strength, duration_override } = self.op_data_at(i) else { unreachable!() };
+                let crate::opcode::OpData::OverlayApply { overlay_name, host_var_name, strength, duration_override, strength_on_stack, duration_on_stack } = self.op_data_at(i) else { unreachable!() };
                 use crate::session::{OverlayInstance, OverlayInstanceId};
+                let bad = |what: &str, v: &Value| GoblinError::Runtime(format!(
+                    "R1223: overlay-apply: overlay {overlay_name} {what}, got {}", v.type_name()));
+                let duration_override = if duration_on_stack {
+                    match self.pop_value()? {
+                        Value::Int(n) if n >= 0 && n <= u32::MAX as i64 => Some(n as u32),
+                        Value::Float(f) if f >= 0.0 && f.fract() == 0.0 && f <= u32::MAX as f64 => Some(f as u32),
+                        v => return Err(bad("`for N ticks` needs a whole number of ticks, 0 or more", &v)),
+                    }
+                } else { duration_override };
+                let strength = if strength_on_stack {
+                    match self.pop_value()? {
+                        Value::Int(n) => n as f64,
+                        Value::Float(f) => f,
+                        Value::Pct(p) => p,
+                        v => return Err(bad("`at` needs a number", &v)),
+                    }
+                } else { strength };
                 let host_val = self.pop_value()?;
                 let (host_var, host_uuid) = match &host_val {
                     // A statement naming a top-level variable names the host

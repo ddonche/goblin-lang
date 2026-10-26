@@ -236,6 +236,10 @@ pub struct OverlayApplyStmt {
     pub strength: f64,
     /// Override duration in ticks. None = use overlay default.
     pub duration_override: Option<u32>,
+    /// `at s` / `for n ticks` written as an expression rather than a
+    /// number: worked out when the statement runs (VM).
+    pub strength_expr: Option<Expr>,
+    pub duration_expr: Option<Expr>,
     pub span: Span,
 }
 

@@ -7635,13 +7635,24 @@ impl<'t> Parser<'t> {
 
         self.skip_layout_inline();
 
+        // A number on its own (`at .8`, `for 3 ticks`) is kept as written;
+        // anything else (`at power / 10`, `for rounds ticks`) is an expression.
+        let lone_number = |p: &Self| {
+            p.peek().is_some_and(|t| matches!(t.kind, goblin_lexer::TokenKind::Int | goblin_lexer::TokenKind::Float))
+                && !p.toks.get(p.i + 1).is_some_and(|t| matches!(t.kind, goblin_lexer::TokenKind::Op(_)))
+        };
+
         // optional: at strength
         let mut strength = 1.0f64;
+        let mut strength_expr: Option<ast::Expr> = None;
         if self.peek_ident() == Some("at") {
             let _ = self.eat_ident();
             self.skip_layout_inline();
-            if let Some(n) = self.eat_number_f64() {
-                strength = n;
+            if lone_number(self) {
+                if let Some(n) = self.eat_number_f64() { strength = n; }
+            } else {
+                let pe = self.parse_coalesce()?;
+                strength_expr = Some(self.lower_expr(pe));
             }
         }
 
@@ -7649,11 +7660,15 @@ impl<'t> Parser<'t> {
 
         // optional: for N ticks
         let mut duration_override: Option<u32> = None;
+        let mut duration_expr: Option<ast::Expr> = None;
         if self.peek_ident() == Some("for") {
             let _ = self.eat_ident();
             self.skip_layout_inline();
-            if let Some(n) = self.eat_number_u32() {
-                duration_override = Some(n);
+            if lone_number(self) {
+                if let Some(n) = self.eat_number_u32() { duration_override = Some(n); }
+            } else {
+                let pe = self.parse_coalesce()?;
+                duration_expr = Some(self.lower_expr(pe));
             }
             self.skip_layout_inline();
             // consume 'ticks' / 'tick'
@@ -7668,6 +7683,8 @@ impl<'t> Parser<'t> {
             host_expr,
             strength,
             duration_override,
+            strength_expr,
+            duration_expr,
             span,
         }))
     }

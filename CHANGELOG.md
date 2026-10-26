@@ -73,6 +73,8 @@ in parentheses are the pull requests that made each change.
   regex `{1,3}`) stays as written.
 - `:round(x, n)` keeps n digits after the point (`:round(3.14159, 2)` is 3.14); a negative n
   rounds to tens, hundreds, ... `:round(x)` is unchanged.
+- DES: `overlay X on host at s for n ticks` takes expressions for the strength and the ticks
+  (`at a >> power / 10 for rounds + 1 ticks`); a bad value is R1223.
 
 ## 0.49.0 — 2026-10-26
 

@@ -479,7 +479,9 @@ pub enum OpData {
     /// A type name, for the type-lock and cast opcodes.
     Name(String),
     OverlayDef(Box<goblin_ast::OverlayDefStmt>),
-    OverlayApply { overlay_name: String, host_var_name: String, strength: f64, duration_override: Option<u32> },
+    /// `strength_on_stack` / `duration_on_stack`: the value was written as
+    /// an expression and sits on the stack above the host (strength first).
+    OverlayApply { overlay_name: String, host_var_name: String, strength: f64, duration_override: Option<u32>, strength_on_stack: bool, duration_on_stack: bool },
     OverlayDetach { overlay_name: String, host_var_name: String },
     LinkDef(Box<goblin_ast::LinkDefStmt>),
     ObjectLinkDef(Box<goblin_ast::ObjectLinkDefStmt>),

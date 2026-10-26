@@ -1014,11 +1014,15 @@ impl Compiler {
                     goblin_ast::Expr::Ident(name, _) => name.clone(),
                     _ => String::new(),
                 };
+                if let Some(e) = &apply.strength_expr { self.compile_expr(e)?; }
+                if let Some(e) = &apply.duration_expr { self.compile_expr(e)?; }
                 let i = self.op_data(crate::opcode::OpData::OverlayApply {
                     overlay_name: apply.overlay_name.clone(),
                     host_var_name,
                     strength: apply.strength,
                     duration_override: apply.duration_override,
+                    strength_on_stack: apply.strength_expr.is_some(),
+                    duration_on_stack: apply.duration_expr.is_some(),
                 });
                 self.emit(Opcode::OverlayApply(i));
             }
