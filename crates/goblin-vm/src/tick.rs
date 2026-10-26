@@ -549,8 +549,8 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let self_val = Value::Object(Box::new(crate::value::ObjectVal {
             class_name: inst.overlay_name.clone(),
             fields: std::rc::Rc::new(self_fields),
-            readonly_fields: BTreeSet::new(),
-            trait_fields: BTreeSet::new(),
+            readonly_fields: Default::default(),
+            trait_fields: Default::default(),
             uuid: inst.host_uuid.clone(),
         }));
 
@@ -1233,8 +1233,8 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                         let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
                             class_name: child_class.clone(),
                             fields: std::rc::Rc::new(fields),
-                            readonly_fields: BTreeSet::new(),
-                            trait_fields: BTreeSet::new(),
+                            readonly_fields: Default::default(),
+                            trait_fields: Default::default(),
                             uuid: new_uuid.clone(),
                         }));
                         vm.session.object_store.insert(new_uuid, child_obj);

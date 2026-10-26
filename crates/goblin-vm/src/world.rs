@@ -463,7 +463,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
 fn refresh_copy(v: &mut Value, p: &PValue, fp: &mut FromPortable, session: &mut crate::session::Session) -> bool {
     let (Value::Object(o), PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid }) = (v, p) else { return false };
     if o.uuid != *uuid || o.class_name != *class_name || o.fields.len() != fields.len()
-        || o.readonly_fields != *readonly_fields || o.trait_fields != *trait_fields
+        || *o.readonly_fields != *readonly_fields || *o.trait_fields != *trait_fields
         || o.fields.keys().zip(fields).any(|(k, (pk, _))| k != pk) {
         return false;
     }

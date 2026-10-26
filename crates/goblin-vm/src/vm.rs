@@ -1476,7 +1476,7 @@ impl Vm {
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
-                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: class_name.to_string(), fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid }));
+                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: class_name.to_string(), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid }));
                 self.stack.push(Operand::Val(obj));
             }
 
@@ -4934,6 +4934,12 @@ impl Vm {
                 _ => None,
             }
         }
+        fn plain_or_str(v: Fv<'_>) -> Option<Value> {
+            match v {
+                Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => Some(v),
+                _ => None,
+            }
+        }
         let code = &f.bytecode;
         let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
         // Where each value that refers to a stored object sits in the
@@ -5093,8 +5099,9 @@ impl Vm {
                     st.push(Fv::Val(Value::Bool(test(c))));
                 }
                 Opcode::Eq | Opcode::Ne => {
-                    let b = plain(st.pop()?)?;
-                    let a = plain(st.pop()?)?;
+                    // Strings compare here too (`it >> kind == "rabbit"`).
+                    let b = plain_or_str(st.pop()?)?;
+                    let a = plain_or_str(st.pop()?)?;
                     let eq = values_equal(&a, &b);
                     st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
                 }
@@ -5208,8 +5215,8 @@ impl Vm {
                     results.push(Value::Object(Box::new(crate::value::ObjectVal {
                         class_name: inst.overlay_name.clone(),
                         fields: std::rc::Rc::new(fields),
-                        readonly_fields: BTreeSet::new(),
-                        trait_fields: BTreeSet::new(),
+                        readonly_fields: Default::default(),
+                        trait_fields: Default::default(),
                         // Its own id: binding it must not replace its host.
                         uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
                     })));
@@ -5375,8 +5382,8 @@ impl Vm {
             let obj = Value::Object(Box::new(crate::value::ObjectVal {
                 class_name: inst.overlay_name.clone(),
                 fields: std::rc::Rc::new(fields),
-                readonly_fields: BTreeSet::new(),
-                trait_fields: BTreeSet::new(),
+                readonly_fields: Default::default(),
+                trait_fields: Default::default(),
                 // Its own id: binding it must not replace its host.
                 uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
             }));

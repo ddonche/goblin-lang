@@ -77,6 +77,9 @@ in parentheses are the pull requests that made each change.
   (`at a >> power / 10 for rounds + 1 ticks`); a bad value is R1223.
 - `sims/rpg_combat` uses the new DES features (`where`, `one of`, `order by`, `each tick:`, erase after
   actions, overlay builtins on objects, `{expr}`, `:round(x, n)`); FINDINGS.md has the status.
+- Faster: `:objects(...)` predicates and DES formulas compare strings on the fast path
+  (`it >> kind == "rabbit"` no longer runs the predicate as a call per object), and copying an
+  object no longer copies its read-only and trait field sets.
 
 ## 0.49.0 — 2026-10-26
 

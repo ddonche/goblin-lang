@@ -190,8 +190,8 @@ impl<'s> ToPortable<'s> {
             Value::Object(o) => PValue::Object {
                 class_name: o.class_name.clone(),
                 fields: self.fields(&o.fields)?,
-                readonly_fields: o.readonly_fields.clone(),
-                trait_fields: o.trait_fields.clone(),
+                readonly_fields: (*o.readonly_fields).clone(),
+                trait_fields: (*o.trait_fields).clone(),
                 uuid: o.uuid.clone(),
             },
             // An object reference crosses as the object itself.
@@ -385,8 +385,8 @@ impl FromPortable {
                 session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
                     class_name: class_name.clone(),
                     fields,
-                    readonly_fields: readonly_fields.clone(),
-                    trait_fields: trait_fields.clone(),
+                    readonly_fields: Rc::new(readonly_fields.clone()),
+                    trait_fields: Rc::new(trait_fields.clone()),
                     uuid: uuid.clone(),
                 })));
                 Value::Ref(uuid.clone())
@@ -414,8 +414,8 @@ impl FromPortable {
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
                 class_name: class_name.clone(),
                 fields: Rc::new(self.fields(fields, session)),
-                readonly_fields: readonly_fields.clone(),
-                trait_fields: trait_fields.clone(),
+                readonly_fields: Rc::new(readonly_fields.clone()),
+                trait_fields: Rc::new(trait_fields.clone()),
                 uuid: uuid.clone(),
             })),
             PValue::Enum { enum_name, variant_name, fields } => Value::Enum(Box::new(EnumVal {
