@@ -7256,7 +7256,14 @@ impl<'t> Parser<'t> {
                                     | Some("conflicts") | Some("spawns") | Some("hosts")
                                     | Some("spreads") | Some("decays") | Some("lasts")
                                     | Some("transition") | Some("stacks") | Some("replaces")
-                                    | Some("caps") | Some("on"))
+                                    | Some("caps"))
+                            {
+                                break;
+                            }
+                            // `on end:` starts the next clause; a field named
+                            // `on` is still a change (`on + 1`).
+                            if tok.value.as_deref() == Some("on")
+                                && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("end"))
                             {
                                 break;
                             }
