@@ -5,6 +5,13 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Objects (VM): the object store keeps each class's objects in one place,
+  updated as objects are made and erased. `:objects("Rabbit")` gives a class's
+  objects and `:objects("Rabbit", pred)` those the predicate holds for, without
+  looking at every object; `:is_type(r, "Rabbit")` is true for a Rabbit; an
+  unknown class name is R1230. `repeat Rabbit` and the DES tick's class lookups
+  (decisions, `every` blocks, transitions, `spreads to`) read the same lists.
+  Predator-prey 200 days: 7.3 s to 5.6 s.
 - Objects (VM): a field given an object holds that object, not a copy, like a
   database entry. `p >> home >> food |= 5` changes the village; a change to the
   village shows through `p >> home`; the field reads nil once the object is

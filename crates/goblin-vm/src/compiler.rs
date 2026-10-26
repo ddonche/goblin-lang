@@ -3386,9 +3386,19 @@ impl Compiler {
             Some(b) => b,
             None    => return Ok(None),
         };
-        if (bare == "objects" || bare == "overlays") && args.len() == 1 {
-            self.compile_predicate_lambda(&args[0])?;
-            self.emit(Opcode::CallBuiltin(bid, 1));
+        // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
+        // a predicate is compiled as `fn(it)`; a class name is a plain value.
+        if bare == "objects" || bare == "overlays" {
+            match args {
+                [Expr::Str(..)] => self.compile_expr(&args[0])?,
+                [pred] => self.compile_predicate_lambda(pred)?,
+                [name, pred] => {
+                    self.compile_expr(name)?;
+                    self.compile_predicate_lambda(pred)?;
+                }
+                _ => for arg in args { self.compile_expr(arg)?; },
+            }
+            self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
             return Ok(Some(()));
         }
         for arg in args { self.compile_expr(arg)?; }

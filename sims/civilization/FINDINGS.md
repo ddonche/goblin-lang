@@ -103,7 +103,8 @@ bigger change than the others; the message works today.
 ## 5–6. Repeats
 
 - Nothing can ask an object its class, so both classes carry `~kind` for
-  counting (predator-prey 1).
+  counting (predator-prey 1). Fixed: the sim now uses
+  `:objects("Person", ...)` and `:objects("Village", ...)`.
 - A region must be told the list of regions before `:move!` and `:post`
   work (predator-prey 4).
 

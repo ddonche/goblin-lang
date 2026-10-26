@@ -25,7 +25,6 @@ xx
 all_villages | []
 
 <>Village |
-    ~kind: "village"
     ~village: 0
     ~food: 200
     ~wood: 0
@@ -39,7 +38,7 @@ all_villages | []
     ~month: 0
     every 1 tick
         self >> month |= self >> month + 1
-        self >> pop |= :len(:objects(it >> kind == "person" and it >> village == self >> village))
+        self >> pop |= :len(:objects("Person", it >> village == self >> village))
         send_away(self)
         send_food(self)
         if self >> month % 12 == 11
@@ -62,7 +61,6 @@ overlay Winter |
 end
 
 <>Person |
-    ~kind: "person"
     ~village: 0
     ~age: 0
     ~hungry: 0
@@ -114,7 +112,7 @@ xx
 act send_away(v)
     homeless | v >> pop - v >> huts * 4
     if homeless > 0 and n_villages > 1
-        repeat :objects(it >> kind == "person" and it >> village == v >> village and it >> age >= 180) as p
+        repeat :objects("Person", it >> village == v >> village and it >> age >= 180) as p
             if homeless > 0 and (pick 1 from 1...6) == 1
                 to | (p >> village + 1) % n_villages
                 p >> village |= to
@@ -133,7 +131,7 @@ xx
 act send_food(v)
     if n_villages > 1 and v >> food > v >> pop * 6
         to | (v >> village + 1) % n_villages
-        repeat :objects(it >> kind == "village" and it >> village == to) as w
+        repeat :objects("Village", it >> village == to) as w
             if w >> food < w >> pop * 3
                 give | :floor(v >> food / 5)
                 v >> food |= v >> food - give
@@ -159,7 +157,7 @@ act chop(p, v)
 xx
 
 act bury(p)
-    repeat :objects(it >> kind == "village" and it >> village == p >> village) as v
+    repeat :objects("Village", it >> village == p >> village) as v
         v >> graves |= v >> graves + 1
     xx
 xx
@@ -180,7 +178,7 @@ act village_month(st, msg)
         all_villages |= msg{"villages"}
     xx
     if :has(msg, "food")
-        repeat :objects(it >> kind == "village" and it >> village == st{"n"}) as v
+        repeat :objects("Village", it >> village == st{"n"}) as v
             v >> food |= v >> food + msg{"food"}
         xx
     xx
@@ -201,7 +199,7 @@ repeat :range(1, months + 1) as m
     if m % 60 == 0 or m == months
         line | "year {:floor(m / 12)}:"
         total | 0
-        repeat :objects(it >> kind == "village") as v
+        repeat :objects("Village") as v
             total |= total + v >> pop
             line |= line + " [{v >> pop} people, {v >> huts} huts, {v >> food} food, {v >> sent} food sent, {v >> born} born, {v >> graves} dead]"
         xx

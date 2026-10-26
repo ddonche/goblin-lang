@@ -815,9 +815,7 @@ impl Vm {
                 match target {
                     Value::Ref(uuid) => {
                         self.session.touch(&uuid);
-                        if let Some(slot_val) = self.session.object_store.get_mut(&uuid) {
-                            *slot_val = new_val;
-                        }
+                        self.session.object_store.replace(&uuid, new_val);
                     }
                     _ => {
                         return Err(GoblinError::Runtime(
@@ -1918,8 +1916,8 @@ impl Vm {
                         return Ok(());
                     }
                     BuiltinId::Objects => {
-                        let pred = arg_vals.into_iter().next();
-                        let result = self.vm_objects_query(pred)?;
+                        let (class, pred) = query_args(arg_vals, "objects")?;
+                        let result = self.vm_objects_query(class.as_deref(), pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -5269,12 +5267,7 @@ impl Vm {
         // Check object_store for objects with matching class_name
         for candidate in &candidates {
             if !candidate.is_empty() && self.session.classes.contains_key(candidate.as_str()) {
-                let cand = candidate.clone();
-                let results: Vec<Value> = self.session.object_store.values()
-                    .filter(|v| matches!(v, Value::Object(o) if o.class_name == cand))
-                    .cloned()
-                    .collect();
-                return Ok(Value::Array(results));
+                return self.vm_objects_query(Some(candidate.as_str()), None);
             }
         }
         // Not a class/overlay — return empty array (or could error, but interpreter silently returns empty)
@@ -5326,11 +5319,28 @@ impl Vm {
         }
     }
 
-    fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
-        if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p)) {
+    /// `:objects(...)`: every object, or a class's objects (read from the
+    /// store's class lists, not by looking at every object), those `pred`
+    /// holds for when there is one.
+    fn vm_objects_query(&mut self, class: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
+        let ids: Option<Vec<usize>> = match class {
+            None => None,
+            Some(c) => {
+                if !self.session.classes.contains_key(c) {
+                    return Err(GoblinError::Runtime(format!(
+                        "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
+                }
+                let store = &self.session.object_store;
+                Some(store.of_class(c).filter_map(|u| store.get_index_of(u)).collect())
+            }
+        };
+        if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p, ids.as_deref())) {
             return Ok(Value::Array(found));
         }
-        let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
+        let all_values: Vec<Value> = match &ids {
+            None => self.session.object_store.values().cloned().collect(),
+            Some(ids) => ids.iter().filter_map(|&i| self.session.object_store.get_index(i).map(|(_, v)| v.clone())).collect(),
+        };
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
             let include = if let Some(ref pred_fn) = pred {
@@ -5349,7 +5359,7 @@ impl Vm {
     /// the general path gives; None when the predicate needs the VM for some
     /// object, and the general path then runs from the start (nothing here
     /// changes anything).
-    fn objects_query_direct(&mut self, pred: &Value) -> Option<Vec<Value>> {
+    fn objects_query_direct(&mut self, pred: &Value, only: Option<&[usize]>) -> Option<Vec<Value>> {
         let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
             Value::Closure(c) => (&c.func, &c.upvalues),
             Value::Function(f) => (f, &[]),
@@ -5376,7 +5386,12 @@ impl Vm {
         let func = func.clone();
         let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let mut found = Vec::new();
-        for i in 0..self.session.object_store.len() {
+        let all: Vec<usize>;
+        let places = match only {
+            Some(p) => p,
+            None => { all = (0..self.session.object_store.len()).collect(); &all }
+        };
+        for &i in places {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
             let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env) {
                 Some(v) => matches!(v, Value::Bool(true)),
@@ -5843,11 +5858,24 @@ impl Vm {
 
 /// The id prefix of an `:overlays()` result: a record of an overlay, not an
 /// object of a class, so it is never put in the object store.
-const OVERLAY_RECORD: &str = "overlay:";
+pub(crate) const OVERLAY_RECORD: &str = "overlay:";
 
 /// A value put in an object's field: an object that lives in the store is
 /// kept as its id (a `Value::Ref`), so the field names that object and every
 /// change to it shows through the field. Anything else is kept as it is.
+/// The arguments of `:objects(...)` / `:overlays(...)`: an optional name
+/// (a class or an overlay) and an optional predicate.
+fn query_args(args: Vec<Value>, what: &'static str) -> Result<(Option<String>, Option<Value>), GoblinError> {
+    let mut it = args.into_iter();
+    match (it.next(), it.next()) {
+        (None, _) => Ok((None, None)),
+        (Some(Value::Str(s)), None) => Ok((Some(s.to_string()), None)),
+        (Some(p), None) => Ok((None, Some(p))),
+        (Some(Value::Str(s)), Some(p)) => Ok((Some(s.to_string()), Some(p))),
+        (Some(other), Some(_)) => Err(GoblinError::type_error("str", other.type_name(), what)),
+    }
+}
+
 /// What reading a field gives: a field that names a stored object by its id
 /// reads as that object, and as nil once the object is erased.
 fn entry_out(session: &crate::session::Session, v: Value) -> Value {

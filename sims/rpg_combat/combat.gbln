@@ -181,6 +181,6 @@ r | battle(7)
 w | r{"winner"}
 rr | r{"rounds"}
 say("{w} in {rr} rounds")
-repeat :objects(it >> hp > -100) as f
+repeat :objects("Fighter") as f
     say("  {f >> name}: {f >> hp} hp")
 xx

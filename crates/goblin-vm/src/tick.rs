@@ -351,9 +351,9 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                         Some(Value::Object(o)) => o.class_name.clone(),
                         _ => continue,
                     };
-                    let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if o.class_name == host_class))
-                        .map(|(uuid, _)| uuid.clone())
+                    let candidates: Vec<String> = vm.session.object_store.of_class(&host_class)
+                        .filter(|u| *u != inst.host_uuid)
+                        .map(str::to_string)
                         .collect();
                     for target_uuid in candidates {
                         let already = ov_host_idx.contains_key(&(inst.overlay_name.clone(), target_uuid.clone()));
@@ -384,9 +384,9 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
 
                 SpreadRule::All { class_name, rate } => {
-                    let candidates: Vec<String> = vm.session.object_store.iter()
-                        .filter(|(uuid, v)| *uuid != &inst.host_uuid && matches!(v, Value::Object(o) if &o.class_name == class_name))
-                        .map(|(uuid, _)| uuid.clone())
+                    let candidates: Vec<String> = vm.session.object_store.of_class(class_name)
+                        .filter(|u| *u != inst.host_uuid)
+                        .map(str::to_string)
                         .collect();
                     for target_uuid in candidates {
                         let amount = inst.strength * inst.strength * rate;
@@ -820,10 +820,11 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     let tick = vm.session.des_ticks;
     let classes = vm.session.classes.clone();
     if classes.values().all(|c| c.every.is_empty()) { return Ok(()); }
-    let selves: Vec<(String, String)> = vm.session.object_store.iter()
-        .filter_map(|(u, v)| match v {
-            Value::Object(o) if classes.get(&o.class_name).is_some_and(|c| !c.every.is_empty()) =>
-                Some((u.clone(), o.class_name.clone())),
+    let store = &vm.session.object_store;
+    let selves: Vec<(String, String)> = store.places_of(|c| classes.get(c).is_some_and(|c| !c.every.is_empty()))
+        .into_iter()
+        .filter_map(|i| match store.get_index(i) {
+            Some((u, Value::Object(o))) => Some((u.clone(), o.class_name.clone())),
             _ => None,
         })
         .filter(|(u, _)| !crate::world::is_remote(vm, u))
@@ -845,18 +846,21 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // Find all objects with a decision formula
     let candidates: Vec<(String, String)> = {
-        let mut out = Vec::new();
-        for (uuid, val) in &vm.session.object_store {
-            if let Value::Object(o) = val {
-                let class_name = &o.class_name;
-                let has_decision = vm.session.classes.get(class_name)
-                    .map(|c| c.decision.is_some())
-                    .unwrap_or(false)
-                    || object_decision(&vm.session, uuid).is_some();
-                // Another region's object decides in its own region.
-                if has_decision && !crate::world::is_remote(vm, uuid) {
-                    out.push((uuid.clone(), class_name.clone()));
-                }
+        // The objects of classes with a decision, and objects given one of
+        // their own, from the store's class lists, in creation order.
+        let store = &vm.session.object_store;
+        let mut at = store.places_of(|c| vm.session.classes.get(c).is_some_and(|c| c.decision.is_some()));
+        for uuid in vm.session.object_decisions.keys() {
+            if let Some(i) = store.get_index_of(uuid.as_str()) { at.push(i); }
+        }
+        at.sort_unstable();
+        at.dedup();
+        let mut out = Vec::with_capacity(at.len());
+        for i in at {
+            let Some((uuid, Value::Object(o))) = store.get_index(i) else { continue };
+            // Another region's object decides in its own region.
+            if !crate::world::is_remote(vm, uuid) {
+                out.push((uuid.clone(), o.class_name.clone()));
             }
         }
         out
@@ -985,9 +989,8 @@ impl Targets {
             self.seen = Some(now);
         }
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
-            store.iter().enumerate()
-                .filter(|(_, (_, v))| matches!(v, Value::Object(o) if o.class_name == class))
-                .map(|(i, (u, _))| (Value::Ref(u.clone()), i))
+            store.of_class(class)
+                .filter_map(|u| store.get_index_of(u).map(|i| (Value::Ref(u.to_string()), i)))
                 .collect()
         )).clone()
     }
@@ -1231,16 +1234,14 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
 fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     use goblin_ast::TransitionKind;
 
-    let candidates: Vec<(String, String)> = vm.session.object_store.iter()
-        .filter_map(|(uuid, v)| {
-            if let Value::Object(o) = v {
-                let class_name = &o.class_name;
-                let has_transitions = vm.session.classes.get(class_name)
-                    .map(|c| !c.transitions.is_empty())
-                    .unwrap_or(false);
-                if has_transitions && !crate::world::is_remote(vm, uuid) { Some((uuid.clone(), class_name.clone())) }
-                else { None }
-            } else { None }
+    let store = &vm.session.object_store;
+    let candidates: Vec<(String, String)> = store
+        .places_of(|c| vm.session.classes.get(c).is_some_and(|c| !c.transitions.is_empty()))
+        .into_iter()
+        .filter_map(|i| match store.get_index(i) {
+            Some((uuid, Value::Object(o))) if !crate::world::is_remote(vm, uuid) =>
+                Some((uuid.clone(), o.class_name.clone())),
+            _ => None,
         }).collect();
 
     let mut erased: std::collections::HashSet<String> = std::collections::HashSet::new();

@@ -44,6 +44,12 @@ has no way to name a class. Decisions can already say `against Rabbit`.
 `Rabbit`. Then `:objects(:is_type(it, "Rabbit"))` works with no new
 builtin. The query would also need to run fast for this form.
 
+**Fixed in the runtime:** the object store keeps each class's objects in
+one place, updated as objects are made and erased. `:objects("Rabbit")`
+reads that list directly (`:objects("Rabbit", pred)` filters it), and
+`:is_type(r, "Rabbit")` is true for a Rabbit. The sim now uses them and
+has no `kind` field; it runs in 5.6 s instead of 7.3 s.
+
 ## 2. Counting what's nearby costs a scan per action
 
 How well a hunt goes depends on how many rabbits are in the meadow, so

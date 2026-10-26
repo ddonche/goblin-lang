@@ -20,7 +20,6 @@ xx
 all_towns | []
 
 <>Person |
-    ~kind: "person"
     ~town: 0
     ~health: 10
     ~immune: 0
@@ -81,7 +80,7 @@ say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
 repeat :range(1, days + 1) as d
     tick(towns)
     if d % 5 == 0 or d == days
-        alive | :len(:objects(it >> kind == "person"))
+        alive | :len(:objects("Person"))
         sick | :len(:overlays(it >> overlay_name == "Sick"))
         immune | :len(:objects(it >> immune == 1))
         say("day {d}: alive {alive}, sick {sick}, immune {immune}, dead {n_towns * people_per_town - alive}")

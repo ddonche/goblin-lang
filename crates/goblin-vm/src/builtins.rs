@@ -2740,6 +2740,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
                 (Value::Str(s), "int") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<i64>().is_ok() }
                 (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
+                // An object is of its class: `:is_type(r, "Rabbit")`.
+                (Value::Object(o), name) => o.class_name == name,
+                (Value::Ref(u), name) => matches!(session.object_store.get(u.as_str()),
+                    Some(Value::Object(o)) if o.class_name == name),
                 _ => false,
             };
             Ok(Value::Bool(ok))
