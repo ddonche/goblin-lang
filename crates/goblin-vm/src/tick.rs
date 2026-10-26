@@ -1100,27 +1100,9 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         scored.push((k, raw));
     }
     if scored.is_empty() { return Ok(false); }
-    // A formula on `~` fields (prices, money, ...) has no fixed range, so
-    // its scores are measured against the candidates: the best scores 1
-    // and the others in proportion to it (0 stays 0). When some score is
-    // below 0 they are spread from the worst (0) to the best (1) instead.
-    // A formula on 0..1 traits keeps its own range.
-    let self_class = match vm.session.object_store.get(&self_uuid) {
-        Some(Value::Object(o)) => o.class_name.clone(),
-        _ => String::new(),
-    };
-    if targets.reads_real(vm, &self_class, decision) {
-        let lo = scored.iter().map(|(_, r)| *r).fold(f64::INFINITY, f64::min);
-        let hi = scored.iter().map(|(_, r)| *r).fold(f64::NEG_INFINITY, f64::max);
-        for (_, r) in scored.iter_mut() {
-            *r = if lo >= 0.0 {
-                if hi <= 0.0 { 0.0 } else { *r / hi }
-            } else if hi - lo < 1e-12 { 1.0 } else { (*r - lo) / (hi - lo) };
-        }
-    } else {
-        for (_, r) in scored.iter_mut() { *r = normalize_score(*r, decision.formula_min, decision.formula_max); }
-    }
-
+    // A score is exactly the number the formula gives: nothing rescales or
+    // clamps it. `margin` is in the formula's own units, and the judge sees
+    // the same number.
     let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 
     let pool: Vec<(usize, f64)> = scored.into_iter()
@@ -1135,7 +1117,6 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(false) };
     let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(false) };
     let best_target_uuid = best_target_uuid.clone();
-    let final_score = final_score.clamp(0.0, 1.0);
     let target_ref = Value::Ref(best_target_uuid.clone());
 
     // Run judge to find selected action

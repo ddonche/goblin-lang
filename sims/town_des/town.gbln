@@ -161,12 +161,11 @@ xx
             :move!(self, all_districts[to])
         xx
     end
-    /// Cheaper open shops score higher (prices run 15 to 24; a closed shop
-    /// scores 0). `price` is a `~` field, so the scores are measured against
-    /// the shops: the cheapest open one scores 1. `margin .8` spreads people
-    /// over the shops that score near the best.
-    shop | decision against Business margin .8 by [
-        (30 - target >> price) * (target >> open)
+    /// Open shops only; cheaper ones score higher (prices run 15 to 24, so
+    /// scores 6 to 15). `margin 10` spreads people over the shops within 10
+    /// of the best.
+    shop | decision against Business margin 10 where [ target >> open == 1 ] by [
+        30 - target >> price
     ]
     judge using shop
         > 0: buy(target)

@@ -1,19 +1,18 @@
-/// known-gap: interp scores a formula on `~` fields over 0..1, so every shop scores 0
-/// When no score is below 0, a formula on `~` fields scores each candidate
-/// in proportion to the best: stock 10, 9 and 8 score 1, .9 and .8, so a
-/// margin of .25 keeps all three shops in the running.
+/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
+/// `margin` is in the formula's own units: stock 10, 9 and 8 score 10, 9
+/// and 8, so a margin of 2 keeps all three shops in the running.
 :rand_seed(4)
 <>Shop |
     ~stock: 0
     ~sold: 0
 xx
 <>Buyer |
-    margin: .25
+    margin: 2
     buy | decision against Shop by [
         target >> stock
     ]
     judge using buy
-        >= .75: purchase(target)
+        >= 8: purchase(target)
     end
 xx
 act purchase(b, s)
@@ -23,7 +22,7 @@ a <> Shop | stock: 10
 b <> Shop | stock: 9
 c <> Shop | stock: 8
 repeat 30
-    x <> Buyer | margin: .25
+    x <> Buyer | margin: 2
 xx
 tick()
 total | 0

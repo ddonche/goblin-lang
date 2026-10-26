@@ -1,7 +1,7 @@
 /// known-gap: interp has no `margin` on a decision (it reads the object's `margin` field only)
 /// `margin N` on a decision sets how far below the best score a target may
-/// be and still be picked, for that decision only. Here buying spreads over
-/// both shops (stock 10 and 6 score 1 and .6, margin .5), while visiting,
+/// be and still be picked, in the formula's units, for that decision only.
+/// Here buying spreads over both shops (stock 10 and 6, margin 5), while visiting,
 /// with no margin of its own, uses the object's `margin` (0): only the best.
 :rand_seed(3)
 <>Shop |
@@ -11,7 +11,7 @@
 xx
 <>Buyer |
     margin: 0
-    buy | decision against Shop margin .5 by [
+    buy | decision against Shop margin 5 by [
         target >> stock
     ]
     judge using buy

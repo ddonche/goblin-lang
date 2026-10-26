@@ -1,6 +1,6 @@
-/// known-gap: interp scores a formula on `~` fields over 0..1, so every shop scores 0
+/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
 /// A `~` field read inside a map literal scores the same as a plain read:
-/// the cheapest shop scores 1.
+/// the cheapest shop scores -10.
 <>Shop |
     ~price: 0
     ~sold: 0
@@ -11,7 +11,7 @@ xx
         0 - {"price": target >> price}{"price"}
     ]
     judge using buy
-        >= .9: purchase(target)
+        >= -10: purchase(target)
         else: browse(target)
     end
 xx
