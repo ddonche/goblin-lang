@@ -1,0 +1,38 @@
+/// known-gap: interp has no `each tick:` on overlays
+/// `each tick:` uses the fields of the overlay as it was put on: an overlay
+/// defined again later does not change one already on a host. Clauses come
+/// in any order (`each tick:` before `modifies:`), and a field named `each`
+/// can be changed.
+<>F |
+    ~hp: 20
+    ~def: 0
+    ~each: 0
+xx
+overlay Bleed |
+    rate: 2
+    lasts 5 ticks
+    each tick:
+        hp - rate
+        each + 1
+    end
+    modifies:
+        def + 1
+    end
+end
+a <> F | hp: 20
+overlay Bleed on a at 1
+overlay Bleed |
+    rate: 5
+    lasts 5 ticks
+    each tick:
+        hp - rate
+        each + 1
+    end
+    modifies:
+        def + 1
+    end
+end
+tick()
+say(a >> hp)
+say(a >> def)
+say(a >> each)

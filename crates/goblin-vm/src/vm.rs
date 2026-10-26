@@ -5247,7 +5247,7 @@ impl Vm {
     /// An argument as the callee holds it: an object that lives in the
     /// object store is passed by reference, as in the interpreter, so the
     /// callee reads the object's current fields, not a copy taken at the call.
-    fn arg_ref(&self, v: Value) -> Value {
+    pub(crate) fn arg_ref(&self, v: Value) -> Value {
         match v {
             // Same class as the stored object: an overlay record carries its
             // host's uuid but is not the host.

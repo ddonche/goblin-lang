@@ -1,0 +1,19 @@
+/// known-gap: interp has no `each tick:` on overlays
+/// An `each tick:` change that takes a whole-number field past the largest
+/// whole number is an error (R1221), not a wrapped or crashed value.
+<>C |
+    ~n: 0
+xx
+overlay Up |
+    lasts 3 ticks
+    each tick:
+        n + 1
+    end
+end
+c <> C | n: :int("9223372036854775807")
+overlay Up on c at 1
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "R1221"))
+xx
