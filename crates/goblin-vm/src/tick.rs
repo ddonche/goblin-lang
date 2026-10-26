@@ -239,19 +239,20 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 /// own fields. One that fails or gives no number stops the tick (R1221).
 fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     if !vm.session.overlay_defs.values().any(|d| !d.each_tick.is_empty()) { return Ok(()); }
-    let live: Vec<(String, String, f64, u64)> = vm.session.overlay_instances.iter()
+    // Each instance with its own fields (`rate: 2` given when it was put on).
+    let live: Vec<(String, String, f64, u64, indexmap::IndexMap<String, Value>)> = vm.session.overlay_instances.iter()
         .filter(|i| i.strength > 0.0)
         .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.each_tick.is_empty()))
         .filter(|i| !crate::world::is_remote(vm, &i.host_uuid))
-        .map(|i| (i.overlay_name.clone(), i.host_uuid.clone(), i.strength, i.count))
+        .map(|i| (i.overlay_name.clone(), i.host_uuid.clone(), i.strength, i.count, i.extra_fields.clone()))
         .collect();
-    for (name, host, strength, count) in live {
+    for (name, host, strength, count, extra_fields) in live {
         let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
         let count_label = match &def.apply_behavior {
             crate::session::OverlayApplyBehavior::Stacks { label: Some(l) } => Some(l.clone()),
             _ => None,
         };
-        let mut deltas: Vec<(String, f64)> = Vec::with_capacity(def.each_tick.len());
+        let mut deltas: Vec<(String, Value)> = Vec::with_capacity(def.each_tick.len());
         for (field, expr) in &def.each_tick {
             let mut bind: Vec<(&str, Value)> = vec![
                 ("self", Value::Ref(host.clone())),
@@ -259,12 +260,11 @@ fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 ("count", Value::Int(count as i64)),
             ];
             if let Some(ref l) = count_label { bind.push((l.as_str(), Value::Int(count as i64))); }
-            for (k, v) in &def.extra_fields { bind.push((k.as_str(), v.clone())); }
+            for (k, v) in &extra_fields { bind.push((k.as_str(), v.clone())); }
             let fail = |what: String| GoblinError::Runtime(format!(
                 "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {what}"));
             match vm.eval_tick_expr(expr, bind) {
-                Ok(Value::Float(f)) => deltas.push((field.clone(), f)),
-                Ok(Value::Int(i)) => deltas.push((field.clone(), i as f64)),
+                Ok(v @ (Value::Float(_) | Value::Int(_))) => deltas.push((field.clone(), v)),
                 Ok(other) => return Err(fail(format!("gave {}, not a number", other.type_name()))),
                 Err(e) => return Err(fail(format!("failed: {e}"))),
             }
@@ -278,9 +278,24 @@ fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 return Err(GoblinError::Runtime(format!(
                     "R1221: overlay-each-tick: overlay {name} changes `{field}`, which {class} has no field named")));
             };
-            *v = match v {
+            let d = match d {
                 // A whole-number field stays whole while the change is whole.
-                Value::Int(i) if d.fract() == 0.0 && !t => Value::Int(*i + d as i64),
+                Value::Int(n) if !t && matches!(v, Value::Int(_)) => {
+                    let Value::Int(i) = v else { unreachable!() };
+                    *v = Value::Int(i.checked_add(n).ok_or_else(|| GoblinError::Runtime(format!(
+                        "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {i} + {n} is past the largest whole number")))?);
+                    continue;
+                }
+                Value::Int(n) => n as f64,
+                Value::Float(f) => f,
+                _ => unreachable!(),
+            };
+            *v = match v {
+                Value::Int(i) if d.fract() == 0.0 && !t => match i.checked_add(d as i64) {
+                    Some(n) => Value::Int(n),
+                    None => return Err(GoblinError::Runtime(format!(
+                        "R1221: overlay-each-tick: overlay {name}, `each tick:` change to `{field}`: {i} + {d} is past the largest whole number"))),
+                },
                 Value::Int(i) if t => Value::Float((*i as f64 + d).clamp(0.0, 1.0)),
                 Value::Int(i) => Value::Float(*i as f64 + d),
                 Value::Float(f) if t => Value::Float((*f + d).clamp(0.0, 1.0)),
