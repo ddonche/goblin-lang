@@ -4735,16 +4735,16 @@ impl Vm {
     fn compile_tick_expr(
         &mut self,
         expr: &goblin_ast::Expr,
-        locals: &[(&str, Value)],
+        param_names: &[&str],
     ) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
         // DES formulas live in shared (Rc) definitions, so a formula keeps
         // its address; the key is that address, checked against the
         // formula's span and kind, and the names it is called with.
-        let key = tick_expr_key(expr, locals);
+        let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
-        let param_names: Vec<&str> = locals.iter().map(|(n, _)| *n).collect();
-        let f = Self::compile_expr_fn(expr, &param_names, crate::compiler::Compiler::new())?;
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), func: f });
+        let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
+        let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -4796,7 +4796,8 @@ impl Vm {
         expr: &goblin_ast::Expr,
         locals: Vec<(&str, Value)>,
     ) -> Result<Value, GoblinError> {
-        let formula = self.compile_tick_expr(expr, &locals)?;
+        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
+        let formula = self.compile_tick_expr(expr, &names)?;
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
@@ -4804,11 +4805,21 @@ impl Vm {
         // A formula that keeps needing the VM (it errors every time, say)
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, &locals) {
+            let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
+            match self.run_formula(&func_rc, &refs, &formula.hints) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
         }
+        self.run_tick_formula_vm(func_rc, locals)
+    }
+
+    /// Runs a compiled DES formula on the VM, with a call frame.
+    fn run_tick_formula_vm(
+        &mut self,
+        func_rc: std::rc::Rc<crate::value::FunctionObject>,
+        locals: Vec<(&str, Value)>,
+    ) -> Result<Value, GoblinError> {
         if self.call_stack.len() >= MAX_CALL_DEPTH {
             return Err(GoblinError::StackOverflow);
         }
@@ -4825,6 +4836,27 @@ impl Vm {
         let op = self.stack.pop()
             .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
         self.resolve_op(op)
+    }
+
+    /// A DES formula compiled for these argument names, to run many times
+    /// with `run_tick_formula_ref`.
+    pub(crate) fn tick_formula(&mut self, expr: &goblin_ast::Expr, names: &[&str]) -> Result<std::rc::Rc<TickFormula>, GoblinError> {
+        self.compile_tick_expr(expr, names)
+    }
+
+    /// Runs a compiled DES formula with borrowed arguments.
+    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)]) -> Result<Value, GoblinError> {
+        let func_rc = formula.func.clone();
+        if locals.len() != func_rc.params {
+            return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
+            match self.run_formula(&func_rc, locals, &formula.hints) {
+                Some(v) => { formula.misses.set(0); return Ok(v); }
+                None => formula.misses.set(formula.misses.get() + 1),
+            }
+        }
+        self.run_tick_formula_vm(func_rc, locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -4847,8 +4879,14 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, Value)]) -> Option<Value> {
-        enum Fv<'a> { Val(Value), Arg(&'a Value) }
+    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
+        self.run_formula_in(f, args, hints, &FormulaEnv::default())
+    }
+
+    /// `run_formula` for a closure: `env` holds the values its captured
+    /// variables and the globals it reads had when the run started.
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
+        enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
             match v {
@@ -4857,7 +4895,17 @@ impl Vm {
             }
         }
         let code = &f.bytecode;
-        let mut st: Vec<Fv> = Vec::with_capacity(8);
+        let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
+        // Where each argument that refers to a stored object sits in the
+        // store, looked up on first use (checked against its id when read).
+        const UNSEEN: usize = usize::MAX - 1;
+        // Arguments, then captured variables, then globals, in one list.
+        let mut vals: smallvec::SmallVec<[&Value; 8]> = args.iter().map(|(_, v)| *v).collect();
+        vals.extend(env.upvalues.iter());
+        vals.extend(env.globals.iter().map(|(_, v)| v));
+        let ups_at = args.len();
+        let globals_at = ups_at + env.upvalues.len();
+        let mut at: smallvec::SmallVec<[usize; 8]> = smallvec::smallvec![UNSEEN; vals.len()];
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4871,33 +4919,83 @@ impl Vm {
                 Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
-                Opcode::LoadLocal(slot) => {
-                    let a = &args.get(slot as usize)?.1;
+                Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
+                    let slot = match op {
+                        Opcode::LoadLocal(s) => { if s as usize >= ups_at { return None; } s as usize }
+                        Opcode::LoadUpvalue(i) => ups_at + i as usize,
+                        Opcode::LoadGlobal(g) => globals_at + env.globals.iter().position(|(n, _)| *n == g)?,
+                        _ => return None,
+                    };
+                    let a: &Value = vals.get(slot)?;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
-                        Value::Object(_) | Value::Ref(_) => st.push(Fv::Arg(a)),
+                        Value::Object(_) | Value::Ref(_) => {
+                            let pos = at.get_mut(slot)?;
+                            if *pos == UNSEEN {
+                                *pos = match a {
+                                    Value::Ref(uuid) => self.session.object_store.get_index_of(uuid.as_str()).unwrap_or(usize::MAX),
+                                    _ => usize::MAX,
+                                };
+                            }
+                            st.push(Fv::Arg(a, *pos))
+                        }
                         _ => return None,
                     }
                 }
                 Opcode::GetMember(idx) => {
-                    let Some(Fv::Arg(a)) = st.pop() else { return None };
+                    let Some(Fv::Arg(a, pos)) = st.pop() else { return None };
                     // `formula_runs_direct` ruled out names of member builtins.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
                     let obj = match a {
                         Value::Object(o) => o,
-                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
-                            Some(Value::Object(o)) => o,
-                            _ => return None,
+                        Value::Ref(uuid) => match self.session.object_store.get_index(pos) {
+                            Some((k, Value::Object(o))) if k == uuid => o,
+                            _ => match self.session.object_store.get(uuid.as_str()) {
+                                Some(Value::Object(o)) => o,
+                                _ => return None,
+                            },
                         },
                         _ => return None,
                     };
-                    let v = obj.fields.get(name.as_ref() as &str)?;
+                    let name: &str = name.as_ref();
+                    let hint = hints.get(ip - 1);
+                    let v = match hint.and_then(|h| obj.fields.get_index(h.get() as usize)) {
+                        Some((k, v)) if k.as_str() == name => v,
+                        _ => {
+                            // No such field is an error on the VM (R0403); an
+                            // `:objects` predicate that errors does not match.
+                            let Some((i, _, v)) = obj.fields.get_full(name) else {
+                                return if env.missing_field_is_false { Some(Value::Bool(false)) } else { None };
+                            };
+                            if let Some(h) = hint { h.set(i as u32); }
+                            v
+                        }
+                    };
                     if matches!(v, Value::Frozen(_)) { return None; }
                     st.push(Fv::Val(v.clone_fast()));
                 }
+                // In a query predicate, a bare name is `it`'s field when it
+                // has one (then skip the name's own load), as on the VM.
+                Opcode::LoadItFieldOrJump(idx, off) => {
+                    let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
+                    let it: &Value = vals.first()?;
+                    let obj = match it {
+                        Value::Object(o) => Some(&**o),
+                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                            Some(Value::Object(o)) => Some(&**o),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(v) = obj.and_then(|o| o.fields.get(name.as_ref() as &str)) {
+                        if matches!(v, Value::Frozen(_)) { return None; }
+                        st.push(Fv::Val(v.clone_fast()));
+                        ip = (ip as isize + off as isize) as usize;
+                    }
+                }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a) => Fv::Arg(a) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(a, *p) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
@@ -5130,6 +5228,9 @@ impl Vm {
     }
 
     fn vm_objects_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
+        if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p)) {
+            return Ok(Value::Array(found));
+        }
         let all_values: Vec<Value> = self.session.object_store.values().cloned().collect();
         let mut results: Vec<Value> = Vec::new();
         for obj in all_values {
@@ -5141,6 +5242,56 @@ impl Vm {
             if include { results.push(obj); }
         }
         Ok(Value::Array(results))
+    }
+
+    /// `:objects(pred)` for a predicate that only reads (fields, numbers,
+    /// comparisons, its captured variables and globals): it is run on each
+    /// object in place, without a call or a copy of every object. Gives what
+    /// the general path gives; None when the predicate needs the VM for some
+    /// object, and the general path then runs from the start (nothing here
+    /// changes anything).
+    fn objects_query_direct(&mut self, pred: &Value) -> Option<Vec<Value>> {
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 || !predicate_runs_direct(func) { return None; }
+        let mut env = FormulaEnv { missing_field_is_false: true, ..Default::default() };
+        for c in cells {
+            match &self.session.get_stash(&c.get()).ok()?.value {
+                Value::Frozen(_) => return None,
+                v => env.upvalues.push(v.clone_fast()),
+            }
+        }
+        for op in &func.bytecode {
+            if let Opcode::LoadGlobal(g) = op {
+                if env.globals.iter().any(|(n, _)| n == g) { continue; }
+                let t = self.session.get_global(*g as usize)?.clone();
+                match &self.session.get_stash(&t).ok()?.value {
+                    Value::Frozen(_) => return None,
+                    v => env.globals.push((*g, v.clone_fast())),
+                }
+            }
+        }
+        let func = func.clone();
+        let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let mut found = Vec::new();
+        for i in 0..self.session.object_store.len() {
+            let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &hints, &env) {
+                Some(v) => matches!(v, Value::Bool(true)),
+                // Something the direct run leaves to the VM (a missing field,
+                // which is an error there, say): the VM decides for this one.
+                // The predicate only reads, so this changes nothing.
+                None => {
+                    let obj = self.session.object_store.get_index(i)?.1.clone();
+                    self.query_predicate_holds(pred, &obj)
+                }
+            };
+            if holds { found.push(self.session.object_store.get_index(i)?.1.clone()); }
+        }
+        Some(found)
     }
 
     fn vm_overlays_query(&mut self, pred: Option<Value>) -> Result<Value, GoblinError> {
@@ -5213,7 +5364,7 @@ impl Vm {
     fn link_score_in(
         &mut self,
         args: &[Value],
-        direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>,
+        direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>,
     ) -> Result<Value, GoblinError> {
         if args.len() < 3 { return Ok(Value::Nil); }
         let s = |i: usize| -> Result<&str, GoblinError> {
@@ -5250,7 +5401,7 @@ impl Vm {
     /// A variable's value as `lookup_var` finds it, except that an object
     /// variable gives its `Value::Ref` (the object must exist) instead of a
     /// copy of the object.
-    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, Value)])>) -> Option<Value> {
+    fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>) -> Option<Value> {
         let deref = |v: &Value| -> Option<Value> {
             match v {
                 Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()).then(|| v.clone()),
@@ -5267,7 +5418,7 @@ impl Vm {
         };
         match direct {
             Some((func, args)) => match func.local_names.iter().position(|n| n == name) {
-                Some(slot) if slot < args.len() => deref(&args[slot].1),
+                Some(slot) if slot < args.len() => deref(args[slot].1),
                 _ => globals(func),
             },
             None => {
@@ -5591,12 +5742,25 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 }
 
 /// A compiled DES formula.
+/// What a closure run directly reads besides its arguments.
+#[derive(Default)]
+struct FormulaEnv {
+    upvalues: Vec<Value>,
+    globals: Vec<(u16, Value)>,
+    /// A predicate whose error means "no match": a missing field ends the
+    /// run with false.
+    missing_field_is_false: bool,
+}
+
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
     /// Every opcode is one `Vm::run_formula` handles.
     direct: bool,
     /// Direct runs in a row that had to fall back to the VM.
     misses: std::cell::Cell<u32>,
+    /// Per opcode: where the field a `GetMember` read was found in the
+    /// object's field map last time (objects of one class share a layout).
+    hints: Vec<std::cell::Cell<u32>>,
 }
 
 impl TickFormula {
@@ -5619,6 +5783,23 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
         | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
         | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+    })
+}
+
+/// Whether an `:objects` predicate can run on `run_formula_in`: a DES
+/// formula's operations, plus reading captured variables and globals.
+fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
+    let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
+        Some(Value::Str(n)) if member_builtin(n).is_none());
+    f.locals == f.params && f.bytecode.iter().all(|op| match op {
+        Opcode::GetMember(idx) => plain_member(idx),
+        op => matches!(op,
+        Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
+        | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) | Opcode::LoadItFieldOrJump(..)
+        | Opcode::Pop | Opcode::Dup
+        | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
+        | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
+        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return),
     })
 }
 
@@ -5866,7 +6047,8 @@ mod tests {
                     let mut vm = make_vm();
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
-                    if vm.run_formula(&f, &locals).is_some() { ran_direct += 1; }
+                    let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
+                    if vm.run_formula(&f, &refs, &[]).is_some() { ran_direct += 1; }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {
@@ -6262,13 +6444,13 @@ fn concat_text(a: &str, b: &str) -> String {
 /// the parameter names. A freed formula's address could be reused, so the
 /// table is emptied whenever a definition holding formulas is replaced, and
 /// a reused address must also match span and kind.
-fn tick_expr_key(expr: &goblin_ast::Expr, params: &[(&str, Value)]) -> (usize, usize, usize, u32, u32, u64) {
+fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usize, u32, u32, u64) {
     use std::hash::{Hash, Hasher};
     let sp = expr.span();
     let mut h = rustc_hash::FxHasher::default();
     std::mem::discriminant(expr).hash(&mut h);
     params.len().hash(&mut h);
-    for (n, _) in params { n.hash(&mut h); }
+    for n in params { n.hash(&mut h); }
     sp.file.hash(&mut h);
     (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }

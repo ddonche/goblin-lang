@@ -3802,7 +3802,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::OwnsTree => {
             // owns_tree(root): one "{Class: id}" line per object, children
             // (sorted) indented two spaces per level.
-            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value>, depth: usize) -> String {
+            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
                 let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
                     let id = o.fields.get("id")
