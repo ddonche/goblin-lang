@@ -75,6 +75,8 @@ in parentheses are the pull requests that made each change.
   rounds to tens, hundreds, ... `:round(x)` is unchanged.
 - DES: `overlay X on host at s for n ticks` takes expressions for the strength and the ticks
   (`at a >> power / 10 for rounds + 1 ticks`); a bad value is R1223.
+- `sims/rpg_combat` uses the new DES features (`where`, `one of`, `order by`, `each tick:`, erase after
+  actions, overlay builtins on objects, `{expr}`, `:round(x, n)`); FINDINGS.md has the status.
 
 ## 0.49.0 — 2026-10-26
 

@@ -2,16 +2,39 @@
 
 `combat.gbln` is a party (knight, archer, cleric) against five monsters
 (three goblins, an ogre, a shaman). One tick is one round. Every fighter
-picks a target with a decision: `attack` for an enemy, `heal` for an ally.
-A fighter at 0 hp falls (`transition erase`, with `on erase: fall`). The
-shaman's bite poisons, and the knight raises a shield (overlay `Guarded`,
-`on end: lower_shield`). It runs 1,000 battles with `:swarm` (0.6 s on 4
-workers; the party wins 524), then shows battle 7 round by round.
+picks a target with a decision: `heal` for a hurt ally (the cleric only)
+or `attack` for an enemy, `one of` the two, fastest first (`order by`).
+A fighter at 0 hp falls at once (`transition erase`, `on erase: fall`).
+The shaman's bite poisons (overlay `Poisoned`, `each tick:`), and the
+knight raises a shield (overlay `Guarded`, `on end: lower_shield`). It
+runs 1,000 battles with `:swarm` (0.33 s on 4 workers; the party wins
+431), then shows battle 7 round by round.
 
 `check.sh`: the output is as expected, two runs match, and 1 worker matches 4.
 
-Each finding below has the code I had to write, what I would change, and
-why. Nothing here is changed yet.
+## Status (2026-10-26)
+
+Findings 1 to 8 are fixed, and `combat.gbln` uses the fixes (all but
+`for N ticks`, which it has no need for). The `acted`, `poison` and
+`guarded` fields, the `every` block, and the `abs(...)` and
+`min(1, max(0, ...))` score tricks are gone. One `hp > 0` check stays in
+`strike`: a fighter killed by the blow is erased when the action ends, so
+the action itself must not poison or shield it.
+
+| # | Finding | Fix |
+|---|---------|-----|
+| 1 | timed overlay undoes other changes | takes back only its own change |
+| 2 | no per-round overlay effect | `each tick:` on overlays |
+| 3 | every decision runs every round | `one of heal, attack` |
+| 4 | can't leave targets out; a failing formula is silent | `where [ ... ]`; a failing formula is an error (R1220) |
+| 5 | the fallen fight on until the round ends | erase right after the action that killed them |
+| 6 | can't ask an object about its overlays | `:overlay_strength(name, obj)`, `:overlays_of(obj)` |
+| 7 | turn order is creation order | `order by [ self >> speed ] desc` |
+| 8 | `{expr}` in strings, `:round(x, n)`, clearing objects, `for N ticks` | `{n - wins}`, `:round(x, 1)`, `for rounds ticks`; clearing already worked (`delete_object!` over `:objects()`) |
+
+Finding 9 is new, found while rewriting the sim.
+
+The findings below are as first written, with the code the sim needed then.
 
 ## 1. A timed overlay undoes everything else when it ends (bug)
 
@@ -157,3 +180,18 @@ highest first, ties in creation order.
 - There is no way to clear the objects between two battles in one session.
   The sim gets around it by running each battle in a `:swarm` task, which
   starts from a clean state.
+
+## 9. A map read can't go inside `{}` in a string
+
+`say("{r{"winner"}} wins")` can't work: the first `}` ends the
+placeholder, so `{r{"winner"}}` is never one expression, and it stays as
+written. The sim reads the map into a variable first:
+
+```goblin
+w | r{"winner"}
+say("{w} in {rr} rounds")
+```
+
+Not changed. It would need the string scanner to count nested braces in
+a placeholder. Say if you want it.
+
