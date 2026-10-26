@@ -1612,6 +1612,9 @@ pub(crate) fn snapshot(p: &PValue, session: &mut Session) -> Value {
                     if k == "uuid" { *v = PValue::Str(new.as_str().into()); } else { walk(v, ids); }
                 }
             }
+            PValue::ObjRef(uuid) => {
+                *uuid = ids.entry(uuid.clone()).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone();
+            }
             PValue::Formatted(v, _) | PValue::CtrlReturn(v) => walk(v, ids),
             PValue::Array(a) | PValue::Seq(a) => a.iter_mut().for_each(|v| walk(v, ids)),
             PValue::Map(m) => m.values_mut().for_each(|v| walk(v, ids)),
