@@ -1,0 +1,15 @@
+/// known-gap: interp does not fill in expressions in braces
+/// Placeholders are worked out in the order they are written (a call that
+/// changes `n` comes before a later `{n}`), and a call to a name that is
+/// neither an action nor a builtin stays as written.
+n | 0
+act bump(x)
+    n |= n + 1
+    return n
+xx
+say("{bump(n)} {n}")
+x | 1
+say("template {nope(x)} stays")
+say("css stays {unknown_fn()}")
+say("len {:len([1,2])}")
+say("{n} then {bump(n)} then {n}")
