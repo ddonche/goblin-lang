@@ -812,6 +812,8 @@ struct Targets {
     seen: Option<(usize, String)>,
     /// A `Value::Ref` to each object.
     by_class: std::collections::HashMap<String, std::rc::Rc<Vec<Value>>>,
+    /// Per decision (by address): whether its formula reads a `~` field.
+    real: std::collections::HashMap<usize, bool>,
 }
 
 impl Targets {
@@ -828,6 +830,41 @@ impl Targets {
                 .map(|(u, _)| Value::Ref(u.clone()))
                 .collect()
         )).clone()
+    }
+
+    /// Whether `decision`'s formula reads a field declared with `~` (an
+    /// actual value, not a 0..1 trait) on `self` or `target`.
+    fn reads_real(&mut self, vm: &Vm, self_class: &str, decision: &goblin_ast::DecisionDef) -> bool {
+        let key = decision as *const _ as usize;
+        if let Some(&r) = self.real.get(&key) { return r; }
+        let is_real = |class: &str, field: &str| vm.session.classes.get(class)
+            .map(|c| c.fields.iter().any(|f| f.name == field && f.raw))
+            .unwrap_or(false);
+        let mut fields = Vec::new();
+        member_reads(&decision.formula, &mut fields);
+        let r = fields.iter().any(|(who, field)| match who.as_str() {
+            "self" => is_real(self_class, field),
+            _ => is_real(&decision.target_class, field),
+        });
+        self.real.insert(key, r);
+        r
+    }
+}
+
+/// The `self >> field` / `target >> field` reads in a formula.
+fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
+    use goblin_ast::Expr as E;
+    match e {
+        E::Member(obj, field, _) | E::OptMember(obj, field, _) => match obj.as_ref() {
+            E::Ident(who, _) if who == "self" || who == "target" => out.push((who.clone(), field.clone())),
+            other => member_reads(other, out),
+        },
+        E::Binary(l, _, r, _) => { member_reads(l, out); member_reads(r, out); }
+        E::Prefix(_, x, _) | E::Postfix(x, _, _) => member_reads(x, out),
+        E::FreeCall(_, args, _) | E::NsCall(_, _, args, _) | E::Array(args, _) => args.iter().for_each(|a| member_reads(a, out)),
+        E::Call(recv, _, args, _) | E::OptCall(recv, _, args, _) => { member_reads(recv, out); args.iter().for_each(|a| member_reads(a, out)) }
+        E::Index(a, b, _) | E::IndexMap(a, b, _) => { member_reads(a, out); member_reads(b, out) }
+        _ => {}
     }
 }
 
@@ -861,9 +898,29 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             Ok(_) => 0.5,
             Err(_) => continue,
         };
-        scored.push((k, normalize_score(raw, decision.formula_min, decision.formula_max)));
+        scored.push((k, raw));
     }
     if scored.is_empty() { return Ok(()); }
+    // A formula on `~` fields (prices, money, ...) has no fixed range, so
+    // its scores are measured against the candidates: the best scores 1
+    // and the others in proportion to it (0 stays 0). When some score is
+    // below 0 they are spread from the worst (0) to the best (1) instead.
+    // A formula on 0..1 traits keeps its own range.
+    let self_class = match vm.session.object_store.get(&self_uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        _ => String::new(),
+    };
+    if targets.reads_real(vm, &self_class, decision) {
+        let lo = scored.iter().map(|(_, r)| *r).fold(f64::INFINITY, f64::min);
+        let hi = scored.iter().map(|(_, r)| *r).fold(f64::NEG_INFINITY, f64::max);
+        for (_, r) in scored.iter_mut() {
+            *r = if lo >= 0.0 {
+                if hi <= 0.0 { 0.0 } else { *r / hi }
+            } else if hi - lo < 1e-12 { 1.0 } else { (*r - lo) / (hi - lo) };
+        }
+    } else {
+        for (_, r) in scored.iter_mut() { *r = normalize_score(*r, decision.formula_min, decision.formula_max); }
+    }
 
     let best = scored.iter().map(|(_, s)| *s).fold(f64::NEG_INFINITY, f64::max);
 

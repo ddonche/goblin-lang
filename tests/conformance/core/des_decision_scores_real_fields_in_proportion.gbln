@@ -1,0 +1,37 @@
+/// known-gap: interp scores a formula on `~` fields over 0..1, so every shop scores 0
+/// When no score is below 0, a formula on `~` fields scores each candidate
+/// in proportion to the best: stock 10, 9 and 8 score 1, .9 and .8, so a
+/// margin of .25 keeps all three shops in the running.
+:rand_seed(4)
+<>Shop |
+    ~stock: 0
+    ~sold: 0
+xx
+<>Buyer |
+    margin: .25
+    buy | decision against Shop by [
+        target >> stock
+    ]
+    judge using buy
+        >= .75: purchase(target)
+    end
+xx
+act purchase(b, s)
+    s >> sold |= s >> sold + 1
+xx
+a <> Shop | stock: 10
+b <> Shop | stock: 9
+c <> Shop | stock: 8
+repeat 30
+    x <> Buyer | margin: .25
+xx
+tick()
+total | 0
+repeat :objects(it >> stock > 0)
+    st | it >> stock
+    s | it >> sold
+    total |= total + s
+    got | s > 0
+    say("stock {st}: has buyers {got}")
+xx
+say("sold {total}")

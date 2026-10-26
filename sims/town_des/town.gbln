@@ -73,8 +73,6 @@ xx
     /// 1 or 0: open, and hiring. Traits, so decisions can score them.
     open: 1
     hiring: 0
-    /// 1 for the cheapest price (15), 0 for the dearest (25).
-    cheapness: 0
     every 1 tick
         wage | self >> wage
         need | wage * (self >> staff + 1) / 2
@@ -135,10 +133,12 @@ xx
             self >> money |= self >> money - pay
         xx
     end
-    /// Cheaper open shops score higher; `margin` spreads people over the
-    /// shops that score near the best.
+    /// Cheaper open shops score higher (prices run 15 to 24; a closed shop
+    /// scores 0). `price` is a `~` field, so the scores are spread over the
+    /// shops: the cheapest open one scores 1. `margin` spreads people over
+    /// the shops that score near the best.
     shop | decision against Business by [
-        (target >> cheapness) * (target >> open)
+        (30 - target >> price) * (target >> open)
     ]
     judge using shop
         > 0: buy(target)
@@ -194,8 +194,7 @@ act make_district(d)
     repeat b < n_businesses
         price | 15 + (pick 1 from 0...9)
         wage | 380 + (pick 1 from 0...79)
-        cheap | (25 - price) / 10
-        biz <> Business | code: b, district: d, price: price, wage: wage, cheapness: cheap
+        biz <> Business | code: b, district: d, price: price, wage: wage
         :put_last!(things, biz)
         total |= total + 6000
         b |= b + n_districts

@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## Unreleased
+
+- DES: a decision formula on `~` fields (prices, money) is scored against
+  the candidates: the best scores 1 and the others in proportion (spread
+  worst-to-best when some score is below 0). Before, every such score
+  collapsed to 0. The DES town now scores shops on `price`.
+
 ## 0.49.0 — 2026-10-26
 
 Everything merged since 0.48.0 (2026-10-06).

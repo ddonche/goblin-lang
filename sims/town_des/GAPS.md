@@ -26,7 +26,7 @@ money is in flight between districts) the money total never changes.
 |---|-----|--------|
 | 1 | A class can't run a rule every tick | **Built**: `every N ticks ... end` (PR #68) |
 | 2 | A class can have only one decision | **Built**: several named decisions, `judge using <name>` (PR #69) |
-| 3 | Scores on real-value (`~`) fields collapse to 0 | Open. The town uses a 0..1 trait, `cheapness`, set when a business is made |
+| 3 | Scores on real-value (`~`) fields collapse to 0 | **Fixed**: they are measured against the candidates; the town scores shops on `price` |
 | 4 | Nothing happens when an overlay ends | Open. Stops births (pregnancy, then a baby) |
 | 5 | An erased object takes its fields with it | Open. A death takes the person's money out of the town |
 | 6 | Objects can't move between regions | Open, later. Stops households moving district |
