@@ -1,0 +1,24 @@
+/// known-gap: interp has no `on end:` on overlays
+/// A field named `on` can be changed in `modifies:`; only `on end:` starts
+/// the next clause.
+<>Lamp |
+    ~on: 2
+    ~ended: 0
+xx
+overlay Bright |
+    lasts 2 ticks
+    on end: dim
+    modifies:
+        on + 1
+end
+act dim(l)
+    l >> ended |= 1
+xx
+l <> Lamp | on: 2
+overlay Bright on l at 1
+say(l >> on)
+tick()
+tick()
+tick()
+say(l >> on)
+say(l >> ended)
