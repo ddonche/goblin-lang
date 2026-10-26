@@ -578,6 +578,9 @@ impl std::hash::Hash for Value {
         if let Value::Frozen(f) = self { return f.value.hash(state); }
         if self.is_seq_like() { 0xA5u8.hash(state); self.container_len().hash(state); return; }
         if self.is_map_like() { 0x5Au8.hash(state); self.container_len().hash(state); return; }
+        // An object and a reference to it are equal, so they hash alike.
+        if let Value::Object(o) = self { 0x0Bu8.hash(state); return o.uuid.hash(state); }
+        if let Value::Ref(u) = self { 0x0Bu8.hash(state); return u.hash(state); }
         std::mem::discriminant(self).hash(state);
         match self {
             Value::Nil           => {}
