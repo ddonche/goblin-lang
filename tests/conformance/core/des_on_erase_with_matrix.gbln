@@ -1,0 +1,24 @@
+/// known-gap: interp has no `on erase:` in classes
+/// Objects made by a matrix keep their class's `on erase:` action.
+<>Person |
+    ~age: 0
+    on erase: bury
+    every 1 tick
+        self >> age |= self >> age + 1
+    end
+    transition erase when (self >> age) > 11
+    end
+xx
+act bury(p)
+    a | p >> age
+    say("buried at {a}")
+xx
+
+<>Person matrix
+    name: "{name}", ann, bob
+    age:  10,       nc,  20
+end
+
+tick()
+tick()
+say("done")

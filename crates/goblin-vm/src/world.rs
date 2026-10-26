@@ -340,6 +340,21 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         if let Item::Arrive(a) = item { arrive(vm, a, &mut fp); }
     }
     for item in &job.inbox {
+        // An object that moved away earlier in this list (a message's
+        // handler, or the main program, moved it): what was sent to it
+        // follows it to its new region.
+        let to_object = match item {
+            Item::Change { uuid, .. } => Some(uuid.as_str()),
+            Item::Overlay(o) => Some(o.host()),
+            Item::Reinforce { host, .. } => Some(host.as_str()),
+            _ => None,
+        };
+        if let Some(u) = to_object {
+            if !vm.session.object_store.contains_key(u) && vm.session.moved_away.contains_key(u) {
+                if let Some(c) = vm.session.region.as_mut() { c.sent.push((Dest::Object(u.to_string()), item.clone())); }
+                continue;
+            }
+        }
         match item {
             Item::Arrive(_) => {}
             Item::MoveTo { uuid, to } => {
