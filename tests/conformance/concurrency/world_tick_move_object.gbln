@@ -60,7 +60,8 @@ repeat :range(1, 7) as d
     repeat :objects(it >> marked == 1)
         age |= it >> age
     xx
-    say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}")
+    seen | :len(:overlays(it >> overlay_name == "Tired"))
+    say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}, tired seen {seen}")
     if d == 2
         say(:has(w{"err"}, "C0125: object-moved"))
     xx

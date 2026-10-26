@@ -121,6 +121,8 @@ pub struct World {
     /// snapshot until they arrive, but the main program still sees them.
     /// (uuid, object, index of the region it goes to.)
     in_flight: Vec<(String, PValue, usize)>,
+    /// The overlays those objects carry, for the main program's `:overlays()`.
+    in_flight_overlays: Vec<POverlay>,
 }
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
@@ -153,7 +155,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
         if let Some(old) = vm.session.world.take() {
             vm.session.object_store.retain(|k, _| !old.view.contains(k));
         }
-        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox: vec![Vec::new(); ids.len()], view: HashSet::new(), in_flight: Vec::new() });
+        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox: vec![Vec::new(); ids.len()], view: HashSet::new(), in_flight: Vec::new(), in_flight_overlays: Vec::new() });
         // Before the first tick, every region reports its objects, so the
         // first tick already sees the whole world.
         let outs = round(vm, &actors, &ids, true)?;
@@ -172,12 +174,14 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     // An object on its way somewhere belongs to where it goes: what is sent
     // to it this tick follows it there.
     let mut in_flight = Vec::new();
+    let mut in_flight_overlays = Vec::new();
     for o in &outs {
         for (dest, item) in &o.sent {
             if let (Dest::Actor(a), Item::Arrive(x)) = (dest, item) {
                 if let Some(&j) = by_id.get(a) {
                     owner.insert(x.uuid.as_str(), j);
                     in_flight.push((x.uuid.clone(), x.object.clone(), j));
+                    in_flight_overlays.extend(x.overlays.iter().cloned());
                 }
             }
         }
@@ -195,6 +199,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     }
     w.inbox = inbox;
     w.in_flight = in_flight;
+    w.in_flight_overlays = in_flight_overlays;
     w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
     let n = w.tick;
     refresh_view(vm);
@@ -278,9 +283,11 @@ pub(crate) fn view_overlays(vm: &mut Vm) -> Vec<crate::session::OverlayInstance>
     let snaps = w.snaps.clone();
     let mut fp = FromPortable::new();
     let mut out = Vec::new();
+    let flying = w.in_flight_overlays.clone();
     for s in &snaps {
         for o in &s.overlays { out.push(overlay_from_p(o, &mut fp, &mut vm.session)); }
     }
+    for o in &flying { out.push(overlay_from_p(o, &mut fp, &mut vm.session)); }
     out
 }
 
