@@ -1,0 +1,30 @@
+/// known-gap: interp has no `each tick:` and checks erase only at the end of the tick
+/// An `each tick:` change that brings a host to its erase condition
+/// erases it before anything acts that tick: it doesn't act, and nobody
+/// picks it.
+<>G |
+    ~name: ""
+    ~hp: 2
+    shout | decision against G by [ 1 ]
+    judge using shout
+        >= 0: yell(target)
+    end
+    transition erase when (self >> hp) <= 0
+    end
+xx
+overlay Bleeding |
+    each tick:
+        hp - 2
+    end
+end
+act yell(g, t)
+    a | g >> name
+    b | t >> name
+    say("{a} yells at {b}")
+xx
+p <> G | name: "p", hp: 2
+q <> G | name: "q", hp: 9
+r <> G | name: "r", hp: 9
+overlay Bleeding on p at 1
+tick()
+say(:len(:objects(it >> name == "p")))
