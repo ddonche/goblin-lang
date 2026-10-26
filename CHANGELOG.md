@@ -61,6 +61,8 @@ in parentheses are the pull requests that made each change.
   that order each tick and the first whose judge runs an action ends the group.
 - DES: overlays take `each tick:` changes (`hp - 2`), made to the host every tick the
   overlay is on and never taken back; `modifies:` stays temporary. A failing change is R1221.
+- DES: `order by [ self >> speed ] desc` in a class sets the order its objects make their
+  decisions in (ascending by default; other classes keep their places). A bad key is R1222.
 
 ## 0.49.0 — 2026-10-26
 

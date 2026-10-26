@@ -273,6 +273,9 @@ pub struct ClassDecl {
     pub on_erase: Option<String>,
     /// `one of heal, attack`: groups of decisions that are alternatives.
     pub one_of: Vec<Vec<String>>,
+    /// `order by [ expr ] desc`: the order the class's objects make their
+    /// decisions in; true = descending.
+    pub order_by: Option<(Expr, bool)>,
     pub span: Span,
 }
 

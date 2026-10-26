@@ -822,6 +822,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
         out
     };
+    let candidates = order_candidates(vm, candidates)?;
 
     let mut targets = Targets::default();
     for (self_uuid, class_name) in candidates {
@@ -872,6 +873,51 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
 
     Ok(())
+}
+
+/// `order by [ expr ] desc`: the objects of such a class decide in that
+/// order (ascending unless `desc`; ties keep the order they were made in).
+/// They take the places the class's objects had in the pass, so other
+/// classes keep theirs. Keys are worked out once, at the start of the pass.
+fn order_candidates(vm: &mut Vm, mut candidates: Vec<(String, String)>) -> Result<Vec<(String, String)>, GoblinError> {
+    let classes = vm.session.classes.clone();
+    let mut ordered: Vec<String> = Vec::new();
+    for (_, c) in &candidates {
+        if !ordered.contains(c) && classes.get(c).is_some_and(|d| d.order_by.is_some()) { ordered.push(c.clone()); }
+    }
+    for class_name in &ordered {
+        let Some((key, desc)) = classes.get(class_name).and_then(|d| d.order_by.as_ref()) else { continue };
+        let slots: Vec<usize> = candidates.iter().enumerate()
+            .filter(|(_, (_, c))| c == class_name).map(|(i, _)| i).collect();
+        let fail = |what: String| GoblinError::Runtime(format!("R1222: decision-order: `order by` of {class_name}: {what}"));
+        let mut keyed: Vec<(Value, String)> = Vec::with_capacity(slots.len());
+        for &i in &slots {
+            let uuid = candidates[i].0.clone();
+            let k = vm.eval_tick_expr(key, vec![("self", Value::Ref(uuid.clone()))])
+                .map_err(|e| fail(format!("failed: {e}")))?;
+            match k {
+                Value::Int(_) | Value::Float(_) | Value::Str(_) => keyed.push((k, uuid)),
+                other => return Err(fail(format!("gave {}, not a number or a string", other.type_name()))),
+            }
+        }
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
+        if keyed.iter().any(|(k, _)| num(k).is_some()) && keyed.iter().any(|(k, _)| num(k).is_none()) {
+            return Err(fail("gave numbers for some objects and strings for others".into()));
+        }
+        // A stable sort, so equal keys keep the order the objects were made in.
+        keyed.sort_by(|(a, _), (b, _)| {
+            let o = match (num(a), num(b), a, b) {
+                (Some(x), Some(y), _, _) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                (_, _, Value::Str(x), Value::Str(y)) => AsRef::<str>::as_ref(x).cmp(AsRef::<str>::as_ref(y)),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if *desc { o.reverse() } else { o }
+        });
+        for (slot, (_, uuid)) in slots.into_iter().zip(keyed) {
+            candidates[slot].0 = uuid;
+        }
+    }
+    Ok(candidates)
 }
 
 /// One decision of one object: score the targets, pick the best (within

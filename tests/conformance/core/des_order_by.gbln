@@ -1,0 +1,38 @@
+/// known-gap: interp has no `order by` on classes
+/// `order by [ expr ]` sets the order a class's objects make their
+/// decisions in: ascending, or descending with `desc`. Equal keys keep the
+/// order the objects were made in. It orders only that class's decisions:
+/// the other classes keep their places in the pass.
+<>F |
+    ~name: ""
+    ~speed: 0
+    move | decision against T by [ 1 ]
+    judge using move
+        >= 0: go(target)
+    end
+    order by [ self >> speed ] desc
+xx
+<>S |
+    ~name: ""
+    ~rank: ""
+    move | decision against T by [ 1 ]
+    judge using move
+        >= 0: go(target)
+    end
+    order by [ self >> rank ]
+xx
+<>T |
+    ~n: 0
+xx
+act go(f, t)
+    a | f >> name
+    say("{a}")
+xx
+t <> T | n: 1
+a <> F | name: "slow", speed: 1
+b <> S | name: "s-b", rank: "b"
+c <> F | name: "fast", speed: 9
+d <> F | name: "tie-1", speed: 5
+e <> S | name: "s-a", rank: "a"
+f <> F | name: "tie-2", speed: 5
+tick()

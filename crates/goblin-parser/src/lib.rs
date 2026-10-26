@@ -82,6 +82,7 @@ enum PExpr {
         named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
         on_erase: Option<String>,
         one_of: Vec<Vec<String>>,
+        order_by: Option<(ast::Expr, bool)>,
     },
     EnumVariant {
         enum_name: String,
@@ -254,7 +255,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -4015,6 +4016,12 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
+                // `order by [ ... ]` (a field named `order` is followed by ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("order")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+                {
+                    break;
+                }
                 // `one of a, b` (a field named `one` is followed by ':').
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("one")
                     && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("of"))
@@ -4130,7 +4137,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4145,6 +4152,8 @@ impl<'t> Parser<'t> {
         // `on erase: action`: run on an object before an erase transition removes it.
         let mut on_erase: Option<String> = None;
         let mut one_of: Vec<Vec<String>> = Vec::new();
+        // `order by [ expr ] desc`: the order the class's objects decide in.
+        let mut order_by: Option<(ast::Expr, bool)> = None;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
 
@@ -4164,7 +4173,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                 }
             }
 
@@ -4188,7 +4197,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
             }
 
             if self.is_eof() {
@@ -4374,6 +4383,48 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
+            // `order by [ self >> speed ] desc`: the class's objects make
+            // their decisions in this order (ascending unless `desc`).
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("order")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+            {
+                self.i += 2; // 'order' 'by'
+                self.skip_layout_inline();
+                if !self.eat_op("[") {
+                    return Err(s_help_site!(
+                        "P1566",
+                        "Expected '[' after 'order by'",
+                        "Write: order by [ self >> speed ] desc  (the value each object is ordered by)",
+                    ));
+                }
+                self.skip_layout();
+                let key_pe = self.parse_coalesce()?;
+                self.skip_layout();
+                if !self.eat_op("]") {
+                    return Err(s_help_site!(
+                        "P1567",
+                        "Expected ']' to close 'order by ['",
+                        "Write: order by [ self >> speed ] desc",
+                    ));
+                }
+                self.skip_layout_inline();
+                let desc = match self.peek_ident() {
+                    Some("desc") => { let _ = self.eat_ident(); true }
+                    Some("asc") => { let _ = self.eat_ident(); false }
+                    _ => false,
+                };
+                if order_by.is_some() {
+                    return Err(s_help_site!(
+                        "P1568",
+                        "A class can have only one 'order by'",
+                        "Order by one value: order by [ self >> speed ] desc",
+                    ));
+                }
+                order_by = Some((self.lower_expr(key_pe), desc));
+                self.skip_stmt_separators();
+                continue;
+            }
+
             // `one of heal, attack`: these decisions are alternatives. They
             // are tried in this order and the first whose judge runs an
             // action is the object's only one of them this tick.
@@ -4531,7 +4582,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4607,7 +4658,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4756,8 +4807,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by });
                     }
                 }
 
@@ -6866,6 +6917,7 @@ impl<'t> Parser<'t> {
             decisions: vec![],
             on_erase: None,
             one_of: Vec::new(),
+            order_by: None,
             span: sp.clone(),
         }));
 
@@ -7006,7 +7058,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } => {
                 // Each name in `one of` must be a named decision of the class.
                 for n in one_of.iter().flatten() {
                     if !named.iter().any(|(d, _, _)| d == n) {
@@ -7091,6 +7143,7 @@ impl<'t> Parser<'t> {
                     decisions: decisions_ast,
                     on_erase,
                     one_of,
+                    order_by,
                     span: sp,
                 }))
             }
