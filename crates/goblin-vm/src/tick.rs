@@ -922,6 +922,8 @@ fn order_candidates(vm: &mut Vm, mut candidates: Vec<(String, String)>) -> Resul
         // A stable sort, so equal keys keep the order the objects were made in.
         keyed.sort_by(|(a, _), (b, _)| {
             let o = match (num(a), num(b), a, b) {
+                // Whole numbers compare exactly (past 2^53 a float can't tell them apart).
+                (_, _, Value::Int(x), Value::Int(y)) => x.cmp(y),
                 (Some(x), Some(y), _, _) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
                 (_, _, Value::Str(x), Value::Str(y)) => AsRef::<str>::as_ref(x).cmp(AsRef::<str>::as_ref(y)),
                 _ => std::cmp::Ordering::Equal,

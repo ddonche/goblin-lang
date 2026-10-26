@@ -1,0 +1,23 @@
+/// known-gap: interp has no `order by` on classes
+/// `order by` compares whole numbers exactly, even past 2^53, where two
+/// numbers can look the same as decimals.
+<>F |
+    ~name: ""
+    ~key: 0
+    move | decision against T by [ 1 ]
+    judge using move
+        >= 0: go(target)
+    end
+    order by [ self >> key ] desc
+xx
+<>T |
+    ~n: 0
+xx
+act go(f, t)
+    a | f >> name
+    say("{a}")
+xx
+t <> T | n: 1
+a <> F | name: "lower", key: :int("9007199254740992")
+b <> F | name: "higher", key: :int("9007199254740993")
+tick()
