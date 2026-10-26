@@ -151,7 +151,7 @@ pub struct Vm {
     step_err: Option<GoblinError>,
     /// DES formulas already compiled, by parameter names and expression, so
     /// a formula evaluated every tick is compiled once.
-    /// Compiled DES formulas, with whether `run_formula` can run each one.
+    /// Compiled DES formulas, with whether `run_formula_in` can run each one.
     tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<TickFormula>, rustc_hash::FxBuildHasher>,
 }
 
@@ -4744,7 +4744,7 @@ impl Vm {
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
         let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f });
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default() });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -4806,7 +4806,7 @@ impl Vm {
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
             let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
-            match self.run_formula(&func_rc, &refs, &formula.hints) {
+            match self.run_formula_in(&func_rc, &refs, &[], &formula.hints, &formula.env) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -4845,18 +4845,18 @@ impl Vm {
     }
 
     /// Runs a compiled DES formula with borrowed arguments.
-    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)]) -> Result<Value, GoblinError> {
-        let func_rc = formula.func.clone();
-        if locals.len() != func_rc.params {
+    /// `known`: per argument, where its object sits in the store, if known.
+    pub(crate) fn run_tick_formula_ref(&mut self, formula: &TickFormula, locals: &[(&str, &Value)], known: &[usize]) -> Result<Value, GoblinError> {
+        if locals.len() != formula.func.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula(&func_rc, locals, &formula.hints) {
+            match self.run_formula_in(&formula.func, locals, known, &formula.hints, &formula.env) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
         }
-        self.run_tick_formula_vm(func_rc, locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
+        self.run_tick_formula_vm(formula.func.clone(), locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
     pub(crate) fn eval_tick_expr_bool(
@@ -4879,13 +4879,11 @@ impl Vm {
     /// float, bool or nil in an operation, a missing field, an error), and
     /// the caller runs it on the VM instead. Nothing here has side effects,
     /// so running it again from the start is safe.
-    fn run_formula(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>]) -> Option<Value> {
-        self.run_formula_in(f, args, hints, &FormulaEnv::default())
-    }
-
-    /// `run_formula` for a closure: `env` holds the values its captured
-    /// variables and the globals it reads had when the run started.
-    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
+    /// `known` gives, per argument, where the object it refers to sits in
+    /// the store when the caller already knows (empty when not). For a
+    /// closure, `env` holds the values its captured variables and the
+    /// globals it reads had when the run started.
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], known: &[usize], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
         enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
         // An operand an operation may use: numbers, bools and nil only.
         fn plain(v: Fv<'_>) -> Option<Value> {
@@ -4896,16 +4894,23 @@ impl Vm {
         }
         let code = &f.bytecode;
         let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
-        // Where each argument that refers to a stored object sits in the
-        // store, looked up on first use (checked against its id when read).
+        // Where each value that refers to a stored object sits in the
+        // store: given by the caller for arguments it already knows,
+        // otherwise looked up on first use (checked against its id when read).
         const UNSEEN: usize = usize::MAX - 1;
-        // Arguments, then captured variables, then globals, in one list.
-        let mut vals: smallvec::SmallVec<[&Value; 8]> = args.iter().map(|(_, v)| *v).collect();
-        vals.extend(env.upvalues.iter());
-        vals.extend(env.globals.iter().map(|(_, v)| v));
+        // Slots: arguments, then captured variables, then globals.
         let ups_at = args.len();
         let globals_at = ups_at + env.upvalues.len();
-        let mut at: smallvec::SmallVec<[usize; 8]> = smallvec::smallvec![UNSEEN; vals.len()];
+        let slots = globals_at + env.globals.len();
+        let mut at_small = [UNSEEN; 8];
+        let mut at_big: Vec<usize> = Vec::new();
+        let at: &mut [usize] = if slots <= at_small.len() { &mut at_small[..slots] } else { at_big.resize(slots, UNSEEN); &mut at_big[..] };
+        for (i, p) in known.iter().enumerate().take(ups_at) { at[i] = *p; }
+        let value_at = |slot: usize| -> Option<&Value> {
+            if slot < ups_at { Some(args[slot].1) }
+            else if slot < globals_at { env.upvalues.get(slot - ups_at) }
+            else { env.globals.get(slot - globals_at).map(|(_, v)| v) }
+        };
         let mut ip = 0usize;
         // Bound the loop: a formula is straight-line code with forward jumps.
         let mut budget = 4 * code.len() + 16;
@@ -4926,7 +4931,7 @@ impl Vm {
                         Opcode::LoadGlobal(g) => globals_at + env.globals.iter().position(|(n, _)| *n == g)?,
                         _ => return None,
                     };
-                    let a: &Value = vals.get(slot)?;
+                    let a: &Value = value_at(slot)?;
                     match a {
                         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.push(Fv::Val(a.clone_fast())),
                         Value::Object(_) | Value::Ref(_) => {
@@ -4978,7 +4983,7 @@ impl Vm {
                 // has one (then skip the name's own load), as on the VM.
                 Opcode::LoadItFieldOrJump(idx, off) => {
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
-                    let it: &Value = vals.first()?;
+                    let it: &Value = value_at(0)?;
                     let obj = match it {
                         Value::Object(o) => Some(&**o),
                         Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
@@ -5019,6 +5024,9 @@ impl Vm {
                             num_div(&a, &b).ok()?,
                         _ => return None,
                     };
+                    // Plain numbers own nothing: skip their drop calls.
+                    std::mem::forget(a);
+                    std::mem::forget(b);
                     st.push(Fv::Val(r));
                 }
                 Opcode::Neg => {
@@ -5280,7 +5288,7 @@ impl Vm {
         let mut found = Vec::new();
         for i in 0..self.session.object_store.len() {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
-            let holds = match self.run_formula_in(&func, &[("it", &it)], &hints, &env) {
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env) {
                 Some(v) => matches!(v, Value::Bool(true)),
                 // Something the direct run leaves to the VM (a missing field,
                 // which is an error there, say): the VM decides for this one.
@@ -5362,7 +5370,7 @@ impl Vm {
 
     /// `link_score` with its variable names looked up in the running
     /// formula: the current call frame, or, for a formula run by
-    /// `run_formula`, that formula's parameter names and arguments.
+    /// `run_formula_in`, that formula's parameter names and arguments.
     fn link_score_in(
         &mut self,
         args: &[Value],
@@ -5769,20 +5777,22 @@ struct FormulaEnv {
 
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
-    /// Every opcode is one `Vm::run_formula` handles.
+    /// Every opcode is one `Vm::run_formula_in` handles.
     direct: bool,
     /// Direct runs in a row that had to fall back to the VM.
     misses: std::cell::Cell<u32>,
     /// Per opcode: where the field a `GetMember` read was found in the
     /// object's field map last time (objects of one class share a layout).
     hints: Vec<std::cell::Cell<u32>>,
+    /// An empty environment, kept so a run does not build and drop one.
+    env: FormulaEnv,
 }
 
 impl TickFormula {
     const MAX_MISSES: u32 = 32;
 }
 
-/// Whether every opcode in a compiled DES formula is one `Vm::run_formula`
+/// Whether every opcode in a compiled DES formula is one `Vm::run_formula_in`
 /// handles, so it is worth trying before the VM.
 fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
     // `obj >> name` where name is also a member builtin (`size`, ...) is
@@ -6040,7 +6050,7 @@ mod tests {
     #[test]
     fn direct_formulas_match_the_vm() {
         // Every formula gives the same value (or fails the same way) through
-        // `run_formula` as through a call frame on the VM.
+        // `run_formula_in` as through a call frame on the VM.
         let formulas = [
             "a * 2 + b", "a - b * 3", "a / b", "a / 4", "-a", "a * 1.5 - b",
             "a < b and b >= 3", "a > 2 or b <= 1", "a == b", "a != 6",
@@ -6063,7 +6073,7 @@ mod tests {
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
                     let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
-                    if vm.run_formula(&f, &refs, &[]).is_some() { ran_direct += 1; }
+                    if vm.run_formula_in(&f, &refs, &[], &[], &FormulaEnv::default()).is_some() { ran_direct += 1; }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {

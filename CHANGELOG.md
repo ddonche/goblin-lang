@@ -21,6 +21,9 @@ in parentheses are the pull requests that made each change.
   or `repeat :range(0, 3) as d`) instead of "local slot 0 is uninitialized".
 - Parser: a `:builtin(...)` argument can use `and`, `or` and `??`
   (`:objects(it >> age > 18 and it >> district == d)`); it stopped at comparisons.
+- DES (VM): scoring a decision does less work per candidate (no per-score
+  lists, no id lookup for objects the tick already knows): about 14% fewer
+  instructions for the DES town, same output.
 
 ## 0.49.0 — 2026-10-26
 

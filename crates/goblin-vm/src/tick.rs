@@ -810,14 +810,14 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 #[derive(Default)]
 struct Targets {
     seen: Option<(usize, String)>,
-    /// A `Value::Ref` to each object.
-    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<Value>>>,
+    /// A `Value::Ref` to each object, with where it sits in the store.
+    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<(Value, usize)>>>,
     /// Per decision (by address): whether its formula reads a `~` field.
     real: std::collections::HashMap<usize, bool>,
 }
 
 impl Targets {
-    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<Value>> {
+    fn of(&mut self, vm: &Vm, class: &str) -> std::rc::Rc<Vec<(Value, usize)>> {
         let store = &vm.session.object_store;
         let now = (store.len(), store.last().map(|(k, _)| k.clone()).unwrap_or_default());
         if self.seen.as_ref() != Some(&now) {
@@ -825,9 +825,9 @@ impl Targets {
             self.seen = Some(now);
         }
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
-            store.iter()
-                .filter(|(_, v)| matches!(v, Value::Object(o) if o.class_name == class))
-                .map(|(u, _)| Value::Ref(u.clone()))
+            store.iter().enumerate()
+                .filter(|(_, (_, v))| matches!(v, Value::Object(o) if o.class_name == class))
+                .map(|(i, (u, _))| (Value::Ref(u.clone()), i))
                 .collect()
         )).clone()
     }
@@ -892,6 +892,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
     let self_ref = Value::Ref(self_uuid.clone());
+    let self_at = vm.session.object_store.get_index_of(self_uuid.as_str()).unwrap_or(usize::MAX);
 
     let target_candidates = targets.of(vm, &decision.target_class);
     let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
@@ -900,9 +901,9 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // (A formula that does not compile scores no target, as before.)
     let Ok(formula) = vm.tick_formula(&decision.formula, &["self", "target"]) else { return Ok(()) };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
-    for (k, target) in target_candidates.iter().enumerate() {
+    for (k, (target, target_at)) in target_candidates.iter().enumerate() {
         if is_self(target) { continue; }
-        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)]) {
+        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
             Ok(Value::Float(f)) => f,
             Ok(Value::Int(i)) => i as f64,
             Ok(_) => 0.5,
@@ -943,7 +944,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
     let (best_k, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
-    let Value::Ref(best_target_uuid) = &target_candidates[best_k] else { return Ok(()) };
+    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(()) };
     let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
     let target_ref = Value::Ref(best_target_uuid.clone());
