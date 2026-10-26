@@ -1,8 +1,8 @@
-tick 1: west 3 (tired 0), east 2 (tired 0), all 5, walker age -1
-tick 2: west 2 (tired 0), east 2 (tired 0), all 5, walker age 2
+tick 1: west 3 (tired 0), east 2 (tired 0), all 5, walker age -1, tired seen 0
+tick 2: west 2 (tired 0), east 2 (tired 0), all 5, walker age 2, tired seen 1
 true
-tick 3: west 2 (tired 0), east 3 (tired 1), all 5, walker age 3
-tick 4: west 2 (tired 0), east 3 (tired 1), all 5, walker age 4
-tick 5: west 2 (tired 0), east 2 (tired 0), all 5, walker age 4
-tick 6: west 3 (tired 1), east 2 (tired 0), all 5, walker age 5
+tick 3: west 2 (tired 0), east 3 (tired 1), all 5, walker age 3, tired seen 1
+tick 4: west 2 (tired 0), east 3 (tired 1), all 5, walker age 4, tired seen 1
+tick 5: west 2 (tired 0), east 2 (tired 0), all 5, walker age 4, tired seen 1
+tick 6: west 3 (tired 1), east 2 (tired 0), all 5, walker age 5, tired seen 1
 true
