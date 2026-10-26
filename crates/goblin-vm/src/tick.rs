@@ -898,6 +898,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             Ok(_) => 0.5,
             Err(_) => continue,
         };
+        // A score that overflowed (inf) or is not a number can't be ranked.
+        if !raw.is_finite() { continue; }
         scored.push((k, raw));
     }
     if scored.is_empty() { return Ok(()); }
@@ -928,11 +930,12 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
+    if pool.is_empty() { return Ok(()); }
     let chosen_idx = if pool.len() == 1 { 0 } else {
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let (best_k, final_score) = pool.into_iter().nth(chosen_idx).unwrap();
+    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(()) };
     let Value::Ref(best_target_uuid) = &target_candidates[best_k] else { return Ok(()) };
     let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
