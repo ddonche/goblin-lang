@@ -4248,7 +4248,9 @@ impl Vm {
         upvalues: Vec<UpvalueCell>,
         args: Vec<Value>,
     ) -> Result<Value, GoblinError> {
-        if args.len() != func_rc.params {
+        // Trailing parameters with defaults may be left out, as in a call
+        // from Goblin code; the callee fills them in.
+        if args.len() < func_rc.required_params || args.len() > func_rc.params {
             return Err(GoblinError::ArityMismatch {
                 expected: func_rc.params,
                 got: args.len(),
