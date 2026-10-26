@@ -45,8 +45,8 @@ money is in flight between districts) the money total never changes.
   It now stops the tick, as an error in an `every` block does. This also
   showed that the VM never ran an action written inside the class
   (`act govern(target)`); it does now.
-- **`and` inside call parentheses doesn't parse**, so
-  `:objects(it >> district == d and it >> age > 18)` has to be a loop
+- **Fixed: `and` inside `:builtin(...)` parentheses didn't parse**, so
+  `:objects(it >> district == d and it >> age > 18)` had to be a loop
   with an `if`.
 
 ## The 365-day run

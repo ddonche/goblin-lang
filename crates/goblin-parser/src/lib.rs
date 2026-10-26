@@ -8443,7 +8443,9 @@ impl<'t> Parser<'t> {
                         self.skip_layout();
                         while !self.peek_op(")") {
                             if self.i >= self.toks.len() { break; }
-                            args.push(self.parse_compare()?);
+                            // A whole expression, `and`/`or`/`??` included,
+                            // as in any other call.
+                            args.push(self.parse_coalesce()?);
                             self.skip_layout_inline();
                             if !self.eat_op(",") { break; }
                             self.skip_layout();

@@ -19,6 +19,8 @@ in parentheses are the pull requests that made each change.
   (`act govern(target)`); the VM only found program-level actions and silently did nothing.
 - VM: `repeat 3 as d` gives a clear error (a count has no items to name; use `idx`
   or `repeat :range(0, 3) as d`) instead of "local slot 0 is uninitialized".
+- Parser: a `:builtin(...)` argument can use `and`, `or` and `??`
+  (`:objects(it >> age > 18 and it >> district == d)`); it stopped at comparisons.
 
 ## 0.49.0 — 2026-10-26
 
