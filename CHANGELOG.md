@@ -34,6 +34,9 @@ in parentheses are the pull requests that made each change.
 - DES: an overlay can say `on end: action`; when it runs out (its time is up or
   its strength reaches 0) the action runs with the host (`give_birth(mom)`, or the
   host class's own `act give_birth()`). Taking it off with `detach` runs nothing.
+- DES: a class can say `on erase: action`; it runs on the object just before an
+  erase transition removes it, while its fields can still be read (an estate
+  goes to the heirs before the person is gone).
 
 ## 0.49.0 — 2026-10-26
 

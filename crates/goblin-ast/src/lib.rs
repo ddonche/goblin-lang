@@ -265,6 +265,9 @@ pub struct ClassDecl {
     /// `shop | decision against Business by [ ... ]` / `judge using shop`.
     /// `decision` and `judge` above hold the first of them.
     pub decisions: Vec<NamedDecision>,
+    /// `on erase: action`: run on an object (with `self`) just before an
+    /// erase transition removes it.
+    pub on_erase: Option<String>,
     pub span: Span,
 }
 

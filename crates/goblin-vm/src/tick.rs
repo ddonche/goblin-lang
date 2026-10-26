@@ -1059,6 +1059,11 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
             match tdef.kind {
                 TransitionKind::Erase => {
+                    // `on erase: action` runs first, while the object and its
+                    // fields are still there. An error in it stops the tick.
+                    if let Some(action) = classes.get(class_name).and_then(|c| c.on_erase.clone()) {
+                        call_object_action(vm, self_uuid, &action, Vec::new())?;
+                    }
                     vm.session.object_store.shift_remove(self_uuid);
                     erased.insert(self_uuid.clone());
                     break;

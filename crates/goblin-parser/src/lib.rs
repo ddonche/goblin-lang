@@ -80,6 +80,7 @@ enum PExpr {
         capacity: Option<ast::CapacityDecl>,
         every: Vec<(u64, String)>,
         named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
+        on_erase: Option<String>,
     },
     EnumVariant {
         enum_name: String,
@@ -251,7 +252,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -4012,6 +4013,12 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
+                // `on erase: action` (a field named `on` is followed by ':').
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("on")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
+                {
+                    break;
+                }
             }
 
             // Check if this is a relation keyword first (BEFORE eating ident)
@@ -4115,7 +4122,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4127,6 +4134,8 @@ impl<'t> Parser<'t> {
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
         let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
+        // `on erase: action`: run on an object before an erase transition removes it.
+        let mut on_erase: Option<String> = None;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
 
@@ -4146,7 +4155,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase });
                 }
             }
 
@@ -4170,7 +4179,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase });
             }
 
             if self.is_eof() {
@@ -4329,6 +4338,31 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
+            // `on erase: action`: the action runs on an object (with `self`,
+            // fields still readable) just before an erase transition removes it.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("on")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
+            {
+                self.i += 2; // 'on' 'erase'
+                if !self.eat_op(":") {
+                    return Err(s_help_site!(
+                        "P1561",
+                        "Expected ':' after 'on erase'",
+                        "Write: on erase: settle_estate",
+                    ));
+                }
+                let Some(action) = self.eat_ident() else {
+                    return Err(s_help_site!(
+                        "P1562",
+                        "Expected an action name after 'on erase:'",
+                        "Write: on erase: settle_estate  (runs on the object just before it is erased)",
+                    ));
+                };
+                on_erase = Some(action);
+                self.skip_stmt_separators();
+                continue;
+            }
+
             // `every N ticks` ... `end`: a block DES runs on each object of
             // the class every N ticks, with `self` the object. It is kept as
             // a class action named after the block.
@@ -4452,7 +4486,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4528,7 +4562,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4677,8 +4711,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase });
                     }
                 }
 
@@ -6785,6 +6819,7 @@ impl<'t> Parser<'t> {
             capacity: None,
             every: vec![],
             decisions: vec![],
+            on_erase: None,
             span: sp.clone(),
         }));
 
@@ -6925,7 +6960,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase } => {
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -6996,6 +7031,7 @@ impl<'t> Parser<'t> {
                     capacity,
                     every: every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
                     decisions: decisions_ast,
+                    on_erase,
                     span: sp,
                 }))
             }
