@@ -946,14 +946,14 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     let target_ref = Value::Ref(best_target_uuid.clone());
 
     // Run judge to find selected action
-    let mut selected_action: Option<String> = None;
-    let mut else_action: Option<String> = None;
+    let mut selected_action: Option<(String, &[goblin_ast::Expr])> = None;
+    let mut else_action: Option<(String, &[goblin_ast::Expr])> = None;
 
     for arm in &judge.arms {
         match &arm.condition {
             None => {
-                if let Some(name) = extract_action_call_name(&arm.body) {
-                    else_action = Some(name);
+                if let Some(call) = extract_action_call(&arm.body) {
+                    else_action = Some(call);
                 }
             }
             Some(cond) => {
@@ -965,8 +965,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
                 if name != "score" { bind.push((name, Value::Float(final_score))); }
                 let fires = vm.eval_tick_expr_bool(cond, bind);
                 if fires {
-                    if let Some(name) = extract_action_call_name(&arm.body) {
-                        selected_action = Some(name);
+                    if let Some(call) = extract_action_call(&arm.body) {
+                        selected_action = Some(call);
                         break;
                     }
                 }
@@ -974,7 +974,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         }
     }
 
-    let action_name = selected_action.or(else_action).unwrap_or_default();
+    let (action_name, arg_exprs) = selected_action.or(else_action).unwrap_or((String::new(), &[]));
     if !action_name.is_empty() {
         // The action gets the objects as they are now (nothing above
         // changes them), the same values it was given before.
@@ -986,11 +986,29 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         // class, run with `self`), else a program action taking both.
         // An error in the action stops the tick, as one in an `every`
         // block does: a mistake there must not pass as "nothing happened".
+        // Either way it gets `self` first, then the arguments the arm wrote
+        // (`purchase(target, 5)`), worked out with `score`, `self` and
+        // `target` in view.
+        let mut args = Vec::with_capacity(arg_exprs.len() + 1);
+        for e in arg_exprs {
+            args.push(match e {
+                goblin_ast::Expr::Ident(n, _) if n == "target" => target_val.clone(),
+                other => {
+                    let mut bind = vec![
+                        ("score", Value::Float(final_score)),
+                        ("self", self_ref.clone()),
+                        ("target", target_ref.clone()),
+                    ];
+                    if name != "score" { bind.push((name, Value::Float(final_score))); }
+                    vm.eval_tick_expr(other, bind)?
+                }
+            });
+        }
         let class_name = match &self_val { Value::Object(o) => o.class_name.clone(), _ => String::new() };
         let method = vm.session.compiled_methods.get(&(class_name, action_name.clone())).cloned();
         match method {
-            Some(f) => { vm.call_callable(Value::Function(f), vec![Value::Ref(self_uuid.clone()), target_val])?; }
-            None => { vm.call_named(&action_name, vec![self_val, target_val])?; }
+            Some(f) => { args.insert(0, Value::Ref(self_uuid.clone())); vm.call_callable(Value::Function(f), args)?; }
+            None => { args.insert(0, self_val); vm.call_named(&action_name, args)?; }
         }
     }
     Ok(())
@@ -1289,22 +1307,24 @@ fn restore_originals(vm: &mut Vm, host_uuid: &str, originals: &[(String, Value)]
     }
 }
 
-fn extract_action_call_name(body: &goblin_ast::JudgeArmBody) -> Option<String> {
+/// The action a judge arm calls, and the arguments it writes (none for a
+/// bare name).
+fn extract_action_call(body: &goblin_ast::JudgeArmBody) -> Option<(String, &[goblin_ast::Expr])> {
     use goblin_ast::{JudgeArmBody, Expr};
-    match body {
-        JudgeArmBody::Expr(Expr::FreeCall(name, _, _)) => Some(name.clone()),
-        JudgeArmBody::Expr(Expr::Ident(name, _)) => Some(name.clone()),
-        JudgeArmBody::Stmts(stmts) => {
-            for s in stmts {
-                if let goblin_ast::Stmt::Expr(Expr::FreeCall(name, _, _)) = s {
-                    return Some(name.clone());
-                }
-                if let goblin_ast::Stmt::Expr(Expr::Ident(name, _)) = s {
-                    return Some(name.clone());
-                }
-            }
-            None
+    fn call(e: &Expr) -> Option<(String, &[Expr])> {
+        match e {
+            Expr::FreeCall(name, args, _) => Some((name.clone(), args.as_slice())),
+            Expr::Ident(name, _) => Some((name.clone(), &[])),
+            _ => None,
         }
+    }
+    match body {
+        JudgeArmBody::Expr(e) => call(e),
+        JudgeArmBody::Stmts(stmts) => stmts.iter().find_map(|s| match s {
+            goblin_ast::Stmt::Expr(e) => call(e),
+            _ => None,
+        }),
+        #[allow(unreachable_patterns)]
         _ => None,
     }
 }

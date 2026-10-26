@@ -18,6 +18,8 @@ in parentheses are the pull requests that made each change.
   in an `every` block.
 - DES (VM): a decision's judge can call an action written inside the class
   (`act govern(target)`); the VM only found program-level actions and silently did nothing.
+  The action gets `self`, then the arguments the arm writes (`purchase(target, 3)`,
+  `rest()`); before, it always got just the target.
 
 ## 0.49.0 — 2026-10-26
 
