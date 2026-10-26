@@ -268,6 +268,8 @@ pub struct ClassDecl {
     /// `on erase: action`: run on an object (with `self`) just before an
     /// erase transition removes it.
     pub on_erase: Option<String>,
+    /// `one of heal, attack`: groups of decisions that are alternatives.
+    pub one_of: Vec<Vec<String>>,
     pub span: Span,
 }
 

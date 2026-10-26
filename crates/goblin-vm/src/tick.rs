@@ -785,10 +785,25 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                 list.push((nd.name.as_str(), d, judge));
             }
         }
-        for (name, decision, judge) in list {
+        // `one of heal, attack`: those decisions are tried in that order
+        // and the first whose judge runs an action ends the group, so the
+        // others in it don't run this tick.
+        let group_of = |n: &str| class.one_of.iter().position(|g| g.iter().any(|m| m == n));
+        let mut done_groups: Vec<usize> = Vec::new();
+        for &(name, decision, judge) in &list {
             // Erased by an earlier decision's action: nothing more to decide.
             if !vm.session.object_store.contains_key(&self_uuid) { break; }
-            decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
+            let Some(g) = group_of(name) else {
+                decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
+                continue;
+            };
+            if done_groups.contains(&g) { continue; }
+            done_groups.push(g);
+            for member in &class.one_of[g] {
+                if !vm.session.object_store.contains_key(&self_uuid) { break; }
+                let Some(&(n, d, j)) = list.iter().find(|(n, _, _)| n == member) else { continue };
+                if decide(vm, &mut targets, &self_uuid, n, d, j)? { break; }
+            }
         }
     }
 
@@ -868,7 +883,7 @@ fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
     }
 }
 
-fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<(), GoblinError> {
+fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
     let self_uuid = self_uuid.to_string();
     let margin = match vm.session.object_store.get(&self_uuid) {
         Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
@@ -878,7 +893,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             _ => None,
         }).unwrap_or(0.0),
         Some(_) => 0.0,
-        None => return Ok(()),
+        None => return Ok(false),
     };
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
@@ -934,7 +949,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         if !raw.is_finite() { continue; }
         scored.push((k, raw));
     }
-    if scored.is_empty() { return Ok(()); }
+    if scored.is_empty() { return Ok(false); }
     // A formula on `~` fields (prices, money, ...) has no fixed range, so
     // its scores are measured against the candidates: the best scores 1
     // and the others in proportion to it (0 stays 0). When some score is
@@ -962,13 +977,13 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
-    if pool.is_empty() { return Ok(()); }
+    if pool.is_empty() { return Ok(false); }
     let chosen_idx = if pool.len() == 1 { 0 } else {
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(()) };
-    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(()) };
+    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(false) };
+    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(false) };
     let best_target_uuid = best_target_uuid.clone();
     let final_score = final_score.clamp(0.0, 1.0);
     let target_ref = Value::Ref(best_target_uuid.clone());
@@ -1009,7 +1024,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         let (Some(self_val), Some(target_val)) = (
             vm.session.object_store.get(&self_uuid).cloned(),
             vm.session.object_store.get(&best_target_uuid).cloned(),
-        ) else { return Ok(()) };
+        ) else { return Ok(false) };
         // The class's own action of that name (`act govern(target)` in the
         // class, run with `self`), else a program action taking both.
         // An error in the action stops the tick, as one in an `every`
@@ -1034,8 +1049,9 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         }
         let _ = self_val;
         call_object_action(vm, &self_uuid, &action_name, args)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 // ── Object transition tick ────────────────────────────────────────────────────

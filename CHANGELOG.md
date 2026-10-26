@@ -57,6 +57,8 @@ in parentheses are the pull requests that made each change.
   on `*`, `-` and the like now names the side that is not a number.
 - DES: a decision can leave targets out before scoring with `where [ condition ]`:
   `heal | decision against Fighter where [ target >> side == self >> side ] by [ ... ]`.
+- DES: `one of heal, attack` in a class makes decisions alternatives: they are tried in
+  that order each tick and the first whose judge runs an action ends the group.
 
 ## 0.49.0 — 2026-10-26
 

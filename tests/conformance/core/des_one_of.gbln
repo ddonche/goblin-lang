@@ -1,0 +1,45 @@
+/// known-gap: interp has no `one of` on decisions
+/// `one of heal, attack` tries those decisions in that order each tick and
+/// stops at the first whose judge runs an action: an object that heals
+/// doesn't also attack. A decision outside the group still runs.
+<>F |
+    ~name: ""
+    ~side: 0
+    ~hp: 10
+    ~max_hp: 10
+    heal | decision against F margin 0 where [ target >> side == self >> side and target >> hp * 2 < target >> max_hp ] by [
+        1 - target >> hp / target >> max_hp
+    ]
+    judge using heal
+        >= 0: mend(target)
+    end
+    attack | decision against F where [ target >> side != self >> side ] by [
+        1 - target >> hp / target >> max_hp
+    ]
+    judge using attack
+        >= 0: hit(target)
+    end
+    shout | decision against F where [ target >> side != self >> side ] by [ 1 ]
+    judge using shout
+        >= 0: taunt(target)
+    end
+    one of heal, attack
+xx
+act hit(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} hits {b}")
+xx
+act mend(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} heals {b}")
+xx
+act taunt(f, t)
+    a | f >> name
+    say("{a} shouts")
+xx
+x <> F | name: "x", side: 0, hp: 4
+y <> F | name: "y", side: 0, hp: 10
+z <> F | name: "z", side: 1, hp: 10
+tick()
