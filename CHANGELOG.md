@@ -80,6 +80,8 @@ in parentheses are the pull requests that made each change.
 - Faster: `:objects(...)` predicates and DES formulas compare strings on the fast path
   (`it >> kind == "rabbit"` no longer runs the predicate as a call per object), and copying an
   object no longer copies its read-only and trait field sets.
+- `sims/predator_prey`: rabbits, foxes and grass over four meadows (regions); the populations
+  cycle. `check.sh` and FINDINGS.md.
 
 ## 0.49.0 — 2026-10-26
 
