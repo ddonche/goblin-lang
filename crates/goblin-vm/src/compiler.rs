@@ -1307,8 +1307,8 @@ impl Compiler {
                     for (text, e) in interp_placeholder_exprs(s) {
                         if names.iter().any(|n| *n == text) { continue; }
                         let mut idents = Vec::new();
-                        // At least one name: `{1,3}` in a regex is not an expression to fill in.
-                        if !interp_expr_idents(&e, &mut idents) || idents.is_empty() { continue; }
+                        // A name or a call in it: `{1,3}` in a regex is not an expression to fill in.
+                        if !interp_expr_idents(&e, &mut idents) || (idents.is_empty() && !interp_has_call(&e)) { continue; }
                         let all_known = idents.iter().all(|name| {
                             match self.scope().find_local_entry(name) {
                                 Some((i, _)) => self.scope().local_meta[i].bound,
@@ -4097,6 +4097,17 @@ fn parse_interp_expr(text: &str) -> Option<Expr> {
     }
 }
 
+/// Whether an interpolated expression calls something (`{:len(xs)}`).
+fn interp_has_call(e: &Expr) -> bool {
+    match e {
+        Expr::FreeCall(..) | Expr::Call(..) | Expr::OptCall(..) => true,
+        Expr::Binary(l, _, r, _) => interp_has_call(l) || interp_has_call(r),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_has_call(x),
+        Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_has_call(a) || interp_has_call(b),
+        _ => false,
+    }
+}
+
 /// The variable names an interpolated expression reads. False when it holds
 /// something other than names, literals, operators, `>>` fields, indexes
 /// and calls: then it is not filled in.
@@ -4107,6 +4118,7 @@ fn interp_expr_idents(e: &Expr, out: &mut Vec<String>) -> bool {
         Expr::Str(t, _) => !t.contains('{'),
         Expr::Binary(l, _, r, _) => interp_expr_idents(l, out) && interp_expr_idents(r, out),
         Expr::Prefix(_, x, _) => interp_expr_idents(x, out),
+        Expr::Array(xs, _) => xs.iter().all(|x| interp_expr_idents(x, out)),
         Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out),
         Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out) && interp_expr_idents(b, out),
         Expr::FreeCall(_, args, _) => args.iter().all(|a| interp_expr_idents(a, out)),
