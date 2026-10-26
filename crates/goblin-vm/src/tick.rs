@@ -851,13 +851,10 @@ impl Targets {
     }
 }
 
-/// The decision written for one object (`x score | decision against ...`).
-/// It is registered under the variable's name; the object goes by the name
-/// of the variable that holds it.
+/// The decision written for one object (`x score | decision against ...`),
+/// kept under the id of the object `x` held when it was declared.
 fn object_decision(session: &crate::session::Session, uuid: &str) -> Option<std::rc::Rc<goblin_ast::DecisionDef>> {
-    session.object_decisions.get(uuid)
-        .or_else(|| session.object_names.get(uuid).and_then(|(n, _)| session.object_decisions.get(n)))
-        .cloned()
+    session.object_decisions.get(uuid).cloned()
 }
 
 /// The `self >> field` / `target >> field` reads in a formula.

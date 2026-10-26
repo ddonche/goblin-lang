@@ -1,0 +1,49 @@
+/// known-gap: interp never runs decisions for buyers made inside an action (no purchases)
+/// A decision written for one object belongs to the object the variable
+/// holds when it is written: here through `pal`, another name for Ann.
+/// Ann and Bob were both made by `make`, under the same name inside it;
+/// Bob keeps the class's decision (the most stock), Ann's own picks the
+/// least stock.
+<>Shop |
+    ~stock: 0
+    ~ann: 0
+    ~bob: 0
+xx
+<>Buyer |
+    who: 0
+    score | decision against Shop by [
+        target >> stock
+    ]
+    judge using score
+        > 0: purchase(target)
+        else: purchase(target)
+    end
+xx
+act purchase(b, s)
+    if b >> who == 1
+        s >> ann |= s >> ann + 1
+    else
+        s >> bob |= s >> bob + 1
+    xx
+xx
+act make(n)
+    x <> Buyer | who: n
+    return x
+xx
+big <> Shop | stock: 10
+small <> Shop | stock: 6
+ann | make(1)
+bob | make(2)
+pal | ann
+pal score | decision against Shop by [
+    0 - target >> stock
+]
+repeat 3
+    tick()
+xx
+repeat :objects(it >> stock > 0)
+    st | it >> stock
+    a | it >> ann
+    b | it >> bob
+    say("stock {st}: ann {a}, bob {b}")
+xx

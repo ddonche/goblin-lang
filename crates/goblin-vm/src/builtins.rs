@@ -5361,6 +5361,7 @@ fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
         session.des_store.erase(handle);
     }
     session.object_decisions.remove(var_name);
+    session.object_decisions.remove(uuid);
     session.object_link_defs.retain(|(obj, _), _| obj != var_name);
     let dropped_keys: Vec<(String, String, String)> = session.link_offsets.keys()
         .filter(|(from, to, _)| from == var_name || to == var_name)

@@ -1044,6 +1044,8 @@ impl Compiler {
                 let i = self.op_data(crate::opcode::OpData::ClearLink(Box::new(s.clone()))); self.emit(Opcode::ClearLink(i));
             }
             Stmt::ObjectDecision(var_name, def) => {
+                // The object the variable holds now: the decision is its own.
+                self.compile_expr(&Expr::Ident(var_name.clone(), def.span.clone()))?;
                 let i = self.op_data(crate::opcode::OpData::ObjectDecision {
                     var_name: var_name.clone(),
                     def: Box::new(def.clone()),
