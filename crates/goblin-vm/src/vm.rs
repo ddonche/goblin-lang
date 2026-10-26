@@ -572,8 +572,7 @@ impl Vm {
                 } else {
                     val
                 };
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -588,8 +587,7 @@ impl Vm {
                 let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = if let Value::Object(ref o) = cast {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -606,8 +604,7 @@ impl Vm {
                 let lock_type = self.op_name(name_i);
                 let val = self.stack_pop()?;
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
-                let t = if let Value::Object(ref o) = cast {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.object_store.insert(uuid.clone(), cast);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -3299,8 +3296,7 @@ impl Vm {
                     if let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) {
                         let t = t.clone();
                         if self.session.get_stash(&t)?.tether_count > 1 {
-                            if let Value::Object(ref o) = val {
-                                let uuid = o.uuid.clone();
+                            if let Some(uuid) = registered_uuid(&val) {
                                 self.note_object_name(&uuid, NameOf::Local(slot as usize));
                             }
                             return self.write_shared(&t, val);
@@ -3308,8 +3304,7 @@ impl Vm {
                     }
                 }
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
-                let t = if let Value::Object(ref o) = val {
-                    let uuid = o.uuid.clone();
+                let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.object_store.insert(uuid.clone(), val);
                     self.session.alloc_value(Value::Ref(uuid))
@@ -3323,9 +3318,8 @@ impl Vm {
     /// Put `val` into a stash other holders (nested actions) share, so all
     /// of them see it. Pending reads of the old value keep the old value.
     fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
-        let val = if let Value::Object(o) = val {
-            let uuid = o.uuid.clone();
-            self.session.object_store.insert(uuid.clone(), Value::Object(o));
+        let val = if let Some(uuid) = registered_uuid(&val) {
+            self.session.object_store.insert(uuid.clone(), val);
             Value::Ref(uuid)
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
@@ -5160,7 +5154,8 @@ impl Vm {
                         fields: std::rc::Rc::new(fields),
                         readonly_fields: BTreeSet::new(),
                         trait_fields: BTreeSet::new(),
-                        uuid: inst.host_uuid.clone(),
+                        // Its own id: binding it must not replace its host.
+                        uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
                     })));
                 }
                 let _ = pred_fn;
@@ -5326,7 +5321,8 @@ impl Vm {
                 fields: std::rc::Rc::new(fields),
                 readonly_fields: BTreeSet::new(),
                 trait_fields: BTreeSet::new(),
-                uuid: inst.host_uuid.clone(),
+                // Its own id: binding it must not replace its host.
+                uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0),
             }));
             let include = if let Some(ref pred_fn) = pred {
                 self.query_predicate_holds(pred_fn, &obj)
@@ -5721,6 +5717,19 @@ impl Vm {
                 }
             }
         }
+    }
+}
+
+/// The id prefix of an `:overlays()` result: a record of an overlay, not an
+/// object of a class, so it is never put in the object store.
+const OVERLAY_RECORD: &str = "overlay:";
+
+/// The id an object bound to a variable is stored under, or None for a
+/// value that stays as it is (not an object, or an overlay record).
+fn registered_uuid(v: &Value) -> Option<String> {
+    match v {
+        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) => Some(o.uuid.clone()),
+        _ => None,
     }
 }
 
