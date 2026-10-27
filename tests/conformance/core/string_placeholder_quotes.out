@@ -6,3 +6,4 @@ IT'S and [a, b]
 { not code } {"json": 1}
 css a { color: red; } b
 3 {x} 4
+[{not {code}, }]
