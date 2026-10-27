@@ -5,6 +5,12 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: a variable given an object from a field (`x |= x >> owner`) or from
+  another variable (`y | x`) holds that object by id instead of a copy
+  written back into the store; a field read followed by another field
+  read, a comparison or an action call does the same, and `==` / `!=` on
+  two objects compares ids without copying either. Walking 30 owners
+  20,000 times: 650 ms to 460 ms. Feudal sim: 3% fewer instructions.
 - DES (VM): while a decision scores its targets, an action that only reads
   (no writes outside its own variables, nothing random, no output, and only
   calls to other such actions) runs once per set of arguments: in
