@@ -1,0 +1,31 @@
+/// known-gap: interp has no contents list
+/// `where [ target >> owner >> owner == self >> owner ]` (an estate of
+/// another vassal of my liege) looks only at what my liege's vassals hold,
+/// and finds the same targets checking every estate would.
+<>Lord |
+    ~name: ""
+    ~owner: nil
+    ~realm: 0
+    seize | decision against Land where [ target >> owner >> owner == self >> owner and target >> owner != self ] by [ target >> worth ]
+    judge using seize
+        >= 0: take(target)
+    end
+xx
+<>Land |
+    ~name: ""
+    ~worth: 0
+    ~owner: nil
+xx
+act take(l, e)
+    say("{l >> name} takes {e >> name} from {e >> owner >> name}")
+    e >> owner |= l
+xx
+king <> Lord | name: "King"
+a <> Lord | name: "Ash", owner: king
+b <> Lord | name: "Bo", owner: king
+c <> Lord | name: "Cy"
+x1 <> Land | name: "Oak", worth: 3, owner: a
+x2 <> Land | name: "Elm", worth: 7, owner: b
+x3 <> Land | name: "Yew", worth: 9, owner: c
+x4 <> Land | name: "Ash Wood", worth: 1, owner: king
+tick()

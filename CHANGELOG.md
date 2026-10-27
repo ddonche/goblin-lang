@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): a decision's `where [ target >> owner >> owner == x ... ]` (an
+  estate of another vassal of my liege) looks only at what the things `x`
+  holds hold, as `target >> owner == x` already looked only at what `x`
+  holds. Same results; a chain broken by nil still stops the tick with its
+  error. Feudal sim, 60 years, 1 thread: 6.6 -> 4.5 billion instructions.
 - DES (VM): a decision's `where [ target >> pen == self >> pen ... ]` and
   `:objects("Sheep", it >> pen == p)` find the objects through an index of
   that field, kept up to date as objects change, instead of checking every

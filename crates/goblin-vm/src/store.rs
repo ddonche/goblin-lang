@@ -177,6 +177,11 @@ impl ObjectStore {
         self.set_owner(uuid, owner);
     }
 
+    /// The id of the object `uuid`'s `owner` field names, if it names one.
+    pub fn holder_of(&self, uuid: &str) -> Option<&str> {
+        self.owner_of.get(uuid).map(String::as_str)
+    }
+
     /// The ids of what `owner` contains (the objects whose `owner` field
     /// names it), in the order they came to it.
     pub fn contents_of(&self, owner: &str) -> impl Iterator<Item = &str> {
