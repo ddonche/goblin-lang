@@ -1,0 +1,27 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// `:actor(meadow)` with no handler: the actor runs the meadow and what it
+/// holds in `tick(regions)`, and takes no messages (posting one is C0107).
+<>Meadow |
+    n: 0
+xx
+<>Rabbit |
+    owner: nil
+    ~age: 0
+    every 1 tick
+        @age |= @age + 1
+    end
+xx
+act make(i)
+    m <> Meadow | n: i
+    r <> Rabbit | owner: m
+    return m
+xx
+meadows | [:actor(make(1)), :actor(make(2))]
+tick(meadows)
+tick(meadows)
+say(:len(:objects("Rabbit", it >> age == 2)))
+attempt
+    :post(meadows[0], "hi")
+rescue e
+    say(:has("{e}", "C0107"))
+xx

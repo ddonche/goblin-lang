@@ -406,6 +406,8 @@ pub struct ActorShared {
     end: Mutex<EndSlot>,
     /// The object handed over, if the state is an object (its uuid).
     origin: Option<String>,
+    /// False for `:actor(object)`: it takes no messages.
+    has_handler: bool,
     /// The worker this actor lives on.
     worker: usize,
     /// A run of this actor is queued on its worker.
@@ -937,15 +939,18 @@ impl Vm {
     /// `:actor(object, handler, policy)`. `from_var` says the first argument
     /// came straight from a variable, which is the one reference allowed.
     pub(crate) fn actor_create(&mut self, args: Vec<Value>, from_var: bool) -> Result<Value, GoblinError> {
-        if !(2..=3).contains(&args.len()) {
+        if !(1..=3).contains(&args.len()) {
             return Err(err(format!(
-                "C0107: actor-args: :actor expects (object, handler) or (object, handler, policy), got {} arguments", args.len())));
+                "C0107: actor-args: :actor expects (object), (object, handler) or (object, handler, policy), got {} arguments", args.len())));
         }
         let mut it = args.into_iter();
         let state = it.next().unwrap();
-        let handler = it.next().unwrap();
+        // Without a handler the actor only runs what it owns (a region in
+        // `tick(regions)`); it takes no messages.
+        let handler = it.next().unwrap_or(Value::Nil);
+        let has_handler = !matches!(handler, Value::Nil);
         let policy = policy_of(it.next())?;
-        if !matches!(handler, Value::Function(_) | Value::Closure(_) | Value::Str(_)) {
+        if has_handler && !matches!(handler, Value::Function(_) | Value::Closure(_) | Value::Str(_)) {
             return Err(err(format!("C0107: actor-args: the handler must be an action, got {}", handler.type_name())));
         }
         if matches!(state, Value::Nil) {
@@ -1029,6 +1034,7 @@ impl Vm {
             failure: Mutex::new(None),
             end: Mutex::new(EndSlot { end: None, waiters: Vec::new() }),
             origin,
+            has_handler,
             worker,
             scheduled: AtomicBool::new(false),
             pulled: Mutex::new(Vec::new()),
@@ -1522,6 +1528,7 @@ impl Slot {
         match &self.handler {
             Value::Function(f) => f.name.clone(),
             Value::Closure(c) => c.func.name.clone(),
+            Value::Nil => "actor".to_string(),
             other => crate::builtins::fmt_value_raw(other),
         }
     }
@@ -1807,6 +1814,7 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
     let msg = &args[1];
     match h {
         Handle::Actor(a) => {
+            a.takes_messages()?;
             let p = ToPortable::new(session).value(msg)?;
             // From one region to another during a world tick: delivered at
             // the start of the next tick, in a fixed order.
@@ -1847,6 +1855,14 @@ pub(crate) fn actor_of(v: &Value) -> Option<Arc<ActorShared>> {
     match v { Value::Handle(Handle::Actor(a)) => Some(a.clone()), _ => None }
 }
 
+impl ActorShared {
+    /// An actor made without a handler has nothing to give a message to.
+    fn takes_messages(&self) -> Result<(), GoblinError> {
+        if self.has_handler { return Ok(()); }
+        Err(err("C0107: actor-args: this actor was made without a handler, so it takes no messages; give :actor a handler to send it some"))
+    }
+}
+
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
 /// The object an actor was given as its state, if it was one.
 pub(crate) fn actor_origin(a: &ActorShared) -> Option<&str> { a.origin.as_deref() }
@@ -1880,6 +1896,7 @@ pub fn request(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
     let Handle::Actor(a) = handle_arg(&args[0], ":request")?.clone() else {
         return Err(err("C0118: not-a-handle: :request expects an actor"));
     };
+    a.takes_messages()?;
     let p = ToPortable::new(session).value(&args[1])?;
     let reply = Arc::new(Reply {
         id: next_id(),

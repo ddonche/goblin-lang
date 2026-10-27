@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Concurrency (VM): `:actor(meadow)` with no handler. The actor runs the
+  meadow and what it holds in `tick(regions)` and takes no messages
+  (`:post`/`:request` to it is C0107). Sims no longer need a handler that
+  only returns its state.
 - Syntax: `@name` is `self >> name`, anywhere `self` exists (class
   actions, `every`/`when` blocks, decisions, transitions, overlays, links,
   sweeps): reads, `@hp |= ...`, `@home >> food`, `@name.upper()`,
