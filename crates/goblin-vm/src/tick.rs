@@ -1157,7 +1157,8 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 /// - one that doesn't name `target` (`self >> gold < 0`) is the same for
 ///   every target: run once; false leaves no candidates.
 /// - `target >> owner == x` with `x` not naming `target`: only what `x`
-///   holds (its contents list) can pass.
+///   holds (its contents list) can pass; `target >> owner >> owner == x`:
+///   what the things `x` holds hold, and so on.
 /// - `target >> f == x` with `x` not naming `target` and `f` a field the
 ///   class declares: only the objects whose `f` can equal `x` (the store's
 ///   index of `f`) can pass.
@@ -1191,8 +1192,17 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         // later condition could run (or fail with an error).
         let E::Binary(l, op, r, _) = c else { return None };
         if op != "==" { return None; }
-        let owner_of_target = |e: &E| matches!(e, E::Member(o, f, _)
-            if f == crate::store::OWNER_FIELD && matches!(&**o, E::Ident(n, _) if n == "target"));
+        // `target >> owner` is 1, `target >> owner >> owner` 2, ...
+        fn owner_depth(e: &E) -> usize {
+            match e {
+                E::Member(o, f, _) if f == crate::store::OWNER_FIELD => match &**o {
+                    E::Ident(n, _) if n == "target" => 1,
+                    inner => match owner_depth(inner) { 0 => 0, d => d + 1 },
+                },
+                _ => 0,
+            }
+        }
+        let owner_of_target = |e: &E| owner_depth(e) > 0;
         // `target >> meadow == self >> meadow`: the objects whose field
         // can match, from the store's index of that field. The field must be
         // one the class declares, so no object left out lacks it (reading a
@@ -1220,9 +1230,27 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
                 .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
                 .collect());
         }
-        let holder = if owner_of_target(l) && !names(r, "target") { r }
-            else if owner_of_target(r) && !names(l, "target") { l }
+        let (holder, depth) = if owner_of_target(l) && !names(r, "target") { (r, owner_depth(l)) }
+            else if owner_of_target(r) && !names(l, "target") { (l, owner_depth(r)) }
             else { return None };
+        // `target >> owner >> owner == x`: reading through a holder that is
+        // nil, erased or has no `owner` field is an error, which must still
+        // stop the tick: only when every target's chain is whole.
+        if depth > 1 {
+            let store = &vm.session.object_store;
+            for (t, _) in all {
+                if t == self_ref { continue; }
+                let Value::Ref(u) = t else { return None };
+                let mut cur: &str = u.as_str();
+                for _ in 0..depth - 1 {
+                    let h = store.holder_of(cur)?;
+                    match store.get_full(h) {
+                        Some((_, k, Value::Object(o))) if o.fields.contains_key(crate::store::OWNER_FIELD) => cur = k.as_str(),
+                        _ => return None,
+                    }
+                }
+            }
+        }
         let has_owner = vm.session.classes.get(class)
             .is_some_and(|c| c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD));
         if !has_owner { return None; }
@@ -1236,7 +1264,12 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
             _ => return None,
         };
         let store = &vm.session.object_store;
-        let mut fewer: Vec<(Value, usize)> = store.contents_of(&uuid)
+        // What `x` holds, what those hold, ...: `depth` levels down.
+        let mut level: Vec<String> = vec![uuid];
+        for _ in 0..depth - 1 {
+            level = level.iter().flat_map(|h| store.contents_of(h).map(str::to_string)).collect();
+        }
+        let mut fewer: Vec<(Value, usize)> = level.iter().flat_map(|h| store.contents_of(h))
             .filter_map(|u| match store.get_full(u) {
                 Some((i, _, Value::Object(o))) if o.class_name == class => Some((Value::Ref(u.to_string()), i)),
                 _ => None,
