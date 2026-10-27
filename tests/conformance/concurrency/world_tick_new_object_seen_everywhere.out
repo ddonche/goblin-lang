@@ -1,0 +1,6 @@
+tick 1: [m1 sees 2, r1@m1:1, m2 sees 2, r2@m2:1]
+tick 2: [m1 sees 3, r1@m1:2, m2 sees 3, r2@m2:2, kit@m2:1]
+tick 3: [m1 sees 3, m2 sees 3, r2@m2:3, kit@m2:2, sack 0 steps, r1@sack:3]
+tick 4: [m1 sees 3, m2 sees 3, r2@m2:4, kit@m2:3, sack 2 steps, r1@sack:4]
+tick 5: [m1 sees 3, m2 sees 3, r2@m2:5, kit@m2:4, sack 3 steps, r1@sack:5]
+tick 6: [m1 sees 3, m2 sees 3, r2@m2:6, kit@m2:5, sack 4 steps, r1@sack:6]

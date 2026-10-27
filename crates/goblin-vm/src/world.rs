@@ -22,7 +22,7 @@ use crate::value::Value;
 use crate::vm::Vm;
 
 /// A region's objects and overlays at the end of a tick.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Snapshot {
     objects: Vec<(String, PValue)>,
     overlays: Vec<POverlay>,
@@ -910,9 +910,19 @@ fn hand_new_contents(vm: &mut Vm) -> Result<(), GoblinError> {
     for (u, to) in sent {
         let contents: Vec<String> = vm.session.object_store.all_contents_of(&u);
         for x in std::iter::once(&u).chain(contents.iter()) {
+            // A region's object held by this one moves from its own region,
+            // not from the program's copy of it.
+            if vm.session.world.as_ref().is_some_and(|w| w.view.contains(x.as_str())) { continue; }
             let Some(item) = take_for_region(vm, x)? else { continue };
             let w = vm.session.world.as_mut().unwrap();
             let Some(j) = w.ids.iter().position(|id| *id == to) else { continue };
+            // The other regions see it this tick, as they see an object
+            // one region sends another.
+            if let Item::Arrive(a) = &item {
+                let f = Arc::make_mut(&mut w.flying[j]);
+                f.objects.push((a.uuid.clone(), a.object.clone()));
+                f.overlays.extend(a.overlays.iter().cloned());
+            }
             w.inbox[j].push(item);
         }
     }
