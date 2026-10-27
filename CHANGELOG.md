@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Ownership (VM): what an object contains goes with it. Handing it to an
+  actor (`:actor`) and moving it to another region (`:move!`) take along
+  everything whose `owner` names it, at any depth, and what that refers to.
+  A person with belongings used to fail with C0113 when handed to a region,
+  and a moved container left its contents behind.
 - Ownership (VM): an object's `owner` field holds the object that contains
   it, and the store keeps each owner's contents list. Writing `owner` moves the
   object (a transfer; a drop is giving it to a place). `:objects("Class", it >>

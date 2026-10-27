@@ -876,6 +876,27 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
     }
 }
 
+/// Adds to `graph` everything its objects contain and what that refers to,
+/// until nothing new turns up. Returns the added objects in store order.
+fn contents_of_graph(graph: &mut HashSet<String>, session: &Session) -> Vec<String> {
+    let start = graph.clone();
+    let mut todo: Vec<String> = graph.iter().cloned().collect();
+    while let Some(u) = todo.pop() {
+        for c in session.object_store.all_contents_of(&u) {
+            if graph.contains(c.as_str()) { continue; }
+            let mut more = HashSet::new();
+            graph_of(&Value::Ref(c.clone()), session, &mut more);
+            for m in more { if graph.insert(m.clone()) { todo.push(m); } }
+        }
+    }
+    let mut added: Vec<(usize, String)> = graph.iter()
+        .filter(|u| !start.contains(u.as_str()))
+        .filter_map(|u| session.object_store.get_index_of(u.as_str()).map(|i| (i, u.clone())))
+        .collect();
+    added.sort();
+    added.into_iter().map(|(_, u)| u).collect()
+}
+
 /// The values directly inside a container (not through objects).
 fn children(v: &Value, f: &mut dyn FnMut(&Value)) {
     use crate::value::CollectionLayout as L;
@@ -938,6 +959,9 @@ impl Vm {
         // the ones being handed over (spec IV.4). Check before changing anything.
         let mut graph = HashSet::new();
         graph_of(&state, &self.session, &mut graph);
+        // What those objects contain (their `owner` names one of them, at
+        // any depth) goes with them, and so does what that refers to.
+        let contents = contents_of_graph(&mut graph, &self.session);
         if !graph.is_empty() {
             let live = self.collect_live_slots();
             let mut n = 0usize;
@@ -977,7 +1001,14 @@ impl Vm {
             let mut tp = ToPortable::new(&self.session).sharing_values().only_objects(graph.clone());
             let mut roots = vec![&state, &handler];
             if let Some(f) = &policy.stop_when { roots.push(f); }
-            let image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
+            let mut image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
+            if !contents.is_empty() {
+                let mut objs = Vec::with_capacity(contents.len());
+                for u in &contents {
+                    if let Some(v) = self.session.object_store.get(u.as_str()) { objs.push((u.clone(), tp.value(v)?)); }
+                }
+                image = image.with_contents(objs);
+            }
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };

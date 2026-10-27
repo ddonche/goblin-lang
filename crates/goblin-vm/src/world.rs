@@ -773,8 +773,19 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
 }
 
 /// Takes an object of this region, and what goes along with it, out of the
-/// session and sends it to region `to`.
+/// session and sends it to region `to`. What it contains (objects whose
+/// `owner` names it, at any depth) goes too, after it.
 fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
+    let contents: Vec<String> = vm.session.object_store.all_contents_of(uuid).into_iter()
+        .filter(|c| vm.session.object_store.contains_key(c.as_str())
+            && !vm.session.region.as_ref().is_some_and(|r| r.remote.contains(c.as_str())))
+        .collect();
+    send_one(vm, uuid, to)?;
+    for c in &contents { send_one(vm, c, to)?; }
+    Ok(())
+}
+
+fn send_one(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let s = &vm.session;
     let Some(v) = s.object_store.get(uuid) else { return Ok(()) };
     let mut tp = ToPortable::new(s);
