@@ -4178,15 +4178,15 @@ fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
                 i = j + 3;
                 continue;
             }
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '}' { j += 1; }
-            if j >= chars.len() { break; }
+            let byte_at = |k: usize| chars[..k].iter().map(|c| c.len_utf8()).sum::<usize>();
+            let Some(end) = placeholder_end(s, byte_at(i + 1)) else { break };
+            let j = i + 1 + s[byte_at(i + 1)..end].chars().count();
             let inner: String = chars[i + 1..j].iter().collect();
             let text = inner.trim();
             if !text.is_empty() && !out.iter().any(|(t, _)| t == text) {
                 if text.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     out.push((text.to_string(), None));
-                } else if !text.starts_with('#') && !text.contains(['{', '\n']) {
+                } else if !text.starts_with('#') && !text.contains('\n') {
                     if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), Some(e))); }
                 }
             }
@@ -4196,6 +4196,42 @@ fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
         i += 1;
     }
     out
+}
+
+/// Where the `{...}` placeholder whose text starts at byte `start` (just
+/// after the `{`) ends: the byte index of its closing `}`. Text in quotes is
+/// skipped and inner braces nest (`{m{"a"}}`, `{:len(:objects("Estate"))}`);
+/// when they don't balance, the first `}` closes it, as it always has.
+pub(crate) fn placeholder_end(s: &str, start: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let first = s[start..].find('}').map(|r| start + r)?;
+    let mut depth = 1usize;
+    let mut i = start;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') => {
+                let mut j = i + 1;
+                loop {
+                    match b.get(j) {
+                        None => return Some(first),
+                        Some(b'\\') => j += 2,
+                        Some(c) if *c == q => break,
+                        Some(_) => j += 1,
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 { return Some(i); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Some(first)
 }
 
 /// `text` as one expression, or None.
@@ -4234,6 +4270,14 @@ fn interp_expr_idents(e: &Expr, out: &mut Vec<String>, calls: &mut Vec<String>) 
         Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out, calls),
         Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out, calls) && interp_expr_idents(b, out, calls),
         // The name called must exist too (checked by the caller).
+        // A query's predicate reads `it`, the object it is asked about.
+        Expr::FreeCall(name, args, _) if matches!(name.as_str(), ":objects" | ":overlays") => {
+            calls.push(name.clone());
+            let mut names = Vec::new();
+            let ok = all(args, &mut names, calls);
+            out.extend(names.into_iter().filter(|n| n != "it"));
+            ok
+        }
         Expr::FreeCall(name, args, _) => { calls.push(name.clone()); all(args, out, calls) }
         Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) =>
             interp_expr_idents(r, out, calls) && all(args, out, calls),

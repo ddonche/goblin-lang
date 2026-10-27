@@ -177,10 +177,7 @@ say("")
 say("battle 7, round by round:")
 loud |= true
 r | battle(7)
-/// A map read can't go inside `{}` in a string (FINDINGS.md, 9).
-w | r{"winner"}
-rr | r{"rounds"}
-say("{w} in {rr} rounds")
+say("{r{"winner"}} in {r{"rounds"}} rounds")
 repeat :objects("Fighter") as f
     say("  {f >> name}: {f >> hp} hp")
 xx

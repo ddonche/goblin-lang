@@ -31,6 +31,7 @@ the action itself must not poison or shield it.
 | 6 | can't ask an object about its overlays | `:overlay_strength(name, obj)`, `:overlays_of(obj)` |
 | 7 | turn order is creation order | `order by [ self >> speed ] desc` |
 | 8 | `{expr}` in strings, `:round(x, n)`, clearing objects, `for N ticks` | `{n - wins}`, `:round(x, 1)`, `for rounds ticks`; clearing already worked (`delete_object!` over `:objects()`) |
+| 9 | a map read can't go inside `{}` in a string | placeholders count nested braces and quotes: `say("{r{"winner"}} wins")` |
 
 Finding 9 is new, found while rewriting the sim.
 
@@ -192,6 +193,6 @@ w | r{"winner"}
 say("{w} in {rr} rounds")
 ```
 
-Not changed. It would need the string scanner to count nested braces in
-a placeholder. Say if you want it.
+Fixed later (feudal finding): placeholders count nested braces and
+quotes, so `say("{r{"winner"}} wins")` works.
 

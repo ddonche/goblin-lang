@@ -1,0 +1,24 @@
+/// known-gap: interp reads a placeholder only up to its first `}`
+/// A `{...}` placeholder can hold text in quotes and nested braces: the
+/// inner quote doesn't end the string, and the placeholder ends at its own
+/// `}`. Braces that don't start an expression are text, as before.
+<>Estate |
+    ~n: 0
+    ~owner: nil
+xx
+<>Lord |
+    ~name: ""
+xx
+lord <> Lord | name: "Ash"
+e1 <> Estate | n: 1, owner: lord
+e2 <> Estate | n: 2
+say("estates {:len(:objects("Estate"))}")
+say("estates {:len(:objects(\"Estate\"))}")
+say("{lord >> name} holds {:len(:objects("Estate", it >> owner == lord))}")
+m | {"a": 5, "b": {"c": "deep"}}
+say("a is {m{"a"}}, c is {m{"b"}{"c"}}")
+say("{:upper("it's")} and {:split("a-b", "-")}")
+say("{ not code } {\"json\": 1}")
+say("css a { color: red; } b")
+x | 3
+say("{x} \{x\} {x + 1}")
