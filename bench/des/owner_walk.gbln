@@ -1,6 +1,6 @@
 /// Walk 30 owners up a chain, 20,000 times (`x |= x >> owner`).
 <>Box |
-    ~owner: nil
+    owner: nil
     ~n: 0
 xx
 top <> Box | n: 0

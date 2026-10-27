@@ -5,8 +5,8 @@
 /// follow the arguments, an action that writes or prints runs every time,
 /// and what it changes is seen by the reads after it.
 <>Lord |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     seize | decision against Land where [
         target >> owner != self and might(self) >= 2 * might(target >> owner)
     ] by [ target >> yield + might(target >> owner) ]
@@ -16,17 +16,17 @@
 xx
 <>Land |
     ~yield: 0
-    ~owner: nil
+    owner: nil
 xx
 <>Peer |
-    ~name: ""
+    name: ""
     look | decision against Land where [ note(target) and seen() > 0 ] by [ seen() ]
     judge using look
         >= 0: show(target)
     end
 xx
 <>Scout |
-    ~name: ""
+    name: ""
     look | decision against Land where [ apply(note, target) and seen() > 0 ] by [ seen() ]
     judge using look
         >= 0: show(target)

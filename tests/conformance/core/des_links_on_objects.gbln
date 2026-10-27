@@ -5,7 +5,7 @@
 /// `bool` link is true or false; the program's formula decides what a link
 /// means (here, in a decision's `where`).
 <>Nation |
-    ~name: ""
+    name: ""
     ~gold: 0
     act praise(target)
         self link to target on respect offset +3

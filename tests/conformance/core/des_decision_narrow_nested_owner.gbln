@@ -3,8 +3,8 @@
 /// another vassal of my liege) looks only at what my liege's vassals hold,
 /// and finds the same targets checking every estate would.
 <>Lord |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     ~realm: 0
     seize | decision against Land where [ target >> owner >> owner == self >> owner and target >> owner != self ] by [ target >> worth ]
     judge using seize
@@ -12,9 +12,9 @@
     end
 xx
 <>Land |
-    ~name: ""
+    name: ""
     ~worth: 0
-    ~owner: nil
+    owner: nil
 xx
 act take(l, e)
     say("{l >> name} takes {e >> name} from {e >> owner >> name}")

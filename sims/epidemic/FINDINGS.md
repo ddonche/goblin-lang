@@ -53,7 +53,7 @@ predator-prey sim (limited to its own region) would cut it to one town.
 
 ## 3. Again: no way to ask an object its class
 
-Counting people needs a `~kind: "person"` field, as with rabbits and
+Counting people needs a `kind: "person"` field, as with rabbits and
 foxes (predator-prey, finding 1). Same proposal: make
 `:is_type(p, "Person")` true for an object of class `Person`.
 

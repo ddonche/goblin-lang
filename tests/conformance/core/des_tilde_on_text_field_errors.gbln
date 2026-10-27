@@ -1,0 +1,5 @@
+/// `~` keeps a number as its real value; on a text field it is an error.
+<>Farm |
+    ~name: "Hilltop"
+xx
+say("never printed")

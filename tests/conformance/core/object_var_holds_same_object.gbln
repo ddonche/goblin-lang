@@ -3,9 +3,9 @@
 /// that same object: writes through it reach the object, comparisons are by
 /// object, and an erased object reads as nil from a field.
 <>Box |
-    ~name: ""
+    name: ""
     ~gold: 0
-    ~owner: nil
+    owner: nil
 xx
 top <> Box | name: "top"
 mid <> Box | name: "mid", owner: top

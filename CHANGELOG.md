@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES: `~` before a field that starts as something other than a number
+  (`~name: "Ash"`, `~owner: nil`, `~tags: []`) is a parse error, P0917.
+  `~` only keeps a number as its real value instead of a 0..1 trait, so on
+  any other field it did nothing. The sims, tests and benches drop it
+  there.
 - Concurrency + DES (VM): ownership works across actors. An actor given a
   meadow (`:actor(meadow, handler)`) runs the meadow and everything it
   holds; setting an object's `owner` to a meadow another actor runs (or to

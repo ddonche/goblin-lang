@@ -32,7 +32,7 @@ exists for counting:
 
 ```goblin
 <>Rabbit |
-    ~kind: "rabbit"
+    kind: "rabbit"
 ...
 rabbits | :len(:objects(it >> kind == "rabbit"))
 ```

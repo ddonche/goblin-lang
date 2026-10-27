@@ -3,7 +3,7 @@
 /// decision in the group gets its turn. Any other result (nil included)
 /// ends the group. Outside a group the result changes nothing.
 <>P |
-    ~name: ""
+    name: ""
     ~brave: 0
     flee | decision against P by [ 1 ]
     judge using flee

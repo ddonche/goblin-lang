@@ -4,17 +4,17 @@
 /// after it, and a condition before the ownership test still runs (and
 /// fails) for every target.
 <>Lord |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     claim | decision against Knight where [ target >> owner == self ] by [ annex(self, target) ]
     judge using claim
         >= 0: hire(target)
     end
 xx
 <>Knight |
-    ~name: ""
+    name: ""
     ~deeds: 0
-    ~owner: nil
+    owner: nil
 xx
 act annex(l, k)
     /// Scoring the first knight brings the free one under the lord.

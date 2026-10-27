@@ -4,10 +4,10 @@
 /// `}`. Braces that don't start an expression are text, as before.
 <>Estate |
     ~n: 0
-    ~owner: nil
+    owner: nil
 xx
 <>Lord |
-    ~name: ""
+    name: ""
 xx
 lord <> Lord | name: "Ash"
 e1 <> Estate | n: 1, owner: lord

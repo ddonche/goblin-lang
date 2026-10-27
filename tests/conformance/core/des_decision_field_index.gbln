@@ -6,7 +6,7 @@
 /// test does the same; a bare name there is the object's own field when the
 /// class has one, else the variable.
 <>Wolf |
-    ~name: ""
+    name: ""
     ~pen: 0
     hunt | decision against Sheep where [ target >> pen == self >> pen ] by [ target >> fat ]
     judge using hunt
@@ -14,10 +14,10 @@
     end
 xx
 <>Sheep |
-    ~name: ""
+    name: ""
     ~pen: 0
     ~fat: 0
-    ~color: ""
+    color: ""
 xx
 act eat(w, s)
     say("{w >> name} eats {s >> name} in pen {w >> pen}")

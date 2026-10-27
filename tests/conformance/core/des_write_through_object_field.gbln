@@ -5,7 +5,7 @@
     ~food: 10
 xx
 <>Person |
-    ~home: nil
+    home: nil
     every 1 tick
         self >> home >> food |= self >> home >> food - 1
     end
