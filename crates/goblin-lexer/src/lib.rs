@@ -1181,6 +1181,14 @@ fn quoted_placeholder_end(b: &[u8], open: usize, outer: u8) -> Option<usize> {
             // An escape outside quoted text: read the string as before.
             b'\\' => return None,
             q @ (b'"' | b'\'') => {
+                // Text in quotes in an expression follows an opening
+                // bracket, a comma or an operator. After a name or a closing
+                // bracket the quote is the string's own end, as in
+                // `"{not {code}", "}"`: read the string as before.
+                let before = b[open + 1..i].iter().rev().find(|c| !c.is_ascii_whitespace());
+                if !matches!(before, Some(b'(' | b'[' | b'{' | b',' | b'=' | b'?' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'|' | b'&' | b':')) {
+                    return None;
+                }
                 let mut j = i + 1;
                 loop {
                     match b.get(j)? {
