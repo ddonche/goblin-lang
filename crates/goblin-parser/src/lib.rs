@@ -1266,7 +1266,7 @@ impl<'t> Parser<'t> {
                 Some(K::Ident)
                 | Some(K::Int) | Some(K::Float) | Some(K::String)
                 | Some(K::Blob) | Some(K::Date) | Some(K::Time) | Some(K::DateTime) => true,
-                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" => true,
+                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" || s == "@" => true,
                 _ => false,
             }
         };
@@ -9344,7 +9344,7 @@ impl<'t> Parser<'t> {
                             }
 
                             // grouping / collection / prefix ops that begin an expr
-                            TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" => true,
+                            TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" || s == "@" => true,
 
                             _ => false,
                         },
@@ -11695,7 +11695,7 @@ impl<'t> Parser<'t> {
                 Some(K::Ident)
                 | Some(K::Int) | Some(K::Float) | Some(K::String)
                 | Some(K::Blob) | Some(K::Date) | Some(K::Time) | Some(K::DateTime) => true,
-                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" => true,
+                Some(K::Op(s)) if s == "(" || s == "[" || s == "{" || s == "+" || s == "-" || s == "!" || s == "&" || s == "@" => true,
                 _ => false,
             }
         };
@@ -11906,7 +11906,7 @@ impl<'t> Parser<'t> {
                             K::Int | K::Float | K::Money | K::String | K::Duration
                             | K::Date | K::Time | K::DateTime
                             | K::Ident | K::ClassIdent | K::HashIdent => true,
-                            K::Op(s) if s == "(" => true,
+                            K::Op(s) if s == "(" || s == "@" => true,
                             _ => false,
                         }
                     }
