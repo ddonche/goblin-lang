@@ -5,6 +5,13 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Sims: epidemic, predator-prey and feudal rewritten around ownership. A
+  person's or animal's `owner` is its town or meadow, and moving one is
+  setting `owner`. Regions are `:actor(x)` with no handler, and there is no
+  list of regions to pass around and no `:move!`. Epidemic and feudal give
+  the same output; predator-prey's draws fall differently (new
+  `expected.txt`) and it still cycles. 62/102/301 lines instead of
+  71/115/312; bench/vs_mesa README updated.
 - DES (VM): faster when objects are compared by `owner`. `target >> owner
   == @owner` compares the two ids without looking either object up;
   spreads, decisions and `:objects(..., it >> owner == x >> owner)` find

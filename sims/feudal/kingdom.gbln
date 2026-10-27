@@ -11,7 +11,7 @@
 ///           one deed a year (`one of`):
 ///             defect  a disloyal vassal half as strong as his liege swears to
 ///                     another kingdom's king, and goes there with all he
-///                     holds (:move!)
+///                     holds (his `owner` is now in another region)
 ///             sell    a noble in debt sells his poorest estate to the
 ///                     richest of his liege's other vassals
 ///             seize   a noble twice as strong as another vassal of his
@@ -35,11 +35,11 @@ if :env("YEARS") != ""
 xx
 houses | ["Arden", "Bracken", "Corvel", "Dunmore", "Elsing", "Fenwick", "Garrow", "Holt", "Ivers", "Jessop", "Kell", "Lorne", "Marsh", "Norwood", "Orme"]
 realm_names | ["Aldmark", "Brennor", "Caddis"]
-all_realms | []
 
 <>Realm |
-    ~n: 0
+    n: 0
     name: ""
+    /// A realm is held by no one; a realm's `owner` is nil.
     owner: nil
     ~crowned: 0
     ~inherited: 0
@@ -58,10 +58,10 @@ xx
     name: ""
     house: ""
     ~age: 20
-    ~lifespan: 60
+    lifespan: 60
     ~gold: 0
-    ~loyalty: 50
-    ~vows: 0
+    loyalty: 50
+    vows: false
     /// The noble whose child this is (nil for the first generation).
     parent: nil
     owner: nil
@@ -98,13 +98,13 @@ xx
         >= 0: grant(target)
     end
     one of defect, sell, seize, grant
-    transition erase when @age >= @lifespan or @vows == 1
+    transition erase when @age >= @lifespan or @vows
     end
 xx
 
 <>Estate |
     name: ""
-    ~yield: 5
+    yield: 5
     owner: nil
     every 1 tick
         if :is_type(@owner, "Noble")
@@ -160,7 +160,7 @@ act live(n)
     xx
     land | estates(n)
     if land == 0 and n >> age >= 25 and (pick 1 from 1...10) == 1
-        n >> vows |= 1
+        n >> vows |= true
     xx
     if n >> age >= 20 and n >> age <= 45 and land >= 1 and (pick 1 from 1...10) == 1
         h | n >> house
@@ -176,9 +176,8 @@ act defect(n, r)
     home | realm_of(n)
     home >> defected |= home >> defected + 1
     r >> arrived |= r >> arrived + 1
-    n >> owner |= kings[0]
     n >> loyalty |= 60
-    :move!(n, all_realms[r >> n])
+    n >> owner |= kings[0]
 xx
 
 act sell(n, buyer)
@@ -293,8 +292,8 @@ act noble(house, liege, age)
 xx
 
 /// A kingdom: a king with 4 estates, 4 lords with 3 each, and under each
-/// lord 2 knights with 1. Only the realm goes in the state; everything
-/// else belongs to it and goes with it to the region.
+/// lord 2 knights with 1. Everything belongs to the realm, so it all goes
+/// with the realm to its region.
 act make_kingdom(k)
     r <> Realm | n: k, name: realm_names[k]
     h | k * 5
@@ -312,22 +311,12 @@ act make_kingdom(k)
             estate(kn, 9)
         xx
     xx
-    return {"n": k, "realm": r}
-xx
-
-act kingdom_year(st, msg)
-    if :has(msg, "realms")
-        all_realms |= msg{"realms"}
-    xx
-    return st
+    return r
 xx
 
 realms | []
 repeat :range(0, n_kingdoms) as k
-    :put_last!(realms, :actor(make_kingdom(k), kingdom_year))
-xx
-repeat realms as rl
-    :post(rl, {"realms": realms})
+    :put_last!(realms, :actor(make_kingdom(k)))
 xx
 
 say("feudal kingdoms: {n_kingdoms} realms, {years} years")

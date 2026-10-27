@@ -115,3 +115,15 @@ The first versions died out within 60 days: the rabbits ate the grass
 bare, or the foxes ate every rabbit and then starved. Finding numbers that
 cycle took a sweep of 16 runs over four constants. The sweep edited copies
 of the file with `sed`, because the constants are in the code.
+
+## Rewritten on ownership (2026-10-27)
+
+Findings above describe the first version. Now each animal's `owner` is
+its `Meadow`, and grass belongs to the meadow too. Wandering sets `owner`
+to the next meadow, and the runtime hands the animal to that meadow's
+region. So finding 4 (posting the list of meadows to every region, and
+`meadow_day`) is gone. The `meadow` number field, kept in step by hand, is
+gone too. Decisions and the hunt count read `target >> owner == @owner`.
+Same rules; the random draws fall differently, so `expected.txt` is new,
+and the populations still cycle about every 90 days. #130 made the runtime
+do these lookups through its index instead of scans.
