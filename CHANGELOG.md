@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): `:objects(...)` with a predicate works out once per predicate
+  what running it directly needs, instead of on every call, and
+  `:objects("Class", it >> owner == x)` reads `x` without calling the VM.
+  Same results. Feudal sim, 40 years, 1 thread: 2.85 -> 2.51 billion
+  instructions (-12%).
 - DES (VM): a decision's `where [ target >> owner >> owner == x ... ]` (an
   estate of another vassal of my liege) looks only at what the things `x`
   holds hold, as `target >> owner == x` already looked only at what `x`
