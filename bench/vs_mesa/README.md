@@ -35,13 +35,13 @@ The two come out about even.
 
 ## Speed
 
-Times are wall-clock on one machine with 4 cores. Mesa's time does not include importing Mesa, which takes about 1.2 s.
+Times are wall-clock on one machine with 4 cores; repeated runs vary by about 10%. Mesa's time does not include importing Mesa, which takes about 1.2 s.
 
 | Sim | Goblin 1 thread | Goblin 4 threads | Mesa (1 thread) |
 |---|---|---|---|
 | epidemic 4×100 people, 120 days | 1.19 s | 0.74 s | 0.11 s |
 | epidemic 4×1000 people, 60 days | 20.7 s | 8.8 s | 8.0 s |
-| predator-prey, 360 days | 21.2 s | 7.3 s | 3.9 s |
+| predator-prey, 360 days | 21.2 s | 7.3 s | 4.8 s |
 | feudal, 200 years | 4.4 s | 3.0 s | 0.41 s |
 
 On one core, Mesa is 2.5–11× faster. Goblin on 4 threads draws level only on the large epidemic. Before #121–#124:

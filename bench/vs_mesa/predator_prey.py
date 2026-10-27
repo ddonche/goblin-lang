@@ -61,7 +61,8 @@ class Fox(Animal):
     def decide(self):
         if self.energy >= 30:
             return
-        here = self.model.agents_by_type[Rabbit].select(lambda r: r.meadow == self.meadow)
+        # A rabbit on its way to another meadow is in neither until tomorrow.
+        here = self.model.agents_by_type[Rabbit].select(lambda r: r.meadow == self.meadow and not r.moved)
         if len(here) == 0:
             return
         prey = self.random.choice(list(here))
@@ -88,8 +89,9 @@ class Meadows(mesa.Model):
             a.daily()
             if isinstance(a, Animal) and a.energy <= 0:
                 a.remove()
-        # Then each animal still here (not caught, not wandered off) eats or hunts.
-        for a in list(self.agents_by_type[Rabbit]) + list(self.agents_by_type[Fox]):
+        # Then each animal still here (not caught, not wandered off) eats or
+        # hunts, in the order they were made, rabbits and foxes alike.
+        for a in [a for a in self.agents if isinstance(a, Animal)]:
             if a in self.agents and not a.moved:
                 a.decide()
         for a in self.agents:
