@@ -1,0 +1,23 @@
+/// known-gap: interp scores targets differently (scaled scores)
+/// `target >> is_int` calls the builtin even when the class declares a
+/// field named `is_int`, so the field index is not used for it: with 40
+/// targets the decision still finds them all (an object is not an int).
+<>Hunter |
+    ~name: ""
+    pick | decision against Prey where [ target >> is_int == false ] by [ target >> n ]
+    judge using pick
+        >= 0: take(target)
+    end
+xx
+<>Prey |
+    ~n: 0
+    ~is_int: true
+xx
+act take(h, p)
+    say("{h >> name} takes {p >> n}")
+xx
+h <> Hunter | name: "Ash"
+repeat :range(0, 40) as i
+    p <> Prey | n: i
+xx
+tick()

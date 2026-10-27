@@ -22,3 +22,5 @@ say("{ not code } {\"json\": 1}")
 say("css a { color: red; } b")
 x | 3
 say("{x} \{x\} {x + 1}")
+/// Unbalanced braces in text don't reach into the next string.
+say(["{not {code}", "}"])

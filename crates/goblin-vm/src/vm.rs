@@ -6343,6 +6343,19 @@ pub(crate) struct FormulaEnv {
 /// to an object (by its argument slot), with where it sits in the store.
 enum Fv { Val(Value), Arg(usize, usize) }
 
+impl TickFormula {
+    /// Whether it reads `x >> name` only for names that are fields, not
+    /// member builtins (`>> shuffle`, `>> is_nil`), which may give a new
+    /// answer each time or don't read a field at all.
+    pub(crate) fn reads_fields_only(&self) -> bool {
+        let f = &self.func;
+        f.bytecode.iter().all(|op| match op {
+            Opcode::GetMember(idx) => matches!(f.constants.get(*idx as usize), Some(Value::Str(n)) if member_builtin(n).is_none()),
+            _ => true,
+        })
+    }
+}
+
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
     /// Every opcode is one `Vm::run_formula_in` handles.
@@ -6400,7 +6413,7 @@ fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
 
 /// The builtin a `x >> name` member access calls, if `name` is one; those
 /// names win over an object's fields of the same name.
-fn member_builtin(name: &str) -> Option<crate::value::BuiltinId> {
+pub(crate) fn member_builtin(name: &str) -> Option<crate::value::BuiltinId> {
     use crate::value::BuiltinId;
     match name {
         "str" | "string"   => Some(BuiltinId::ToStr),

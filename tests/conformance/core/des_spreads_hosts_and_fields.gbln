@@ -13,6 +13,14 @@ xx
 <>Q |
     ~name: ""
 xx
+<>S |
+    ~town: 0
+xx
+/// `target >> is_nil` is the builtin, not a field: every S catches it.
+overlay Odd |
+    hosts S
+    spreads where target >> is_nil == false at 1 per tick
+end
 overlay Flu |
     hosts P
     spreads where target >> town == self >> town at 1 per tick
@@ -26,8 +34,12 @@ same <> P | town: 1.0, name: "bob"
 other <> P | town: 2, name: "ann"
 r <> Rock | town: 1
 q <> Q | name: "ann"
+s1 <> S | town: 1
+s2 <> S | town: 2
+overlay Odd on s1 at 1
 overlay Flu on first at 1
 overlay Rumor on first at 1
 tick()
 say([:len(:overlays_of(same)), :len(:overlays_of(other)), :len(:overlays_of(r)), :len(:overlays_of(q))])
 say(:len(:overlays(it >> overlay_name == "Rumor")))
+say(:len(:overlays_of(s2)))
