@@ -1636,8 +1636,18 @@ impl Vm {
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let arg_vals = self.drain_operands(func_idx + 1)?;
+                    let mut arg_vals = self.drain_operands(func_idx + 1)?;
                     self.stack.pop(); // pop the func operand
+                    // A builtin gets objects, not ids (a field read kept as
+                    // an id for an action call, `render | str` then
+                    // `render(x >> owner)`).
+                    for a in arg_vals.iter_mut() {
+                        if let Value::Ref(u) = a {
+                            if !u.starts_with(OVERLAY_RECORD) {
+                                if let Some(o) = self.session.object_store.get(u.as_str()) { *a = o.clone(); }
+                            }
+                        }
+                    }
                     if let Some(m) = self.memo.as_mut() {
                         if !crate::memo::builtin_reads(bid) { m.changed(); }
                     }
@@ -3494,6 +3504,12 @@ impl Vm {
                 }
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    // A cast works on the object, not on its id.
+                    let val = match val {
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) =>
+                            self.session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+                        v => v,
+                    };
                     crate::builtins::cast_value_to_lock(val, &lock)?
                 } else {
                     val
