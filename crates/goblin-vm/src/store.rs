@@ -109,6 +109,27 @@ impl ObjectStore {
         self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str))
     }
 
+    /// Everything `uuid` contains, at any depth (what it holds, what those
+    /// hold, ...), in the order they were put there, each once.
+    pub fn all_contents_of(&self, uuid: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        seen.insert(uuid.to_string());
+        let mut i = 0;
+        let mut frontier = vec![uuid.to_string()];
+        while i < frontier.len() {
+            let here = frontier[i].clone();
+            i += 1;
+            for c in self.contents_of(&here) {
+                if seen.insert(c.to_string()) {
+                    out.push(c.to_string());
+                    frontier.push(c.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Before `uuid` is erased: what it contains moves up to what contains
     /// it (its own `owner`, nil when it has none), so nothing is left
     /// belonging to an object that is gone. An `on erase:` action that wants

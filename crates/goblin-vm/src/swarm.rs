@@ -39,6 +39,9 @@ pub(crate) struct Image {
     gc_mode: GcMode,
     token_store: BTreeMap<String, BTreeMap<String, PValue>>,
     object_store: Vec<(String, PValue)>,
+    /// For an actor: `object_store` holds what its objects contain, rebuilt
+    /// as objects of the actor's store (fields that name them are references).
+    contents: bool,
     box_store: Vec<(String, PValue)>,
     /// Overlay, link and decision definitions, and for an actor the
     /// overlays on the objects handed to it.
@@ -211,6 +214,16 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&
     image_for(session, tp, roots, None)
 }
 
+impl Image {
+    /// An actor's image: what the objects handed to it contain (owned
+    /// through their `owner` field, at any depth) goes along with them.
+    pub(crate) fn with_contents(mut self, objects: Vec<(String, PValue)>) -> Self {
+        self.object_store = objects;
+        self.contents = true;
+        self
+    }
+}
+
 pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[&Value]>, handed: Option<&std::collections::HashSet<String>>) -> Result<Image, GoblinError> {
     let program = program_of(session, tp)?;
     let keep = roots.and_then(|r| crate::reach::reachable(&base_of(session), r, session));
@@ -250,6 +263,7 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
         gc_mode: session.gc_mode,
         token_store,
         object_store,
+        contents: false,
         box_store,
         program,
         base_dir: session.base_dir.clone(),
@@ -329,9 +343,15 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
         build_tables(p, fp, &mut s)
     };
     tables.install(&mut s);
-    for (k, v) in &img.object_store {
-        let v = fp.value(v, &mut s);
-        s.object_store.insert(k.clone(), v);
+    if img.contents {
+        fp.adopting(true);
+        for (_, v) in &img.object_store { fp.value(v, &mut s); }
+        fp.adopting(false);
+    } else {
+        for (k, v) in &img.object_store {
+            let v = fp.value(v, &mut s);
+            s.object_store.insert(k.clone(), v);
+        }
     }
     for (k, v) in &img.box_store {
         let v = fp.value(v, &mut s);

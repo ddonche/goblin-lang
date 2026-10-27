@@ -1,0 +1,59 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// What an object contains (objects whose `owner` names it, at any depth)
+/// goes with it: to the actor it is handed to, and to the region it moves
+/// to with :move!. The state holds only the person; the bag and the coins
+/// in it come along because they belong to the person.
+<>Person |
+    ~name: ""
+xx
+<>Bag |
+    ~owner: nil
+xx
+<>Coin |
+    ~owner: nil
+    ~worth: 1
+xx
+act make_region(name, rich)
+    folk | []
+    if rich
+        p <> Person | name: "lord"
+        b <> Bag | owner: p
+        repeat :range(0, 3)
+            c <> Coin | owner: b
+        xx
+        c <> Coin | owner: p, worth: 10
+        :put_last!(folk, p)
+    xx
+    return {"name": name, "folk": folk, "peer": nil, "seen": nil}
+xx
+act wealth()
+    n | 0
+    repeat :objects("Coin") as c
+        n |= n + c >> worth
+    xx
+    return n
+xx
+act region_day(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick")
+        if msg{"tick"} == 1 and st{"name"} == "west"
+            :move!(st{"folk"}[0], st{"peer"})
+            :update!(st{"folk"}, [])
+        xx
+    elif :has(msg, "ask")
+        :update!(st{"seen"}, {"coins": :len(:objects("Coin")), "bags": :len(:objects("Bag")), "wealth": wealth()})
+    xx
+    return st
+xx
+west | :actor(make_region("west", true), region_day)
+east | :actor(make_region("east", false), region_day)
+:post(west, {"peer": east})
+:post(east, {"peer": west})
+repeat :range(1, 4) as d
+    w | :await(:request(west, {"ask": 1})){"seen"}
+    e | :await(:request(east, {"ask": 1})){"seen"}
+    say("before tick {d}: west {w}, east {e}")
+    tick([west, east])
+xx
+say(:len(:objects("Coin")))
