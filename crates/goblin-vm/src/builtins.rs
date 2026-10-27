@@ -12,11 +12,85 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
+/// Whether a value holds an object whose field names another stored object.
+fn holds_entry_fields(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => o.fields.values().any(|f| matches!(f, Value::Ref(_)) || holds_entry_fields(f)),
+        Value::Array(a) => a.iter().any(holds_entry_fields),
+        Value::Map(m) => m.values().any(holds_entry_fields),
+        Value::MapOrd(m) => m.values().any(holds_entry_fields),
+        Value::Collection(c) => match &c.layout {
+            crate::value::CollectionLayout::FlatArray(xs) => xs.iter().any(holds_entry_fields),
+            crate::value::CollectionLayout::SmallMap(xs) => xs.iter().any(|(_, x)| holds_entry_fields(x)),
+            crate::value::CollectionLayout::HashMapBackend(m) => m.values().any(holds_entry_fields),
+            _ => collections::to_vec(c).iter().any(holds_entry_fields),
+        },
+        _ => false,
+    }
+}
+
+/// A value as it is shown or written out: a field that names a stored
+/// object shows that object (nil once it is erased); an object met again
+/// inside itself stays a reference, so a cycle prints once.
+pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
+    fn walk(v: Value, s: &Session, seen: &mut Vec<String>) -> Value {
+        match v {
+            Value::Ref(u) if seen.iter().any(|x| *x == u) => Value::Ref(u),
+            Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => Value::Ref(u),
+            Value::Ref(u) => match s.object_store.get(u.as_str()) {
+                Some(o) => walk(o.clone(), s, seen),
+                None => Value::Nil,
+            },
+            Value::Object(mut o) => {
+                if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
+                seen.push(o.uuid.clone());
+                let fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+                    .map(|(k, f)| (k.clone(), match f {
+                        Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
+                        other => other.clone(),
+                    })).collect();
+                seen.pop();
+                o.fields = std::rc::Rc::new(fields);
+                Value::Object(o)
+            }
+            Value::Array(a) => Value::Array(a.into_iter().map(|x| walk(x, s, seen)).collect()),
+            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect()),
+            Value::MapOrd(m) => Value::MapOrd(Box::new(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect())),
+            Value::Collection(c) if holds_entry_fields(&Value::Collection(c.clone())) => {
+                if c.is_map() {
+                    let pairs = collections::to_pairs(&c).into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect();
+                    Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
+                } else {
+                    let xs = collections::to_vec(&c).into_iter().map(|x| walk(x, s, seen)).collect();
+                    Value::Collection(Rc::new(CollectionValue::from_flat(xs)))
+                }
+            }
+            other => other,
+        }
+    }
+    if session.object_store.is_empty() || !holds_entry_fields(&v) { return v; }
+    walk(v, session, &mut Vec::new())
+}
+
+/// `fmt_value_raw`, showing the objects that fields name.
+pub(crate) fn fmt_value_in(v: &Value, session: &Session) -> String {
+    if session.object_store.is_empty() || !holds_entry_fields(v) { return fmt_value_raw(v); }
+    fmt_value_raw(&show_entries(v.clone(), session))
+}
+
+/// Builtins that show or write out their arguments.
+fn shows_values(id: BuiltinId) -> bool {
+    matches!(id, BuiltinId::ToString | BuiltinId::ToStr | BuiltinId::Println | BuiltinId::Format
+        | BuiltinId::JsonStringify | BuiltinId::JsonStringifyPretty | BuiltinId::WriteJson
+        | BuiltinId::YallWrite | BuiltinId::YallWriteFile | BuiltinId::YallPretty)
+}
+
 pub fn call_builtin(
     id: BuiltinId,
     args: Vec<Value>,
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
+    let args = if shows_values(id) { args.into_iter().map(|a| show_entries(a, session)).collect() } else { args };
     let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
     // Math functions read a percent as its fraction: sqrt(25%) = 0.5.
     let args = if is_math(id) {
