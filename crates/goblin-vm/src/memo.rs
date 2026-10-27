@@ -92,7 +92,9 @@ pub(crate) fn builtin_reads(id: BuiltinId) -> bool {
 /// closure it makes and every action it loads from a global only reads too.
 /// A function that calls anything else (a function given as an argument, a
 /// method) doesn't count.
-pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option<Rc<FunctionObject>>, seen: &mut Vec<usize>) -> bool {
+/// `globals(g)`: what global `g` holds, when it is something callable (an
+/// action, a closure or a builtin).
+pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option<Value>, seen: &mut Vec<usize>) -> bool {
     let me = Rc::as_ptr(f) as usize;
     if seen.contains(&me) { return true; }
     seen.push(me);
@@ -122,8 +124,11 @@ pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option
                 _ => false,
             },
             Opcode::LoadGlobal(g) => match globals(g) {
-                Some(g) => reads_only(&g, globals, seen),
-                None => true,
+                Some(Value::Function(g)) => reads_only(&g, globals, seen),
+                Some(Value::Closure(c)) => reads_only(&c.func, globals, seen),
+                // `job | shuffle`: calling it calls the builtin.
+                Some(Value::Builtin(id)) => builtin_reads(id),
+                _ => true,
             },
             _ => false,
         };
