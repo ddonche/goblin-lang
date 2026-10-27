@@ -1,0 +1,12 @@
+/// known-gap: interp reads a bare name in a method as the object's field
+/// A bare name in a method is never the object's field: reading one that is
+/// only a field is an error that points to `@name`.
+<>P |
+    ~hp: 5
+    act show()
+        say("start")
+        say(hp)
+    xx
+xx
+p <> P | hp: 5
+p.show()

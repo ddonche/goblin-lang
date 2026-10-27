@@ -28,19 +28,19 @@ all_towns | []
     ~immune: 0
     every 1 tick
         if n_towns > 1 and (pick 1 from 1...30) == 1
-            to | (self >> town + 1) % n_towns
-            self >> town |= to
+            to | (@town + 1) % n_towns
+            @town |= to
             :move!(self, all_towns[to])
         xx
     end
-    transition erase when (self >> health) <= 0
+    transition erase when @health <= 0
     end
 xx
 
 overlay Sick |
     hosts Person
     lasts 8 ticks
-    spreads where target >> town == self >> town and target >> immune == 0 at .004 per tick
+    spreads where target >> town == @town and target >> immune == 0 at .004 per tick
     each tick:
         health - 1
     end

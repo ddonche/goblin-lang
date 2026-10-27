@@ -1,0 +1,12 @@
+/// A method that does not compile (here `hp |= ...`, where `hp` is only a
+/// field: that is `@hp |= ...`) reports why when it is called, instead of
+/// going missing.
+<>P |
+    ~hp: 5
+    act hurt()
+        hp |= hp - 1
+    xx
+xx
+p <> P | hp: 5
+say("before")
+p.hurt()

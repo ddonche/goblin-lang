@@ -37,16 +37,16 @@ all_villages | []
     ~sent: 0
     ~month: 0
     every 1 tick
-        self >> month |= self >> month + 1
-        self >> pop |= :len(:objects("Person", it >> village == self >> village))
+        @month |= @month + 1
+        @pop |= :len(:objects("Person", it >> village == @village))
         send_away(self)
         send_food(self)
-        if self >> month % 12 == 11
+        if @month % 12 == 11
             overlay Winter on self at 1
         xx
-        if self >> food > self >> pop * 3 and self >> pop < self >> huts * 4 and (pick 1 from 1...3) == 1
-            kid <> Person | village: self >> village
-            self >> born |= self >> born + 1
+        if @food > @pop * 3 and @pop < @huts * 4 and (pick 1 from 1...3) == 1
+            kid <> Person | village: @village
+            @born |= @born + 1
         xx
     end
 xx
@@ -67,34 +67,34 @@ end
     ~dead: 0
     on erase: bury
     every 1 tick
-        self >> age |= self >> age + 1
-        if self >> age > 600 and (pick 1 from 1...60) == 1
-            self >> dead |= 1
+        @age |= @age + 1
+        if @age > 600 and (pick 1 from 1...60) == 1
+            @dead |= 1
         xx
     end
     /// Every job is a decision against the person's own village.
-    eat | decision against Village where [ target >> village == self >> village ]
+    eat | decision against Village where [ target >> village == @village ]
     judge using eat
         >= 0: eat_food(target)
     end
     build | decision against Village where [
-        target >> village == self >> village and target >> wood >= 10 and target >> pop + 4 > target >> huts * 4
+        target >> village == @village and target >> wood >= 10 and target >> pop + 4 > target >> huts * 4
     ]
     judge using build
         >= 0: build_hut(target)
     end
     farm | decision against Village where [
-        self >> age >= 120 and target >> village == self >> village and target >> food < target >> pop * 12
+        @age >= 120 and target >> village == @village and target >> food < target >> pop * 12
     ]
     judge using farm
         >= 0: farm(target)
     end
-    chop | decision against Village where [ self >> age >= 120 and target >> village == self >> village ]
+    chop | decision against Village where [ @age >= 120 and target >> village == @village ]
     judge using chop
         >= 0: chop(target)
     end
     one of build, farm, chop
-    transition erase when (self >> hungry) >= 3 or (self >> dead) == 1
+    transition erase when @hungry >= 3 or @dead == 1
     end
 xx
 

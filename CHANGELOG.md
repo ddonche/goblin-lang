@@ -5,6 +5,14 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Syntax: `@name` is `self >> name`, anywhere `self` exists (class
+  actions, `every`/`when` blocks, decisions, transitions, overlays, links,
+  sweeps): reads, `@hp |= ...`, `@home >> food`, `@name.upper()`,
+  `@tags[0]`, `&@hp` and `"{@hp}"`. Outside those it is error P0919.
+  A bare name in a class action is no longer the object's field: it is a
+  variable, and reading one that is only a field is error R0122 ("did you
+  mean `@hp`?"). A method or `every` block that does not compile now says
+  why when it runs, instead of going missing. The sims use `@`.
 - DES: `~` before a field that starts as something other than a number
   (`~name: "Ash"`, `~owner: nil`, `~tags: []`) is a parse error, P0917.
   `~` only keeps a number as its real value instead of a 0..1 trait, so on

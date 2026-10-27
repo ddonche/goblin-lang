@@ -32,7 +32,7 @@ all_meadows | []
     ~meadow: 0
     ~amount: 400
     every 1 tick
-        self >> amount |= :min(400, self >> amount + 80)
+        @amount |= :min(400, @amount + 80)
     end
 xx
 
@@ -42,20 +42,20 @@ xx
     ~energy: 6
     ~born: 0
     every 1 tick
-        self >> energy |= self >> energy - 1
-        if self >> energy >= 10 and (pick 1 from 1...4) == 1
-            self >> energy |= self >> energy - 5
-            kit <> Rabbit | meadow: self >> meadow, energy: 4, born: 1
+        @energy |= @energy - 1
+        if @energy >= 10 and (pick 1 from 1...4) == 1
+            @energy |= @energy - 5
+            kit <> Rabbit | meadow: @meadow, energy: 4, born: 1
         xx
         wander(self)
     end
     graze | decision against Grass where [
-        target >> meadow == self >> meadow and target >> amount >= 1
+        target >> meadow == @meadow and target >> amount >= 1
     ] by [ target >> amount ]
     judge using graze
         >= 0: eat_grass(target)
     end
-    transition erase when (self >> energy) <= 0
+    transition erase when @energy <= 0
     end
 xx
 
@@ -64,19 +64,19 @@ xx
     ~energy: 12
     ~born: 0
     every 1 tick
-        self >> energy |= self >> energy - 1
-        if self >> energy >= 25 and (pick 1 from 1...4) == 1
-            self >> energy |= self >> energy - 12
-            cub <> Fox | meadow: self >> meadow, energy: 10, born: 1
+        @energy |= @energy - 1
+        if @energy >= 25 and (pick 1 from 1...4) == 1
+            @energy |= @energy - 12
+            cub <> Fox | meadow: @meadow, energy: 10, born: 1
         xx
         wander(self)
     end
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ]
+    hunt | decision against Rabbit where [ @energy < 30 and target >> meadow == @meadow ]
     judge using hunt
         >= 0: catch(target)
     end
-    transition erase when (self >> energy) <= 0
+    transition erase when @energy <= 0
     end
 xx
 

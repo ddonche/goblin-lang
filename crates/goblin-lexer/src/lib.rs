@@ -2365,8 +2365,15 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 state.tokens.push(Token::simple_op(";".to_string(), state.span(start_i, start_col)));
             }
 
-            // @ is no longer valid syntax; class declarations use <>
-            b'@' => {
+            // `@name` is `self >> name` (the parser builds that).
+            b'@' if state.peek(1).is_some_and(|c| c.is_ascii_lowercase() || c == b'_') => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance();
+                state.tokens.push(Token::simple_op("@".to_string(), state.span(start_i, start_col)));
+            }
+            // Any other `@`: classes are declared with <>, not @
+            b'@' if state.peek(1).is_some_and(|c| c.is_ascii_uppercase()) => {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance();
@@ -2374,6 +2381,17 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                 return Err(vec![Diagnostic::error(
                     "L0402",
                     "`@` is not valid Goblin syntax\n\nhelp: Use `<>ClassName` to declare or instantiate a class: `<>Player |`",
+                    span,
+                )]);
+            }
+            b'@' => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance();
+                let span = state.span(start_i, start_col);
+                return Err(vec![Diagnostic::error(
+                    "L0405",
+                    "`@` needs a field name right after it\n\nhelp: `@name` means `self >> name`: write `@energy`",
                     span,
                 )]);
             }

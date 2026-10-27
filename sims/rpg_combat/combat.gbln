@@ -26,14 +26,14 @@ loud | false
     /// else (and the cleric, when nobody needs healing) strikes the most
     /// hurt enemy. `one of`: a fighter that heals doesn't also strike.
     heal | decision against Fighter where [
-        self >> role == "cleric" and target >> side == self >> side and target >> hp * 2 < target >> max_hp
+        @role == "cleric" and target >> side == @side and target >> hp * 2 < target >> max_hp
     ] by [
         (target >> max_hp - target >> hp) / target >> max_hp
     ]
     judge using heal
         >= 0: mend(target)
     end
-    attack | decision against Fighter where [ target >> side != self >> side ] by [
+    attack | decision against Fighter where [ target >> side != @side ] by [
         (target >> max_hp - target >> hp) / target >> max_hp
     ]
     judge using attack
@@ -41,8 +41,8 @@ loud | false
     end
     one of heal, attack
     /// The fastest act first.
-    order by [ self >> speed ] desc
-    transition erase when (self >> hp) <= 0
+    order by [ @speed ] desc
+    transition erase when @hp <= 0
     end
 xx
 

@@ -49,28 +49,28 @@ end
     /// the fund has it.
     every 7 ticks
         repeat :objects(it >> job == -1)
-            if it >> district == self >> fund_of and it >> age >= adult and self >> cash >= 120
+            if it >> district == @fund_of and it >> age >= adult and @cash >= 120
                 it >> money |= it >> money + 120
-                self >> cash |= self >> cash - 120
+                @cash |= @cash - 120
             xx
         xx
     end
     every 1 tick
-        if self >> cash > 20000
+        if @cash > 20000
             open_here | []
             repeat :objects(it >> open == 1)
-                if it >> district == self >> fund_of
+                if it >> district == @fund_of
                     :put_last!(open_here, it)
                 xx
             xx
             n | :len(open_here)
             if n > 0
-                each | :floor((self >> cash - 20000) / 30 / n)
+                each | :floor((@cash - 20000) / 30 / n)
                 repeat open_here as b
                     b >> cash |= b >> cash + each
                     b >> sales |= b >> sales + each
                 xx
-                self >> cash |= self >> cash - each * n
+                @cash |= @cash - each * n
             xx
         xx
     end
@@ -88,19 +88,19 @@ xx
     open: 1
     hiring: 0
     every 1 tick
-        wage | self >> wage
-        need | wage * (self >> staff + 1) / 2
-        if self >> open == 1 and self >> staff < 15 and self >> cash >= need
-            self >> hiring |= 1
+        wage | @wage
+        need | wage * (@staff + 1) / 2
+        if @open == 1 and @staff < 15 and @cash >= need
+            @hiring |= 1
         else
-            self >> hiring |= 0
+            @hiring |= 0
         xx
     end
     every 14 ticks
-        if self >> open == 1
-            staff | :objects(it >> job == self >> code)
-            wage | self >> wage
-            cash | self >> cash
+        if @open == 1
+            staff | :objects(it >> job == @code)
+            wage | @wage
+            cash | @cash
             keep | :len(staff)
             repeat keep > 0 and wage * keep > cash
                 keep |= keep - 1
@@ -120,10 +120,10 @@ xx
                 xx
                 i |= i + 1
             xx
-            self >> staff |= keep
-            self >> cash |= cash - (wage + bonus) * keep
-            if keep == 0 and self >> cash < wage
-                self >> open |= 0
+            @staff |= keep
+            @cash |= cash - (wage + bonus) * keep
+            if keep == 0 and @cash < wage
+                @open |= 0
             xx
         xx
     end
@@ -138,26 +138,26 @@ xx
     ~moves: 0
     on erase: settle_estate
     every 1 tick
-        self >> age |= self >> age + 1
-        a | self >> age
-        if self >> expecting == 0 and a >= adult and a < 40 * 365 and (pick 1 from 1...9000) == 1
-            self >> expecting |= 1
+        @age |= @age + 1
+        a | @age
+        if @expecting == 0 and a >= adult and a < 40 * 365 and (pick 1 from 1...9000) == 1
+            @expecting |= 1
             overlay Pregnant on self at 1
         xx
     end
     every 30 ticks
-        if self >> age >= adult
-            pay | :min(self >> money, 150)
-            repeat :objects(it >> fund_of == self >> district)
+        if @age >= adult
+            pay | :min(@money, 150)
+            repeat :objects(it >> fund_of == @district)
                 it >> cash |= it >> cash + pay
             xx
-            self >> money |= self >> money - pay
+            @money |= @money - pay
         xx
         /// Now and then an adult moves to another district.
-        if n_districts > 1 and self >> age >= adult and (pick 1 from 1...100) == 1
-            to | (self >> district + 1 + (pick 1 from 0...(n_districts - 2))) % n_districts
-            self >> district |= to
-            self >> moves |= self >> moves + 1
+        if n_districts > 1 and @age >= adult and (pick 1 from 1...100) == 1
+            to | (@district + 1 + (pick 1 from 0...(n_districts - 2))) % n_districts
+            @district |= to
+            @moves |= @moves + 1
             :move!(self, all_districts[to])
         xx
     end
@@ -177,7 +177,7 @@ xx
         >= .5: apply(target)
     end
     /// Death: rare until old age (one in 200,000 a day; 1 in 2,500 past 70).
-    transition erase when (self >> age) > 70 * 365 and (pick 1 from 1...2500) == 1
+    transition erase when @age > 70 * 365 and (pick 1 from 1...2500) == 1
     end
     transition erase when (pick 1 from 1...200000) == 1
     end

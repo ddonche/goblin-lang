@@ -309,6 +309,10 @@ pub struct Parser<'t> {
     /// variable when followed by `[`, `+` or `-` (owner ruling 2026-10-06:
     /// variables win; `:name(...)` always reaches the builtin).
     bound_names: std::collections::HashSet<String>,
+    /// How many constructs that give their code a `self` (a class, an
+    /// overlay, a link, an object decision, a sweep) are open here. `@name`
+    /// is only valid when this is above zero.
+    self_scope: u32,
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -361,8 +365,25 @@ impl<'t> Parser<'t> {
             suspend_colon_call: 0,
             in_object_construction: false,
             bound_names: scan_bound_names(toks),
+            self_scope: 0,
         }
     } 
+
+    /// Accept `@name` outside any construct that gives `self` (for the
+    /// expression inside a string placeholder, whose surroundings the
+    /// compiler checks).
+    pub fn allow_self(mut self) -> Self {
+        self.self_scope = 1;
+        self
+    }
+
+    /// Runs `f` with `self` available to `@name`.
+    fn with_self<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.self_scope += 1;
+        let r = f(self);
+        self.self_scope -= 1;
+        r
+    }
 
     const MAX_RECURSION: usize = 256;
 
@@ -871,8 +892,21 @@ impl<'t> Parser<'t> {
         // allow newline(s) before the root after '&'
         self.skip_newlines();
 
-        // Root must be an identifier
-        let mut expr = if let Some(name) = self.eat_ident() {
+        // Root must be an identifier (or `@name`, which is `self >> name`)
+        let mut expr = if self.peek_op("@") {
+            self.i += 1;
+            let Some(name) = self.eat_ident() else {
+                return Err(s_help_site!("P0918", "'@' needs a field name right after it", "'@name' means 'self >> name': write &@energy"));
+            };
+            if self.self_scope == 0 {
+                return Err(s_help_site!(
+                    "P0919",
+                    &format!("'@{name}' means 'self >> {name}', and there is no 'self' here"),
+                    "Use '@name' inside a class (its actions, every/when blocks, decisions and transitions), an overlay, a link or a sweep",
+                ));
+            }
+            PExpr::Member(Box::new(PExpr::Ident("self".to_string())), name)
+        } else if let Some(name) = self.eat_ident() {
             PExpr::Ident(name)
         } else {
             return Err(s_help_site!(
@@ -2097,20 +2131,20 @@ impl<'t> Parser<'t> {
             }
         }
         // `return` expr (',' expr)*
-        let first_pe = self.parse_assign().map_err(|_| s_help_site!(
+        let first_pe = self.parse_assign().map_err(|e| if e.contains("P0919") { e } else { s_help_site!(
             "P0603",
             "Invalid expression after 'return'",
             "Use `return expr` or `return a, b`.",
-        ))?;
+        )})?;
         let first = self.lower_expr(first_pe);
         values.push(first);
         
         while self.eat_op(",") {
-            let expr_pe = self.parse_assign().map_err(|_| s_help_site!(
+            let expr_pe = self.parse_assign().map_err(|e| if e.contains("P0919") { e } else { s_help_site!(
                 "P0603",
                 "Invalid expression in return list",
                 "Separate expressions with commas, e.g., `return a+b, lower(name)`.",
-            ))?;
+            )})?;
             let expr = self.lower_expr(expr_pe);
             values.push(expr);
         }
@@ -2140,7 +2174,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P0903",
                         "Expected a field name in this class header",
-                        "Add a field in the header: @Player = username: \"john\" :: health: 100",
+                        "Add a field on its own line: <>Player |  then  name: \"john\"",
                     ));
                 } else {
                     break;
@@ -3931,6 +3965,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_class_decl(&mut self) -> Result<PExpr, String> {
+        self.with_self(|p| p.parse_class_decl_body())
+    }
+
+    fn parse_class_decl_body(&mut self) -> Result<PExpr, String> {
         use goblin_lexer::TokenKind;
 
         // Detect REPL input by filename
@@ -3966,8 +4004,8 @@ impl<'t> Parser<'t> {
         } else {
             return Err(s_help_site!(
                 "P0905",
-                "Expected '@' to start a class declaration",
-                "Start the class like: @Player = username: \"john\", health: 100",
+                "Expected '<>' to start a class declaration",
+                "Start the class like: <>Player |",
             ));
         };
 
@@ -3979,7 +4017,7 @@ impl<'t> Parser<'t> {
             ));
         }
 
-        // Optionally consume a '!' modifier after the class name (@Entity! | ...)
+        // Optionally consume a '!' modifier after the class name (<>Entity! | ...)
         self.eat_op("!");
 
 
@@ -3988,7 +4026,7 @@ impl<'t> Parser<'t> {
                 return Err(s_help_site!(
                     "P0710",
                     "Parentheses are not allowed after a class name.",
-                    "Put fields after '=': @Player | username: \"john\", health: 100",
+                    "Put the fields on the lines after the header: <>Player |  then  name: \"john\"",
                 ));
             }
         }
@@ -3997,7 +4035,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P0908",
                 &format!("You need '|' after the class name '{}'", name),
-                "Write it like: @Player | username: \"john\", health: 100",
+                "Write it like: <>Player |",
             ));
         }
 
@@ -4238,7 +4276,7 @@ impl<'t> Parser<'t> {
                         "I reached the end of the file, but the class '{}' is still open (missing 'end' or 'xx')",
                         name
                     ),
-                    "Close the class with 'end' or 'xx' (crossbones): @Player = username: \"john\", health: 100 end",
+                    "Close the class with 'xx' (crossbones) on its own line",
                 ));
             }
 
@@ -4872,7 +4910,7 @@ impl<'t> Parser<'t> {
         Err(s_help_site!(
             "P0912",
             "The 'class' keyword isn't used here",
-            "Declare a class with '@' instead: @Player = username: \"john\" :: health: 100",
+            "Declare a class with '<>' instead: <>Player |",
         ))
     }
 
@@ -6141,7 +6179,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // ---- Friendly guard: looks like a class header but missing '@'
+        // ---- Friendly guard: looks like a class header but missing '<>'
         // Pattern: Capitalized Ident '=' Ident ':'  (e.g., A = n: 1)
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
@@ -6648,11 +6686,13 @@ impl<'t> Parser<'t> {
         }
 
         // -------- member path assignment: Object >> field |= value --------
-        // Detects IDENT >> ... |= pattern and lowers to a member retether.
+        // Detects IDENT >> ... |= (or @IDENT ... |=) and lowers to a member retether.
         if let Some(t0) = self.peek().cloned() {
-            if matches!(t0.kind, TokenKind::Ident) {
+            let at = matches!(t0.kind, TokenKind::Op(ref s) if s == "@");
+            if matches!(t0.kind, TokenKind::Ident) || at {
                 if let Some(t1) = self.toks.get(self.i + 1) {
-                    if matches!(t1.kind, TokenKind::Op(ref s) if s == ">>") {
+                    if (!at && matches!(t1.kind, TokenKind::Op(ref s) if s == ">>"))
+                        || (at && matches!(t1.kind, TokenKind::Ident)) {
                         // Scan ahead to find |= anywhere in this member chain
                         let mut k = self.i + 2;
                         let mut found_retether = false;
@@ -7180,8 +7220,8 @@ impl<'t> Parser<'t> {
             }
             _ => Err(s_help_site!(
                 "P0905",
-                "Expected a class declaration after '@'",
-                "Start the class like: @Player | username: \"john\" :: health: 100",
+                "Expected a class declaration after '<>'",
+                "Start the class like: <>Player |",
             )),
         }
     }
@@ -7302,6 +7342,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_overlay_def(&mut self, name: String, start_i: usize) -> Result<ast::Stmt, String> {
+        self.with_self(|p| p.parse_overlay_def_body(name, start_i))
+    }
+
+    fn parse_overlay_def_body(&mut self, name: String, start_i: usize) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
         let mut host_types: Vec<String> = Vec::new();
@@ -7833,6 +7877,10 @@ impl<'t> Parser<'t> {
 
     /// Parse `link ClassName [channel] by [ formula ]`
     fn parse_link_def(&mut self) -> Result<ast::Stmt, String> {
+        self.with_self(|p| p.parse_link_def_body())
+    }
+
+    fn parse_link_def_body(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'link'
 
@@ -7942,6 +7990,10 @@ impl<'t> Parser<'t> {
     /// Parse `ObjectName link [channel] by [ formula ]`
     /// OR   `VarA link to VarB on channel offset value [for N ticks]`
     fn parse_object_link_def(&mut self) -> Result<ast::Stmt, String> {
+        self.with_self(|p| p.parse_object_link_def_body())
+    }
+
+    fn parse_object_link_def_body(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
 
         let Some(object_var) = self.eat_ident() else {
@@ -8071,6 +8123,10 @@ impl<'t> Parser<'t> {
     /// Parse `clear link VarA to VarB on channel`
     /// Parse `VarName score | decision against Class by [ formula ]`
     fn parse_object_decision(&mut self) -> Result<ast::Stmt, String> {
+        self.with_self(|p| p.parse_object_decision_body())
+    }
+
+    fn parse_object_decision_body(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let Some(var_name) = self.eat_ident() else {
             return Err("expected var name".to_string());
@@ -8737,6 +8793,27 @@ impl<'t> Parser<'t> {
             } else {
                 break;
             }
+        }
+
+        // `@name` is `self >> name`.
+        if self.peek_op("@") {
+            self.i += 1;
+            let Some(name) = self.eat_ident() else {
+                return Err(s_help_site!(
+                    "P0918",
+                    "'@' needs a field name right after it",
+                    "'@name' means 'self >> name': write @energy",
+                ));
+            };
+            if self.self_scope == 0 {
+                return Err(s_help_site!(
+                    "P0919",
+                    &format!("'@{name}' means 'self >> {name}', and there is no 'self' here"),
+                    "Use '@name' inside a class (its actions, every/when blocks, decisions and transitions), an overlay, a link or a sweep",
+                ));
+            }
+            let base = PExpr::Member(Box::new(PExpr::Ident("self".to_string())), name);
+            return self.apply_postfix_ops(base);
         }
 
         // Box variable read: #namespace::name
@@ -10569,6 +10646,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_sweep_stmt(&mut self, mode: ast::SweepMode) -> Result<ast::Stmt, String> {
+        self.with_self(|p| p.parse_sweep_stmt_body(mode))
+    }
+
+    fn parse_sweep_stmt_body(&mut self, mode: ast::SweepMode) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
         use ast::{SweepStmt, SweepArm, SweepArmKind, Stmt};
 
@@ -10907,6 +10988,7 @@ impl<'t> Parser<'t> {
                 let i0 = self.i;
                 match self.parse_definedness_lvalue() {
                     Ok(lv) => return Ok(PExpr::IsBound(Box::new(lv))),
+                    Err(e) if e.contains("P0919") => return Err(e),
                     Err(_) => {
                         // Don't loop forever if nothing consumed after '&'
                         if self.i == i0 { /* we already ate '&' */ }

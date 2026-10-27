@@ -4,7 +4,7 @@ lim | 3
     v: 1
     act check()
         say("lim {lim}")
-        return v < lim
+        return @v < lim
     xx
 xx
 act make_gauge(v)
