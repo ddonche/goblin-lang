@@ -5,6 +5,14 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Concurrency + DES (VM): ownership works across actors. An actor given a
+  meadow (`:actor(meadow, handler)`) runs the meadow and everything it
+  holds; setting an object's `owner` to a meadow another actor runs (or to
+  something that meadow holds) sends the object there, with what it holds,
+  its overlays and links, as `:move!` does. The main program can set
+  `owner` too, and an object it makes for a meadow goes to that meadow's
+  actor. Before, the object stayed in its old actor (and one the main
+  program made was never ticked).
 - DES (VM): `:objects(...)` with a predicate works out once per predicate
   what running it directly needs, instead of on every call, and
   `:objects("Class", it >> owner == x)` reads `x` without calling the VM.
