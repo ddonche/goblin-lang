@@ -1006,6 +1006,12 @@ impl Vm {
                         return Ok(());
                     }
                 }
+                // Two objects: the same object or not, without copying either.
+                if let Some(same) = self.same_object_top2() {
+                    self.stack.pop();
+                    *self.stack.last_mut().unwrap() = Operand::Val(Value::Bool(same));
+                    return Ok(());
+                }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 self.stack.push(Operand::Val(Value::Bool(values_equal(&a, &b))));
             }
@@ -1016,6 +1022,12 @@ impl Vm {
                         *self.stack.last_mut().unwrap() = Operand::Val(r);
                         return Ok(());
                     }
+                }
+                // Two objects: the same object or not, without copying either.
+                if let Some(same) = self.same_object_top2() {
+                    self.stack.pop();
+                    *self.stack.last_mut().unwrap() = Operand::Val(Value::Bool(!same));
+                    return Ok(());
                 }
                 let b = self.pop_value()?; let a = self.pop_value()?;
                 self.stack.push(Operand::Val(Value::Bool(!values_equal(&a, &b))));
@@ -1568,7 +1580,23 @@ impl Vm {
                 // `obj >> field` on a variable: read the one field in place
                 // instead of copying the whole object off the variable.
                 if let Value::Str(ref name) = key {
-                    if let Some(r) = self.member_field_in_place(name) {
+                    // An object the field names stays a reference (its id, as
+                    // in the field) when what comes next only needs that: a
+                    // store into a variable (`x |= x >> owner`), another
+                    // field read (`x >> owner >> gold`), a comparison or an
+                    // action call. Otherwise it reads as a copy.
+                    let keep_ref = {
+                        let f = self.call_stack.last().unwrap();
+                        match f.func.bytecode.get(f.ip) {
+                            Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_) | Opcode::Eq | Opcode::Ne | Opcode::Call(_)) => true,
+                            Some(Opcode::GuardRebindLocal(..)) =>
+                                matches!(f.func.bytecode.get(f.ip + 1), Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_))),
+                            Some(Opcode::GetMember(k)) => matches!(f.func.constants.get(*k as usize),
+                                Some(Value::Str(n)) if member_builtin(n).is_none()),
+                            _ => false,
+                        }
+                    };
+                    if let Some(r) = self.member_field_in_place(name, keep_ref) {
                         let v = r?;
                         self.stack.pop();
                         self.stack.push(Operand::Val(v));
@@ -1608,8 +1636,18 @@ impl Vm {
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let arg_vals = self.drain_operands(func_idx + 1)?;
+                    let mut arg_vals = self.drain_operands(func_idx + 1)?;
                     self.stack.pop(); // pop the func operand
+                    // A builtin gets objects, not ids (a field read kept as
+                    // an id for an action call, `render | str` then
+                    // `render(x >> owner)`).
+                    for a in arg_vals.iter_mut() {
+                        if let Value::Ref(u) = a {
+                            if !u.starts_with(OVERLAY_RECORD) {
+                                if let Some(o) = self.session.object_store.get(u.as_str()) { *a = o.clone(); }
+                            }
+                        }
+                    }
                     if let Some(m) = self.memo.as_mut() {
                         if !crate::memo::builtin_reads(bid) { m.changed(); }
                     }
@@ -3202,11 +3240,16 @@ impl Vm {
     /// copying the object, when the top operand is a variable holding an
     /// object and `name` is not a builtin member. None means take the
     /// general path.
-    fn member_field_in_place(&self, name: &str) -> Option<Result<Value, GoblinError>> {
-        let Some(Operand::Ref(t)) = self.stack.last() else { return None };
+    /// `keep_ref`: a field naming a stored object reads as its id (Value::Ref).
+    fn member_field_in_place(&self, name: &str, keep_ref: bool) -> Option<Result<Value, GoblinError>> {
         if member_builtin(name).is_some() { return None; }
-        let stash = self.session.get_stash(t).ok()?;
-        let obj = match &stash.value {
+        let held = match self.stack.last() {
+            Some(Operand::Ref(t)) => &self.session.get_stash(t).ok()?.value,
+            // A field read that kept its object as a reference.
+            Some(Operand::Val(v @ Value::Ref(_))) => v,
+            _ => return None,
+        };
+        let obj = match held {
             Value::Object(o) => o,
             Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
                 Some(Value::Object(o)) => o,
@@ -3214,8 +3257,33 @@ impl Vm {
             },
             _ => return None,
         };
-        Some(obj.fields.get(name).cloned().map(|v| entry_out(&self.session, v)).ok_or_else(|| GoblinError::Runtime(format!(
+        Some(obj.fields.get(name).cloned().map(|v| match v {
+            Value::Ref(ref u) if keep_ref && !u.starts_with(OVERLAY_RECORD)
+                && self.session.object_store.contains_key(u.as_str()) => v,
+            v => entry_out(&self.session, v),
+        }).ok_or_else(|| GoblinError::Runtime(format!(
             "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
+    }
+
+    /// When the top two operands are both stored objects: whether they are
+    /// the same one (objects compare by id).
+    fn same_object_top2(&self) -> Option<bool> {
+        let n = self.stack.len();
+        if n < 2 { return None; }
+        let id = |op: &Operand| -> Option<String> {
+            let v = match op {
+                Operand::Val(v) => v,
+                Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
+            };
+            match v {
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) => Some(u.clone()),
+                Value::Object(o) => Some(o.uuid.clone()),
+                _ => None,
+            }
+        };
+        let a = id(&self.stack[n - 2])?;
+        let b = id(&self.stack[n - 1])?;
+        Some(a == b)
     }
 
     fn resolve_op(&self, op: Operand) -> Result<Value, GoblinError> {
@@ -3393,7 +3461,28 @@ impl Vm {
                         return Ok(());
                     }
                 }
-                let val = self.stack_pop_raw()?;
+                // Another variable's object (`y | x`) is stored as its id:
+                // the object stays where it is, not copied and written back.
+                let val = match self.stack.last() {
+                    Some(Operand::Ref(t)) if self.call_stack.last().unwrap().get_hard_type_lock(slot).is_none() => {
+                        match &self.session.get_stash(t)?.value {
+                            Value::Ref(u) if !u.starts_with(OVERLAY_RECORD)
+                                && self.session.object_store.contains_key(u.as_str()) => {
+                                let v = Value::Ref(u.clone());
+                                self.stack.pop();
+                                v
+                            }
+                            _ => self.stack_pop_raw()?,
+                        }
+                    }
+                    _ => self.stack_pop_raw()?,
+                };
+                if let Value::Ref(u) = &val {
+                    if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) {
+                        let u = u.clone();
+                        self.note_object_name(&u, NameOf::Local(slot as usize));
+                    }
+                }
                 // A variable nothing else holds (no closure, no pending
                 // operand) and no lock to cast for: overwrite its value
                 // instead of making a new stash. Nobody can tell the
@@ -3415,6 +3504,12 @@ impl Vm {
                 }
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    // A cast works on the object, not on its id.
+                    let val = match val {
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) =>
+                            self.session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+                        v => v,
+                    };
                     crate::builtins::cast_value_to_lock(val, &lock)?
                 } else {
                     val

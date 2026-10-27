@@ -1,0 +1,24 @@
+/// Walk 30 owners up a chain, 20,000 times (`x |= x >> owner`).
+<>Box |
+    ~owner: nil
+    ~n: 0
+xx
+top <> Box | n: 0
+cur | top
+repeat :range(0, 30) as i
+    b <> Box | n: i, owner: cur
+    cur |= b
+xx
+act walk(x)
+    k | 0
+    repeat x >> owner != nil
+        x |= x >> owner
+        k |= k + 1
+    xx
+    return k
+xx
+t | 0
+repeat 20000
+    t |= t + walk(cur)
+xx
+say(t)

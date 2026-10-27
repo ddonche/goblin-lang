@@ -1,0 +1,48 @@
+/// known-gap: interp copies an object read from a field into a variable
+/// A variable given an object from a field or from another variable holds
+/// that same object: writes through it reach the object, comparisons are by
+/// object, and an erased object reads as nil from a field.
+<>Box |
+    ~name: ""
+    ~gold: 0
+    ~owner: nil
+xx
+top <> Box | name: "top"
+mid <> Box | name: "mid", owner: top
+low <> Box | name: "low", owner: mid
+act root(x)
+    repeat x >> owner != nil
+        x |= x >> owner
+    xx
+    return x
+xx
+r | root(low)
+say(r >> name)
+r >> gold |= 7
+say(top >> gold)
+say(root(low) == top)
+say(low >> owner >> owner == top)
+say(low >> owner == top)
+say(low >> owner != top)
+y | mid
+y >> gold |= 3
+say(mid >> gold)
+z | low >> owner
+z >> owner |= nil
+say(root(low) >> name)
+say(:is_type(low >> owner, "Box"))
+up | low >> owner
+delete_object!(mid)
+say(low >> owner == nil)
+/// A builtin called through a variable, and a cast into a typed variable,
+/// get the object itself.
+hold <> Box | name: "hold"
+item <> Box | name: "item", owner: hold
+render | str
+say(render(item >> owner) == :str(hold))
+act lock_it(x)
+    s.str | ""
+    s |= x >> owner
+    return s
+xx
+say(lock_it(item))
