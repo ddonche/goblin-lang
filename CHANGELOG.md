@@ -5,6 +5,19 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): a decision's `where`, score and other formulas can call the
+  program's actions and read its variables (`where [ kingdom(target) == 2 ]`
+  was an R1220 "undefined variable" error).
+- DES (VM): a decision whose `where` has `target >> owner == x` (alone or
+  joined by `and`) looks only at what `x` holds, through its contents list;
+  a leading condition that doesn't name `target` (`self >> gold < 0`) is
+  checked once instead of per target. Only read-only conditions are used
+  this way, so the result is the same. 300 lords rewarding their 3,000
+  knights for 10 ticks: 11.5 s to 0.09 s.
+- Regions (VM): objects cross between regions by id. An object that moved to
+  another region used to carry copies of the objects its fields named (its
+  owner, its owner's owner, ...); writing through such a copy wiped the real
+  object's changes there. Changes and snapshots send ids the same way.
 - Ownership (VM): what an object contains goes with it. Handing it to an
   actor (`:actor`) and moving it to another region (`:move!`) take along
   everything whose `owner` names it, at any depth, and what that refers to.

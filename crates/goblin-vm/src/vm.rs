@@ -4850,7 +4850,10 @@ impl Vm {
         // formula's span and kind, and the names it is called with.
         let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
-        let f = Self::compile_expr_fn(expr, param_names, crate::compiler::Compiler::new())?;
+        // Compiled against the program's globals, so a formula can read a
+        // variable and call an action (`where [ kingdom(target) == 2 ]`).
+        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec());
+        let f = Self::compile_expr_fn(expr, param_names, compiler)?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default() });
         // A formula at a passing address (a copy) is compiled each time; keep
@@ -5062,17 +5065,22 @@ impl Vm {
                     }
                 }
                 Opcode::GetMember(idx) => {
-                    let Some(Fv::Arg(a, pos)) = st.pop() else { return None };
+                    let top = st.pop()?;
                     // `formula_runs_direct` ruled out names of member builtins.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
-                    let obj = match a {
-                        Value::Object(o) => o,
-                        Value::Ref(uuid) => match self.session.object_store.get_index(pos) {
-                            Some((k, Value::Object(o))) if k == uuid => o,
+                    let obj = match &top {
+                        Fv::Arg(Value::Object(o), _) => &**o,
+                        Fv::Arg(Value::Ref(uuid), pos) => match self.session.object_store.get_index(*pos) {
+                            Some((k, Value::Object(o))) if k == uuid => &**o,
                             _ => match self.session.object_store.get(uuid.as_str()) {
-                                Some(Value::Object(o)) => o,
+                                Some(Value::Object(o)) => &**o,
                                 _ => return None,
                             },
+                        },
+                        // A field that names an object (`target >> owner >> gold`).
+                        Fv::Val(Value::Ref(uuid)) => match self.session.object_store.get(uuid.as_str()) {
+                            Some(Value::Object(o)) => &**o,
+                            _ => return None,
                         },
                         _ => return None,
                     };
@@ -5090,8 +5098,14 @@ impl Vm {
                             v
                         }
                     };
-                    if matches!(v, Value::Frozen(_) | Value::Ref(_)) { return None; }
-                    st.push(Fv::Val(v.clone_fast()));
+                    match v {
+                        Value::Frozen(_) => return None,
+                        // An object the field names, by its id: compared by
+                        // identity, or read through (above).
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => st.push(Fv::Val(Value::Ref(u.clone()))),
+                        Value::Ref(_) => return None,
+                        _ => st.push(Fv::Val(v.clone_fast())),
+                    }
                 }
                 // In a query predicate, a bare name is `it`'s field when it
                 // has one (then skip the name's own load), as on the VM.
@@ -5165,10 +5179,26 @@ impl Vm {
                     st.push(Fv::Val(Value::Bool(test(c))));
                 }
                 Opcode::Eq | Opcode::Ne => {
-                    // Strings compare here too (`it >> kind == "rabbit"`).
-                    let b = plain_or_str(st.pop()?)?;
-                    let a = plain_or_str(st.pop()?)?;
-                    let eq = values_equal(&a, &b);
+                    // Strings compare here too (`it >> kind == "rabbit"`), and
+                    // objects by identity (`target >> owner == self`), as on
+                    // the VM. An id with no object behind it is the VM's call.
+                    let b = st.pop()?;
+                    let a = st.pop()?;
+                    let id = |v: &Fv<'_>| -> Option<Option<String>> {
+                        let x: &Value = match v { Fv::Arg(x, _) => x, Fv::Val(x) => x };
+                        match x {
+                            Value::Object(o) => Some(Some(o.uuid.to_string())),
+                            Value::Ref(u) => Some(if self.session.object_store.contains_key(u.as_str()) { Some(u.to_string()) } else { None }),
+                            _ => None,
+                        }
+                    };
+                    let eq = match (id(&a), id(&b)) {
+                        (None, None) => values_equal(&plain_or_str(a)?, &plain_or_str(b)?),
+                        (Some(Some(x)), Some(Some(y))) => x == y,
+                        (Some(Some(_)), None) => { if !matches!(b, Fv::Val(Value::Nil)) { return None; } false }
+                        (None, Some(Some(_))) => { if !matches!(a, Fv::Val(Value::Nil)) { return None; } false }
+                        _ => return None,
+                    };
                     st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
                 }
                 Opcode::Not => {
