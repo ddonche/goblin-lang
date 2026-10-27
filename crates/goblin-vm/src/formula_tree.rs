@@ -28,12 +28,15 @@ enum Arith { Add, Sub, Mul, Div }
 #[derive(Clone, Copy)]
 enum Cmp { Lt, Le, Gt, Ge }
 
-enum Node {
+pub(crate) enum Node {
     Const(Value),
     Load(Slot),
     /// `obj >> name`; `hint`: where the field was found last time (objects
     /// of one class share a layout).
     Member(Box<Node>, String, Cell<u32>),
+    /// A bare name in a query predicate: `it`'s field of that name when it
+    /// has one, else the variable (the node).
+    ItOr(String, Box<Node>),
     Arith(Arith, Box<Node>, Box<Node>),
     Neg(Box<Node>),
     Cmp(Cmp, Box<Node>, Box<Node>),
@@ -71,6 +74,38 @@ enum Stop {
 type R<'a> = Result<Tv<'a>, Stop>;
 
 impl FormulaTree {
+    /// A part `x >> f == e` (or `e == x >> f`) of the formula's top `and`
+    /// chain, where `x` is argument `arg` and `e` doesn't read it: the
+    /// formula is false for any object whose `f` differs from `e`.
+    /// `has_field`: whether the objects looked at have a field of that name
+    /// (a bare name in a predicate reads it then).
+    pub(crate) fn field_equal(&self, arg: u16, has_field: &dyn Fn(&str) -> bool) -> Option<(&str, &Node)> {
+        fn parts<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
+            match n {
+                Node::Logic(true, a, b) => { parts(a, out); parts(b, out); }
+                // `a and b` as a condition comes out as `not not (a and b)`.
+                Node::Not(x) => match &**x { Node::Not(y) => parts(y, out), _ => out.push(n) },
+                other => out.push(other),
+            }
+        }
+        fn field_of(n: &Node, arg: u16) -> Option<&str> {
+            match n {
+                Node::Member(o, f, _) if matches!(&**o, Node::Load(Slot::Arg(a)) if *a == arg) => Some(f.as_str()),
+                _ => None,
+            }
+        }
+        let mut all = Vec::new();
+        parts(&self.root, &mut all);
+        all.into_iter().find_map(|p| match p {
+            Node::Eq(true, a, b) => match (field_of(a, arg), field_of(b, arg)) {
+                (Some(f), _) if !reads_arg(b, arg, has_field) => Some((f, &**b)),
+                (_, Some(f)) if !reads_arg(a, arg, has_field) => Some((f, &**a)),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
     /// The tree for `f`, when every step is one the tree handles.
     pub(crate) fn build(f: &FunctionObject) -> Option<FormulaTree> {
         let code = &f.bytecode;
@@ -106,6 +141,17 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
                 let Value::Str(name) = f.constants.get(c as usize)? else { return None };
                 let obj = st.pop()?;
                 st.push(Node::Member(Box::new(obj), name.to_string(), Cell::new(u32::MAX)));
+            }
+            // The field, or else the load in the next `off` steps.
+            Opcode::LoadItFieldOrJump(c, off) => {
+                let Value::Str(name) = f.constants.get(c as usize)? else { return None };
+                let end_of = i + 1 + off as usize;
+                if off < 1 || end_of > end { return None; }
+                let (mut alt, ret) = segment(f, i + 1, end_of, false)?;
+                if ret.is_some() || alt.len() != 1 { return None; }
+                st.push(Node::ItOr(name.to_string(), Box::new(alt.pop()?)));
+                i = end_of;
+                continue;
             }
             Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
                 let (a, b) = bin(&mut st)?;
@@ -146,6 +192,19 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
         i += 1;
     }
     if top { None } else { Some((st, None)) }
+}
+
+fn reads_arg(n: &Node, arg: u16, has_field: &dyn Fn(&str) -> bool) -> bool {
+    let r = |x: &Node| reads_arg(x, arg, has_field);
+    match n {
+        Node::Const(_) => false,
+        Node::Load(Slot::Arg(a)) => *a == arg,
+        Node::Load(_) => false,
+        // `it` is argument 0 of a query predicate.
+        Node::ItOr(name, x) => (arg == 0 && has_field(name)) || r(x),
+        Node::Member(x, _, _) | Node::Neg(x) | Node::Not(x) => r(x),
+        Node::Arith(_, a, b) | Node::Cmp(_, a, b) | Node::Eq(_, a, b) | Node::Logic(_, a, b) => r(a) || r(b),
+    }
 }
 
 fn plain(v: Tv<'_>) -> Option<Value> {
@@ -189,7 +248,12 @@ impl Vm {
     /// `at`: per slot (arguments, then captured variables, then globals),
     /// where its object sits in the store, `usize::MAX - 1` when not known.
     pub(crate) fn run_formula_tree(&self, tree: &FormulaTree, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<Value> {
-        match self.tree_eval(&tree.root, args, at, env) {
+        self.run_formula_part(&tree.root, args, at, env)
+    }
+
+    /// Runs one part of a tree (see `FormulaTree::field_equal`).
+    pub(crate) fn run_formula_part(&self, n: &Node, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<Value> {
+        match self.tree_eval(n, args, at, env) {
             Ok(v) => match v {
                 Tv::Obj(..) => None,
                 Tv::Other(v) => Some(v.clone_fast()),
@@ -270,6 +334,30 @@ impl Vm {
                     Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => return Err(Stop::Fallback),
                     Value::Ref(_) => return self.tree_obj(v, None, false),
                     other => Tv::Other(other),
+                }
+            }
+            Node::ItOr(name, alt) => {
+                // As `run_formula_in`: `it` (argument 0) when it is an object
+                // that has the field.
+                let it = args.first().ok_or(Stop::Fallback)?.1;
+                let obj = match it {
+                    Value::Object(o) => Some(&**o),
+                    Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                        Some(Value::Object(o)) => Some(&**o),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match obj.and_then(|o| o.fields.get(name.as_str())) {
+                    Some(Value::Frozen(_) | Value::Ref(_)) => return Err(Stop::Fallback),
+                    Some(v) => match v {
+                        Value::Int(x) => Tv::Int(*x),
+                        Value::Float(x) => Tv::Float(*x),
+                        Value::Bool(x) => Tv::Bool(*x),
+                        Value::Nil => Tv::Nil,
+                        other => Tv::Other(other),
+                    },
+                    None => self.tree_eval(alt, args, at, env)?,
                 }
             }
             Node::Arith(k, a, b) => {

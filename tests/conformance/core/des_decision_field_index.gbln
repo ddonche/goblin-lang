@@ -1,0 +1,41 @@
+/// known-gap: interp scores targets differently (scaled scores)
+/// A condition `target >> pen == self >> pen` finds the targets through an
+/// index of that field, and the result is what checking every target gives:
+/// a change made by an earlier action is seen by the next decision, 1 and
+/// 1.0 are the same pen, and text compares as text. `:objects` with such a
+/// test does the same; a bare name there is the object's own field when the
+/// class has one, else the variable.
+<>Wolf |
+    ~name: ""
+    ~pen: 0
+    hunt | decision against Sheep where [ target >> pen == self >> pen ] by [ target >> fat ]
+    judge using hunt
+        >= 0: eat(target)
+    end
+xx
+<>Sheep |
+    ~name: ""
+    ~pen: 0
+    ~fat: 0
+    ~color: ""
+xx
+act eat(w, s)
+    say("{w >> name} eats {s >> name} in pen {w >> pen}")
+    /// The sheep runs to pen 2: the next wolf in pen 1 can't find it.
+    s >> pen |= 2
+    s >> fat |= 0
+xx
+a <> Wolf | name: "Ash", pen: 1
+b <> Wolf | name: "Bo", pen: 1.0
+c <> Wolf | name: "Cy", pen: 2
+s1 <> Sheep | name: "Dot", pen: 1, fat: 9, color: "white"
+s2 <> Sheep | name: "Eve", pen: 1, fat: 5, color: "black"
+s3 <> Sheep | name: "Fay", pen: 3, fat: 7, color: "white"
+tick()
+f | 2
+say(:len(:objects("Sheep", it >> pen == f)))
+color | "white"
+say(:len(:objects("Sheep", it >> color == color)))
+say(:len(:objects("Sheep", it >> color == "black" and it >> pen == 2)))
+fat | 100
+say(:len(:objects("Sheep", it >> fat == fat)))
