@@ -45,6 +45,8 @@ pub struct CallFrame {
     pub self_tether: Option<Tether>,
     /// State of this call's `repeat` loops, by loop number (grown on use).
     pub loops: Vec<LoopState>,
+    /// What this call does with the decision memo (see memo.rs), if one is on.
+    pub(crate) memo: Option<crate::memo::Mark>,
 }
 
 /// One running `repeat`: its kind (see builtins::repeat_plan), what it
@@ -65,7 +67,7 @@ impl CallFrame {
             // Grown on first use: most calls lock nothing.
             type_locks: Vec::new(),
             hard_type_locks: Vec::new(),
-            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(),
+            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None,
         }
     }
 
@@ -153,6 +155,11 @@ pub struct Vm {
     /// a formula evaluated every tick is compiled once.
     /// Compiled DES formulas, with whether `run_formula_in` can run each one.
     tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<TickFormula>, rustc_hash::FxBuildHasher>,
+    /// On while a DES decision is worked out: answers of actions that only
+    /// read, by arguments (memo.rs).
+    pub(crate) memo: Option<Box<crate::memo::Memo>>,
+    /// Whether each function seen only reads (memo.rs), kept with it.
+    reads_only: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
 }
 
 /// How far an actor's handler got in one go.
@@ -167,7 +174,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1603,6 +1610,9 @@ impl Vm {
                     let bid = *bid;
                     let arg_vals = self.drain_operands(func_idx + 1)?;
                     self.stack.pop(); // pop the func operand
+                    if let Some(m) = self.memo.as_mut() {
+                        if !crate::memo::builtin_reads(bid) { m.changed(); }
+                    }
                     if crate::host::is_host_call(bid) && crate::actor::on_worker() {
                         return self.host_call_on_worker(bid, arg_vals);
                     }
@@ -1624,8 +1634,22 @@ impl Vm {
                     });
                 }
 
+                // While a decision is worked out, an action that only reads
+                // gives the answer it gave for these arguments before.
+                let mark = if self.memo.is_some() {
+                    match self.memo_call(&func_rc, !upvalues.is_empty(), func_idx)? {
+                        Ok(mark) => mark,
+                        Err(answer) => {
+                            self.stack.truncate(func_idx);
+                            self.stack.push(Operand::Val(answer));
+                            return Ok(());
+                        }
+                    }
+                } else { None };
+
                 let stack_base = func_idx; // caller cleans up from here
                 let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+                new_frame.memo = mark;
 
                 // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
                 for i in (0..arg_count).rev() {
@@ -1668,8 +1692,9 @@ impl Vm {
                     other => self.resolve_op(other)?,
                 };
 
-                let frame = self.call_stack.pop().unwrap();
+                let mut frame = self.call_stack.pop().unwrap();
                 let _ = frame.self_tether;
+                if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
 
                 self.stack.truncate(frame.stack_base);
                 self.stack.push(Operand::Val(ret_val));
@@ -5227,6 +5252,78 @@ impl Vm {
     }
 
     /// Call a Value::Function or Value::Closure with the given args, returning the result.
+    /// Whether `f` only reads (memo.rs), worked out once per function.
+    pub(crate) fn fn_reads_only(&mut self, f: &Rc<FunctionObject>) -> bool {
+        let key = Rc::as_ptr(f) as usize;
+        if let Some((_, r)) = self.reads_only.get(&key) { return *r; }
+        let session = &self.session;
+        let globals = |g: u16| -> Option<Value> {
+            let t = session.get_global(g as usize)?;
+            match &session.resolve(t.addr).ok()?.value {
+                v @ (Value::Function(_) | Value::Closure(_) | Value::Builtin(_)) => Some(v.clone()),
+                _ => None,
+            }
+        };
+        let r = crate::memo::reads_only(f, &globals, &mut Vec::new());
+        self.reads_only.insert(key, (f.clone(), r));
+        r
+    }
+
+    /// Whether a call to the program's action `name` only reads.
+    pub(crate) fn action_reads_only(&mut self, name: &str) -> bool {
+        let f = match self.session.named_values.get(name) {
+            Some(Value::Function(f)) => Some(f.clone()),
+            Some(Value::Closure(c)) => Some(c.func.clone()),
+            _ => self.session.global_names.iter().position(|n| n == name)
+                .and_then(|i| self.session.get_global(i))
+                .and_then(|t| match &self.session.resolve(t.addr).ok()?.value {
+                    Value::Function(f) => Some(f.clone()),
+                    Value::Closure(c) => Some(c.func.clone()),
+                    _ => None,
+                }),
+        };
+        match f { Some(f) => self.fn_reads_only(&f), None => false }
+    }
+
+    /// A call while the memo is on: Err(answer) when it was worked out
+    /// before, else what the call's frame does with the memo.
+    /// `captures`: the callee is a closure holding captured values, which
+    /// its answer may depend on: it runs every time.
+    fn memo_call(&mut self, f: &Rc<FunctionObject>, captures: bool, func_idx: usize) -> Result<Result<Option<crate::memo::Mark>, Value>, GoblinError> {
+        use crate::memo::{Arg, Mark};
+        if !self.fn_reads_only(f) {
+            let m = self.memo.as_mut().unwrap();
+            m.changed();
+            m.changing += 1;
+            return Ok(Ok(Some(Mark::Changes)));
+        }
+        if captures || self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
+        let mut args = Vec::with_capacity(self.stack.len() - func_idx - 1);
+        for i in func_idx + 1..self.stack.len() {
+            let v = self.resolve_op(self.stack[i].clone())?;
+            match Arg::of(&v) {
+                Some(a) => args.push(a),
+                None => return Ok(Ok(None)),
+            }
+        }
+        let key = (Rc::as_ptr(f) as usize, args);
+        let m = self.memo.as_mut().unwrap();
+        if let Some(v) = m.answers.get(&key) { return Ok(Err(v.clone())); }
+        Ok(Ok(Some(Mark::Keep(Box::new((key, m.epoch))))))
+    }
+
+    fn memo_return(&mut self, mark: crate::memo::Mark, answer: &Value) {
+        use crate::memo::Mark;
+        let Some(m) = self.memo.as_mut() else { return };
+        match mark {
+            Mark::Changes => { m.changed(); m.changing = m.changing.saturating_sub(1); }
+            Mark::Keep(k) => {
+                let (key, epoch) = *k;
+                if epoch == m.epoch && m.changing == 0 { m.answers.insert(key, answer.clone()); }
+            }
+        }
+    }
+
     fn call_func_value(&mut self, func_val: Value, args: Vec<Value>) -> Result<Value, GoblinError> {
         let (func_rc, upvalues) = match func_val {
             Value::Function(f) => (f, Vec::new()),
@@ -6250,6 +6347,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
+            calls_values: false,
         }
     }
 
@@ -6375,6 +6473,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
+            calls_values: false,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -6407,6 +6506,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
+            calls_values: false,
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -6437,6 +6537,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
+            calls_values: false,
         };
 
         // Outer: create inner, call with 5, return result
@@ -6460,6 +6561,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
+            calls_values: false,
         };
 
         let result = vm.execute(outer).unwrap();

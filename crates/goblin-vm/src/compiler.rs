@@ -64,6 +64,9 @@ struct FunctionScope {
     /// An `:objects(…)` / `:overlays(…)` predicate body: the fields of `it`
     /// are in scope by name, as in the interpreter.
     pred_fields: bool,
+    /// Calls something other than an action named in the program (a value
+    /// it was given or worked out): see `FunctionObject::calls_values`.
+    calls_values: bool,
 }
 
 impl FunctionScope {
@@ -89,6 +92,7 @@ impl FunctionScope {
             line_numbers: Vec::new(),
             current_line: 0,
             pred_fields: false,
+            calls_values: false,
         }
     }
 
@@ -231,6 +235,7 @@ impl FunctionScope {
             global_prefix: None,
             source_file,
             global_names,
+            calls_values: self.calls_values,
         }
     }
 }
@@ -648,6 +653,14 @@ impl Compiler {
     // ── Variable resolution ───────────────────────────────────────────────────
 
     /// Resolve a name to a load opcode sequence, searching locals → upvalues → globals.
+    /// A call's callee is loaded with `op`: anything but an action named in
+    /// the program marks the function as calling values.
+    fn note_callee(&mut self, op: &Opcode) {
+        if !matches!(op, Opcode::LoadGlobal(_) | Opcode::LoadNamed(_)) {
+            self.scope_mut().calls_values = true;
+        }
+    }
+
     fn resolve_load(&mut self, name: &str) -> Result<Opcode, GoblinError> {
         // 1. Check innermost scope's locals first.
         if let Some(slot) = self.scope().find_local(name) {
@@ -1472,6 +1485,7 @@ impl Compiler {
                 let bare_name = name.trim_start_matches(':');
                 if self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     let take = match self.take_arg.take() {
                         Some((at, n, slot)) if args.first().map(|a| a as *const Expr) == Some(at) => Some((n, slot)),
@@ -1614,6 +1628,7 @@ impl Compiler {
                     }
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
@@ -1663,6 +1678,7 @@ impl Compiler {
                     || self.global_index(method).is_some();
                 if is_var {
                     let load_op = self.resolve_load(method).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     self.compile_expr(recv)?;
                     for arg in args { self.compile_expr(arg)?; }
@@ -1744,6 +1760,7 @@ impl Compiler {
                 // Re-compile the receiver since we popped the dup.
                 self.compile_expr(recv)?;
                 let load_op = self.resolve_load(method).unwrap_or(Opcode::LoadNil);
+                self.note_callee(&load_op);
                 self.emit(load_op);
                 for arg in args { self.compile_expr(arg)?; }
                 self.emit(Opcode::Call((args.len() + 1) as u8));
@@ -2005,6 +2022,7 @@ impl Compiler {
                     } else {
                         // User function: stack layout must be [func, lhs, args...]
                         self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        self.scope_mut().calls_values = true;
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
                         self.emit(Opcode::Call(argc));
@@ -2018,12 +2036,14 @@ impl Compiler {
                     // Emit as member call: recv.method(lhs, args...)
                     let argc = (args.len() + 1) as u8;
                     self.emit(Opcode::GetMember(method_idx));
+                    self.scope_mut().calls_values = true;
                     self.emit(Opcode::Call(argc));
                 }
                 _ => {
                     // Generic pipeline: evaluate rhs as callable, call with lhs
                     self.compile_expr(rhs)?;
                     self.compile_expr(lhs)?;
+                    self.scope_mut().calls_values = true;
                     self.emit(Opcode::Call(1));
                 }
             }
@@ -3473,16 +3493,26 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
 pub(crate) fn only_reads(e: &Expr) -> bool {
+    only_reads_with(e, &mut |_| false)
+}
+
+/// `only_reads`, where `calls(name)` says whether a call to the program's
+/// action `name` only reads.
+pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> bool {
+    let only_reads = |e: &Expr, calls: &mut dyn FnMut(&str) -> bool| only_reads_with(e, calls);
     match e {
         Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
         // A string with `{...}` runs what it names.
         Expr::Str(t, _) => !t.contains('{'),
-        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),
-        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x),
-        Expr::Array(xs, _) => xs.iter().all(only_reads),
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l, calls) && only_reads(r, calls),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x, calls),
+        Expr::Array(xs, _) => xs.iter().all(|x| only_reads(x, calls)),
         Expr::FreeCall(name, args, _) => {
-            name.starts_with(':') && READ_ONLY_BUILTINS.contains(&name.trim_start_matches(':'))
-                && args.iter().all(only_reads)
+            let ok = match name.strip_prefix(':') {
+                Some(b) => READ_ONLY_BUILTINS.contains(&b),
+                None => calls(name),
+            };
+            ok && args.iter().all(|x| only_reads(x, calls))
         }
         _ => false,
     }
@@ -3490,7 +3520,7 @@ pub(crate) fn only_reads(e: &Expr) -> bool {
 
 /// Builtins that only read: no effects, no randomness, no calls back into
 /// the program.
-const READ_ONLY_BUILTINS: &[&str] = &[
+pub(crate) const READ_ONLY_BUILTINS: &[&str] = &[
     "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow", "clamp", "sum", "avg",
     "len", "count", "has", "contains", "starts_with", "ends_with", "is_empty", "keys", "values",
     "lower", "upper", "trim", "str", "to_str", "int", "i", "float", "f", "bool",

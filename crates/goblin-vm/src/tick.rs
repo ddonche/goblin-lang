@@ -1054,10 +1054,16 @@ fn names(e: &goblin_ast::Expr, who: &str) -> bool {
     }
 }
 
+/// Whether `e` only reads: what `only_reads` allows, and calls to the
+/// program's actions that only read (memo.rs).
+fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
+    crate::compiler::only_reads_with(e, &mut |name| vm.action_reads_only(name))
+}
+
 /// In a `where` condition, the candidates that can pass, found without
 /// running the condition on every object of the target class. None: all of
 /// them. It looks at the conditions joined by `and`, from the first, while
-/// they only read (no action calls, nothing random):
+/// they only read (nothing random, calls only to actions that only read):
 /// - one that doesn't name `target` (`self >> gold < 0`) is the same for
 ///   every target: run once; false leaves no candidates.
 /// - `target >> owner == x` with `x` not naming `target`: only what `x`
@@ -1072,11 +1078,16 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
     if !all.iter().any(|(t, _)| t != self_ref) { return None; }
     let mut parts = Vec::new();
     conjuncts(filter, &mut parts);
+    let epoch = vm.memo.as_ref().map(|m| m.epoch);
+    let changed = |vm: &Vm, e: Option<u64>| vm.memo.as_ref().map(|m| m.epoch) != e;
     for c in parts {
-        if !crate::compiler::only_reads(c) { return None; }
+        if !reads(vm, c) { return None; }
         if !names(c, "target") {
             let f = vm.tick_formula(c, &["self", "target"]).ok()?;
-            match vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]) {
+            let r = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
+            // Something it called turned out to change things: check every target.
+            if changed(vm, epoch) { return None; }
+            match r {
                 Ok(Value::Bool(true)) => continue,
                 Ok(Value::Bool(false)) => return Some(Vec::new()),
                 _ => return None,
@@ -1096,7 +1107,9 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
             .is_some_and(|c| c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD));
         if !has_owner { return None; }
         let f = vm.tick_formula(holder, &["self", "target"]).ok()?;
-        let h = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()?;
+        let h = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
+        if changed(vm, epoch) { return None; }
+        let h = h.ok()?;
         let uuid = match &h {
             Value::Ref(u) => u.clone(),
             Value::Object(o) => o.uuid.clone(),
@@ -1113,6 +1126,55 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         return Some(fewer);
     }
     None
+}
+
+/// Every target that passes the `where` condition, with its score, by
+/// position in the returned candidate list.
+#[allow(clippy::too_many_arguments)]
+fn score_targets(
+    vm: &mut Vm,
+    decision: &goblin_ast::DecisionDef,
+    formula: &crate::vm::TickFormula,
+    filter: Option<&crate::vm::TickFormula>,
+    self_ref: &Value,
+    self_at: usize,
+    target_candidates: std::rc::Rc<Vec<(Value, usize)>>,
+    is_self: &dyn Fn(&Value) -> bool,
+    formula_error: &dyn Fn(&Vm, String) -> GoblinError,
+) -> Result<(std::rc::Rc<Vec<(Value, usize)>>, Vec<(usize, f64)>), GoblinError> {
+    // Fewer candidates, same result: see `narrow`.
+    let target_candidates = match &decision.filter {
+        Some(f) if reads(vm, &decision.formula) => match narrow(vm, f, &decision.target_class, self_ref, self_at, &target_candidates) {
+            Some(fewer) => std::rc::Rc::new(fewer),
+            None => target_candidates,
+        },
+        _ => target_candidates,
+    };
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
+    for (k, (target, target_at)) in target_candidates.iter().enumerate() {
+        if is_self(target) { continue; }
+        if let Some(c) = filter {
+            match vm.run_tick_formula_ref(c, &[("self", self_ref), ("target", target)], &[self_at, *target_at]) {
+                Ok(Value::Bool(true)) => {}
+                Ok(Value::Bool(false)) => continue,
+                Ok(other) => return Err(formula_error(vm, format!(
+                    "the `where` condition gave {}, not true or false", other.type_name()))),
+                Err(e) => return Err(formula_error(vm, format!("the `where` condition failed: {e}"))),
+            }
+        }
+        let raw = match vm.run_tick_formula_ref(formula, &[("self", self_ref), ("target", target)], &[self_at, *target_at]) {
+            Ok(Value::Float(f)) => f,
+            Ok(Value::Int(i)) => i as f64,
+            Ok(other) => return Err(formula_error(vm, format!(
+                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where [ ... ]` to leave targets out)",
+                if other.type_name().starts_with(['a','e','i','o','u']) { "an" } else { "a" }, other.type_name()))),
+            Err(e) => return Err(formula_error(vm, format!("the formula failed: {e}"))),
+        };
+        // A score that overflowed (inf) or is not a number can't be ranked.
+        if !raw.is_finite() { continue; }
+        scored.push((k, raw));
+    }
+    Ok((target_candidates, scored))
 }
 
 fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
@@ -1157,38 +1219,14 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         },
         None => None,
     };
-    // Fewer candidates, same result: see `narrow`.
-    let target_candidates = match &decision.filter {
-        Some(f) if crate::compiler::only_reads(&decision.formula) => match narrow(vm, f, &decision.target_class, &self_ref, self_at, &target_candidates) {
-            Some(fewer) => std::rc::Rc::new(fewer),
-            None => target_candidates,
-        },
-        _ => target_candidates,
-    };
-    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
-    for (k, (target, target_at)) in target_candidates.iter().enumerate() {
-        if is_self(target) { continue; }
-        if let Some(c) = &filter {
-            match vm.run_tick_formula_ref(c, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
-                Ok(Value::Bool(true)) => {}
-                Ok(Value::Bool(false)) => continue,
-                Ok(other) => return Err(formula_error(vm, format!(
-                    "the `where` condition gave {}, not true or false", other.type_name()))),
-                Err(e) => return Err(formula_error(vm, format!("the `where` condition failed: {e}"))),
-            }
-        }
-        let raw = match vm.run_tick_formula_ref(&formula, &[("self", &self_ref), ("target", target)], &[self_at, *target_at]) {
-            Ok(Value::Float(f)) => f,
-            Ok(Value::Int(i)) => i as f64,
-            Ok(other) => return Err(formula_error(vm, format!(
-                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where [ ... ]` to leave targets out)",
-                if other.type_name().starts_with(['a','e','i','o','u']) { "an" } else { "a" }, other.type_name()))),
-            Err(e) => return Err(formula_error(vm, format!("the formula failed: {e}"))),
-        };
-        // A score that overflowed (inf) or is not a number can't be ranked.
-        if !raw.is_finite() { continue; }
-        scored.push((k, raw));
-    }
+    // While the targets are scored nothing changes, so an action the
+    // condition or the formula calls that only reads gives the same answer
+    // for the same arguments: it runs once (memo.rs).
+    let memo = decision.filter.as_ref().is_none_or(|f| reads(vm, f)) && reads(vm, &decision.formula);
+    if memo { vm.memo = Some(Box::default()); }
+    let scored = score_targets(vm, decision, &formula, filter.as_deref(), &self_ref, self_at, target_candidates, &is_self, &formula_error);
+    vm.memo = None;
+    let (target_candidates, scored) = scored?;
     if scored.is_empty() { return Ok(false); }
     // A score is exactly the number the formula gives: nothing rescales or
     // clamps it. `margin` is in the formula's own units, and the judge sees

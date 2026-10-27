@@ -104,6 +104,7 @@ pub struct PFunction {
     pub global_prefix: Option<String>,
     pub source_file: String,
     pub global_names: Vec<String>,
+    pub calls_values: bool,
 }
 
 fn unsupported(what: &str) -> GoblinError {
@@ -359,6 +360,7 @@ impl<'s> ToPortable<'s> {
             global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: f.global_names().to_vec(),
+            calls_values: f.calls_values,
         });
         self.funcs.insert(key, p.clone());
         if cacheable {
@@ -606,6 +608,7 @@ impl FromPortable {
             global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: names,
+            calls_values: f.calls_values,
         });
         self.funcs.insert(key, r.clone());
         r
