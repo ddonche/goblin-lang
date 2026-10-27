@@ -873,7 +873,8 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
         // `one of heal, attack`: those decisions are tried in that order
         // and the first whose judge runs an action ends the group, so the
-        // others in it don't run this tick.
+        // others in it don't run this tick. An action that returns false
+        // didn't act, and the next one is tried.
         let group_of = |n: &str| class.one_of.iter().position(|g| g.iter().any(|m| m == n));
         let mut done_groups: Vec<usize> = Vec::new();
         for &(name, decision, judge) in &list {
@@ -1182,8 +1183,10 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             });
         }
         let _ = self_val;
-        call_object_action(vm, &self_uuid, &action_name, args)?;
-        return Ok(true);
+        // An action that returns false didn't act: in a `one of` group the
+        // next decision gets its turn.
+        let out = action_result(vm, &self_uuid, &action_name, args)?;
+        return Ok(!matches!(out, Value::Bool(false)));
     }
     Ok(false)
 }
@@ -1541,21 +1544,32 @@ fn undo_modifiers(vm: &mut Vm, host_uuid: &str, applied: &[(String, f64)]) {
 /// Runs `action` for the object `uuid`: the class's own action of that name
 /// (`act give_birth()` in the class, run with `self`), else a program
 /// action, given the object first. `args` follow.
-fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<(), GoblinError> {
+fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, args: Vec<Value>) -> Result<(), GoblinError> {
+    action_result(vm, uuid, action, args).map(|_| ())
+}
+
+/// `call_object_action`, giving what the action returned (nil when the
+/// object is gone).
+fn action_result(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<Value, GoblinError> {
     let class_name = match vm.session.object_store.get(uuid) {
         Some(Value::Object(o)) => o.class_name.clone(),
         Some(_) => String::new(),
-        None => return Ok(()),
+        None => return Ok(Value::Nil),
     };
     let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
     args.insert(0, Value::Ref(uuid.to_string()));
-    with_erase_check(vm, |vm| match method {
-        Some(f) => vm.call_callable(Value::Function(f), args).map(|_| ()),
-        // A reference, as a class action gets: if the action moves or
-        // erases the object, reading it afterwards fails instead of reading
-        // a stale copy.
-        None => vm.call_named(action, args).map(|_| ()),
-    })
+    let mut out = Value::Nil;
+    with_erase_check(vm, |vm| {
+        out = match method {
+            Some(f) => vm.call_callable(Value::Function(f), args)?,
+            // A reference, as a class action gets: if the action moves or
+            // erases the object, reading it afterwards fails instead of
+            // reading a stale copy.
+            None => vm.call_named(action, args)?,
+        };
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Runs an action, then the erase transitions of the objects it changed:

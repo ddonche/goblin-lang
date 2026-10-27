@@ -69,6 +69,9 @@ village's `every` block.
 `false` lets the next decision in the group run. Today the return value
 is ignored.
 
+**Fixed in the runtime:** an action in a `one of` group that returns
+`false` now lets the next decision in the group run.
+
 ## 3. `by [ 1 ]` when the score doesn't matter
 
 Every decision here has one possible target, so the score means nothing,

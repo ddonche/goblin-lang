@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): in a `one of` group, an action that returns `false` didn't act, so
+  the next decision in the group gets its turn. Any other result (nil included)
+  still ends the group.
 - DES (VM): a decision's score is exactly the number its formula gives. The
   runtime no longer rescales scores (over the candidates for `~` fields, over a
   range guessed from the formula otherwise) or clamps them to 0..1. `margin` is
