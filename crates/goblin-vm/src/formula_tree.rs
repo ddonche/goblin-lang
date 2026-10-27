@@ -264,6 +264,18 @@ impl Vm {
         }
     }
 
+    /// The key (see `store::field_key`) of what one part of a tree gives,
+    /// an object included (it keys by id). None: work it out the usual way.
+    pub(crate) fn run_formula_key(&self, n: &Node, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<crate::store::FieldKey> {
+        match self.tree_eval(n, args, at, env) {
+            Ok(Tv::Obj(o, _)) => Some(crate::store::FieldKey::Obj(o.uuid.clone())),
+            Ok(Tv::Other(v)) => crate::store::field_key(v),
+            Ok(v) => crate::store::field_key(&plain(v)?),
+            Err(Stop::False) => crate::store::field_key(&Value::Bool(false)),
+            Err(Stop::Fallback) => None,
+        }
+    }
+
     /// An object a value refers to, if it is in the store.
     fn tree_obj<'a>(&'a self, v: &'a Value, pos: Option<&mut usize>, arg: bool) -> R<'a> {
         let store = &self.session.object_store;
@@ -285,6 +297,32 @@ impl Vm {
             }
             _ => Err(Stop::Fallback),
         }
+    }
+
+    /// The value field `name` of the object `obj` gives holds, as stored.
+    fn tree_field<'a>(&'a self, obj: &'a Node, name: &str, hint: &Cell<u32>, args: &[(&str, &'a Value)], at: &mut [usize], env: &'a FormulaEnv) -> Result<&'a Value, Stop> {
+        let Tv::Obj(o, _) = self.tree_eval(obj, args, at, env)? else { return Err(Stop::Fallback) };
+        Ok(match o.fields.get_index(hint.get() as usize) {
+            Some((k, v)) if k == name => v,
+            _ => match o.fields.get_full(name) {
+                Some((i, _, v)) => { hint.set(i as u32); v }
+                None => return Err(if env.missing_field_is_false { Stop::False } else { Stop::Fallback }),
+            },
+        })
+    }
+
+    /// A field's value as `tree_eval` gives it.
+    fn tree_field_tv<'a>(&'a self, v: &'a Value) -> R<'a> {
+        Ok(match v {
+            Value::Int(x) => Tv::Int(*x),
+            Value::Float(x) => Tv::Float(*x),
+            Value::Bool(x) => Tv::Bool(*x),
+            Value::Nil => Tv::Nil,
+            Value::Frozen(_) => return Err(Stop::Fallback),
+            Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => return Err(Stop::Fallback),
+            Value::Ref(_) => return self.tree_obj(v, None, false),
+            other => Tv::Other(other),
+        })
     }
 
     fn tree_eval<'a>(&'a self, n: &'a Node, args: &[(&str, &'a Value)], at: &mut [usize], env: &'a FormulaEnv) -> R<'a> {
@@ -316,26 +354,7 @@ impl Vm {
                     _ => return Err(Stop::Fallback),
                 }
             }
-            Node::Member(obj, name, hint) => {
-                let Tv::Obj(o, _) = self.tree_eval(obj, args, at, env)? else { return Err(Stop::Fallback) };
-                let v = match o.fields.get_index(hint.get() as usize) {
-                    Some((k, v)) if k == name => v,
-                    _ => match o.fields.get_full(name.as_str()) {
-                        Some((i, _, v)) => { hint.set(i as u32); v }
-                        None => return Err(if env.missing_field_is_false { Stop::False } else { Stop::Fallback }),
-                    },
-                };
-                match v {
-                    Value::Int(x) => Tv::Int(*x),
-                    Value::Float(x) => Tv::Float(*x),
-                    Value::Bool(x) => Tv::Bool(*x),
-                    Value::Nil => Tv::Nil,
-                    Value::Frozen(_) => return Err(Stop::Fallback),
-                    Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => return Err(Stop::Fallback),
-                    Value::Ref(_) => return self.tree_obj(v, None, false),
-                    other => Tv::Other(other),
-                }
-            }
+            Node::Member(obj, name, hint) => return self.tree_field_tv(self.tree_field(obj, name, hint, args, at, env)?),
             Node::ItOr(name, alt) => {
                 // As `run_formula_in`: `it` (argument 0) when it is an object
                 // that has the field.
@@ -411,8 +430,19 @@ impl Vm {
                 })
             }
             Node::Eq(is_eq, a, b) => {
-                let a = self.tree_eval(a, args, at, env)?;
-                let b = self.tree_eval(b, args, at, env)?;
+                // Two fields that hold the same object id are equal without
+                // looking the object up (`target >> owner == @owner`).
+                let (a, b) = match (&**a, &**b) {
+                    (Node::Member(ao, an, ah), Node::Member(bo, bn, bh)) => {
+                        let x = self.tree_field(ao, an, ah, args, at, env)?;
+                        let y = self.tree_field(bo, bn, bh, args, at, env)?;
+                        if let (Value::Ref(x), Value::Ref(y)) = (x, y) {
+                            if x == y && !x.starts_with(crate::vm::OVERLAY_RECORD) { return Ok(Tv::Bool(*is_eq)); }
+                        }
+                        (self.tree_field_tv(x)?, self.tree_field_tv(y)?)
+                    }
+                    _ => (self.tree_eval(a, args, at, env)?, self.tree_eval(b, args, at, env)?),
+                };
                 let eq = match (a, b) {
                     (Tv::Obj(x, _), Tv::Obj(y, _)) => x.uuid == y.uuid,
                     (Tv::Obj(..), Tv::Nil) | (Tv::Nil, Tv::Obj(..)) => false,

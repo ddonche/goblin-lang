@@ -1,0 +1,25 @@
+/// known-gap: interp has no `@` and no `owner` index
+/// `spreads where target >> owner == @owner`: only the objects that
+/// belong to the same object catch it (objects are equal when they are the
+/// same object); one in another town does not until it moves there.
+<>Town |
+    n: 0
+xx
+<>P |
+    owner: nil
+xx
+overlay Flu |
+    hosts P
+    spreads where target >> owner == @owner at 1 per tick
+end
+a <> Town | n: 1
+b <> Town | n: 2
+first <> P | owner: a
+same <> P | owner: a
+other <> P | owner: b
+overlay Flu on first at 1
+tick()
+say([:len(:overlays_of(same)), :len(:overlays_of(other))])
+other >> owner |= a
+tick()
+say(:len(:overlays_of(other)))

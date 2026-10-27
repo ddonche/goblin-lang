@@ -5,6 +5,15 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): faster when objects are compared by `owner`. `target >> owner
+  == @owner` compares the two ids without looking either object up;
+  spreads, decisions and `:objects(..., it >> owner == x >> owner)` find
+  the matches through the store's field index (objects key by id); a
+  decision against a class its holder holds little of checks every target
+  instead of going through all the holder holds; a region no longer
+  re-files every visiting object under its owner each tick. Epidemic on
+  `owner` 1.85G -> 1.30G instructions (30 days), predator-prey on `owner`
+  3.64G -> 2.75G (20 days); the other sims unchanged.
 - Concurrency (VM): `:actor(meadow)` with no handler. The actor runs the
   meadow and what it holds in `tick(regions)` and takes no messages
   (`:post`/`:request` to it is C0107). Sims no longer need a handler that

@@ -20,8 +20,13 @@ pub struct ObjectStore {
     /// Ownership: each object whose `owner` field holds another object, by
     /// that owner, and the other way round. Kept by every change that goes
     /// through the methods here; a field write calls `refile_owner`.
+    /// `retain` leaves the entries of the objects it drops (a region drops
+    /// its visitors' copies every tick and puts them back the next), so
+    /// readers skip ids that are not in `map`; they are cleared once there
+    /// are twice as many as the most objects the store has held (`peak`).
     contents: FxHashMap<String, IndexSet<String, FxBuildHasher>>,
     owner_of: FxHashMap<String, String>,
+    peak: usize,
     /// Equality indexes, made the first time something looks objects up by
     /// a field's value (`target >> meadow == self >> meadow`): by (class,
     /// field). Brought up to date with the objects changed since (`dirty`)
@@ -35,8 +40,9 @@ pub struct ObjectStore {
 /// A field's value as far as `==` can tell values apart: values that are
 /// equal get the same key (numbers of any kind by their f64 value, which may
 /// also give some unequal ones the same key; that only costs a check).
+/// Objects are equal when they are the same object, so they key by id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum FieldKey { Num(u64), Str(String), Bool(bool), Nil }
+pub enum FieldKey { Num(u64), Str(String), Bool(bool), Nil, Obj(String) }
 
 pub fn field_key(v: &Value) -> Option<FieldKey> {
     let num = |f: f64| FieldKey::Num(if f == 0.0 { 0 } else { f.to_bits() });
@@ -47,6 +53,8 @@ pub fn field_key(v: &Value) -> Option<FieldKey> {
         Value::Str(s) => FieldKey::Str(s.to_string()),
         Value::Bool(b) => FieldKey::Bool(*b),
         Value::Nil => FieldKey::Nil,
+        Value::Object(o) => FieldKey::Obj(o.uuid.to_string()),
+        Value::Ref(u) => FieldKey::Obj(u.to_string()),
         _ => return None,
     })
 }
@@ -156,8 +164,8 @@ impl ObjectStore {
     }
 
     /// Files `uuid` under the owner its `owner` field names now.
-    fn set_owner(&mut self, uuid: &str, owner: Option<String>) {
-        if self.owner_of.get(uuid) == owner.as_ref() { return; }
+    fn set_owner(&mut self, uuid: &str, owner: Option<&str>) {
+        if self.owner_of.get(uuid).map(String::as_str) == owner { return; }
         if let Some(old) = self.owner_of.remove(uuid) {
             if let Some(set) = self.contents.get_mut(&old) {
                 set.shift_remove(uuid);
@@ -165,8 +173,15 @@ impl ObjectStore {
             }
         }
         if let Some(o) = owner {
-            self.contents.entry(o.clone()).or_default().insert(uuid.to_string());
-            self.owner_of.insert(uuid.to_string(), o);
+            match self.contents.get_mut(o) {
+                Some(set) => { set.insert(uuid.to_string()); }
+                None => {
+                    let mut set = IndexSet::default();
+                    set.insert(uuid.to_string());
+                    self.contents.insert(o.to_string(), set);
+                }
+            }
+            self.owner_of.insert(uuid.to_string(), o.to_string());
         }
     }
 
@@ -174,18 +189,31 @@ impl ObjectStore {
     /// `owner` field names now.
     pub fn refile_owner(&mut self, uuid: &str) {
         let owner = self.map.get(uuid).and_then(owner_in).map(str::to_string);
-        self.set_owner(uuid, owner);
+        self.set_owner(uuid, owner.as_deref());
     }
 
     /// The id of the object `uuid`'s `owner` field names, if it names one.
     pub fn holder_of(&self, uuid: &str) -> Option<&str> {
+        if !self.map.contains_key(uuid) { return None; }
         self.owner_of.get(uuid).map(String::as_str)
+    }
+
+    /// `holder_of` for an object known to be in the store.
+    pub fn holder_of_present(&self, uuid: &str) -> Option<&str> {
+        self.owner_of.get(uuid).map(String::as_str)
+    }
+
+    /// About how many objects `owner` contains (copies dropped by `retain`
+    /// may still count).
+    pub fn contents_len(&self, owner: &str) -> usize {
+        self.contents.get(owner).map_or(0, |s| s.len())
     }
 
     /// The ids of what `owner` contains (the objects whose `owner` field
     /// names it), in the order they came to it.
     pub fn contents_of(&self, owner: &str) -> impl Iterator<Item = &str> {
-        self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str))
+        let map = &self.map;
+        self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str)).filter(move |u| map.contains_key(*u))
     }
 
     /// Everything `uuid` contains, at any depth (what it holds, what those
@@ -233,8 +261,10 @@ impl ObjectStore {
     pub fn insert(&mut self, uuid: String, v: Value) -> Option<Value> {
         self.touched(&uuid);
         let new_class = class_of(&uuid, &v).map(str::to_string);
-        let owner = owner_in(&v).map(str::to_string);
-        if owner.is_some() || self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, owner); }
+        match owner_in(&v) {
+            Some(o) => self.set_owner(&uuid, Some(o)),
+            None => if self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, None); },
+        }
         let old = self.map.insert(uuid.clone(), v);
         let old_class = old.as_ref().and_then(|o| class_of(&uuid, o));
         if old_class != new_class.as_deref() {
@@ -260,6 +290,7 @@ impl ObjectStore {
     /// Keep only the objects `keep` says yes to.
     pub fn retain(&mut self, mut keep: impl FnMut(&String, &mut Value) -> bool) {
         let before = self.map.len();
+        self.peak = self.peak.max(before);
         // `keep` may change the objects it keeps.
         if !self.indexes.is_empty() { self.stale = true; self.dirty.clear(); }
         self.map.retain(|k, v| keep(k, v));
@@ -271,7 +302,7 @@ impl ObjectStore {
             set.retain(|u| map.contains_key(u.as_str()));
         }
         self.by_class.retain(|_, set| !set.is_empty());
-        if !self.owner_of.is_empty() {
+        if self.owner_of.len() > 2 * self.peak + 64 {
             self.owner_of.retain(|u, _| map.contains_key(u.as_str()));
             let owner_of = &self.owner_of;
             for set in self.contents.values_mut() {
@@ -542,6 +573,30 @@ mod tests {
         s.shift_remove("hero");
         assert_eq!(s.contents_of("hero").count(), 0);
         assert!(matches!(s.get("b"), Some(Value::Object(o)) if matches!(o.fields.get(OWNER_FIELD), Some(Value::Nil))));
+    }
+
+    #[test]
+    fn contents_skip_dropped_copies_and_take_them_back() {
+        // A region drops its visitors' copies after a tick and puts them
+        // back the next: the lists don't show them meanwhile, and keep
+        // their places when they return.
+        let mut s = ObjectStore::default();
+        s.insert("town".into(), owned("T", "town", None));
+        for u in ["a", "b", "c"] { s.insert(u.into(), owned("P", u, Some("town"))); }
+        s.retain(|k, _| k != "a" && k != "b");
+        assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["c"]);
+        assert_eq!(s.holder_of("a"), None);
+        assert_eq!(s.all_contents_of("town"), ["c"]);
+        s.insert("b".into(), owned("P", "b", Some("town")));
+        s.insert("a".into(), owned("P", "a", Some("town")));
+        assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["a", "b", "c"]);
+        // Back with another owner, or none.
+        s.retain(|k, _| k != "a" && k != "b");
+        s.insert("a".into(), owned("P", "a", None));
+        s.insert("b".into(), owned("P", "b", Some("c")));
+        assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["c"]);
+        assert_eq!(s.contents_of("c").collect::<Vec<_>>(), ["b"]);
+        assert_eq!(s.holder_of("a"), None);
     }
 
     #[test]

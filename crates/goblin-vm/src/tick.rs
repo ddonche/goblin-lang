@@ -1251,7 +1251,7 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
                 let Value::Ref(u) = t else { return None };
                 let mut cur: &str = u.as_str();
                 for _ in 0..depth - 1 {
-                    let h = store.holder_of(cur)?;
+                    let h = store.holder_of_present(cur)?;
                     match store.get_full(h) {
                         Some((_, k, Value::Object(o))) if o.fields.contains_key(crate::store::OWNER_FIELD) => cur = k.as_str(),
                         _ => return None,
@@ -1271,6 +1271,18 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
             Value::Object(o) => o.uuid.clone(),
             _ => return None,
         };
+        // `target >> owner == x` when x holds more than the class has (a
+        // meadow and its one patch of grass) or much of it (a meadow and its
+        // rabbits): checking every target, or the class's index of
+        // `owner`, beats going through everything x holds.
+        let store = &mut vm.session.object_store;
+        if depth == 1 && store.contents_len(&uuid) * 4 > store.count_of(class) {
+            if all.len() < crate::store::ObjectStore::INDEX_FROM { return None; }
+            let at = store.with_field(class, crate::store::OWNER_FIELD, &crate::store::FieldKey::Obj(uuid));
+            return Some(at.into_iter()
+                .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
+                .collect());
+        }
         let store = &vm.session.object_store;
         // What `x` holds, what those hold, ...: `depth` levels down.
         let mut level: Vec<String> = vec![uuid];
