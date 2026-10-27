@@ -1203,7 +1203,8 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         // one the class declares, so no object left out lacks it (reading a
         // missing field is an error, which must still stop the tick).
         let field_of_target = |e: &E| match e {
-            E::Member(o, f, _) if f != crate::store::OWNER_FIELD && matches!(&**o, E::Ident(n, _) if n == "target") => Some(f.clone()),
+            E::Member(o, f, _) if f != crate::store::OWNER_FIELD && crate::vm::member_builtin(f).is_none()
+                && matches!(&**o, E::Ident(n, _) if n == "target") => Some(f.clone()),
             _ => None,
         };
         let same_field = match (field_of_target(l), field_of_target(r)) {
@@ -1216,6 +1217,8 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
                 .is_some_and(|c| c.fields.iter().any(|f| f.name == field));
             if !declared || all.len() < crate::store::ObjectStore::INDEX_FROM { return None; }
             let f = vm.tick_formula(other, &["self", "target"]).ok()?;
+            // Worked out once for every target: no `>> shuffle` and the like.
+            if !f.reads_fields_only() { return None; }
             let want = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
             if changed(vm, epoch) { return None; }
             let key = crate::store::field_key(&want.ok()?)?;
