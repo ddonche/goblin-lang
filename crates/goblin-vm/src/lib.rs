@@ -13,6 +13,7 @@ pub mod debug;
 pub mod exec;
 pub mod render;
 pub mod tick;
+pub(crate) mod memo;
 pub mod reqenv;
 pub mod modcache;
 pub mod sweep;

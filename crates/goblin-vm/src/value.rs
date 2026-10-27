@@ -680,6 +680,10 @@ pub struct FunctionObject {
     /// unit has finished compiling (the list only ever grows, so later entries
     /// keep the indices they would have had in an earlier snapshot).
     pub global_names: std::rc::Rc<std::cell::OnceCell<Vec<String>>>,
+    /// It calls something other than an action named in the program: a
+    /// value it was given or worked out, a method. Such a call can do
+    /// anything, so the function can't be known to only read (memo.rs).
+    pub calls_values: bool,
 }
 
 impl FunctionObject {

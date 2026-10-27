@@ -26,7 +26,7 @@ Over 200 years, 20 lords change kingdoms with their lands and households
 (the realms trade the lead: Aldmark holds 2 estates at year 100 and 66 at
 year 200), Caddis crowns 5 kings, about 150 nobles inherit and 34 die
 without heirs, and all 72 estates stay held by some realm. 200 years take
-5.1 s on 4 threads (7.8 s on 1), 60 to 140 nobles.
+3.7 s on 4 threads (5.7 s on 1), 60 to 140 nobles.
 
 `check.sh`: 100 years match `expected.txt`, two runs match, and 1 thread
 matches 4.
@@ -51,22 +51,11 @@ matches 4.
 | 2 | a decision's `where` couldn't call an action (`kingdom(target)` was "undefined variable") | formulas compile against the program's names (#114) |
 | 3 | every decision checked every object of the target class, even with `target >> owner == self` | owner conditions use the contents list; target-free conditions run once (#114): 300 lords × 3,000 knights, 10 ticks, 11.5 s → 0.09 s |
 | 4 | a lord who moved carried copies of his new king and realm; walking up `owner` stored those copies over the real ones, so the new realm lost its counts | objects cross regions by id (#114) |
+| 5 | an action called in a condition (`strength(self)`) ran once per target | an action that only reads runs once per set of arguments while a decision is scored: 200 years 5.2 s → 3.7 s on 4 threads |
 
 The findings below are still open.
 
-## 1. An action called in a condition runs once per target
-
-`seize` asks `strength(self) >= 2 * strength(target >> owner) + 2`.
-`strength(self)` is the same for every target, but the runtime can't tell
-that `strength` only reads, so it runs for every candidate estate. This is
-most of what the sim still spends (the decisions are about half the time).
-
-**Change (a proposal):** have the compiler mark actions that only read
-(no field or variable writes, no randomness, no output, and only call
-other such actions). A target-free part of a condition that calls only
-those could then be checked once, like `self >> gold < 0` is now.
-
-## 2. Walking up `owner` copies each object into the store
+## 1. Walking up `owner` copies each object into the store
 
 `realm_of` walks `x |= x >> owner` until it reaches the realm. Each step
 reads an object out of a field and stores it in a variable, and the
@@ -77,17 +66,17 @@ ownership walk.
 **Change:** a variable given an object that already lives in the store
 should hold its id, as a field does, without writing it back.
 
-## 3. "Is this object in my region?"
+## 2. "Is this object in my region?"
 
 During a tick a region sees the other regions' objects too, so a
 condition that means "an estate in my kingdom" has to walk up the owners
-(`kingdom(target) == kingdom(self)`), which is slow (finding 1). The sim
+(`kingdom(target) == kingdom(self)`), which used to be slow (fixed: see the table). The sim
 avoids the question by asking about ownership instead ("an estate held by
 another vassal of my liege": `target >> owner >> owner == self >> owner`),
 which is also the more feudal rule. No change proposed; noting it because
 the first version of the sim reached for the slow form.
 
-## 4. A field that names another region's object reads nil from outside
+## 3. A field that names another region's object reads nil from outside
 
 A region's snapshot keeps a field that names one of its own objects, but a
 field that names another region's object (a vassal whose liege lives
@@ -97,7 +86,7 @@ sim never sees it.
 
 **Change:** keep the id; the object can be found wherever it lives.
 
-## 5. Text with quotes can't go inside `{}` in a string
+## 4. Text with quotes can't go inside `{}` in a string
 
 `say("estates {:len(:objects("Estate"))}")` is a parse error: the inner
 quote ends the string. Same as finding 9 of the RPG sim; the sim reads the

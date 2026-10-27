@@ -5,6 +5,15 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): while a decision scores its targets, an action that only reads
+  (no writes outside its own variables, nothing random, no output, and only
+  calls to other such actions) runs once per set of arguments: in
+  `where [ strength(self) >= 2 * strength(target >> owner) ]`,
+  `strength(self)` runs once and `strength(target >> owner)` once per
+  holder, not once per target. A condition that calls such actions can now
+  narrow the targets too (`estates(self) >= 2` is checked once). Results
+  are the same; actions that write or print still run every time. Feudal
+  sim, 200 years on 4 threads: 5.2 s to 3.7 s.
 - DES (VM): a decision's `where`, score and other formulas can call the
   program's actions and read its variables (`where [ kingdom(target) == 2 ]`
   was an R1220 "undefined variable" error).
