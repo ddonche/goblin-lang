@@ -72,7 +72,7 @@ xx
         wander(self)
     end
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ] by [ 1 ]
+    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ]
     judge using hunt
         >= 0: catch(target)
     end

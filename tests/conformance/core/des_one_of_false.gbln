@@ -1,0 +1,33 @@
+/// known-gap: interp has no `one of` on decisions
+/// In a `one of` group, an action that returns false didn't act: the next
+/// decision in the group gets its turn. Any other result (nil included)
+/// ends the group. Outside a group the result changes nothing.
+<>P |
+    ~name: ""
+    ~brave: 0
+    flee | decision against P by [ 1 ]
+    judge using flee
+        >= 0: run_away(target)
+    end
+    work | decision against P by [ 1 ]
+    judge using work
+        >= 0: dig(target)
+    end
+    one of flee, work
+xx
+act run_away(p, t)
+    if p >> brave == 1
+        n | p >> name
+        say("{n} stays")
+        return false
+    xx
+    n | p >> name
+    say("{n} runs")
+xx
+act dig(p, t)
+    n | p >> name
+    say("{n} digs")
+xx
+a <> P | name: "a", brave: 0
+b <> P | name: "b", brave: 1
+tick()

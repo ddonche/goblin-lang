@@ -80,6 +80,9 @@ but `by [ ... ]` is required. Five decisions end in `by [ 1 ]`.
 **Change:** let `by [ ... ]` be left out; every target then scores the
 same (1), and `margin`/`order by` work as now.
 
+**Fixed in the runtime:** `by [ ... ]` can be left out; every target
+that passes `where` scores 1. The sim's decisions no longer end in `by [ 1 ]`.
+
 ## 4. Sending something to another region takes a message and a search
 
 The next village's object is a read-only copy in this region (as of last

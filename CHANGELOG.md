@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES: a decision can leave out `by [ ... ]` (in a class and on one object);
+  every target that passes its `where` then scores 1. The civilization and
+  predator-prey sims drop their `by [ 1 ]`, same output.
 - DES (VM): in a `one of` group, an action that returns `false` didn't act, so
   the next decision in the group gets its turn. Any other result (nil included)
   still ends the group.

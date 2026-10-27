@@ -73,23 +73,23 @@ end
         xx
     end
     /// Every job is a decision against the person's own village.
-    eat | decision against Village where [ target >> village == self >> village ] by [ 1 ]
+    eat | decision against Village where [ target >> village == self >> village ]
     judge using eat
         >= 0: eat_food(target)
     end
     build | decision against Village where [
         target >> village == self >> village and target >> wood >= 10 and target >> pop + 4 > target >> huts * 4
-    ] by [ 1 ]
+    ]
     judge using build
         >= 0: build_hut(target)
     end
     farm | decision against Village where [
         self >> age >= 120 and target >> village == self >> village and target >> food < target >> pop * 12
-    ] by [ 1 ]
+    ]
     judge using farm
         >= 0: farm(target)
     end
-    chop | decision against Village where [ self >> age >= 120 and target >> village == self >> village ] by [ 1 ]
+    chop | decision against Village where [ self >> age >= 120 and target >> village == self >> village ]
     judge using chop
         >= 0: chop(target)
     end
