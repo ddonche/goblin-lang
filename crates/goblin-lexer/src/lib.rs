@@ -1138,6 +1138,22 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
             continue;
         }
 
+        // `{expr}` holding text in quotes (`{:objects("Estate")}`,
+        // `{m{"a"}}`): the placeholder is kept exactly as written, quotes
+        // and all, and the string goes on after its closing `}`.
+        if !is_raw && b == b'{' {
+            if let Some(end) = quoted_placeholder_end(&state.bytes, state.i, quote) {
+                let text = std::str::from_utf8(&state.bytes[state.i..end]).map_err(|_| {
+                    vec![Diagnostic::error("L0201", "Invalid UTF-8 in string", state.span(start_i, start_col))]
+                })?;
+                out.push_str(text);
+                let chars = text.chars().count();
+                state.i = end;
+                state.col += chars as u32;
+                continue;
+            }
+        }
+
         let ch = state.bump_char().ok_or_else(|| {
             vec![Diagnostic::error("L0201", "Invalid UTF-8 in string", state.span(start_i, start_col))]
         })?;
@@ -1147,6 +1163,55 @@ fn lex_string_literal(state: &mut LexerState, is_raw: bool, is_trim: bool) -> Re
     let span = Span::new(state.file, start_i, state.i, start_line, start_col, state.line, state.col);
     state.tokens.push(Token::new(TokenKind::String, span, Some(out)));
     Ok(())
+}
+
+/// At a `{` in a one-line string: when it opens an expression (a name or
+/// `:builtin` follows) that has text in quotes before its matching `}` on
+/// the same line (quotes like the string's own), the index just past that `}`. Otherwise None, and the
+/// string is read as before (the first quote ends it).
+fn quoted_placeholder_end(b: &[u8], open: usize, outer: u8) -> Option<usize> {
+    let first = *b.get(open + 1)?;
+    if !(first.is_ascii_alphabetic() || first == b'_' || first == b':') { return None; }
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'\n' | b'\r' => return None,
+            // An escape outside quoted text: read the string as before.
+            b'\\' => return None,
+            q @ (b'"' | b'\'') => {
+                // Text in quotes in an expression follows an opening
+                // bracket, a comma or an operator. After a name or a closing
+                // bracket the quote is the string's own end, as in
+                // `"{not {code}", "}"`: read the string as before.
+                let before = b[open + 1..i].iter().rev().find(|c| !c.is_ascii_whitespace());
+                if !matches!(before, Some(b'(' | b'[' | b'{' | b',' | b'=' | b'?' | b'+' | b'-' | b'*' | b'/' | b'%' | b'<' | b'>' | b'!' | b'|' | b'&' | b':')) {
+                    return None;
+                }
+                let mut j = i + 1;
+                loop {
+                    match b.get(j)? {
+                        b'\n' | b'\r' => return None,
+                        b'\\' => j += 2,
+                        c if *c == q => break,
+                        _ => j += 1,
+                    }
+                }
+                if q == outer { quoted = true; }
+                i = j + 1;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 { return if quoted { Some(i + 1) } else { None }; }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn lex_char_literal(state: &mut LexerState) -> Result<(), Vec<Diagnostic>> {

@@ -360,8 +360,7 @@ repeat :range(1, years + 1) as y
                 lost |= lost + 1
             xx
         xx
-        total | :len(:objects("Estate"))
-        say("  estates {total}, held by no realm {lost}")
+        say("  estates {:len(:objects("Estate"))}, held by no realm {lost}")
     xx
 xx
 
@@ -373,8 +372,7 @@ repeat :objects("Realm") as r
         say("  {r >> name}: king {k >> house}, {estates(k)} estates of his own, gold {k >> gold}")
         repeat :objects("Noble", it >> owner == k) as v
             if estates(v) > 0 or :len(:objects("Noble", it >> owner == v)) > 0
-                vs | :len(:objects("Noble", it >> owner == v))
-                say("    {v >> house} ({v >> age}): {estates(v)} estates, {vs} in his household")
+                say("    {v >> house} ({v >> age}): {estates(v)} estates, {:len(:objects("Noble", it >> owner == v))} in his household")
             xx
         xx
     xx

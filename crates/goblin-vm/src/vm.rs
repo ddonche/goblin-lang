@@ -2997,12 +2997,11 @@ impl Vm {
                         continue;
                     }
                     let start = i + 1;
-                    let Some(rel) = s[start..].find('}') else {
+                    let Some(j) = crate::compiler::placeholder_end(s, start) else {
                         // D20: an unclosed `{` is an error (R0500), as in the interpreter.
                         return Err(GoblinError::Runtime(
                             "unclosed '{' in interpolated string (use \\{ for a literal brace)".into()));
                     };
-                    let j = start + rel;
                     let raw = &s[start..j];
                     let inner = raw.trim();
                     if let Some(trimmed) = inner.strip_prefix('#') {

@@ -5,6 +5,12 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Strings: a `{...}` placeholder can hold text in quotes and nested braces:
+  `say("estates {:len(:objects("Estate"))}")` and `say("{r{"winner"}} wins")`
+  work (the inner quote used to end the string, and the first `}` ended the
+  placeholder). Only a placeholder that starts like an expression (a name
+  or `:builtin`) and closes on the same line is read this way; other braces
+  are unchanged.
 - Regions (VM): a field naming an object another region holds keeps its id
   when the objects cross between regions (snapshots, changes, moves). The
   program running the world reads through it (`lord >> owner >> name`
