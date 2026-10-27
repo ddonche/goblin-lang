@@ -1,0 +1,5 @@
+/// `@` inside a string is text: emails, and placeholders that are not one
+/// expression, stay as written.
+e | "alice@example.com"
+say(e)
+say("{user@host}")

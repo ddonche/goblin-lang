@@ -1,0 +1,4 @@
+/// `@` before a capitalized name is not a class: classes use `<>`.
+@Player |
+    name: ""
+xx

@@ -7,7 +7,7 @@
     ~sick: 0
     every 1 tick
         if :overlay_strength("Sick", self) ?? 0 > 0
-            self >> sick |= self >> sick + 1
+            @sick |= @sick + 1
         xx
     end
 xx

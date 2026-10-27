@@ -114,7 +114,7 @@ pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option
             | Opcode::GuardRebindLocal(..) | Opcode::GuardObjRebind(_) | Opcode::GuardMutable(_)
             | Opcode::Call(_) | Opcode::Return
             | Opcode::ToPct | Opcode::MakePair | Opcode::MakeRange | Opcode::MakeRangeInclusive
-            | Opcode::TryBegin(_) | Opcode::TryEnd | Opcode::StringInterpVals(..) | Opcode::SelfField(_)
+            | Opcode::TryBegin(_) | Opcode::TryEnd | Opcode::StringInterpVals(..) | Opcode::ProgramVar(_)
             | Opcode::TupleSplit(_) | Opcode::ArrayPushToLocal(_) | Opcode::AppendLocal(_)
             | Opcode::RepeatNext(_) | Opcode::RepeatStart(..) | Opcode::RepeatIdx(..) => true,
             Opcode::CallBuiltin(id, _) => builtin_reads(id),

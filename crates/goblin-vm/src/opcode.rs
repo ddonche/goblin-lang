@@ -273,9 +273,10 @@ pub enum Opcode {
     /// stack holds the N values (last on top).
     StringInterpVals(u16, u8),
 
-    /// Load a field from self (locals[0], which is the receiver object in a class method).
-    /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
-    SelfField(u16),
+    /// In a class method, a name that is not a local: the program's variable
+    /// of that name (constants[idx]), else nil. Errors when it is only one of
+    /// self's fields (that is `@name`).
+    ProgramVar(u16),
 
     // ── Type-lock opcodes ─────────────────────────────────────────────────────
     /// Tether with type lock for a local slot: pop value, cast to lock_type, store in slot,
@@ -452,7 +453,7 @@ impl Opcode {
             Opcode::RegisterAction(_) => "RegisterAction",
             Opcode::LoadNamed(_)      => "LoadNamed",
             Opcode::StringInterp(_)   => "StringInterp",
-            Opcode::SelfField(_)      => "SelfField",
+            Opcode::ProgramVar(_)      => "ProgramVar",
             Opcode::StoreLockLocal(..)   => "StoreLockLocal",
             Opcode::StoreLockGlobal(..)  => "StoreLockGlobal",
             Opcode::CastBangLocal(..)    => "CastBangLocal",

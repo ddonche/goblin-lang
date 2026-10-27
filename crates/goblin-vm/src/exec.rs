@@ -116,15 +116,28 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         };
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
-        match compiler.compile_action(&pseudo) {
-            Ok(mut func) => {
-                func.global_prefix = prefix.map(str::to_string);
-                std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
-                    (class.name.clone(), action.name.clone()),
-                    std::rc::Rc::new(func),
-                );
+        let compiled = compiler.compile_action(&pseudo).or_else(|e| {
+            // A method that does not compile reports why when it is called,
+            // instead of going missing.
+            let mut msg = format!("class `{}`, action `{}`: {}", class.name, action.name, e);
+            let inner = match &e { GoblinError::WithLocation { inner, .. } => inner.as_ref(), e => e };
+            if let GoblinError::UndefinedVariable { name } = inner {
+                if class.fields.iter().any(|f| f.name == *name) {
+                    msg.push_str(&format!("; did you mean `@{name}`, this object's field (`self >> {name}`)?"));
+                }
             }
-            Err(_) => {}
+            let stub = goblin_ast::ActionDecl { body: goblin_ast::ActionBody::Block(Vec::new()), ..pseudo.clone() };
+            let mut c = Compiler::new();
+            c.is_class_method = true;
+            c.start_error = Some(msg);
+            c.compile_action(&stub)
+        });
+        if let Ok(mut func) = compiled {
+            func.global_prefix = prefix.map(str::to_string);
+            std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
+                (class.name.clone(), action.name.clone()),
+                std::rc::Rc::new(func),
+            );
         }
     }
 }

@@ -1,0 +1,29 @@
+/// known-gap: interp leaves "{@name}" placeholders as written
+/// `@name` is `self >> name`: in an action, an `every` block, a decision's
+/// `where` and `by`. Another object's field is still `target >> name`.
+<>F |
+    name: ""
+    ~hp: 10
+    ~side: 0
+    act report()
+        say("{@name}: hp {@hp}, same as {self >> hp}")
+    xx
+    every 1 tick
+        @hp |= @hp - 1
+    end
+    hit | decision against F margin 0 where [ target >> side != @side ] by [ @hp / 10 ]
+    judge using hit
+        >= 0: strike(target)
+    end
+xx
+act strike(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} strikes {b}")
+xx
+x <> F | name: "x", side: 0
+y <> F | name: "y", side: 1, hp: 4
+x.report()
+tick()
+x.report()
+y.report()

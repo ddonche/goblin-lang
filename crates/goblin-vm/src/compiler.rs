@@ -350,8 +350,11 @@ pub struct Compiler {
     pub collected_enums: Vec<EnumDecl>,
     /// Current source line (updated before compiling each AST node).
     current_line: u32,
-    /// When true, unknown identifiers are compiled as self-field loads (for class methods).
+    /// When true, unknown identifiers are read as program variables at run time (for class methods).
     pub is_class_method: bool,
+    /// An error the compiled action raises as soon as it is called (a method
+    /// that did not compile reports why instead of going missing).
+    pub start_error: Option<String>,
     /// When true, top-level binds use StoreGlobal/LoadGlobal so state persists across REPL entries.
     pub repl_mode: bool,
     /// Number of globals that existed before this REPL snippet (for duplicate-bind detection).
@@ -404,7 +407,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -537,6 +540,7 @@ impl Compiler {
             scope.declare_params(&param_names);
         }
         self.compile_param_defaults(&action.params)?;
+        if let Some(msg) = self.start_error.take() { self.emit_runtime_error(&msg)?; }
         match &action.body {
             ActionBody::Block(stmts) => {
                 // Two-pass: pre-register nested action names as globals.
@@ -679,10 +683,11 @@ impl Compiler {
             return Ok(Opcode::LoadGlobal(pos as u16));
         }
 
-        // 4. In a class method, unknown names are self-field accesses (shadow builtins).
+        // 4. In a class method, unknown names are the program's variables, read
+        //    when the method runs (methods are compiled apart from the program).
         if self.is_class_method {
             let field_idx = self.add_constant(Value::Str(name.to_string().into()));
-            return Ok(Opcode::SelfField(field_idx));
+            return Ok(Opcode::ProgramVar(field_idx));
         }
 
         // 5. Check if it's a known builtin name.
@@ -1357,6 +1362,18 @@ impl Compiler {
                                 || self.scope().find_local_entry(bare).is_some_and(|(i, _)| self.scope().local_meta[i].bound)
                                 || self.global_index(bare).is_some()
                         });
+                        if text.contains('@') && idents.iter().any(|n| n == "self") {
+                            let has_self = match self.scope().find_local_entry("self") {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => self.scopes.len() > 1 && self.scopes[..self.scopes.len() - 1].iter().any(|sc| sc.find_local("self").is_some()),
+                            };
+                            if !has_self {
+                                return Err(GoblinError::CompileError {
+                                    message: format!("P0919: '{{{text}}}': '@name' means 'self >> name', and there is no 'self' here"),
+                                    span_debug: "(unknown)".into(),
+                                });
+                            }
+                        }
                         if !all_known { continue; }
                         self.compile_expr(&e)?;
                         names.push(text);
@@ -4237,7 +4254,7 @@ pub(crate) fn placeholder_end(s: &str, start: usize) -> Option<usize> {
 /// `text` as one expression, or None.
 fn parse_interp_expr(text: &str) -> Option<Expr> {
     let toks = goblin_lexer::lex(text, "<interpolation>").ok()?;
-    let module = goblin_parser::Parser::new(&toks).parse_module().ok()?;
+    let module = goblin_parser::Parser::new(&toks).allow_self().parse_module().ok()?;
     match module.items.as_slice() {
         [Stmt::Expr(e)] => Some(e.clone()),
         _ => None,

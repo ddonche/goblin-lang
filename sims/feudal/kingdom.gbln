@@ -67,25 +67,25 @@ xx
     owner: nil
     on erase: inherit
     every 1 tick
-        self >> age |= self >> age + 1
+        @age |= @age + 1
         live(self)
     end
     defect | decision against Realm where [
-        self >> age >= 16 and self >> loyalty < 20 and :is_type(self >> owner, "Noble")
-        and target >> n != kingdom(self) and strength(self) * 2 > strength(self >> owner)
+        @age >= 16 and @loyalty < 20 and :is_type(@owner, "Noble")
+        and target >> n != kingdom(self) and strength(self) * 2 > strength(@owner)
     ] by [ 0 - target >> seized ]
     /// The best-scored realm (fewest seizures) is the choice, whatever its score.
     judge using defect
         else: defect(target)
     end
     sell | decision against Noble where [
-        self >> gold < 0 and target >> owner == self >> owner and target >> gold >= 60 and estates(self) >= 2
+        @gold < 0 and target >> owner == @owner and target >> gold >= 60 and estates(self) >= 2
     ] by [ target >> gold ]
     judge using sell
         >= 0: sell(target)
     end
     seize | decision against Estate where [
-        self >> age >= 16 and target >> owner >> owner == self >> owner and target >> owner != self
+        @age >= 16 and target >> owner >> owner == @owner and target >> owner != self
         and strength(self) >= 2 * strength(target >> owner) + 2
     ] by [ target >> yield ]
     judge using seize
@@ -98,7 +98,7 @@ xx
         >= 0: grant(target)
     end
     one of defect, sell, seize, grant
-    transition erase when (self >> age) >= (self >> lifespan) or (self >> vows) == 1
+    transition erase when @age >= @lifespan or @vows == 1
     end
 xx
 
@@ -107,8 +107,8 @@ xx
     ~yield: 5
     owner: nil
     every 1 tick
-        if :is_type(self >> owner, "Noble")
-            self >> owner >> gold |= self >> owner >> gold + self >> yield
+        if :is_type(@owner, "Noble")
+            @owner >> gold |= @owner >> gold + @yield
         xx
     end
 xx

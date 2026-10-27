@@ -2906,35 +2906,18 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Str(result.into())));
             }
 
-            Opcode::SelfField(idx) => {
+            Opcode::ProgramVar(idx) => {
                 let field_name = {
                     let frame = self.call_stack.last().unwrap();
                     match frame.func.constants.get(idx as usize).cloned() {
                         Some(Value::Str(s)) => s,
-                        _ => return Err(GoblinError::Runtime("SelfField: bad constant".into())),
+                        _ => return Err(GoblinError::Runtime("ProgramVar: bad constant".into())),
                     }
                 };
-                let self_tether = self.call_stack.last()
-                    .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
-                // A name in a method that is not a local: the object's field
-                // if it has one, else the program's variable of that name
-                // (as the interpreter reads it), else nil.
-                let field = match self_tether {
-                    Some(t) => match self.session.read_value(&t)? {
-                        Value::Object(ref o) => o.fields.get(field_name.as_str()).cloned().map(|v| entry_out(&self.session, v)),
-                        Value::Ref(ref u) => match self.session.object_store.get(u.as_str()) {
-                            Some(Value::Object(o)) => o.fields.get(field_name.as_str()).cloned().map(|v| entry_out(&self.session, v)),
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                    None => None,
-                };
-                // A method from an imported module reads that module's
-                // variable first, as the interpreter does.
-                let result = match field {
-                    Some(v) => v,
-                    None => {
+                // A name in a method that is not a local is the program's
+                // variable of that name (as the interpreter reads it), else
+                // nil. An object's field is `@name`, never a bare name.
+                let found = {
                         let qualified = self.call_stack.last()
                             .and_then(|f| f.func.global_prefix.as_ref().map(|p| format!("{p}{field_name}")));
                         let names = &self.session.global_names;
@@ -2942,8 +2925,11 @@ impl Vm {
                             .or_else(|| names.iter().position(|n| n.as_str() == field_name.as_str()))
                             .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
                             .and_then(|t| self.session.read_value(&t).ok())
-                            .unwrap_or(Value::Nil)
-                    }
+                };
+                let result = match found {
+                    Some(v) => v,
+                    None if self.self_has_field(&field_name) => return Err(Self::not_a_variable(&field_name)),
+                    None => Value::Nil,
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -3053,7 +3039,10 @@ impl Vm {
                             (Some(Err(f)), _) => f,
                             (None, Some(Value::Str(t))) => t.as_str(),
                             (None, Some(v)) => { formatted = crate::builtins::fmt_value_in(v, &self.session); &formatted }
-                            (None, None) => { formatted = format!("{{{}}}", inner); &formatted }
+                            (None, None) => {
+                                if self.self_has_field(inner) { return Err(Self::not_a_variable(inner)); }
+                                formatted = format!("{{{}}}", inner); &formatted
+                            }
                         };
                         // Secondary resolve: a regular variable's value may contain {#...}
                         if val.contains("{#") {
@@ -3084,6 +3073,25 @@ impl Vm {
     /// The value `{name}` interpolates from the variables in scope (values
     /// resolved at compile time are looked up by the caller), or None when
     /// nothing by that name is in scope (the text then stays as written).
+    /// Whether the running action has a `self` with a field `name`: a bare
+    /// `name` there is then most likely meant as `@name`.
+    fn self_has_field(&mut self, name: &str) -> bool {
+        let Some(t) = self.call_stack.last().and_then(|f| {
+            let slot = f.func.local_names.iter().position(|n| n == "self")?;
+            f.locals.get(slot).cloned().flatten()
+        }) else { return false };
+        match self.session.read_value(&t) {
+            Ok(Value::Object(o)) => o.fields.contains_key(name),
+            Ok(Value::Ref(u)) => matches!(self.session.object_store.get(u.as_str()), Some(Value::Object(o)) if o.fields.contains_key(name)),
+            _ => false,
+        }
+    }
+
+    fn not_a_variable(name: &str) -> GoblinError {
+        GoblinError::Runtime(format!(
+            "R0122: `{name}` is not a variable here; did you mean `@{name}`, this object's field (`self >> {name}`)?"))
+    }
+
     fn lookup_interp_value(&mut self, name: &str) -> Option<Value> {
         // 1. Check locals in current frame by name
         let local_tether = self.call_stack.last().and_then(|frame| {
@@ -3095,17 +3103,7 @@ impl Vm {
                 return Some(v);
             }
         }
-        // 2. If self (locals[0]) is an Object, check its fields
-        let self_tether = self.call_stack.last()
-            .and_then(|f| f.locals.first().and_then(|opt| opt.clone()));
-        if let Some(t) = self_tether {
-            if let Ok(Value::Object(ref o)) = self.session.read_value(&t) {
-                if let Some(fv) = o.fields.get(name) {
-                    return Some(entry_out(&self.session, fv.clone()));
-                }
-            }
-        }
-        // 3. Check globals by name — use the current frame's compilation-unit global_names
+        // 2. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
         //    A class method from an imported module looks in that module first.
         let global_tether = self.call_stack.last()
