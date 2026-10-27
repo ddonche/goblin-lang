@@ -3472,7 +3472,7 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// Whether a query predicate only reads: names, literals, fields,
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
-fn only_reads(e: &Expr) -> bool {
+pub(crate) fn only_reads(e: &Expr) -> bool {
     match e {
         Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) | Expr::Str(..) => true,
         Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),

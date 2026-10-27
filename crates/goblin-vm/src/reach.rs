@@ -66,6 +66,19 @@ impl Base {
             for (_, v) in list { w.value(v, session); }
         }
         for f in session.compiled_methods.values() { w.func(f); }
+        // DES formulas (decision conditions and scores, order, transitions,
+        // overlays, links) are compiled when a tick runs; they can read
+        // globals and call actions. Every name in them counts.
+        let mut des = String::new();
+        for c in session.classes.values() {
+            if c.decisions.is_empty() && c.decision.is_none() && c.transitions.is_empty() && c.order_by.is_none() { continue; }
+            des.push_str(&format!("{:?}{:?}{:?}{:?}{:?}", c.decision, c.judge, c.decisions, c.transitions, c.order_by));
+        }
+        for d in session.overlay_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.link_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.object_link_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.object_decisions.values() { des.push_str(&format!("{d:?}")); }
+        if !des.is_empty() { w.words(&des, true); }
         // Field defaults that are not plain literals run when an object is
         // made, so the globals they read count too.
         let mut defaults = Vec::new();
