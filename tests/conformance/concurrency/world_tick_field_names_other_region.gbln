@@ -1,0 +1,58 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A field naming an object another region holds keeps its id: the program
+/// running the world reads through it, and so does the region during a
+/// tick. (It used to read nil outside the region.)
+<>Realm |
+    ~name: ""
+    ~owner: nil
+xx
+<>Lord |
+    ~name: ""
+    ~owner: nil
+    ~sees: ""
+    every 1 tick
+        if self >> owner != nil
+            self >> sees |= self >> owner >> name
+        xx
+    end
+xx
+act make(name)
+    r <> Realm | name: name
+    l <> Lord | name: "lord of {name}", owner: r
+    return {"realm": r}
+xx
+act h(st, msg)
+    return st
+xx
+west | :actor(make("west"), h)
+east | :actor(make("east"), h)
+all | [west, east]
+tick(all)
+wl | nil
+er | nil
+repeat :objects("Lord") as l
+    if l >> name == "lord of west"
+        wl |= l
+    xx
+xx
+repeat :objects("Realm") as r
+    if r >> name == "east"
+        er |= r
+    xx
+xx
+wl >> owner |= er
+say(wl >> owner >> name)
+tick(all)
+say(wl >> owner >> name)
+repeat :objects("Lord") as l
+    say("{l >> name}: held by {l >> owner >> name}, sees {l >> sees}")
+xx
+tick(all)
+repeat :objects("Lord") as l
+    say("{l >> name}: held by {l >> owner >> name}, sees {l >> sees}")
+xx
+/// Once the object is erased, the field reads nil.
+delete_object!(er)
+tick(all)
+tick(all)
+say(wl >> owner == nil)

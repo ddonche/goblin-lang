@@ -1,0 +1,7 @@
+east
+east
+lord of west: held by east, sees east
+lord of east: held by east, sees east
+lord of west: held by east, sees east
+lord of east: held by east, sees east
+true

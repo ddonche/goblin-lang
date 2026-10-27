@@ -53,6 +53,7 @@ matches 4.
 | 4 | a lord who moved carried copies of his new king and realm; walking up `owner` stored those copies over the real ones, so the new realm lost its counts | objects cross regions by id (#114) |
 | 5 | an action called in a condition (`strength(self)`) ran once per target | an action that only reads runs once per set of arguments while a decision is scored: 200 years 5.2 s → 3.7 s on 4 threads |
 | 6 | walking up `owner` (`x \|= x >> owner`) copied each object and wrote it back into the store | a variable given a stored object holds its id; field chains and `==` don't copy (3% of the run; most of what is left is copying object ids, which are text) |
+| 7 | a field naming another region's object (a vassal whose liege lives elsewhere) read nil from the program running the world | the field keeps the id across regions; it reads nil only once the object is erased |
 
 The findings below are still open.
 
@@ -66,17 +67,7 @@ another vassal of my liege": `target >> owner >> owner == self >> owner`),
 which is also the more feudal rule. No change proposed; noting it because
 the first version of the sim reached for the slow form.
 
-## 2. A field that names another region's object reads nil from outside
-
-A region's snapshot keeps a field that names one of its own objects, but a
-field that names another region's object (a vassal whose liege lives
-elsewhere) becomes nil there, so the program running the world reads nil
-through it. Here a defector always moves to his new liege's region, so the
-sim never sees it.
-
-**Change:** keep the id; the object can be found wherever it lives.
-
-## 3. Text with quotes can't go inside `{}` in a string
+## 2. Text with quotes can't go inside `{}` in a string
 
 `say("estates {:len(:objects("Estate"))}")` is a parse error: the inner
 quote ends the string. Same as finding 9 of the RPG sim; the sim reads the

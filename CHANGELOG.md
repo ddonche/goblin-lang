@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Regions (VM): a field naming an object another region holds keeps its id
+  when the objects cross between regions (snapshots, changes, moves). The
+  program running the world reads through it (`lord >> owner >> name`
+  used to read nil there), and so does a region during a tick. Once the
+  object is erased the field reads nil, as before.
 - VM: a variable given an object from a field (`x |= x >> owner`) or from
   another variable (`y | x`) holds that object by id instead of a copy
   written back into the store; a field read followed by another field
