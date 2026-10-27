@@ -536,8 +536,10 @@ fn same_field(
 ) -> Option<std::rc::Rc<Vec<(Value, usize)>>> {
     use goblin_ast::Expr as E;
     if !reads(vm, condition) { return None; }
+    // `target >> is_nil` calls a builtin, it doesn't read a field.
     let field_of_target = |e: &E| match e {
-        E::Member(o, f, _) if matches!(&**o, E::Ident(n, _) if n == "target") => Some(f.clone()),
+        E::Member(o, f, _) if matches!(&**o, E::Ident(n, _) if n == "target")
+            && crate::vm::member_builtin(f).is_none() => Some(f.clone()),
         _ => None,
     };
     let (field, other_side) = parts.iter().find_map(|c| {
@@ -550,6 +552,9 @@ fn same_field(
         }
     })?;
     let e = vm.tick_formula(other_side, &["self", "target"]).ok()?;
+    // It is worked out once for every target, so it must give the same
+    // answer each time (`self >> town >> shuffle` doesn't).
+    if !e.reads_fields_only() { return None; }
     let want = vm.run_tick_formula_ref(&e, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()?;
     let key = field_key(&want)?;
     let g = groups.entry((hosts.to_vec(), field.clone())).or_insert_with(|| {
