@@ -3389,6 +3389,29 @@ impl Compiler {
         // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
         // a predicate is compiled as `fn(it)`; a class name is a plain value.
         if bare == "objects" || bare == "overlays" {
+            // `:objects("Item", it >> owner == pack)`: read pack's contents
+            // list. The predicate still runs on each of them, so the result
+            // is the same; the VM falls back to the class list when it can't
+            // tell (see `vm_objects_in`).
+            if bare == "objects" {
+                if let [cls @ Expr::Str(..), pred] = args {
+                    if let Some((var, var_expr)) = owner_test(pred) {
+                        if self.resolve_load(&var).is_ok() && only_reads(pred) {
+                            self.compile_expr(cls)?;
+                            // The holder is read by a call, so a variable that
+                            // can't be read (its object was erased) makes the
+                            // VM fall back to the plain scan, where the
+                            // predicate failing means no match.
+                            self.compile_predicate_lambda(&var_expr)?;
+                            let vidx = self.add_constant(Value::Str(var.into()));
+                            self.emit(Opcode::LoadConst(vidx));
+                            self.compile_predicate_lambda(pred)?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 4));
+                            return Ok(Some(()));
+                        }
+                    }
+                }
+            }
             match args {
                 [Expr::Str(..)] => self.compile_expr(&args[0])?,
                 [pred] => self.compile_predicate_lambda(pred)?,
@@ -3427,6 +3450,54 @@ impl Compiler {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// In a query predicate, `it >> owner == x` (or `owner == x`, either way
+/// round), alone or as one side of a top-level `and`: the variable `x`.
+fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
+    let Expr::Binary(l, op, r, _) = pred else { return None };
+    if op == "and" || op == "&&" { return owner_test(l).or_else(|| owner_test(r)); }
+    if op != "==" { return None; }
+    let reads_owner = |e: &Expr| match e {
+        Expr::Ident(n, _) => n == crate::store::OWNER_FIELD,
+        Expr::Member(o, f, _) => f == crate::store::OWNER_FIELD && matches!(&**o, Expr::Ident(n, _) if n == "it"),
+        _ => false,
+    };
+    let var = |e: &Expr| match e {
+        Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some((n.clone(), e.clone())),
+        _ => None,
+    };
+    if reads_owner(l) { var(r) } else if reads_owner(r) { var(l) } else { None }
+}
+
+/// Whether a query predicate only reads: names, literals, fields,
+/// operators, indexes and calls to builtins that change nothing. Then
+/// running it on fewer objects changes nothing but the result.
+pub(crate) fn only_reads(e: &Expr) -> bool {
+    match e {
+        Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
+        // A string with `{...}` runs what it names.
+        Expr::Str(t, _) => !t.contains('{'),
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x),
+        Expr::Array(xs, _) => xs.iter().all(only_reads),
+        Expr::FreeCall(name, args, _) => {
+            name.starts_with(':') && READ_ONLY_BUILTINS.contains(&name.trim_start_matches(':'))
+                && args.iter().all(only_reads)
+        }
+        _ => false,
+    }
+}
+
+/// Builtins that only read: no effects, no randomness, no calls back into
+/// the program.
+const READ_ONLY_BUILTINS: &[&str] = &[
+    "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow", "clamp", "sum", "avg",
+    "len", "count", "has", "contains", "starts_with", "ends_with", "is_empty", "keys", "values",
+    "lower", "upper", "trim", "str", "to_str", "int", "i", "float", "f", "bool",
+    "is_nil", "is_bool", "is_int", "is_float", "is_str", "is_array", "is_map", "is_num",
+    "is_type", "is_even", "is_odd", "is_positive", "is_negative",
+    "link_score", "overlay_strength", "owned_by",
+];
 
 fn parse_number(raw: &str) -> Result<Value, GoblinError> {
     // Try int first, then float.

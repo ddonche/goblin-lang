@@ -1,10 +1,15 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
 /// The program that runs tick(regions) can delete a region's object, or
 /// the overlays on it: the program stops seeing them at once, and the
-/// region takes them out at the start of the next tick.
+/// region takes them out at the start of the next tick, running the
+/// object's `on erase:` there.
 <>Person |
     health: .9
     ~n: 0
+    on erase: farewell
+xx
+act farewell(p)
+    say("region: {p >> n} erased")
 xx
 overlay Hurt |
     hosts Person

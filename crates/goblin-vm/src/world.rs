@@ -435,6 +435,8 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             }
             Item::Change { uuid, field, change } => apply_change(vm, uuid, field, change, &mut fp),
             Item::Erase { uuid } => {
+                // Its `on erase:` runs here, where the object lives.
+                if vm.session.object_store.contains_key(uuid) { crate::tick::run_on_erase(vm, uuid)?; }
                 if vm.session.object_store.contains_key(uuid) {
                     let var = vm.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_default();
                     crate::builtins::erase_object(&mut vm.session, &var, uuid);
@@ -595,6 +597,7 @@ fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut 
         Value::Int(i) if is_trait => Value::Float((i as f64).clamp(0.0, 1.0)),
         other => other,
     };
+    if field == crate::store::OWNER_FIELD { vm.session.object_store.refile_owner(uuid); }
 }
 
 /// The region's own objects and overlays, ready for the other regions.

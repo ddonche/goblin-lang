@@ -5,6 +5,14 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Ownership (VM): an object's `owner` field holds the object that contains
+  it, and the store keeps each owner's contents list. Writing `owner` moves the
+  object (a transfer; a drop is giving it to a place). `:objects("Class", it >>
+  owner == x)` (alone or as one side of `and`) reads that list instead of
+  searching every object, and so do `owned_by` and `owns_tree`: 10,000 lookups
+  over 20,000 items went from 684 s to 0.76 s. When an owner is erased, its
+  `on erase:` runs first (now for `delete_object!` too), and whatever it still
+  contains moves up to its own owner (nil if it has none).
 - Regions (VM): the program that runs `tick(regions)` can change the regions'
   objects. A field write, an overlay put on or taken off, `delete_object!` and
   `delete_overlays_on!` show in the program's view at once and go to the

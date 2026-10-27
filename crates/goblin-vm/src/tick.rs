@@ -1648,8 +1648,24 @@ fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), G
         vm.session.des_erasing.retain(|u| u != uuid);
         r?;
     }
+    vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     Ok(())
+}
+
+/// `delete_object!(x)`: x's class's `on erase:` action runs first, as it
+/// does for an erase transition (not again while it is already running).
+pub(crate) fn run_on_erase(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
+    if vm.session.des_erasing.iter().any(|u| u == uuid) { return Ok(()); }
+    let class = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.class_name.clone(),
+        _ => return Ok(()),
+    };
+    let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) else { return Ok(()) };
+    vm.session.des_erasing.push(uuid.to_string());
+    let r = call_object_action(vm, uuid, &action, Vec::new());
+    vm.session.des_erasing.retain(|u| u != uuid);
+    r
 }
 
 /// The action a judge arm calls, and the arguments it writes (none for a

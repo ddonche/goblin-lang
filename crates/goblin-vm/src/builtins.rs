@@ -3815,7 +3815,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             ))
         }
         // Objects/Overlays/QueryByIdent are handled in vm.rs before builtins::call_builtin is called.
-        BuiltinId::Objects | BuiltinId::Overlays | BuiltinId::QueryByIdent => {
+        BuiltinId::Objects | BuiltinId::ObjectsIn | BuiltinId::Overlays | BuiltinId::QueryByIdent => {
             Err(GoblinError::Runtime("objects/overlays/query_by_ident: must be called through VM dispatch".to_string()))
         }
 
@@ -3890,17 +3890,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Some(Value::Str(s)) => s.to_string(),
                 _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
             };
-            let owned: Vec<Value> = session.object_store.values()
-                .filter(|v| matches!(v, Value::Object(o)
-                    if matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == &owner_uuid)))
-                .cloned()
+            let at = owned_places(&session.object_store, &owner_uuid);
+            let owned: Vec<Value> = at.into_iter()
+                .filter_map(|i| session.object_store.get_index(i).map(|(_, v)| v.clone()))
                 .collect();
             Ok(Value::Array(owned))
         }
         BuiltinId::OwnsTree => {
             // owns_tree(root): one "{Class: id}" line per object, children
             // (sorted) indented two spaces per level.
-            fn build_tree(owner_uuid: &str, object_store: &indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>, depth: usize) -> String {
+            fn build_tree(owner_uuid: &str, object_store: &crate::store::ObjectStore, depth: usize) -> String {
                 let indent = "  ".repeat(depth);
                 let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
                     let id = o.fields.get("id")
@@ -3910,10 +3909,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 } else {
                     format!("{}{}", indent, owner_uuid)
                 };
-                let mut children: Vec<String> = object_store.iter()
-                    .filter(|(_, v)| matches!(v, Value::Object(o) if
-                        matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner_uuid)))
-                    .map(|(child_uuid, _)| build_tree(child_uuid, object_store, depth + 1))
+                let mut children: Vec<String> = owned_places(object_store, owner_uuid).into_iter()
+                    .filter_map(|i| object_store.get_index(i).map(|(u, _)| u.clone()))
+                    .map(|child_uuid| build_tree(&child_uuid, object_store, depth + 1))
                     .collect();
                 children.sort();
                 if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
@@ -3948,6 +3946,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
+            session.object_store.move_contents_up(uuid.as_str());
             session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
@@ -5483,8 +5482,24 @@ pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid
 /// Erase an object and the runtime state attached to it (the interpreter's
 /// `erase_var`). The variable keeps a dangling reference, so reading it
 /// afterwards is an error.
+/// Where the objects `owner` holds sit in the store, in store order: those
+/// whose `owner` field names it (its contents list) and those whose
+/// `owner_id` text is its id.
+fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
+    let mut at: Vec<usize> = store.contents_of(owner).filter_map(|u| store.get_index_of(u)).collect();
+    for (i, (_, v)) in store.iter().enumerate() {
+        if matches!(v, Value::Object(o) if matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner)) {
+            at.push(i);
+        }
+    }
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
+    session.object_store.move_contents_up(uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
         if let Some(entity) = session.des_store.get(handle) {

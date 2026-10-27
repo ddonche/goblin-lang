@@ -1356,6 +1356,7 @@ impl Vm {
                         } else { new_val };
                         std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
                     }
+                    if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
                     // A region's object, written by the program that runs
                     // the world: its region gets the new value next tick.
                     crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
@@ -1907,6 +1908,21 @@ impl Vm {
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
+                    // `delete_object!(x)`: the class's `on erase:` action
+                    // runs first, as for an erase transition; then the
+                    // builtin erases it (its contents move up).
+                    BuiltinId::DeleteObject if arg_vals.len() == 3 => {
+                        let uuid = match &arg_vals[0] {
+                            Value::Object(o) => Some(o.uuid.clone()),
+                            Value::Ref(u) => Some(u.clone()),
+                            _ => None,
+                        };
+                        if let Some(u) = uuid {
+                            let elsewhere = crate::world::in_view(&self.session, &u)
+                                || self.session.region.as_ref().is_some_and(|c| c.remote.contains(&u));
+                            if !elsewhere { crate::tick::run_on_erase(self, &u)?; }
+                        }
+                    }
                     BuiltinId::QueryByIdent => {
                         let name = match arg_vals.into_iter().next() {
                             Some(Value::Str(s)) => s,
@@ -1914,6 +1930,11 @@ impl Vm {
                             None => return Err(GoblinError::Runtime("QueryByIdent: no arg".into())),
                         };
                         let result = self.vm_query_by_ident(&name)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::ObjectsIn => {
+                        let result = self.vm_objects_in(arg_vals)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -5288,6 +5309,45 @@ impl Vm {
         }
     }
 
+    /// `:objects("Class", it >> owner == x ...)` (from the compiler): x's
+    /// contents of that class, those the predicate holds for. The same as
+    /// `:objects("Class", pred)`, which it falls back to when x names no
+    /// object, the class has no `owner` field, or the class has a field
+    /// named like x (in the predicate that name reads the field).
+    fn vm_objects_in(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        let mut it = args.into_iter();
+        let (Some(Value::Str(class)), Some(owner), Some(Value::Str(var)), Some(pred)) = (it.next(), it.next(), it.next(), it.next()) else {
+            return Err(GoblinError::Runtime("objects: bad arguments".into()));
+        };
+        let class: &str = class.as_ref();
+        let var: &str = var.as_ref();
+        // `owner` is a call that reads the holder's variable.
+        let base = self.stack.len();
+        let owner = match self.call_func_value(owner, vec![Value::Nil]) {
+            Ok(v) => v,
+            Err(_) => { self.stack.truncate(base); Value::Nil }
+        };
+        let owner_uuid = match &owner {
+            Value::Ref(u) => Some(u.clone()),
+            Value::Object(o) => Some(o.uuid.clone()),
+            _ => None,
+        };
+        let usable = self.session.classes.get(class).is_some_and(|c|
+            c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == var));
+        let (Some(owner_uuid), true) = (owner_uuid, usable) else {
+            return self.vm_objects_query(Some(class), Some(pred));
+        };
+        let store = &self.session.object_store;
+        let mut ids: Vec<usize> = store.contents_of(&owner_uuid)
+            .filter_map(|u| match store.get_full(u) {
+                Some((i, _, Value::Object(o))) if o.class_name == class => Some(i),
+                _ => None,
+            })
+            .collect();
+        ids.sort_unstable();
+        self.objects_among(Some(ids), Some(pred))
+    }
+
     /// `:objects(...)`: every object, or a class's objects (read from the
     /// store's class lists, not by looking at every object), those `pred`
     /// holds for when there is one.
@@ -5303,6 +5363,11 @@ impl Vm {
                 Some(store.of_class(c).filter_map(|u| store.get_index_of(u)).collect())
             }
         };
+        self.objects_among(ids, pred)
+    }
+
+    /// The objects at `ids` (every object when None) that `pred` holds for.
+    fn objects_among(&mut self, ids: Option<Vec<usize>>, pred: Option<Value>) -> Result<Value, GoblinError> {
         if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p, ids.as_deref())) {
             return Ok(Value::Array(found));
         }
@@ -5823,6 +5888,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
                 }
+                if AsRef::<str>::as_ref(field) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
                 crate::world::after_view_write(&mut self.session, &uuid, field)?;
                 Ok(Value::Ref(uuid))
             }
