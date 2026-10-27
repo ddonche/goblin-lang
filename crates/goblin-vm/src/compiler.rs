@@ -2076,9 +2076,12 @@ impl Compiler {
                 self.compile_expr(rhs)?;
                 let idx = self.add_constant(Value::Str(field_name.into()));
                 self.emit(Opcode::SetField(idx));
+                // A field reached through another field (`p >> home >> food |= 5`)
+                // names a stored object by its id: SetField changes it in place,
+                // so there is no variable to store back.
                 let var_name = match obj_expr {
                     Expr::Ident(n, _) => n.clone(),
-                    _ => return Err(GoblinError::Runtime("field assignment: object must be a simple variable".into())),
+                    _ => return Ok(()),
                 };
                 let store_op = self.resolve_store(&var_name)
                     .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
@@ -3383,9 +3386,19 @@ impl Compiler {
             Some(b) => b,
             None    => return Ok(None),
         };
-        if (bare == "objects" || bare == "overlays") && args.len() == 1 {
-            self.compile_predicate_lambda(&args[0])?;
-            self.emit(Opcode::CallBuiltin(bid, 1));
+        // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
+        // a predicate is compiled as `fn(it)`; a class name is a plain value.
+        if bare == "objects" || bare == "overlays" {
+            match args {
+                [Expr::Str(..)] => self.compile_expr(&args[0])?,
+                [pred] => self.compile_predicate_lambda(pred)?,
+                [name, pred] => {
+                    self.compile_expr(name)?;
+                    self.compile_predicate_lambda(pred)?;
+                }
+                _ => for arg in args { self.compile_expr(arg)?; },
+            }
+            self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
             return Ok(Some(()));
         }
         for arg in args { self.compile_expr(arg)?; }

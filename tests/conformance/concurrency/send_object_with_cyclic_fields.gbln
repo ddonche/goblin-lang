@@ -1,0 +1,25 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object sent on a channel takes the objects its fields hold with it,
+/// also when they point back at each other (a cycle stays a cycle in the
+/// copy); a field whose object was erased arrives as nil.
+<>N |
+    ~v: 0
+    ~next: nil
+xx
+a <> N | v: 1
+b <> N | v: 2
+a >> next |= b
+b >> next |= a
+c <> N | v: 3
+d <> N | v: 4, next: c
+delete_object!(c)
+ch | :channel(10)
+:post(ch, a)
+:post(ch, d)
+x | :receive(ch)
+say(x >> v)
+say(x >> next >> v)
+say(x >> next >> next >> v)
+y | :receive(ch)
+say(y >> v)
+say(:is_nil(y >> next))

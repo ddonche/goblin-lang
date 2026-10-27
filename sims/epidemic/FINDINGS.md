@@ -57,6 +57,9 @@ Counting people needs a `~kind: "person"` field, as with rabbits and
 foxes (predator-prey, finding 1). Same proposal: make
 `:is_type(p, "Person")` true for an object of class `Person`.
 
+**Fixed in the runtime:** `:objects("Person")` and `:is_type(p, "Person")`
+(predator-prey, finding 1). The sim uses them and has no `kind` field.
+
 ## 4. Again: a region has to be told the list of regions
 
 `:move!` needs the next town's handle, so the main program posts the list

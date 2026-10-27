@@ -1,0 +1,47 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The program that runs tick(regions) can change a region's object: it
+/// reads back what it wrote at once, and the region gets the new value at
+/// the start of the next tick, before that tick runs. An overlay goes the
+/// same way. A region changes its own objects as before.
+<>Person |
+    health: .9
+    ~gold: 0
+    ~x: 0
+xx
+overlay Hurt |
+    hosts Person
+    modifies:
+        x + 1
+    end
+end
+act make_one()
+    p <> Person | health: .9, gold: 0
+    return {"people": [p]}
+xx
+act day(st, msg)
+    repeat :objects("Person") as p
+        g | p >> gold
+        h | p >> health
+        say("region sees gold {g}, health {h}")
+    xx
+    n | :len(:overlays("Hurt"))
+    say("region sees {n} Hurt")
+    return st
+xx
+r | :actor(make_one(), day)
+tick([r])
+repeat :objects("Person") as p
+    p >> health |= .2
+    p >> gold |= p >> gold + 5
+    g | p >> gold
+    say("program reads gold {g}")
+    overlay Hurt on p at .5
+xx
+n | :len(:overlays("Hurt"))
+say("program sees {n} Hurt")
+tick([r])
+repeat :objects("Person") as p
+    h | p >> health
+    g | p >> gold
+    say("after: health {h}, gold {g}")
+xx

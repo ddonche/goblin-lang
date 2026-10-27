@@ -38,7 +38,7 @@ cy <> Buyer | who: 3
 ann score | decision against Shop by [
     0 - target >> stock
 ]
-cy score | decision against Shop margin .5 by [
+cy score | decision against Shop margin 5 by [
     target >> stock
 ]
 repeat 20

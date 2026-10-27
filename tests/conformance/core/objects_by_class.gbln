@@ -1,0 +1,36 @@
+/// known-gap: interp has no class form of :objects and :is_type knows no classes
+/// `:objects("Rabbit")` gives that class's objects in the order they were
+/// made; `:objects("Rabbit", pred)` those of them the predicate holds for;
+/// `:is_type(x, "Rabbit")` says whether x is a Rabbit; `repeat Rabbit`
+/// goes over them. An erased object leaves its class; an unknown class
+/// name is an error.
+<>Rabbit |
+    ~age: 0
+xx
+<>Fox |
+    ~age: 0
+xx
+a <> Rabbit | age: 1
+b <> Fox | age: 2
+c <> Rabbit | age: 5
+say(:len(:objects("Rabbit")))
+say(:len(:objects("Fox")))
+say(:len(:objects()))
+say(:len(:objects("Rabbit", it >> age > 2)))
+say(:is_type(a, "Rabbit"))
+say(:is_type(b, "Rabbit"))
+n | 0
+repeat Rabbit as r
+    n |= n + r >> age
+end
+say(n)
+delete_object!(a)
+d <> Rabbit | age: 9
+repeat :objects("Rabbit") as r
+    say(r >> age)
+end
+attempt
+    :objects("Rabit")
+rescue e
+    say("error")
+end

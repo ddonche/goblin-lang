@@ -12,11 +12,85 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
+/// Whether a value holds an object whose field names another stored object.
+fn holds_entry_fields(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => o.fields.values().any(|f| matches!(f, Value::Ref(_)) || holds_entry_fields(f)),
+        Value::Array(a) => a.iter().any(holds_entry_fields),
+        Value::Map(m) => m.values().any(holds_entry_fields),
+        Value::MapOrd(m) => m.values().any(holds_entry_fields),
+        Value::Collection(c) => match &c.layout {
+            crate::value::CollectionLayout::FlatArray(xs) => xs.iter().any(holds_entry_fields),
+            crate::value::CollectionLayout::SmallMap(xs) => xs.iter().any(|(_, x)| holds_entry_fields(x)),
+            crate::value::CollectionLayout::HashMapBackend(m) => m.values().any(holds_entry_fields),
+            _ => collections::to_vec(c).iter().any(holds_entry_fields),
+        },
+        _ => false,
+    }
+}
+
+/// A value as it is shown or written out: a field that names a stored
+/// object shows that object (nil once it is erased); an object met again
+/// inside itself stays a reference, so a cycle prints once.
+pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
+    fn walk(v: Value, s: &Session, seen: &mut Vec<String>) -> Value {
+        match v {
+            Value::Ref(u) if seen.iter().any(|x| *x == u) => Value::Ref(u),
+            Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => Value::Ref(u),
+            Value::Ref(u) => match s.object_store.get(u.as_str()) {
+                Some(o) => walk(o.clone(), s, seen),
+                None => Value::Nil,
+            },
+            Value::Object(mut o) => {
+                if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
+                seen.push(o.uuid.clone());
+                let fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+                    .map(|(k, f)| (k.clone(), match f {
+                        Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
+                        other => other.clone(),
+                    })).collect();
+                seen.pop();
+                o.fields = std::rc::Rc::new(fields);
+                Value::Object(o)
+            }
+            Value::Array(a) => Value::Array(a.into_iter().map(|x| walk(x, s, seen)).collect()),
+            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect()),
+            Value::MapOrd(m) => Value::MapOrd(Box::new(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect())),
+            Value::Collection(c) if holds_entry_fields(&Value::Collection(c.clone())) => {
+                if c.is_map() {
+                    let pairs = collections::to_pairs(&c).into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect();
+                    Value::Collection(Rc::new(CollectionValue::from_map(pairs)))
+                } else {
+                    let xs = collections::to_vec(&c).into_iter().map(|x| walk(x, s, seen)).collect();
+                    Value::Collection(Rc::new(CollectionValue::from_flat(xs)))
+                }
+            }
+            other => other,
+        }
+    }
+    if session.object_store.is_empty() || !holds_entry_fields(&v) { return v; }
+    walk(v, session, &mut Vec::new())
+}
+
+/// `fmt_value_raw`, showing the objects that fields name.
+pub(crate) fn fmt_value_in(v: &Value, session: &Session) -> String {
+    if session.object_store.is_empty() || !holds_entry_fields(v) { return fmt_value_raw(v); }
+    fmt_value_raw(&show_entries(v.clone(), session))
+}
+
+/// Builtins that show or write out their arguments.
+fn shows_values(id: BuiltinId) -> bool {
+    matches!(id, BuiltinId::ToString | BuiltinId::ToStr | BuiltinId::Println | BuiltinId::Format
+        | BuiltinId::JsonStringify | BuiltinId::JsonStringifyPretty | BuiltinId::WriteJson
+        | BuiltinId::YallWrite | BuiltinId::YallWriteFile | BuiltinId::YallPretty)
+}
+
 pub fn call_builtin(
     id: BuiltinId,
     args: Vec<Value>,
     session: &mut Session,
 ) -> Result<Value, GoblinError> {
+    let args = if shows_values(id) { args.into_iter().map(|a| show_entries(a, session)).collect() } else { args };
     let args = if takes_legacy_args(id) { args.into_iter().map(legacy_arg).collect() } else { args };
     // Math functions read a percent as its fraction: sqrt(25%) = 0.5.
     let args = if is_math(id) {
@@ -2740,6 +2814,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
                 (Value::Str(s), "int") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<i64>().is_ok() }
                 (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
+                // An object is of its class: `:is_type(r, "Rabbit")`.
+                (Value::Object(o), name) => o.class_name == name,
+                (Value::Ref(u), name) => matches!(session.object_store.get(u.as_str()),
+                    Some(Value::Object(o)) if o.class_name == name),
                 _ => false,
             };
             Ok(Value::Bool(ok))
@@ -3861,14 +3939,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
             };
-            crate::world::check_view_write(session, &uuid)?;
+            // A region's object: its region erases it next tick.
+            if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             erase_object(session, &var_name, &uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
-            crate::world::check_view_write(session, &uuid)?;
+            if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
@@ -3879,7 +3958,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
             };
-            crate::world::check_view_write(session, &host_uuid)?;
+            if crate::world::clear_overlays_in_region(session, &host_uuid) { return Ok(Value::Nil); }
             drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
@@ -3903,10 +3982,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Str(v) => *oi.host_var == **v,
                 _ => false,
             };
-            let overlays: Vec<Value> = session.overlay_instances.iter()
-                .filter(|oi| on_host(oi))
-                .map(|oi| Value::Str(oi.overlay_name.clone().into()))
-                .collect();
+            let list = &session.overlay_instances;
+            let overlays: Vec<Value> = match &host {
+                // An object's overlays are kept in its own list.
+                Value::Ref(u) => list.on_host(u).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
+                Value::Object(o) => list.on_host(&o.uuid).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
+                _ => list.iter().filter(|oi| on_host(oi)).map(|oi| Value::Str(oi.overlay_name.clone().into())).collect(),
+            };
             Ok(Value::Array(overlays))
         }
         BuiltinId::OverlayStrength => {
@@ -3925,7 +4007,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if !matches!(host, Value::Ref(_) | Value::Object(_) | Value::Str(_)) {
                 return Err(GoblinError::type_error("object or str", host.type_name(), "overlay_strength"));
             }
-            match session.overlay_instances.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay) {
+            let list = &session.overlay_instances;
+            let found = match &host {
+                Value::Ref(u) => list.find(u, &overlay).map(|p| &list[p]),
+                Value::Object(o) => list.find(&o.uuid, &overlay).map(|p| &list[p]),
+                _ => list.iter().find(|oi| on_host(oi) && oi.overlay_name == overlay),
+            };
+            match found {
                 Some(oi) => Ok(Value::Float(oi.strength)),
                 None => Ok(Value::Nil),
             }
@@ -5379,23 +5467,23 @@ fn bang_object_target(args: &[Value], name: &str) -> Result<String, GoblinError>
 }
 
 /// Remove every overlay instance on the host (the interpreter's `drop_overlays_for`).
-fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
-    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = session.overlay_instances.iter()
-        .filter(|i| i.host_uuid == host_uuid)
-        .map(|i| (i.overlay_name.clone(), i.des_id))
+pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
+    let places = session.overlay_instances.on_host(host_uuid).to_vec();
+    let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = places.iter()
+        .map(|&p| (session.overlay_instances[p].overlay_name.clone(), session.overlay_instances[p].des_id))
         .collect();
     if let Some(host_handle) = session.des_store.handle_for_name(host_var) {
         for (overlay_name, id) in &to_remove {
             session.des_index.remove_overlay(host_handle, overlay_name, *id);
         }
     }
-    session.overlay_instances.retain(|inst| inst.host_uuid != host_uuid);
+    session.overlay_instances.take_at(&places);
 }
 
 /// Erase an object and the runtime state attached to it (the interpreter's
 /// `erase_var`). The variable keeps a dangling reference, so reading it
 /// afterwards is an error.
-fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
+pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {

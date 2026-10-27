@@ -199,7 +199,7 @@ pub struct Session {
     /// the same way every run (the interpreter keeps creation order too).
     /// Fx hashing: object ids are long strings looked up on every field
     /// read through a reference; order is insertion order either way.
-    pub object_store: indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>,
+    pub object_store: crate::store::ObjectStore,
     /// The variable each object was first stored in (uuid -> name, and
     /// whether that variable is top-level). DES
     /// overlays report their host by this name (`host_var`), as the
@@ -207,7 +207,7 @@ pub struct Session {
     pub object_names: HashMap<String, (String, bool)>,
 
     /// Active overlay instances.
-    pub overlay_instances: Vec<OverlayInstance>,
+    pub overlay_instances: crate::store::OverlayList,
 
     /// HTTP response state.
     pub response: ResponseState,
@@ -380,7 +380,7 @@ impl Session {
             sweeps: Default::default(),
             object_store: Default::default(),
             object_names: HashMap::new(),
-            overlay_instances: Vec::new(),
+            overlay_instances: Default::default(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
             classes: Default::default(),

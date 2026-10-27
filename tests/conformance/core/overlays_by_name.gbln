@@ -1,0 +1,32 @@
+/// known-gap: interp has no name form of :overlays
+/// `:overlays("Sick")` gives that overlay's instances, in the order they
+/// were put on; `:overlays("Sick", pred)` those the predicate holds for;
+/// `:overlays_of(x)` and `:overlay_strength` read the host's own list. An
+/// overlay taken off leaves the lists; an unknown overlay name is an error.
+<>P |
+    ~n: 0
+xx
+overlay Sick |
+end
+overlay Cold |
+end
+a <> P | n: 1
+b <> P | n: 2
+c <> P | n: 3
+overlay Sick on a at .5
+overlay Cold on a at .5
+overlay Sick on c at .9
+say(:len(:overlays("Sick")))
+say(:len(:overlays("Cold")))
+say(:len(:overlays()))
+say(:len(:overlays("Sick", it >> strength > .6)))
+say(:overlays_of(a))
+say(:overlay_strength("Sick", c))
+detach Sick from a
+say(:len(:overlays("Sick")))
+say(:overlays_of(a))
+attempt
+    :overlays("Sik")
+rescue e
+    say("error")
+end

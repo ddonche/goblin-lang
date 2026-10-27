@@ -415,6 +415,10 @@ impl PartialEq for Value {
             (Value::CtrlStop,         Value::CtrlStop)         => true,
             (Value::CtrlReturn(a),    Value::CtrlReturn(b))    => a == b,
             (Value::Ref(a),           Value::Ref(b))           => a == b,
+            // An object is an entry: equal to itself (any copy of it), as on
+            // the interpreter.
+            (Value::Object(a),        Value::Object(b))        => a.uuid == b.uuid,
+            (Value::Object(o), Value::Ref(u)) | (Value::Ref(u), Value::Object(o)) => o.uuid == *u,
             (Value::GridRef { grid_id: ga, x: xa, y: ya },
              Value::GridRef { grid_id: gb, x: xb, y: yb }) => ga == gb && xa == xb && ya == yb,
             (Value::Collection(a),    Value::Collection(b)) if Rc::ptr_eq(a, b) => true,
@@ -574,6 +578,9 @@ impl std::hash::Hash for Value {
         if let Value::Frozen(f) = self { return f.value.hash(state); }
         if self.is_seq_like() { 0xA5u8.hash(state); self.container_len().hash(state); return; }
         if self.is_map_like() { 0x5Au8.hash(state); self.container_len().hash(state); return; }
+        // An object and a reference to it are equal, so they hash alike.
+        if let Value::Object(o) = self { 0x0Bu8.hash(state); return o.uuid.hash(state); }
+        if let Value::Ref(u) = self { 0x0Bu8.hash(state); return u.hash(state); }
         std::mem::discriminant(self).hash(state);
         match self {
             Value::Nil           => {}

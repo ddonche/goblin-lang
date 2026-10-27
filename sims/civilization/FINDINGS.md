@@ -52,6 +52,11 @@ a decision's `target` does: reads and writes go to the object itself, and
 the field reads nil once the object is erased. No new name. At the least,
 a write through such a copy should be an error.
 
+**Fixed in the runtime:** a field given an object now holds the object
+itself (its id): writes through `p >> home` reach the village, and the
+field reads nil once the village is erased. The sim still finds its
+village by number; it moves to `home` with the object index change.
+
 ## 2. An action in a `one of` group can't say it didn't act
 
 The first version had `leave` first in the group: a homeless person
@@ -64,6 +69,9 @@ village's `every` block.
 `false` lets the next decision in the group run. Today the return value
 is ignored.
 
+**Fixed in the runtime:** an action in a `one of` group that returns
+`false` now lets the next decision in the group run.
+
 ## 3. `by [ 1 ]` when the score doesn't matter
 
 Every decision here has one possible target, so the score means nothing,
@@ -71,6 +79,9 @@ but `by [ ... ]` is required. Five decisions end in `by [ 1 ]`.
 
 **Change:** let `by [ ... ]` be left out; every target then scores the
 same (1), and `margin`/`order by` work as now.
+
+**Fixed in the runtime:** `by [ ... ]` can be left out; every target
+that passes `where` scores 1. The sim's decisions no longer end in `by [ 1 ]`.
 
 ## 4. Sending something to another region takes a message and a search
 
@@ -98,7 +109,8 @@ bigger change than the others; the message works today.
 ## 5–6. Repeats
 
 - Nothing can ask an object its class, so both classes carry `~kind` for
-  counting (predator-prey 1).
+  counting (predator-prey 1). Fixed: the sim now uses
+  `:objects("Person", ...)` and `:objects("Village", ...)`.
 - A region must be told the list of regions before `:move!` and `:post`
   work (predator-prey 4).
 

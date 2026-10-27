@@ -38,7 +38,6 @@ xx
 
 <>Rabbit |
     /// Only for counting: nothing can ask an object its class (FINDINGS.md, 1).
-    ~kind: "rabbit"
     ~meadow: 0
     ~energy: 6
     ~born: 0
@@ -61,7 +60,6 @@ xx
 xx
 
 <>Fox |
-    ~kind: "fox"
     ~meadow: 0
     ~energy: 12
     ~born: 0
@@ -74,7 +72,7 @@ xx
         wander(self)
     end
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ] by [ 1 ]
+    hunt | decision against Rabbit where [ self >> energy < 30 and target >> meadow == self >> meadow ]
     judge using hunt
         >= 0: catch(target)
     end
@@ -90,7 +88,7 @@ xx
 /// The more rabbits in the meadow, the likelier a hunt succeeds: a few
 /// rabbits hide well. Counting them takes a scan (FINDINGS.md, 2).
 act catch(f, r)
-    here | :len(:objects(it >> kind == "rabbit" and it >> meadow == f >> meadow))
+    here | :len(:objects("Rabbit", it >> meadow == f >> meadow))
     if (pick 1 from 1...(here + 400)) <= here
         r >> energy |= 0
         f >> energy |= :min(40, f >> energy + 8)
@@ -141,11 +139,11 @@ repeat :range(1, days + 1) as t
     tick(meadows)
     if t % 10 == 0 or t == days
         grass | 0
-        repeat :objects(it >> amount > -1) as g
+        repeat :objects("Grass") as g
             grass |= grass + g >> amount
         xx
-        rabbits | :len(:objects(it >> kind == "rabbit"))
-        foxes | :len(:objects(it >> kind == "fox"))
+        rabbits | :len(:objects("Rabbit"))
+        foxes | :len(:objects("Fox"))
         say("day {t}: rabbits {rabbits}, foxes {foxes}, grass {grass}")
     xx
 xx

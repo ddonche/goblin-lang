@@ -3267,6 +3267,16 @@ impl<'t> Parser<'t> {
         }
     }
 
+    /// Steps back over the layout tokens `skip_layout` passed, so the
+    /// statement ends where its last token was.
+    fn unskip_layout(&mut self) {
+        use goblin_lexer::TokenKind;
+        while self.i > 0 && matches!(self.toks.get(self.i - 1).map(|t| &t.kind),
+            Some(TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent)) {
+            self.i -= 1;
+        }
+    }
+
     fn skip_layout(&mut self) {
         use goblin_lexer::TokenKind;
         while let Some(t) = self.peek() {
@@ -4267,13 +4277,11 @@ impl<'t> Parser<'t> {
                 let mut margin = self.parse_decision_margin()?;
                 let filter = self.parse_decision_where()?;
                 if margin.is_none() { margin = self.parse_decision_margin()?; }
-                if self.peek_ident() != Some("by") {
-                    return Err(s_help_site!(
-                        "P1404",
-                        "Expected 'by' after target class name",
-                        "Write: score | decision against Fighter by [ formula ]",
-                    ));
-                }
+                // Without `by [ ... ]` every target scores the same (1).
+                let formula = if self.peek_ident() != Some("by") {
+                    self.unskip_layout();
+                    PExpr::Int("1".into())
+                } else {
                 let _ = self.eat_ident(); // consume 'by'
                 self.skip_layout();
                 if !self.eat_op("[") {
@@ -4293,6 +4301,8 @@ impl<'t> Parser<'t> {
                         "Write: score | decision against Fighter by [ self >> aggression ]",
                     ));
                 }
+                formula
+                };
                 if named.iter().any(|(n, _, _)| *n == decision_name) {
                     return Err(s_help_site!(
                         "P1407",
@@ -8069,10 +8079,11 @@ impl<'t> Parser<'t> {
         let mut margin = self.parse_decision_margin()?;
         let filter = self.parse_decision_where()?.map(|f| self.lower_expr(f));
         if margin.is_none() { margin = self.parse_decision_margin()?; }
-        if self.peek_ident() != Some("by") {
-            return Err(s_help_site!("P1414", "Expected 'by'",
-                "Write: Germany score | decision against Nation by [ formula ]"));
-        }
+        // Without `by [ ... ]` every target scores the same (1).
+        let formula = if self.peek_ident() != Some("by") {
+            self.unskip_layout();
+            self.lower_expr(PExpr::Int("1".into()))
+        } else {
         let _ = self.eat_ident(); // consume 'by'
         self.skip_layout();
         if !self.eat_op("[") {
@@ -8087,6 +8098,8 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!("P1416", "Expected ']' to close formula",
                 "Write: Germany score | decision against Nation by [ formula ]"));
         }
+        formula
+        };
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         let def = ast::DecisionDef {
             target_class,

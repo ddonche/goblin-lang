@@ -1,0 +1,19 @@
+/// known-gap: interp stores a copy of the object in the field, so writes through the field never reach it
+/// In a DES `every` block, a write through a field that holds an object
+/// changes that object: two people eat from one village each tick.
+<>Village |
+    ~food: 10
+xx
+<>Person |
+    ~home: nil
+    every 1 tick
+        self >> home >> food |= self >> home >> food - 1
+    end
+xx
+v <> Village | food: 10
+a <> Person | home: v
+b <> Person | home: v
+repeat 3
+    tick()
+end
+say(v >> food)

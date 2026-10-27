@@ -5,6 +5,47 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Regions (VM): the program that runs `tick(regions)` can change the regions'
+  objects. A field write, an overlay put on or taken off, `delete_object!` and
+  `delete_overlays_on!` show in the program's view at once and go to the
+  object's region, which applies them at the start of the next tick (they used
+  to fail with C0124). Inside a region, `delete_object!`, `delete_overlays_on!`
+  and `detach` on another region's object go to its owner the same way. A
+  change still on its way to a region left out of the next `tick(regions)` list
+  is an error (C0123).
+- DES: a decision can leave out `by [ ... ]` (in a class and on one object);
+  every target that passes its `where` then scores 1. The civilization and
+  predator-prey sims drop their `by [ 1 ]`, same output.
+- DES (VM): in a `one of` group, an action that returns `false` didn't act, so
+  the next decision in the group gets its turn. Any other result (nil included)
+  still ends the group.
+- DES (VM): a decision's score is exactly the number its formula gives. The
+  runtime no longer rescales scores (over the candidates for `~` fields, over a
+  range guessed from the formula otherwise) or clamps them to 0..1. `margin` is
+  in the formula's own units and the judge compares against the same number.
+  Programs written against the old 0..1 scale need their thresholds and margins
+  in the formula's units (the town's `margin .8` is now `margin 10` with
+  `where [ target >> open == 1 ]`, same output).
+- Overlays (VM): every overlay is kept in one list with its host's and its
+  name's places, updated as overlays are put on, renamed and taken off.
+  `:overlays("Sick")` gives one overlay's instances and `:overlays("Sick", pred)`
+  those the predicate holds for (an unknown name is R1231); `repeat Sick`,
+  `:overlays_of`, `:overlay_strength` and the DES tick's overlay lookups
+  (spreading, conflicts, spawning, stacking) read those lists instead of every
+  overlay or tables rebuilt each tick. Conflicts between overlays now go by the
+  host object, not the name of its variable. bench/des/overlay_lookups.gbln at
+  20,000 objects: 16.1 s to 0.67 s.
+- Objects (VM): the object store keeps each class's objects in one place,
+  updated as objects are made and erased. `:objects("Rabbit")` gives a class's
+  objects and `:objects("Rabbit", pred)` those the predicate holds for, without
+  looking at every object; `:is_type(r, "Rabbit")` is true for a Rabbit; an
+  unknown class name is R1230. `repeat Rabbit` and the DES tick's class lookups
+  (decisions, `every` blocks, transitions, `spreads to`) read the same lists.
+  Predator-prey 200 days: 7.3 s to 5.6 s.
+- Objects (VM): a field given an object holds that object, not a copy, like a
+  database entry. `p >> home >> food |= 5` changes the village; a change to the
+  village shows through `p >> home`; the field reads nil once the object is
+  erased. An object equals itself (any copy of it), as on the interpreter.
 - DES: a decision formula on `~` fields (prices, money) is scored against
   the candidates: the best scores 1 and the others in proportion (spread
   worst-to-best when some score is below 0). Before, every such score

@@ -1,0 +1,38 @@
+/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
+/// The score a judge sees is the number the formula gives, whatever its
+/// fields: a formula of 0..1 traits times 40 scores up to 40, and a
+/// constant formula scores that constant (it was squeezed to .5).
+<>Spot |
+    shade: 0
+    ~picked: 0
+xx
+<>Walker |
+    ~steps: 0
+    rest | decision against Spot by [
+        target >> shade * 40
+    ]
+    judge using rest
+        > 30: sit(target, rest)
+        else: pass(target, rest)
+    end
+xx
+<>Child |
+    ~steps: 0
+    play | decision against Spot by [ 7 ]
+    judge using play
+        == 7: sit(target, play)
+    end
+xx
+act sit(w, s, score)
+    s >> picked |= s >> picked + 1
+    say("sat, score {score}")
+xx
+act pass(w, s, score)
+    say("passed, score {score}")
+xx
+a <> Spot | shade: .9
+w <> Walker | steps: 0
+tick()
+k <> Child | steps: 0
+delete_object!(w)
+tick()

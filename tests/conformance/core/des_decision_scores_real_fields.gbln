@@ -1,7 +1,7 @@
-/// known-gap: interp scores a formula on `~` fields over 0..1, so every shop scores 0
-/// A decision whose formula reads `~` fields (actual values, like prices)
-/// spreads its scores over the candidates: the best scores 1, the worst 0.
-/// Here the cheapest shop scores 1 and the dearest 0.
+/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
+/// A decision's score is the number its formula gives, nothing rescaled:
+/// here the cheapest shop scores -10 and the dearest -30, and the judge
+/// compares against that same number.
 <>Shop |
     ~price: 0
     ~sold: 0
@@ -12,7 +12,7 @@ xx
         0 - target >> price
     ]
     judge using buy
-        >= .9: purchase(target)
+        >= -10: purchase(target)
         else: browse(target)
     end
 xx
