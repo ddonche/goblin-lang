@@ -1,0 +1,23 @@
+/// known-gap: interp stores a copy of the object in the field, so an erased object still shows
+/// Showing or writing out an object shows the objects its fields hold,
+/// a field whose object was erased shows nil, and an object met again
+/// inside itself shows as a reference, so a cycle prints once.
+<>Village |
+    ~food: 10
+xx
+<>Person |
+    ~home: nil
+    ~friend: nil
+xx
+v <> Village | food: 10
+p <> Person | home: v
+say(:has(:str(p), "home: Village"))
+say(:has(:str([p]), "food: 10"))
+say(:has(:yall_pretty({ who: p }), "food: 10"))
+v >> food |= 4
+say(:has(:str(p), "food: 4"))
+q <> Person | home: v, friend: p
+p >> friend |= q
+say(:has(:str(p), "friend: <ref"))
+delete_object!(v)
+say(:has(:str(p), "home: nil"))
