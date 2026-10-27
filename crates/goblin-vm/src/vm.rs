@@ -5321,6 +5321,12 @@ impl Vm {
         };
         let class: &str = class.as_ref();
         let var: &str = var.as_ref();
+        // `owner` is a call that reads the holder's variable.
+        let base = self.stack.len();
+        let owner = match self.call_func_value(owner, vec![Value::Nil]) {
+            Ok(v) => v,
+            Err(_) => { self.stack.truncate(base); Value::Nil }
+        };
         let owner_uuid = match &owner {
             Value::Ref(u) => Some(u.clone()),
             Value::Object(o) => Some(o.uuid.clone()),
