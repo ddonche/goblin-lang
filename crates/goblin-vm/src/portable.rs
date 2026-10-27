@@ -295,6 +295,20 @@ impl<'s> ToPortable<'s> {
     fn object_fields(&mut self, m: &indexmap::IndexMap<String, Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
         let mut out = Vec::with_capacity(m.len());
         for (k, v) in m {
+            // Between regions an object another region holds is named by its
+            // id: it is found wherever it lives (and reads nil where it
+            // isn't, as an erased one does).
+            if self.by_id {
+                if let Value::Ref(u) = v {
+                    if !u.starts_with(crate::vm::OVERLAY_RECORD) && !self.session.object_store.contains_key(u.as_str())
+                        && !self.session.handed_off.contains_key(u.as_str())
+                        && !self.session.moved_away.contains_key(u.as_str())
+                        && self.stays_home(u).is_none() {
+                        out.push((k.clone(), PValue::ObjRef(u.clone())));
+                        continue;
+                    }
+                }
+            }
             let gone = matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u.as_str())
                 && !self.session.handed_off.contains_key(u.as_str())
                 && !self.session.moved_away.contains_key(u.as_str())
