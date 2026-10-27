@@ -1636,8 +1636,18 @@ impl Vm {
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
                     let bid = *bid;
-                    let arg_vals = self.drain_operands(func_idx + 1)?;
+                    let mut arg_vals = self.drain_operands(func_idx + 1)?;
                     self.stack.pop(); // pop the func operand
+                    // A builtin gets objects, not ids (a field read kept as
+                    // an id for an action call, `render | str` then
+                    // `render(x >> owner)`).
+                    for a in arg_vals.iter_mut() {
+                        if let Value::Ref(u) = a {
+                            if !u.starts_with(OVERLAY_RECORD) {
+                                if let Some(o) = self.session.object_store.get(u.as_str()) { *a = o.clone(); }
+                            }
+                        }
+                    }
                     if let Some(m) = self.memo.as_mut() {
                         if !crate::memo::builtin_reads(bid) { m.changed(); }
                     }
@@ -1665,7 +1675,7 @@ impl Vm {
                 // While a decision is worked out, an action that only reads
                 // gives the answer it gave for these arguments before.
                 let mark = if self.memo.is_some() {
-                    match self.memo_call(&func_rc, func_idx)? {
+                    match self.memo_call(&func_rc, !upvalues.is_empty(), func_idx)? {
                         Ok(mark) => mark,
                         Err(answer) => {
                             self.stack.truncate(func_idx);
@@ -3493,6 +3503,12 @@ impl Vm {
                 }
                 // Retether: if a hard type lock exists for this slot, auto-cast the incoming value.
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
+                    // A cast works on the object, not on its id.
+                    let val = match val {
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) =>
+                            self.session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+                        v => v,
+                    };
                     crate::builtins::cast_value_to_lock(val, &lock)?
                 } else {
                     val
@@ -5335,11 +5351,10 @@ impl Vm {
         let key = Rc::as_ptr(f) as usize;
         if let Some((_, r)) = self.reads_only.get(&key) { return *r; }
         let session = &self.session;
-        let globals = |g: u16| -> Option<Rc<FunctionObject>> {
+        let globals = |g: u16| -> Option<Value> {
             let t = session.get_global(g as usize)?;
             match &session.resolve(t.addr).ok()?.value {
-                Value::Function(f) => Some(f.clone()),
-                Value::Closure(c) => Some(c.func.clone()),
+                v @ (Value::Function(_) | Value::Closure(_) | Value::Builtin(_)) => Some(v.clone()),
                 _ => None,
             }
         };
@@ -5366,7 +5381,9 @@ impl Vm {
 
     /// A call while the memo is on: Err(answer) when it was worked out
     /// before, else what the call's frame does with the memo.
-    fn memo_call(&mut self, f: &Rc<FunctionObject>, func_idx: usize) -> Result<Result<Option<crate::memo::Mark>, Value>, GoblinError> {
+    /// `captures`: the callee is a closure holding captured values, which
+    /// its answer may depend on: it runs every time.
+    fn memo_call(&mut self, f: &Rc<FunctionObject>, captures: bool, func_idx: usize) -> Result<Result<Option<crate::memo::Mark>, Value>, GoblinError> {
         use crate::memo::{Arg, Mark};
         if !self.fn_reads_only(f) {
             let m = self.memo.as_mut().unwrap();
@@ -5374,7 +5391,7 @@ impl Vm {
             m.changing += 1;
             return Ok(Ok(Some(Mark::Changes)));
         }
-        if self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
+        if captures || self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
         let mut args = Vec::with_capacity(self.stack.len() - func_idx - 1);
         for i in func_idx + 1..self.stack.len() {
             let v = self.resolve_op(self.stack[i].clone())?;

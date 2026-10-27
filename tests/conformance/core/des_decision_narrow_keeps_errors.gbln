@@ -1,0 +1,28 @@
+/// known-gap: interp has no contents list
+/// A condition that names `target` before the ownership test still runs for
+/// every target: here it divides by zero for the knight nobody holds, and
+/// the tick stops with that error.
+<>Lord |
+    ~name: ""
+    reward | decision against Knight where [ 10 / target >> deeds > 1 and target >> owner == self ] by [ target >> deeds ]
+    judge using reward
+        >= 0: pay(target)
+    end
+xx
+<>Knight |
+    ~name: ""
+    ~deeds: 0
+    ~owner: nil
+xx
+act pay(l, k)
+    say("{l >> name} pays {k >> name}")
+xx
+a <> Lord | name: "Ash"
+k1 <> Knight | name: "Kay", deeds: 2, owner: a
+k2 <> Knight | name: "Lot", deeds: 0
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "R1220"))
+    say(:has("{e}", "division by zero"))
+xx

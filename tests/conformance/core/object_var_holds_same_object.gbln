@@ -34,3 +34,15 @@ say(:is_type(low >> owner, "Box"))
 up | low >> owner
 delete_object!(mid)
 say(low >> owner == nil)
+/// A builtin called through a variable, and a cast into a typed variable,
+/// get the object itself.
+hold <> Box | name: "hold"
+item <> Box | name: "item", owner: hold
+render | str
+say(render(item >> owner) == :str(hold))
+act lock_it(x)
+    s.str | ""
+    s |= x >> owner
+    return s
+xx
+say(lock_it(item))
