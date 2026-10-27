@@ -1,0 +1,34 @@
+/// known-gap: interp has no contents list, and its formulas can't call actions
+/// Looking only at what a holder holds gives the same result as checking
+/// every target: a score that changes who holds what is seen by the targets
+/// after it, and a condition before the ownership test still runs (and
+/// fails) for every target.
+<>Lord |
+    ~name: ""
+    ~owner: nil
+    claim | decision against Knight where [ target >> owner == self ] by [ annex(self, target) ]
+    judge using claim
+        >= 0: hire(target)
+    end
+xx
+<>Knight |
+    ~name: ""
+    ~deeds: 0
+    ~owner: nil
+xx
+act annex(l, k)
+    /// Scoring the first knight brings the free one under the lord.
+    repeat :objects("Knight") as other
+        if other >> owner == nil
+            other >> owner |= l
+        xx
+    xx
+    return k >> deeds
+xx
+act hire(l, k)
+    say("{l >> name} picks {k >> name}")
+xx
+a <> Lord | name: "Ash"
+k1 <> Knight | name: "Kay", deeds: 1, owner: a
+k2 <> Knight | name: "Lot", deeds: 5
+tick()

@@ -1,0 +1,76 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object that moves to another region keeps naming the objects its
+/// fields name, not copies of them: a squire who swears to the east's lord
+/// and moves there pays that lord, and walking up `owner` reaches the real
+/// realm. (Copies used to travel with him; writing through one wiped the
+/// lord's and the realm's real changes.)
+<>Realm |
+    ~name: ""
+    ~owner: nil
+    ~arrived: 0
+xx
+<>Lord |
+    ~gold: 0
+    ~owner: nil
+xx
+<>Squire |
+    ~go: 0
+    ~owner: nil
+    every 1 tick
+        serve(self)
+    end
+xx
+act realm_of(x)
+    repeat x != nil and not :is_type(x, "Realm")
+        x |= x >> owner
+    xx
+    return x
+xx
+act serve(s)
+    if s >> go == 1
+        s >> go |= 0
+        repeat :objects("Lord") as l
+            if realm_of(l) >> name == "east"
+                r | realm_of(l)
+                r >> arrived |= r >> arrived + 1
+                s >> owner |= l
+                :move!(s, all[1])
+            xx
+        xx
+    elif :is_type(s >> owner, "Lord")
+        lord | s >> owner
+        lord >> gold |= lord >> gold + 1
+        r | realm_of(s)
+        r >> arrived |= r >> arrived + 10
+    xx
+xx
+all | []
+act make(name, squire)
+    r <> Realm | name: name
+    l <> Lord | owner: r
+    if squire
+        s <> Squire | go: 1, owner: l
+    xx
+    return {"realm": r}
+xx
+act h(st, msg)
+    if :has(msg, "all")
+        all |= msg{"all"}
+    xx
+    return st
+xx
+west | :actor(make("west", true), h)
+east | :actor(make("east", false), h)
+all |= [west, east]
+:post(west, {"all": all})
+:post(east, {"all": all})
+repeat :range(1, 5) as t
+    tick(all)
+    repeat :objects("Realm") as r
+        g | 0
+        repeat :objects("Lord", it >> owner == r) as l
+            g |= l >> gold
+        xx
+        say("tick {t}: {r >> name} arrived {r >> arrived}, lord's gold {g}")
+    xx
+xx

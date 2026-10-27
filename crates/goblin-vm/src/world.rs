@@ -501,7 +501,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     // 4. What this tick did to other regions' objects goes to their owners.
     let mut changes = Vec::new();
     {
-        let mut tp = ToPortable::new(&vm.session);
+        let mut tp = ToPortable::new(&vm.session).objects_by_id();
         for (uuid, old) in &before {
             let Some(Value::Object(o)) = vm.session.object_store.get(uuid) else { continue };
             if std::rc::Rc::ptr_eq(&o.fields, old) { continue; }
@@ -569,6 +569,7 @@ fn same_plain(p: &PValue, v: &Value) -> bool {
         (PValue::Int(a), Value::Int(b)) => a == b,
         (PValue::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (PValue::Str(a), Value::Str(b)) => **a == *b.as_str(),
+        (PValue::ObjRef(a), Value::Ref(b)) => a == b,
         _ => false,
     }
 }
@@ -602,7 +603,7 @@ fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut 
 
 /// The region's own objects and overlays, ready for the other regions.
 fn snapshot_of(vm: &Vm) -> Result<Snapshot, GoblinError> {
-    let mut tp = ToPortable::new(&vm.session);
+    let mut tp = ToPortable::new(&vm.session).objects_by_id();
     let mut objects = Vec::with_capacity(vm.session.object_store.len());
     for (u, v) in &vm.session.object_store {
         if matches!(v, Value::Object(_)) { objects.push((u.clone(), tp.value(v)?)); }
@@ -680,7 +681,7 @@ pub(crate) fn after_view_write(s: &mut crate::session::Session, uuid: &str, fiel
     if !in_view(s, uuid) { return Ok(()); }
     let Some(Value::Object(o)) = s.object_store.get(uuid) else { return Ok(()) };
     let Some(v) = o.fields.get(field) else { return Ok(()) };
-    let p = ToPortable::new(s).value(v)?;
+    let p = ToPortable::new(s).objects_by_id().value(v)?;
     send_to_owner(s, uuid, Item::Change { uuid: uuid.to_string(), field: field.to_string(), change: Change::Set(p) });
     Ok(())
 }
@@ -775,11 +776,22 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
 }
 
 /// Takes an object of this region, and what goes along with it, out of the
-/// session and sends it to region `to`.
+/// session and sends it to region `to`. What it contains (objects whose
+/// `owner` names it, at any depth) goes too, after it.
 fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
+    let contents: Vec<String> = vm.session.object_store.all_contents_of(uuid).into_iter()
+        .filter(|c| vm.session.object_store.contains_key(c.as_str())
+            && !vm.session.region.as_ref().is_some_and(|r| r.remote.contains(c.as_str())))
+        .collect();
+    send_one(vm, uuid, to)?;
+    for c in &contents { send_one(vm, c, to)?; }
+    Ok(())
+}
+
+fn send_one(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let s = &vm.session;
     let Some(v) = s.object_store.get(uuid) else { return Ok(()) };
-    let mut tp = ToPortable::new(s);
+    let mut tp = ToPortable::new(s).objects_by_id();
     let object = tp.value(v)?;
     let mut overlays = Vec::new();
     for &p in s.overlay_instances.on_host(uuid) { overlays.push(overlay_to_p(&s.overlay_instances[p], &mut tp)?); }

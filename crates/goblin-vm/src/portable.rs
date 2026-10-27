@@ -126,6 +126,9 @@ pub struct ToPortable<'s> {
     /// Objects being copied right now (an object and the objects its fields
     /// reach): a field that comes back to one of them is a cycle.
     visiting: std::collections::HashSet<String>,
+    /// Between regions: an object another value names crosses as its id,
+    /// not as a copy, so it reads the object where it lives.
+    by_id: bool,
 }
 
 /// Texts up to this long are converted once per conversion and shared.
@@ -136,7 +139,7 @@ const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default() }
+        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default(), by_id: false }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -144,6 +147,11 @@ impl<'s> ToPortable<'s> {
     pub fn sharing_values(mut self) -> Self { self.share = true; self }
 
     pub fn is_sharing(&self) -> bool { self.share }
+
+    /// Objects named inside the value (a field that holds one) cross as
+    /// their ids. For what regions send each other: every region's objects
+    /// are in view during a tick, so the id finds the object itself.
+    pub(crate) fn objects_by_id(mut self) -> Self { self.by_id = true; self }
 
     /// Only the objects in `handed` cross; the session's other objects stay
     /// where they are (an actor owns what it was handed, nothing more).
@@ -192,6 +200,8 @@ impl<'s> ToPortable<'s> {
             Value::CtrlSkip => PValue::CtrlSkip,
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
+            Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid.clone()),
+            Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid.as_str()) => PValue::ObjRef(uuid.clone()),
             Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
             Value::Object(o) if self.visiting.contains(o.uuid.as_str()) => PValue::ObjRef(o.uuid.clone()),
             Value::Object(o) => {

@@ -1,0 +1,48 @@
+/// known-gap: interp has no contents list, and its formulas can't call actions
+/// A decision's `where` and score can call the program's actions. A
+/// condition `target >> owner == x` only looks at what x holds (its
+/// contents list); a condition that doesn't name `target` is checked once.
+/// Either way the result is what checking every target gives.
+<>Lord |
+    ~name: ""
+    ~gold: 0
+    ~owner: nil
+    reward | decision against Knight where [ target >> owner == self and target >> deeds > 0 ] by [ worth(target) ]
+    judge using reward
+        >= 0: pay(target)
+    end
+    tax | decision against Knight where [ self >> gold < 5 and target >> owner == self ] by [ target >> purse ]
+    judge using tax
+        >= 0: levy(target)
+    end
+xx
+<>Knight |
+    ~name: ""
+    ~deeds: 0
+    ~purse: 0
+    ~owner: nil
+xx
+act worth(k)
+    return k >> deeds * 10 + k >> purse
+xx
+act pay(l, k)
+    say("{l >> name} rewards {k >> name}")
+    l >> gold |= l >> gold - 1
+    k >> deeds |= 0
+xx
+act levy(l, k)
+    say("{l >> name} taxes {k >> name}")
+    l >> gold |= l >> gold + 3
+    k >> purse |= k >> purse - 3
+xx
+a <> Lord | name: "Ash", gold: 6
+b <> Lord | name: "Birch", gold: 2
+k1 <> Knight | name: "Kay", deeds: 2, owner: a
+k2 <> Knight | name: "Lot", deeds: 3, purse: 4, owner: b
+k3 <> Knight | name: "Mark", deeds: 1, purse: 9, owner: a
+k4 <> Knight | name: "Nod", purse: 20
+tick()
+say("{a >> gold} {b >> gold}")
+k1 >> owner |= b
+tick()
+say("{a >> gold} {b >> gold}")

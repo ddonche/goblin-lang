@@ -1034,6 +1034,87 @@ fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// The conjuncts of `a and b and c`, in order.
+fn conjuncts<'a>(e: &'a goblin_ast::Expr, out: &mut Vec<&'a goblin_ast::Expr>) {
+    match e {
+        goblin_ast::Expr::Binary(l, op, r, _) if op == "and" || op == "&&" => { conjuncts(l, out); conjuncts(r, out); }
+        other => out.push(other),
+    }
+}
+
+/// Whether a read-only expression names `who`.
+fn names(e: &goblin_ast::Expr, who: &str) -> bool {
+    use goblin_ast::Expr as E;
+    match e {
+        E::Ident(n, _) => n == who,
+        E::Binary(l, _, r, _) | E::Index(l, r, _) | E::IndexMap(l, r, _) => names(l, who) || names(r, who),
+        E::Prefix(_, x, _) | E::Member(x, _, _) | E::OptMember(x, _, _) => names(x, who),
+        E::Array(xs, _) | E::FreeCall(_, xs, _) => xs.iter().any(|x| names(x, who)),
+        _ => false,
+    }
+}
+
+/// In a `where` condition, the candidates that can pass, found without
+/// running the condition on every object of the target class. None: all of
+/// them. It looks at the conditions joined by `and`, from the first, while
+/// they only read (no action calls, nothing random):
+/// - one that doesn't name `target` (`self >> gold < 0`) is the same for
+///   every target: run once; false leaves no candidates.
+/// - `target >> owner == x` with `x` not naming `target`: only what `x`
+///   holds (its contents list) can pass.
+/// The targets left out would have failed the condition at or before that
+/// point, and what came before changes nothing, so the result is the same.
+/// It stops at the first condition that names `target` and isn't the
+/// ownership test. The caller uses it only when scoring changes nothing
+/// either (so who holds what stays as it was while the targets are scored).
+fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
+    use goblin_ast::Expr as E;
+    if !all.iter().any(|(t, _)| t != self_ref) { return None; }
+    let mut parts = Vec::new();
+    conjuncts(filter, &mut parts);
+    for c in parts {
+        if !crate::compiler::only_reads(c) { return None; }
+        if !names(c, "target") {
+            let f = vm.tick_formula(c, &["self", "target"]).ok()?;
+            match vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]) {
+                Ok(Value::Bool(true)) => continue,
+                Ok(Value::Bool(false)) => return Some(Vec::new()),
+                _ => return None,
+            }
+        }
+        // The first condition that names `target` must be the ownership
+        // test: a target it leaves out would have stopped there, before any
+        // later condition could run (or fail with an error).
+        let E::Binary(l, op, r, _) = c else { return None };
+        if op != "==" { return None; }
+        let owner_of_target = |e: &E| matches!(e, E::Member(o, f, _)
+            if f == crate::store::OWNER_FIELD && matches!(&**o, E::Ident(n, _) if n == "target"));
+        let holder = if owner_of_target(l) && !names(r, "target") { r }
+            else if owner_of_target(r) && !names(l, "target") { l }
+            else { return None };
+        let has_owner = vm.session.classes.get(class)
+            .is_some_and(|c| c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD));
+        if !has_owner { return None; }
+        let f = vm.tick_formula(holder, &["self", "target"]).ok()?;
+        let h = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()?;
+        let uuid = match &h {
+            Value::Ref(u) => u.clone(),
+            Value::Object(o) => o.uuid.clone(),
+            _ => return None,
+        };
+        let store = &vm.session.object_store;
+        let mut fewer: Vec<(Value, usize)> = store.contents_of(&uuid)
+            .filter_map(|u| match store.get_full(u) {
+                Some((i, _, Value::Object(o))) if o.class_name == class => Some((Value::Ref(u.to_string()), i)),
+                _ => None,
+            })
+            .collect();
+        fewer.sort_by_key(|(_, i)| *i);
+        return Some(fewer);
+    }
+    None
+}
+
 fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
     let self_uuid = self_uuid.to_string();
     let margin = match vm.session.object_store.get(&self_uuid) {
@@ -1075,6 +1156,14 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
             Err(e) => return Err(formula_error(vm, format!("the `where` condition can't be compiled: {e}"))),
         },
         None => None,
+    };
+    // Fewer candidates, same result: see `narrow`.
+    let target_candidates = match &decision.filter {
+        Some(f) if crate::compiler::only_reads(&decision.formula) => match narrow(vm, f, &decision.target_class, &self_ref, self_at, &target_candidates) {
+            Some(fewer) => std::rc::Rc::new(fewer),
+            None => target_candidates,
+        },
+        _ => target_candidates,
     };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
     for (k, (target, target_at)) in target_candidates.iter().enumerate() {
