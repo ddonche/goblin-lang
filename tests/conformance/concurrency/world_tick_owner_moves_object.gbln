@@ -1,0 +1,65 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Ownership works across actors. An actor given a meadow runs the meadow
+/// and everything it holds. Setting an object's `owner` to a meadow another
+/// actor runs (or to something that meadow holds) sends the object there,
+/// with what it holds, as `:move!` does: it is on its way for one tick, then
+/// its rules run in its new meadow. The main program can set `owner` too,
+/// and an object it makes for a meadow goes to that meadow's actor.
+/// (The main program lists the regions' objects region by region, so the
+/// order of the names shows where each one lives.)
+<>Meadow |
+    n: 0
+xx
+<>Rabbit |
+    name: ""
+    owner: nil
+    ~age: 0
+    every 1 tick
+        self >> age |= self >> age + 1
+        if self >> name == "bun" and self >> age == 2
+            self >> owner |= :objects("Meadow", it >> n == 3)[0]
+        xx
+    end
+xx
+<>Bag |
+    name: ""
+    owner: nil
+xx
+act keep(st, msg)
+    return st
+xx
+act make(i)
+    m <> Meadow | n: i
+    r <> Rabbit | name: "r{i}", owner: m
+    if i == 1
+        bun <> Rabbit | name: "bun", owner: m
+        b <> Bag | name: "bag", owner: bun
+    xx
+    return m
+xx
+meadows | []
+repeat :range(1, 4) as i
+    :put_last!(meadows, :actor(make(i), keep))
+xx
+act show(t)
+    names | []
+    repeat :objects() as o
+        if :is_type(o, "Rabbit")
+            :put_last!(names, "{o >> name}@{o >> owner >> n}:{o >> age}")
+        elif :is_type(o, "Bag")
+            :put_last!(names, "{o >> name}@{o >> owner >> name}")
+        xx
+    xx
+    say("tick {t}: {names}")
+xx
+repeat :range(1, 6) as t
+    tick(meadows)
+    show(t)
+    if t == 3
+        r2 | :objects("Rabbit", it >> name == "r2")[0]
+        m1 | :objects("Meadow", it >> n == 1)[0]
+        m2 | :objects("Meadow", it >> n == 2)[0]
+        r2 >> owner |= m1
+        kit <> Rabbit | name: "kit", owner: m2
+    xx
+xx

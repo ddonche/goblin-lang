@@ -1848,6 +1848,8 @@ pub(crate) fn actor_of(v: &Value) -> Option<Arc<ActorShared>> {
 }
 
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
+/// The object an actor was given as its state, if it was one.
+pub(crate) fn actor_origin(a: &ActorShared) -> Option<&str> { a.origin.as_deref() }
 
 /// Sends a region its part of one world tick (`tick(regions)`).
 pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
