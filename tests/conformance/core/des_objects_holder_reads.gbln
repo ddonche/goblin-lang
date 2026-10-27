@@ -1,0 +1,37 @@
+/// known-gap: interp has no contents list (owner is a plain field there)
+/// `:objects("Item", it >> owner == x)` reads x each time it runs: a
+/// global, an action's argument, a loop variable. The same predicate run
+/// for different holders gives each holder's own items, and a holder that
+/// was erased holds nothing.
+<>Bag |
+    ~name: ""
+    ~owner: nil
+xx
+<>Item |
+    ~name: ""
+    ~owner: nil
+xx
+a <> Bag | name: "a"
+b <> Bag | name: "b"
+x <> Item | name: "x", owner: a
+y <> Item | name: "y", owner: b
+z <> Item | name: "z", owner: b
+act held(c)
+    out | []
+    repeat :objects("Item", it >> owner == c) as i
+        :put_last!(out, i >> name)
+    xx
+    return out
+xx
+say(held(a))
+say(held(b))
+say(:len(:objects("Item", it >> owner == a)))
+counts | []
+repeat [a, b, a] as g
+    :put_last!(counts, :len(:objects("Item", it >> owner == g)))
+xx
+say(counts)
+c <> Bag | name: "c"
+w <> Item | name: "w", owner: c
+delete_object!(c)
+say(:len(:objects("Item", it >> owner == c)))

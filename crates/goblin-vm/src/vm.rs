@@ -162,6 +162,19 @@ pub struct Vm {
     reads_only: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
     /// The operand stack `run_formula_in` uses, kept between runs.
     formula_stack: Vec<Fv>,
+    /// `:objects` predicates seen, by function, with what running them
+    /// directly needs (worked out once, not on every call).
+    predicates: rustc_hash::FxHashMap<usize, Rc<Predicate>>,
+}
+
+/// What `:objects` keeps for one predicate function.
+struct Predicate {
+    /// Kept so the function's address isn't reused while it is a key.
+    func: Rc<FunctionObject>,
+    /// Whether `run_formula_in` can run it (`predicate_runs_direct`).
+    direct: bool,
+    tree: Option<crate::formula_tree::FormulaTree>,
+    hints: Vec<std::cell::Cell<u32>>,
 }
 
 /// How far an actor's handler got in one go.
@@ -176,7 +189,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default(), formula_stack: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -5561,6 +5574,38 @@ impl Vm {
         }
     }
 
+    /// The holder `:objects("Class", it >> owner == x)` reads, without a
+    /// call, when that is a plain read giving an object still in the store;
+    /// None leaves it to the call (which also reports a variable that can't
+    /// be read).
+    fn read_holder(&mut self, f: &Value) -> Option<Value> {
+        let (func, cells): (&Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match f {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        // `fn(it) x`: x is read as `it`'s field first, and `it` is nil here.
+        let load = match func.bytecode.as_slice() {
+            [Opcode::LoadItFieldOrJump(..), load, Opcode::Return] | [load, Opcode::Return] => *load,
+            _ => return None,
+        };
+        let v = match load {
+            Opcode::LoadUpvalue(u) => self.session.get_stash(&cells.get(u as usize)?.get()).ok()?.value.clone_fast(),
+            Opcode::LoadGlobal(g) => {
+                let t = self.session.get_global(g as usize)?.clone();
+                self.session.get_stash(&t).ok()?.value.clone_fast()
+            }
+            _ => return None,
+        };
+        let uuid = match &v {
+            Value::Ref(u) => u.as_str(),
+            Value::Object(o) => o.uuid.as_str(),
+            _ => return None,
+        };
+        self.session.object_store.get_index_of(uuid)?;
+        Some(v)
+    }
+
     /// `:objects("Class", it >> owner == x ...)` (from the compiler): x's
     /// contents of that class, those the predicate holds for. The same as
     /// `:objects("Class", pred)`, which it falls back to when x names no
@@ -5574,10 +5619,15 @@ impl Vm {
         let class: &str = class.as_ref();
         let var: &str = var.as_ref();
         // `owner` is a call that reads the holder's variable.
-        let base = self.stack.len();
-        let owner = match self.call_func_value(owner, vec![Value::Nil]) {
-            Ok(v) => v,
-            Err(_) => { self.stack.truncate(base); Value::Nil }
+        let owner = match self.read_holder(&owner) {
+            Some(v) => v,
+            None => {
+                let base = self.stack.len();
+                match self.call_func_value(owner, vec![Value::Nil]) {
+                    Ok(v) => v,
+                    Err(_) => { self.stack.truncate(base); Value::Nil }
+                }
+            }
         };
         let owner_uuid = match &owner {
             Value::Ref(u) => Some(u.clone()),
@@ -5633,9 +5683,9 @@ impl Vm {
             Value::Function(f) => (f, &[]),
             _ => return None,
         };
-        if func.params != 1 || !predicate_runs_direct(func) { return None; }
         if self.session.object_store.count_of(class) < crate::store::ObjectStore::INDEX_FROM { return None; }
-        let tree = crate::formula_tree::FormulaTree::build(func)?;
+        let p = self.predicate(func);
+        let tree = p.tree.as_ref()?;
         // An object has the fields its class declares, and its id.
         let decl = self.session.classes.get(class)?;
         let has_field = |n: &str| ["id", "uuid", "owner_id"].contains(&n) || decl.fields.iter().any(|f| f.name == n);
@@ -5645,6 +5695,24 @@ impl Vm {
         let want = self.run_formula_part(part, &[("it", &Value::Nil)], &mut at, &env)?;
         let key = crate::store::field_key(&want)?;
         Some(self.session.object_store.with_field(class, field, &key))
+    }
+
+    /// What running `func` directly as a one-argument predicate needs,
+    /// worked out the first time it is seen.
+    fn predicate(&mut self, func: &Rc<FunctionObject>) -> Rc<Predicate> {
+        let key = Rc::as_ptr(func) as usize;
+        if let Some(p) = self.predicates.get(&key) { return p.clone(); }
+        let direct = func.params == 1 && predicate_runs_direct(func);
+        let p = Rc::new(Predicate {
+            func: func.clone(),
+            direct,
+            tree: if direct { crate::formula_tree::FormulaTree::build(func) } else { None },
+            hints: (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect(),
+        });
+        // Closures made in a loop share one function; keep the table small anyway.
+        if self.predicates.len() >= 4096 { self.predicates.clear(); }
+        self.predicates.insert(key, p.clone());
+        p
     }
 
     /// What a predicate run directly reads besides its argument: the values
@@ -5703,11 +5771,10 @@ impl Vm {
             Value::Function(f) => (f, &[]),
             _ => return None,
         };
-        if func.params != 1 || !predicate_runs_direct(func) { return None; }
+        let p = self.predicate(func);
+        if !p.direct { return None; }
         let env = self.predicate_env(func, cells)?;
-        let func = func.clone();
-        let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
-        let tree = crate::formula_tree::FormulaTree::build(&func);
+        let (func, hints, tree) = (&p.func, &p.hints, p.tree.as_ref());
         let mut found = Vec::new();
         let all: Vec<usize>;
         let places = match only {
@@ -5716,7 +5783,7 @@ impl Vm {
         };
         for &i in places {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
-            let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env, tree.as_ref()) {
+            let holds = match self.run_formula_in(func, &[("it", &it)], &[i], hints, &env, tree) {
                 Some(v) => matches!(v, Value::Bool(true)),
                 // Something the direct run leaves to the VM (a missing field,
                 // which is an error there, say): the VM decides for this one.
