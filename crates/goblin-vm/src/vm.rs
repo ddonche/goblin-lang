@@ -979,8 +979,8 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!(
                         "T0205: type-mismatch: cannot join str and {t} with '++'; convert explicitly, e.g. \"total\" ++ :str(n)")));
                 }
-                let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
-                let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_raw(v) };
+                let a_str = match &a { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_in(v, &self.session) };
+                let b_str = match &b { Value::Formatted(i, s) => crate::builtins::fmt_formatted_display(i, s), v => crate::builtins::fmt_value_in(v, &self.session) };
                 // An empty side adds no space; surrounding quote marks are dropped.
                 let joined = if a_str.is_empty() { b_str } else if b_str.is_empty() { a_str } else {
                     let mut j = String::with_capacity(a_str.len() + 1 + b_str.len());
@@ -2946,7 +2946,7 @@ impl Vm {
                         let over = self.interp_overrides.iter().find(|(n, _)| n.as_str() == inner)
                             .map(|(_, v)| match v {
                                 Value::Str(t) => Ok(t.clone()),
-                                v => Err(crate::builtins::fmt_value_raw(v)),
+                                v => Err(crate::builtins::fmt_value_in(v, &self.session)),
                             });
                         let found = if over.is_some() { None } else { self.lookup_interp_value(inner) };
                         let formatted;
@@ -2954,7 +2954,7 @@ impl Vm {
                             (Some(Ok(t)), _) => t.as_str(),
                             (Some(Err(f)), _) => f,
                             (None, Some(Value::Str(t))) => t.as_str(),
-                            (None, Some(v)) => { formatted = crate::builtins::fmt_value_raw(v); &formatted }
+                            (None, Some(v)) => { formatted = crate::builtins::fmt_value_in(v, &self.session); &formatted }
                             (None, None) => { formatted = format!("{{{}}}", inner); &formatted }
                         };
                         // Secondary resolve: a regular variable's value may contain {#...}
@@ -2967,7 +2967,7 @@ impl Vm {
                         // An expression (`{n - wins}`) the compiler worked out.
                         match v {
                             Value::Str(t) => out.push_str(t),
-                            v => out.push_str(&crate::builtins::fmt_value_raw(v)),
+                            v => out.push_str(&crate::builtins::fmt_value_in(v, &self.session)),
                         }
                     } else {
                         out.push('{'); out.push_str(raw); out.push('}');
