@@ -5611,11 +5611,63 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!(
                         "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
                 }
-                let store = &self.session.object_store;
-                Some(store.of_class(c).filter_map(|u| store.get_index_of(u)).collect())
+                match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
+                    Some(at) => Some(at),
+                    None => {
+                        let store = &self.session.object_store;
+                        Some(store.of_class(c).filter_map(|u| store.get_index_of(u)).collect())
+                    }
+                }
             }
         };
         self.objects_among(ids, pred)
+    }
+
+    /// `:objects("Rabbit", it >> meadow == m)`: when the predicate only
+    /// reads and requires a field to equal something that doesn't depend on
+    /// `it`, the objects of the class that can match, from the store's index
+    /// of that field (the predicate still runs on each of them).
+    fn objects_by_field(&mut self, class: &str, pred: &Value) -> Option<Vec<usize>> {
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 || !predicate_runs_direct(func) { return None; }
+        if self.session.object_store.count_of(class) < crate::store::ObjectStore::INDEX_FROM { return None; }
+        let tree = crate::formula_tree::FormulaTree::build(func)?;
+        // An object has the fields its class declares, and its id.
+        let decl = self.session.classes.get(class)?;
+        let has_field = |n: &str| ["id", "uuid", "owner_id"].contains(&n) || decl.fields.iter().any(|f| f.name == n);
+        let (field, part) = tree.field_equal(0, &has_field)?;
+        let env = self.predicate_env(func, cells)?;
+        let mut at = vec![usize::MAX - 1; 1 + env.upvalues.len() + env.globals.len()];
+        let want = self.run_formula_part(part, &[("it", &Value::Nil)], &mut at, &env)?;
+        let key = crate::store::field_key(&want)?;
+        Some(self.session.object_store.with_field(class, field, &key))
+    }
+
+    /// What a predicate run directly reads besides its argument: the values
+    /// its captured variables and the globals it loads have now.
+    fn predicate_env(&self, func: &FunctionObject, cells: &[crate::value::UpvalueCell]) -> Option<FormulaEnv> {
+        let mut env = FormulaEnv { missing_field_is_false: true, ..Default::default() };
+        for c in cells {
+            match &self.session.get_stash(&c.get()).ok()?.value {
+                Value::Frozen(_) => return None,
+                v => env.upvalues.push(v.clone_fast()),
+            }
+        }
+        for op in &func.bytecode {
+            if let Opcode::LoadGlobal(g) = op {
+                if env.globals.iter().any(|(n, _)| n == g) { continue; }
+                let t = self.session.get_global(*g as usize)?.clone();
+                match &self.session.get_stash(&t).ok()?.value {
+                    Value::Frozen(_) => return None,
+                    v => env.globals.push((*g, v.clone_fast())),
+                }
+            }
+        }
+        Some(env)
     }
 
     /// The objects at `ids` (every object when None) that `pred` holds for.
@@ -5652,23 +5704,7 @@ impl Vm {
             _ => return None,
         };
         if func.params != 1 || !predicate_runs_direct(func) { return None; }
-        let mut env = FormulaEnv { missing_field_is_false: true, ..Default::default() };
-        for c in cells {
-            match &self.session.get_stash(&c.get()).ok()?.value {
-                Value::Frozen(_) => return None,
-                v => env.upvalues.push(v.clone_fast()),
-            }
-        }
-        for op in &func.bytecode {
-            if let Opcode::LoadGlobal(g) = op {
-                if env.globals.iter().any(|(n, _)| n == g) { continue; }
-                let t = self.session.get_global(*g as usize)?.clone();
-                match &self.session.get_stash(&t).ok()?.value {
-                    Value::Frozen(_) => return None,
-                    v => env.globals.push((*g, v.clone_fast())),
-                }
-            }
-        }
+        let env = self.predicate_env(func, cells)?;
         let func = func.clone();
         let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let tree = crate::formula_tree::FormulaTree::build(&func);

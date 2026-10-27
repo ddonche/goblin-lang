@@ -507,24 +507,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     Ok(())
 }
 
-/// A field's value, as far as `==` can tell values apart: values that are
-/// equal get the same key (numbers of any kind by their f64 value, which
-/// may also give some unequal ones the same key; that only costs a check).
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum FieldKey { Num(u64), Str(String), Bool(bool), Nil }
-
-fn field_key(v: &Value) -> Option<FieldKey> {
-    let num = |f: f64| FieldKey::Num(if f == 0.0 { 0 } else { f.to_bits() });
-    Some(match v {
-        Value::Int(i) => num(*i as f64),
-        Value::Float(f) => num(*f),
-        Value::Pct(p) => num(*p),
-        Value::Str(s) => FieldKey::Str(s.to_string()),
-        Value::Bool(b) => FieldKey::Bool(*b),
-        Value::Nil => FieldKey::Nil,
-        _ => return None,
-    })
-}
+use crate::store::{field_key, FieldKey};
 
 /// The candidates grouped by one field's value, made once per spread pass
 /// (nothing changes a field while overlays spread). `other`: those whose
@@ -1180,10 +1163,13 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 ///   every target: run once; false leaves no candidates.
 /// - `target >> owner == x` with `x` not naming `target`: only what `x`
 ///   holds (its contents list) can pass.
+/// - `target >> f == x` with `x` not naming `target` and `f` a field the
+///   class declares: only the objects whose `f` can equal `x` (the store's
+///   index of `f`) can pass.
 /// The targets left out would have failed the condition at or before that
 /// point, and what came before changes nothing, so the result is the same.
-/// It stops at the first condition that names `target` and isn't the
-/// ownership test. The caller uses it only when scoring changes nothing
+/// It stops at the first condition that names `target` and isn't one of
+/// those tests. The caller uses it only when scoring changes nothing
 /// either (so who holds what stays as it was while the targets are scored).
 fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
     use goblin_ast::Expr as E;
@@ -1212,6 +1198,36 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         if op != "==" { return None; }
         let owner_of_target = |e: &E| matches!(e, E::Member(o, f, _)
             if f == crate::store::OWNER_FIELD && matches!(&**o, E::Ident(n, _) if n == "target"));
+        // `target >> meadow == self >> meadow`: the objects whose field
+        // can match, from the store's index of that field. The field must be
+        // one the class declares, so no object left out lacks it (reading a
+        // missing field is an error, which must still stop the tick).
+        let field_of_target = |e: &E| match e {
+            E::Member(o, f, _) if f != crate::store::OWNER_FIELD && crate::vm::member_builtin(f).is_none()
+                && matches!(&**o, E::Ident(n, _) if n == "target") => Some(f.clone()),
+            _ => None,
+        };
+        let same_field = match (field_of_target(l), field_of_target(r)) {
+            (Some(f), _) if !names(r, "target") => Some((f, &**r)),
+            (_, Some(f)) if !names(l, "target") => Some((f, &**l)),
+            _ => None,
+        };
+        if let Some((field, other)) = same_field {
+            let declared = vm.session.classes.get(class)
+                .is_some_and(|c| c.fields.iter().any(|f| f.name == field));
+            if !declared || all.len() < crate::store::ObjectStore::INDEX_FROM { return None; }
+            let f = vm.tick_formula(other, &["self", "target"]).ok()?;
+            // Worked out once for every target: no `>> shuffle` and the like.
+            if !f.reads_fields_only() { return None; }
+            let want = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
+            if changed(vm, epoch) { return None; }
+            let key = crate::store::field_key(&want.ok()?)?;
+            let store = &mut vm.session.object_store;
+            let at = store.with_field(class, &field, &key);
+            return Some(at.into_iter()
+                .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
+                .collect());
+        }
         let holder = if owner_of_target(l) && !names(r, "target") { r }
             else if owner_of_target(r) && !names(l, "target") { l }
             else { return None };

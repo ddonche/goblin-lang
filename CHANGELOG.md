@@ -5,6 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): a decision's `where [ target >> pen == self >> pen ... ]` and
+  `:objects("Sheep", it >> pen == p)` find the objects through an index of
+  that field, kept up to date as objects change, instead of checking every
+  object of the class (classes of 32 objects or more). Results are the same.
+  Predator-prey sim, 360 days, 1 thread: 28 s -> 19 s.
 - DES (VM): overlays spread much faster with `spreads where`. The condition
   is compiled once and reads objects where they live, only the classes the
   overlay `hosts` are tried (it used to try every object, so a class it may
