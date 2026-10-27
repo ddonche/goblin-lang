@@ -1,0 +1,61 @@
+/// known-gap: interp has no contents list or move-up on erase (owner is a plain field there)
+/// Ownership is containment: an object's `owner` field names what holds
+/// it. Writing the field is a transfer (dropping an item gives it to the
+/// place). `:objects("Item", it >> owner == x)` is what x holds now.
+/// When a holder is erased, its `on erase:` action runs first (for
+/// `delete_object!` as for an erase transition); whatever it still holds
+/// then moves up to what held it. `owned_by` reads the same list.
+<>Place |
+    ~name: ""
+    ~owner: nil
+xx
+<>Person |
+    ~name: ""
+    ~owner: nil
+xx
+<>Bag |
+    ~name: ""
+    ~owner: nil
+xx
+<>Item |
+    ~name: ""
+    ~magic: 0
+    ~owner: nil
+xx
+<>Shop |
+    ~name: ""
+    ~owner: nil
+    on erase: burn
+xx
+act burn(shop)
+    repeat :objects("Item", it >> owner == shop) as x
+        delete_object!(x)
+    xx
+xx
+act names(c)
+    out | []
+    repeat :objects("Item", it >> owner == c) as x
+        :put_last!(out, x >> name)
+    xx
+    return out
+xx
+world <> Place | name: "world"
+cave <> Place | name: "cave", owner: world
+hero <> Person | name: "hero", owner: world
+pack <> Bag | name: "pack", owner: hero
+sword <> Item | name: "sword", owner: pack
+amulet <> Item | name: "amulet", magic: 1, owner: pack
+say(names(pack))
+sword >> owner |= cave
+say(names(pack))
+say(names(cave))
+delete_object!(pack)
+say(names(hero))
+say(:len(:objects("Item", it >> owner == hero and it >> magic == 1)))
+smith <> Shop | name: "smith", owner: world
+axe <> Item | name: "axe", owner: smith
+say(names(smith))
+delete_object!(smith)
+say(:len(:objects("Item")))
+say(:len(:owned_by(hero)))
+say(:owned_by(cave)[0] >> name)

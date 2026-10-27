@@ -3389,6 +3389,25 @@ impl Compiler {
         // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
         // a predicate is compiled as `fn(it)`; a class name is a plain value.
         if bare == "objects" || bare == "overlays" {
+            // `:objects("Item", it >> owner == pack)`: read pack's contents
+            // list. The predicate still runs on each of them, so the result
+            // is the same; the VM falls back to the class list when it can't
+            // tell (see `vm_objects_in`).
+            if bare == "objects" {
+                if let [cls @ Expr::Str(..), pred] = args {
+                    if let Some((var, var_expr)) = owner_test(pred) {
+                        if self.resolve_load(&var).is_ok() {
+                            self.compile_expr(cls)?;
+                            self.compile_expr(&var_expr)?;
+                            let vidx = self.add_constant(Value::Str(var.into()));
+                            self.emit(Opcode::LoadConst(vidx));
+                            self.compile_predicate_lambda(pred)?;
+                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 4));
+                            return Ok(Some(()));
+                        }
+                    }
+                }
+            }
             match args {
                 [Expr::Str(..)] => self.compile_expr(&args[0])?,
                 [pred] => self.compile_predicate_lambda(pred)?,
@@ -3427,6 +3446,24 @@ impl Compiler {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// In a query predicate, `it >> owner == x` (or `owner == x`, either way
+/// round), alone or as one side of a top-level `and`: the variable `x`.
+fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
+    let Expr::Binary(l, op, r, _) = pred else { return None };
+    if op == "and" || op == "&&" { return owner_test(l).or_else(|| owner_test(r)); }
+    if op != "==" { return None; }
+    let reads_owner = |e: &Expr| match e {
+        Expr::Ident(n, _) => n == crate::store::OWNER_FIELD,
+        Expr::Member(o, f, _) => f == crate::store::OWNER_FIELD && matches!(&**o, Expr::Ident(n, _) if n == "it"),
+        _ => false,
+    };
+    let var = |e: &Expr| match e {
+        Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some((n.clone(), e.clone())),
+        _ => None,
+    };
+    if reads_owner(l) { var(r) } else if reads_owner(r) { var(l) } else { None }
+}
 
 fn parse_number(raw: &str) -> Result<Value, GoblinError> {
     // Try int first, then float.

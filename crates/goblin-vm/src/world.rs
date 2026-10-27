@@ -595,6 +595,7 @@ fn apply_change(vm: &mut Vm, uuid: &str, field: &str, change: &Change, fp: &mut 
         Value::Int(i) if is_trait => Value::Float((i as f64).clamp(0.0, 1.0)),
         other => other,
     };
+    if field == crate::store::OWNER_FIELD { vm.session.object_store.refile_owner(uuid); }
 }
 
 /// The region's own objects and overlays, ready for the other regions.

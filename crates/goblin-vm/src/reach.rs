@@ -329,7 +329,7 @@ fn finds_by_name(id: BuiltinId) -> bool {
     matches!(id,
         BuiltinId::CloneObject | BuiltinId::LinkScore | BuiltinId::DecisionDebug
         | BuiltinId::QueryByIdent | BuiltinId::Tick | BuiltinId::ResolveToken
-        | BuiltinId::Objects | BuiltinId::Overlays | BuiltinId::OverlaysOf
+        | BuiltinId::Objects | BuiltinId::ObjectsIn | BuiltinId::Overlays | BuiltinId::OverlaysOf
         | BuiltinId::OverlayStrength | BuiltinId::OwnedBy | BuiltinId::OwnsTree
         | BuiltinId::DeleteOverlaysOn)
 }

@@ -1134,6 +1134,9 @@ pub enum BuiltinId {
 
     // Object/overlay query builtins
     Objects,
+    /// `:objects("Class", it >> owner == x and ...)`: compiled to read x's
+    /// contents list instead of every object of the class.
+    ObjectsIn,
     Overlays,
     // Query all objects of a given class/overlay by name string (for `repeat ClassName`)
     QueryByIdent,

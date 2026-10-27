@@ -17,6 +17,29 @@ pub struct ObjectStore {
     map: Map,
     /// Class name -> ids of that class's objects, in creation order.
     by_class: FxHashMap<String, IndexSet<String, FxBuildHasher>>,
+    /// Ownership: each object whose `owner` field holds another object, by
+    /// that owner, and the other way round. Kept by every change that goes
+    /// through the methods here; a field write calls `refile_owner`.
+    contents: FxHashMap<String, IndexSet<String, FxBuildHasher>>,
+    owner_of: FxHashMap<String, String>,
+}
+
+/// The field that says what an object belongs to (what contains it).
+pub const OWNER_FIELD: &str = "owner";
+
+/// The id of the object an `owner` field names, if it names one.
+fn owner_in(v: &Value) -> Option<&str> {
+    let Value::Object(o) = v else { return None };
+    owner_in_value(o.fields.get(OWNER_FIELD)?)
+}
+
+/// The id of the object a field value names, if it names one.
+fn owner_in_value(f: &Value) -> Option<&str> {
+    match f {
+        Value::Ref(u) if !u.starts_with(crate::vm::OVERLAY_RECORD) => Some(u.as_str()),
+        Value::Object(x) => Some(x.uuid.as_str()),
+        _ => None,
+    }
 }
 
 /// The class an entry is filed under: an object's class. Overlay records
@@ -58,9 +81,58 @@ impl ObjectStore {
         }
     }
 
+    /// Files `uuid` under the owner its `owner` field names now.
+    fn set_owner(&mut self, uuid: &str, owner: Option<String>) {
+        if self.owner_of.get(uuid) == owner.as_ref() { return; }
+        if let Some(old) = self.owner_of.remove(uuid) {
+            if let Some(set) = self.contents.get_mut(&old) {
+                set.shift_remove(uuid);
+                if set.is_empty() { self.contents.remove(&old); }
+            }
+        }
+        if let Some(o) = owner {
+            self.contents.entry(o.clone()).or_default().insert(uuid.to_string());
+            self.owner_of.insert(uuid.to_string(), o);
+        }
+    }
+
+    /// After a write to an object's fields: files it under the owner its
+    /// `owner` field names now.
+    pub fn refile_owner(&mut self, uuid: &str) {
+        let owner = self.map.get(uuid).and_then(owner_in).map(str::to_string);
+        self.set_owner(uuid, owner);
+    }
+
+    /// The ids of what `owner` contains (the objects whose `owner` field
+    /// names it), in the order they came to it.
+    pub fn contents_of(&self, owner: &str) -> impl Iterator<Item = &str> {
+        self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str))
+    }
+
+    /// Before `uuid` is erased: what it contains moves up to what contains
+    /// it (its own `owner`, nil when it has none), so nothing is left
+    /// belonging to an object that is gone. An `on erase:` action that wants
+    /// something else for them runs before this and moves or erases them.
+    pub fn move_contents_up(&mut self, uuid: &str) {
+        let Some(kids) = self.contents.get(uuid).map(|s| s.iter().cloned().collect::<Vec<_>>()) else { return };
+        let up = match self.map.get(uuid) {
+            Some(Value::Object(o)) => o.fields.get(OWNER_FIELD).cloned().unwrap_or(Value::Nil),
+            _ => Value::Nil,
+        };
+        let up = if owner_in_value(&up) == Some(uuid) { Value::Nil } else { up };
+        for k in kids {
+            if let Some(Value::Object(o)) = self.map.get_mut(&k) {
+                std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.to_string(), up.clone());
+            }
+            self.refile_owner(&k);
+        }
+    }
+
     /// Add an object, or replace the one with this id (keeping its place).
     pub fn insert(&mut self, uuid: String, v: Value) -> Option<Value> {
         let new_class = class_of(&uuid, &v).map(str::to_string);
+        let owner = owner_in(&v).map(str::to_string);
+        if owner.is_some() || self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, owner); }
         let old = self.map.insert(uuid.clone(), v);
         let old_class = old.as_ref().and_then(|o| class_of(&uuid, o));
         if old_class != new_class.as_deref() {
@@ -77,6 +149,7 @@ impl ObjectStore {
 
     pub fn shift_remove(&mut self, uuid: &str) -> Option<Value> {
         let old = self.map.shift_remove(uuid)?;
+        if self.owner_of.contains_key(uuid) { self.set_owner(uuid, None); }
         if let Some(c) = class_of(uuid, &old).map(str::to_string) { self.unfile(uuid, &c); }
         Some(old)
     }
@@ -93,6 +166,14 @@ impl ObjectStore {
             set.retain(|u| map.contains_key(u.as_str()));
         }
         self.by_class.retain(|_, set| !set.is_empty());
+        if !self.owner_of.is_empty() {
+            self.owner_of.retain(|u, _| map.contains_key(u.as_str()));
+            let owner_of = &self.owner_of;
+            for set in self.contents.values_mut() {
+                set.retain(|u| owner_of.contains_key(u.as_str()));
+            }
+            self.contents.retain(|_, set| !set.is_empty());
+        }
     }
 
     /// An object to change in place. Its fields may change; its class must
@@ -270,6 +351,43 @@ mod tests {
             trait_fields: Default::default(),
             uuid: uuid.into(),
         }))
+    }
+
+    fn owned(class: &str, uuid: &str, owner: Option<&str>) -> Value {
+        let mut v = obj(class, uuid);
+        if let (Value::Object(o), Some(w)) = (&mut v, owner) {
+            std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.into(), Value::Ref(w.into()));
+        }
+        v
+    }
+
+    #[test]
+    fn contents_follow_writes_removals_and_erases() {
+        let mut s = ObjectStore::default();
+        s.insert("hero".into(), owned("P", "hero", None));
+        s.insert("bag".into(), owned("B", "bag", Some("hero")));
+        s.insert("a".into(), owned("I", "a", Some("bag")));
+        s.insert("b".into(), owned("I", "b", Some("bag")));
+        assert_eq!(s.contents_of("bag").collect::<Vec<_>>(), ["a", "b"]);
+        // A field write, then refile.
+        if let Some(Value::Object(o)) = s.get_mut("a") {
+            std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.into(), Value::Ref("hero".into()));
+        }
+        s.refile_owner("a");
+        assert_eq!(s.contents_of("bag").collect::<Vec<_>>(), ["b"]);
+        assert_eq!(s.contents_of("hero").collect::<Vec<_>>(), ["bag", "a"]);
+        // Erasing the bag: b moves up to the hero.
+        s.move_contents_up("bag");
+        s.shift_remove("bag");
+        assert_eq!(s.contents_of("hero").collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(s.contents_of("bag").count(), 0);
+        s.retain(|k, _| k != "a");
+        assert_eq!(s.contents_of("hero").collect::<Vec<_>>(), ["b"]);
+        // Erasing the top holder leaves its contents with nil.
+        s.move_contents_up("hero");
+        s.shift_remove("hero");
+        assert_eq!(s.contents_of("hero").count(), 0);
+        assert!(matches!(s.get("b"), Some(Value::Object(o)) if matches!(o.fields.get(OWNER_FIELD), Some(Value::Nil))));
     }
 
     #[test]
