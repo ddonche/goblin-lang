@@ -3472,24 +3472,32 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// Whether a query predicate only reads: names, literals, fields,
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
-fn only_reads(e: &Expr) -> bool {
+pub(crate) fn only_reads(e: &Expr) -> bool {
     match e {
-        Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) | Expr::Str(..) => true,
+        Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
+        // A string with `{...}` runs what it names.
+        Expr::Str(t, _) => !t.contains('{'),
         Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),
         Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x),
         Expr::Array(xs, _) => xs.iter().all(only_reads),
         Expr::FreeCall(name, args, _) => {
-            let bare = name.trim_start_matches(':');
-            name.starts_with(':') && !bare.ends_with('!') && builtin_by_name(bare).is_some()
-                && !matches!(bare, "pick" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str" | "shuffle"
-                    | "sample_weighted" | "secure_pick" | "secure_random" | "secure_shuffle" | "uuid_v4" | "uuid_v7"
-                    | "print" | "println" | "eprint" | "eprintln" | "say" | "write_text" | "append_file" | "write_json")
-                && !bare.starts_with("grab_random") && !bare.ends_with("_random")
+            name.starts_with(':') && READ_ONLY_BUILTINS.contains(&name.trim_start_matches(':'))
                 && args.iter().all(only_reads)
         }
         _ => false,
     }
 }
+
+/// Builtins that only read: no effects, no randomness, no calls back into
+/// the program.
+const READ_ONLY_BUILTINS: &[&str] = &[
+    "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow", "clamp", "sum", "avg",
+    "len", "count", "has", "contains", "starts_with", "ends_with", "is_empty", "keys", "values",
+    "lower", "upper", "trim", "str", "to_str", "int", "i", "float", "f", "bool",
+    "is_nil", "is_bool", "is_int", "is_float", "is_str", "is_array", "is_map", "is_num",
+    "is_type", "is_even", "is_odd", "is_positive", "is_negative",
+    "link_score", "overlay_strength", "owned_by",
+];
 
 fn parse_number(raw: &str) -> Result<Value, GoblinError> {
     // Try int first, then float.
