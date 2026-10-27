@@ -1,0 +1,7 @@
+region sees gold 0, health 0.9
+region sees 0 Hurt
+program reads gold 5
+program sees 1 Hurt
+region sees gold 5, health 0.2
+region sees 1 Hurt
+after: health 0.2, gold 5

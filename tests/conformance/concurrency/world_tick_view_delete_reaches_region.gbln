@@ -1,0 +1,37 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The program that runs tick(regions) can delete a region's object, or
+/// the overlays on it: the program stops seeing them at once, and the
+/// region takes them out at the start of the next tick.
+<>Person |
+    health: .9
+    ~n: 0
+xx
+overlay Hurt |
+    hosts Person
+end
+act make_two()
+    a <> Person | health: .9, n: 1
+    b <> Person | health: .9, n: 2
+    overlay Hurt on a at .5
+    overlay Hurt on b at .5
+    return {"people": [a, b]}
+xx
+act day(st, msg)
+    p | :len(:objects("Person"))
+    h | :len(:overlays("Hurt"))
+    say("region: {p} people, {h} Hurt")
+    return st
+xx
+r | :actor(make_two(), day)
+tick([r])
+repeat :objects("Person") as x
+    if x >> n == 1
+        delete_object!(x)
+    else
+        delete_overlays_on!(x)
+    xx
+xx
+p | :len(:objects("Person"))
+h | :len(:overlays("Hurt"))
+say("program: {p} people, {h} Hurt")
+tick([r])

@@ -5,6 +5,14 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Regions (VM): the program that runs `tick(regions)` can change the regions'
+  objects. A field write, an overlay put on or taken off, `delete_object!` and
+  `delete_overlays_on!` show in the program's view at once and go to the
+  object's region, which applies them at the start of the next tick (they used
+  to fail with C0124). Inside a region, `delete_object!`, `delete_overlays_on!`
+  and `detach` on another region's object go to its owner the same way. A
+  change still on its way to a region left out of the next `tick(regions)` list
+  is an error (C0123).
 - DES: a decision can leave out `by [ ... ]` (in a class and on one object);
   every target that passes its `where` then scores 1. The civilization and
   predator-prey sims drop their `by [ 1 ]`, same output.

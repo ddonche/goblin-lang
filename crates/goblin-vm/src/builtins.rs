@@ -3865,14 +3865,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_object! can only delete objects".into())),
             };
-            crate::world::check_view_write(session, &uuid)?;
+            // A region's object: its region erases it next tick.
+            if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             erase_object(session, &var_name, &uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteObject => {
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
-            crate::world::check_view_write(session, &uuid)?;
+            if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             session.object_store.shift_remove(uuid.as_str());
             Ok(Value::Nil)
         }
@@ -3883,7 +3884,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Object(o) => o.uuid,
                 _ => return Err(GoblinError::Runtime("T0205: type-mismatch: delete_overlays_on! can only target object instances".into())),
             };
-            crate::world::check_view_write(session, &host_uuid)?;
+            if crate::world::clear_overlays_in_region(session, &host_uuid) { return Ok(Value::Nil); }
             drop_overlays_for(session, &host_var, &host_uuid);
             Ok(Value::Nil)
         }
@@ -5392,7 +5393,7 @@ fn bang_object_target(args: &[Value], name: &str) -> Result<String, GoblinError>
 }
 
 /// Remove every overlay instance on the host (the interpreter's `drop_overlays_for`).
-fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
+pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
     let places = session.overlay_instances.on_host(host_uuid).to_vec();
     let to_remove: Vec<(String, crate::session::OverlayInstanceId)> = places.iter()
         .map(|&p| (session.overlay_instances[p].overlay_name.clone(), session.overlay_instances[p].des_id))
@@ -5408,7 +5409,7 @@ fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid: &str) {
 /// Erase an object and the runtime state attached to it (the interpreter's
 /// `erase_var`). The variable keeps a dangling reference, so reading it
 /// afterwards is an error.
-fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
+pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {

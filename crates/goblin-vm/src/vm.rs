@@ -1342,7 +1342,6 @@ impl Vm {
                 };
                 let new_val = entry_of(&self.session, new_val);
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
-                crate::world::check_view_write(&self.session, &uuid)?;
                 self.session.touch(&uuid);
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
                     check_field_write(obj, &field_name)?;
@@ -1357,6 +1356,9 @@ impl Vm {
                         } else { new_val };
                         std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
                     }
+                    // A region's object, written by the program that runs
+                    // the world: its region gets the new value next tick.
+                    crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
                 } else {
                     return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
                 }
@@ -2603,7 +2605,11 @@ impl Vm {
                 let host_val = self.pop_value()?;
                 // An object host is matched by identity, so `detach X from
                 // target` inside an action finds the overlay put on the real host.
-                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid.clone()), _ => None };
+                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid.clone()), Value::Ref(u) => Some(u.clone()), _ => None };
+                // A region's object: its region takes the overlay off next tick.
+                if let Some(u) = &host_uuid {
+                    if crate::world::detach_in_region(&mut self.session, u, &overlay_name) { return Ok(()); }
+                }
                 self.session.overlay_instances.retain(|inst| {
                     let same_host = match &host_uuid { Some(u) => inst.host_uuid == *u, None => inst.host_var == *host_var_name };
                     !(inst.overlay_name == *overlay_name && same_host)
@@ -5764,7 +5770,6 @@ impl Vm {
             _ => None,
         };
         if let (Some(uuid), Value::Str(field)) = (container_uuid, key) {
-            crate::world::check_view_write(&self.session, uuid)?;
             if let Some(obj) = self.session.object_store.get(uuid) {
                 check_field_write(obj, field)?;
             }
@@ -5818,6 +5823,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::Runtime(format!("update!: object {} not found", uuid))),
                 }
+                crate::world::after_view_write(&mut self.session, &uuid, field)?;
                 Ok(Value::Ref(uuid))
             }
             _ => {
