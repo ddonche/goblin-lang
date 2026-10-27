@@ -1,0 +1,33 @@
+/// known-gap: interp spreads to objects of any class, not only its hosts
+/// `spreads where`: only objects the overlay may go on (`hosts`) catch it,
+/// and a condition on a field (`target >> town == self >> town`) reaches
+/// exactly the objects whose field matches: numbers by value (1 and 1.0),
+/// strings by text, and an object without the field never.
+<>P |
+    ~town: 0
+    ~name: ""
+xx
+<>Rock |
+    ~town: 0
+xx
+<>Q |
+    ~name: ""
+xx
+overlay Flu |
+    hosts P
+    spreads where target >> town == self >> town at 1 per tick
+end
+overlay Rumor |
+    hosts P, Q
+    spreads where target >> name == self >> name and target >> town >= 0 at 1 per tick
+end
+first <> P | town: 1, name: "ann"
+same <> P | town: 1.0, name: "bob"
+other <> P | town: 2, name: "ann"
+r <> Rock | town: 1
+q <> Q | name: "ann"
+overlay Flu on first at 1
+overlay Rumor on first at 1
+tick()
+say([:len(:overlays_of(same)), :len(:overlays_of(other)), :len(:overlays_of(r)), :len(:overlays_of(q))])
+say(:len(:overlays(it >> overlay_name == "Rumor")))

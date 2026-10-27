@@ -160,6 +160,8 @@ pub struct Vm {
     pub(crate) memo: Option<Box<crate::memo::Memo>>,
     /// Whether each function seen only reads (memo.rs), kept with it.
     reads_only: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
+    /// The operand stack `run_formula_in` uses, kept between runs.
+    formula_stack: Vec<Fv>,
 }
 
 /// How far an actor's handler got in one go.
@@ -174,7 +176,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default(), formula_stack: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -4974,7 +4976,8 @@ impl Vm {
         let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec());
         let f = Self::compile_expr_fn(expr, param_names, compiler)?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
-        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default() });
+        let tree = crate::formula_tree::FormulaTree::build(&f);
+        let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default(), tree });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
@@ -5036,7 +5039,7 @@ impl Vm {
         // stops being tried directly; one success makes it eligible again.
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
             let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
-            match self.run_formula_in(&func_rc, &refs, &[], &formula.hints, &formula.env) {
+            match self.run_formula_in(&func_rc, &refs, &[], &formula.hints, &formula.env, formula.tree.as_ref()) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -5081,7 +5084,7 @@ impl Vm {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
-            match self.run_formula_in(&formula.func, locals, known, &formula.hints, &formula.env) {
+            match self.run_formula_in(&formula.func, locals, known, &formula.hints, &formula.env, formula.tree.as_ref()) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
                 None => formula.misses.set(formula.misses.get() + 1),
             }
@@ -5113,23 +5116,40 @@ impl Vm {
     /// the store when the caller already knows (empty when not). For a
     /// closure, `env` holds the values its captured variables and the
     /// globals it reads had when the run started.
-    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], known: &[usize], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
-        enum Fv<'a> { Val(Value), Arg(&'a Value, usize) }
+    fn run_formula_in(&mut self, f: &crate::value::FunctionObject, args: &[(&str, &Value)], known: &[usize], hints: &[std::cell::Cell<u32>], env: &FormulaEnv, tree: Option<&crate::formula_tree::FormulaTree>) -> Option<Value> {
+        if let Some(t) = tree {
+            let slots = args.len() + env.upvalues.len() + env.globals.len();
+            let mut small = [usize::MAX - 1; 8];
+            let mut big = Vec::new();
+            let at: &mut [usize] = if slots <= small.len() { &mut small[..slots] } else { big.resize(slots, usize::MAX - 1); &mut big[..] };
+            for (i, p) in known.iter().enumerate().take(args.len()) { at[i] = *p; }
+            if let Some(v) = self.run_formula_tree(t, args, at, env) { return Some(v); }
+        }
+        // One stack, kept between runs (a formula inside, like a link's,
+        // gets its own).
+        let mut st = std::mem::take(&mut self.formula_stack);
+        st.clear();
+        let r = self.run_formula_on(&mut st, f, args, known, hints, env);
+        st.clear();
+        self.formula_stack = st;
+        r
+    }
+
+    fn run_formula_on(&mut self, st: &mut Vec<Fv>, f: &crate::value::FunctionObject, args: &[(&str, &Value)], known: &[usize], hints: &[std::cell::Cell<u32>], env: &FormulaEnv) -> Option<Value> {
         // An operand an operation may use: numbers, bools and nil only.
-        fn plain(v: Fv<'_>) -> Option<Value> {
+        fn plain(v: Fv) -> Option<Value> {
             match v {
                 Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => Some(v),
                 _ => None,
             }
         }
-        fn plain_or_str(v: Fv<'_>) -> Option<Value> {
+        fn plain_or_str(v: Fv) -> Option<Value> {
             match v {
                 Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => Some(v),
                 _ => None,
             }
         }
         let code = &f.bytecode;
-        let mut st: smallvec::SmallVec<[Fv; 8]> = smallvec::SmallVec::new();
         // Where each value that refers to a stored object sits in the
         // store: given by the caller for arguments it already knows,
         // otherwise looked up on first use (checked against its id when read).
@@ -5178,7 +5198,7 @@ impl Vm {
                                     _ => usize::MAX,
                                 };
                             }
-                            st.push(Fv::Arg(a, *pos))
+                            st.push(Fv::Arg(slot, *pos))
                         }
                         _ => return None,
                     }
@@ -5188,13 +5208,16 @@ impl Vm {
                     // `formula_runs_direct` ruled out names of member builtins.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
                     let obj = match &top {
-                        Fv::Arg(Value::Object(o), _) => &**o,
-                        Fv::Arg(Value::Ref(uuid), pos) => match self.session.object_store.get_index(*pos) {
-                            Some((k, Value::Object(o))) if k == uuid => &**o,
-                            _ => match self.session.object_store.get(uuid.as_str()) {
-                                Some(Value::Object(o)) => &**o,
-                                _ => return None,
+                        Fv::Arg(slot, pos) => match value_at(*slot)? {
+                            Value::Object(o) => &**o,
+                            Value::Ref(uuid) => match self.session.object_store.get_index(*pos) {
+                                Some((k, Value::Object(o))) if k == uuid => &**o,
+                                _ => match self.session.object_store.get(uuid.as_str()) {
+                                    Some(Value::Object(o)) => &**o,
+                                    _ => return None,
+                                },
                             },
+                            _ => return None,
                         },
                         // A field that names an object (`target >> owner >> gold`).
                         Fv::Val(Value::Ref(uuid)) => match self.session.object_store.get(uuid.as_str()) {
@@ -5247,7 +5270,7 @@ impl Vm {
                 }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(a, *p) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(*a, *p) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
@@ -5303,8 +5326,16 @@ impl Vm {
                     // the VM. An id with no object behind it is the VM's call.
                     let b = st.pop()?;
                     let a = st.pop()?;
-                    let id = |v: &Fv<'_>| -> Option<Option<String>> {
-                        let x: &Value = match v { Fv::Arg(x, _) => x, Fv::Val(x) => x };
+                    // Two plain values (the usual case): compared directly.
+                    let simple = |v: &Fv| matches!(v, Fv::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_)));
+                    if simple(&a) && simple(&b) {
+                        let (Fv::Val(x), Fv::Val(y)) = (&a, &b) else { return None };
+                        let eq = values_equal(x, y);
+                        st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
+                        continue;
+                    }
+                    let id = |v: &Fv| -> Option<Option<String>> {
+                        let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x };
                         match x {
                             Value::Object(o) => Some(Some(o.uuid.to_string())),
                             Value::Ref(u) => Some(if self.session.object_store.contains_key(u.as_str()) { Some(u.to_string()) } else { None }),
@@ -5640,6 +5671,7 @@ impl Vm {
         }
         let func = func.clone();
         let hints: Vec<std::cell::Cell<u32>> = (0..func.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
+        let tree = crate::formula_tree::FormulaTree::build(&func);
         let mut found = Vec::new();
         let all: Vec<usize>;
         let places = match only {
@@ -5648,7 +5680,7 @@ impl Vm {
         };
         for &i in places {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
-            let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env) {
+            let holds = match self.run_formula_in(&func, &[("it", &it)], &[i], &hints, &env, tree.as_ref()) {
                 Some(v) => matches!(v, Value::Bool(true)),
                 // Something the direct run leaves to the VM (a missing field,
                 // which is an error there, say): the VM decides for this one.
@@ -5944,7 +5976,7 @@ impl Vm {
     }
 
     /// Returns negative, zero, or positive for ordering.
-    fn compare_values(&self, a: &Value, b: &Value, op: &'static str) -> Result<i32, GoblinError> {
+    pub(crate) fn compare_values(&self, a: &Value, b: &Value, op: &'static str) -> Result<i32, GoblinError> {
         use std::cmp::Ordering;
         let ord_to_i32 = |o: Ordering| match o { Ordering::Less => -1, Ordering::Equal => 0, Ordering::Greater => 1 };
         match (a, b) {
@@ -6196,13 +6228,17 @@ fn check_field_write(obj: &Value, field: &str) -> Result<(), GoblinError> {
 /// A compiled DES formula.
 /// What a closure run directly reads besides its arguments.
 #[derive(Default)]
-struct FormulaEnv {
-    upvalues: Vec<Value>,
-    globals: Vec<(u16, Value)>,
+pub(crate) struct FormulaEnv {
+    pub(crate) upvalues: Vec<Value>,
+    pub(crate) globals: Vec<(u16, Value)>,
     /// A predicate whose error means "no match": a missing field ends the
     /// run with false.
-    missing_field_is_false: bool,
+    pub(crate) missing_field_is_false: bool,
 }
+
+/// An operand of `Vm::run_formula_in`: a value, or an argument that refers
+/// to an object (by its argument slot), with where it sits in the store.
+enum Fv { Val(Value), Arg(usize, usize) }
 
 pub(crate) struct TickFormula {
     func: std::rc::Rc<crate::value::FunctionObject>,
@@ -6215,6 +6251,8 @@ pub(crate) struct TickFormula {
     hints: Vec<std::cell::Cell<u32>>,
     /// An empty environment, kept so a run does not build and drop one.
     env: FormulaEnv,
+    /// The formula as a tree, when it is simple enough (formula_tree.rs).
+    tree: Option<crate::formula_tree::FormulaTree>,
 }
 
 impl TickFormula {
@@ -6487,6 +6525,7 @@ mod tests {
             "9223372036854775807 + a", "9223372036854775807 * b", "0 - 9223372036854775807 - a",
             "s >> military * .4 - a", "s >> military > 0.5 and s >> military < 2",
             "s >> name", "s >> missing * 2", "a / 0",
+            "s >> name == \"France\"", "s >> name != a", "s == s", "s == nil", "not (a > b) or s >> military == 3",
         ];
         let pairs = [
             (Value::Int(6), Value::Int(3)),
@@ -6495,6 +6534,7 @@ mod tests {
             (Value::Int(7), Value::Nil),
         ];
         let mut ran_direct = 0;
+        let mut ran_tree = 0;
         for src in formulas {
             let expr = parse_formula(src);
             for (a, b) in &pairs {
@@ -6503,7 +6543,16 @@ mod tests {
                     let locals = vec![("a", a.clone()), ("b", b.clone()), ("s", s.clone())];
                     let f = Vm::compile_expr_fn(&expr, &["a", "b", "s"], crate::compiler::Compiler::new()).unwrap();
                     let refs: Vec<(&str, &Value)> = locals.iter().map(|(n, v)| (*n, v)).collect();
-                    if vm.run_formula_in(&f, &refs, &[], &[], &FormulaEnv::default()).is_some() { ran_direct += 1; }
+                    if vm.run_formula_in(&f, &refs, &[], &[], &FormulaEnv::default(), None).is_some() { ran_direct += 1; }
+                    // The tree gives what the VM gives, when it runs.
+                    if let Some(t) = crate::formula_tree::FormulaTree::build(&f) {
+                        let mut at = [usize::MAX - 1; 3];
+                        if let Some(v) = vm.run_formula_tree(&t, &refs, &mut at, &FormulaEnv::default()) {
+                            let slow = vm.call_func_value(Value::Function(f.clone()), vec![a.clone(), b.clone(), s.clone()]);
+                            assert_eq!(format!("{:?}", Ok::<Value, ()>(v)), format!("{:?}", slow.map_err(|_| ())), "tree: {src} with {a:?}, {b:?}");
+                            ran_tree += 1;
+                        }
+                    }
                     let fast = vm.eval_tick_expr(&expr, locals);
                     let slow = vm.call_func_value(Value::Function(f), vec![a.clone(), b.clone(), s]);
                     match (&fast, &slow) {
@@ -6515,6 +6564,7 @@ mod tests {
             }
         }
         assert!(ran_direct > 80, "only {ran_direct} runs were direct");
+        assert!(ran_tree > 40, "only {ran_tree} runs used the tree");
     }
 
     #[test]
@@ -6705,7 +6755,7 @@ pub(crate) fn pct_as_number(a: Value, b: Value) -> (Value, Value) {
     }
 }
 
-fn values_equal(a: &Value, b: &Value) -> bool {
+pub(crate) fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => (*x as f64) == *y,
         (Value::Pct(x), Value::Float(y)) | (Value::Float(y), Value::Pct(x)) => *x == *y,
@@ -6716,7 +6766,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
 
 /// `/` on ints and floats (D5): int / int stays an int when exact and is a
 /// float otherwise; dividing by zero is an error (D19).
-fn num_div(a: &Value, b: &Value) -> Result<Value, GoblinError> {
+pub(crate) fn num_div(a: &Value, b: &Value) -> Result<Value, GoblinError> {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => {
             if *y == 0 { return Err(GoblinError::DivisionByZero); }

@@ -16,6 +16,9 @@ days | 120
 if :env("DAYS") != ""
     days |= :int(:env("DAYS"))
 xx
+if :env("PEOPLE") != ""
+    people_per_town |= :int(:env("PEOPLE"))
+xx
 
 all_towns | []
 

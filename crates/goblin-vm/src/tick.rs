@@ -322,6 +322,9 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
 
     let mut spread_buf: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, strength)
+    // `spreads where`: the objects each `hosts` list allows, with where they sit.
+    let mut candidate_lists: std::collections::HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = std::collections::HashMap::new();
+    let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::new();
 
     for inst in &instances_snap {
         let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
@@ -422,32 +425,50 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
 
                 SpreadRule::Predicate { condition, rate } => {
-                    let self_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
-                        Some(v) => v, None => continue,
+                    let amount = inst.strength * rate;
+                    let chance = amount;
+                    if amount <= 0.0 { continue; }
+                    let Some(self_at) = vm.session.object_store.get_index_of(inst.host_uuid.as_str()) else { continue };
+                    let self_ref = Value::Ref(inst.host_uuid.clone());
+                    // The condition is compiled once and reads `self` and
+                    // `target` where they live, as a decision's `where` does.
+                    let cond = vm.tick_formula(condition, &["self", "target"])?;
+                    let cond_parts = { let mut v = Vec::new(); conjuncts(condition, &mut v); v };
+                    // Only objects the overlay may go on (`hosts`), in the
+                    // order they were made. Nothing is added or erased while
+                    // overlays spread, so the list is made once per pass.
+                    let candidates = candidate_lists.entry(def.host_types.clone()).or_insert_with(|| {
+                        let store = &vm.session.object_store;
+                        let at: Vec<usize> = if def.host_types.is_empty() { (0..store.len()).collect() }
+                            else { store.places_of(|c| def.host_types.iter().any(|h| h == c)) };
+                        std::rc::Rc::new(at.into_iter()
+                            .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
+                            .collect())
+                    }).clone();
+                    // `target >> town == self >> town`: only the objects
+                    // whose field matches can pass (see `same_field`).
+                    let candidates = match same_field(vm, condition, &cond_parts, &def.host_types, &candidates, &mut field_groups, &self_ref, self_at) {
+                        Some(fewer) => fewer,
+                        None => candidates,
                     };
-                    let candidates: Vec<String> = vm.session.object_store.keys()
-                        .filter(|uuid| *uuid != &inst.host_uuid)
-                        .cloned().collect();
-                    for target_uuid in candidates {
-                        let target_val = match vm.session.object_store.get(&target_uuid).cloned() {
-                            Some(v) => v, None => continue,
+                    for (target_ref, target_at) in candidates.iter() {
+                        let target_at = *target_at;
+                        if target_at == self_at { continue; }
+                        let fires = match vm.run_tick_formula_ref(&cond, &[("self", &self_ref), ("target", target_ref)], &[self_at, target_at]) {
+                            Ok(Value::Bool(b)) => b,
+                            Ok(Value::Int(i)) => i != 0,
+                            Ok(Value::Float(f)) => f != 0.0,
+                            _ => false,
                         };
-                        let fires = vm.eval_tick_expr_bool(
-                            condition,
-                            vec![("self", self_val.clone()), ("target", target_val)],
-                        );
                         if !fires { continue; }
-                        let amount = inst.strength * rate;
-                        let chance = amount;
-                        if amount <= 0.0 { continue; }
-                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name).is_some();
-                        if !already && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
-                        if already {
-                            if let Some(eidx) = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name) {
-                                if eidx < vm.session.overlay_instances.len() {
-                                    vm.session.overlay_instances[eidx].strength =
-                                        (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
-                                }
+                        let Value::Ref(target_uuid) = target_ref else { continue };
+                        let target_uuid = target_uuid.clone();
+                        let already = vm.session.overlay_instances.find(&target_uuid, &inst.overlay_name);
+                        if already.is_none() && crate::world::reinforce_remote(vm, &inst.overlay_name, &target_uuid, amount) { continue; }
+                        if let Some(eidx) = already {
+                            if eidx < vm.session.overlay_instances.len() {
+                                vm.session.overlay_instances[eidx].strength =
+                                    (vm.session.overlay_instances[eidx].strength + amount).min(1.0);
                             }
                         } else if catches(vm, chance) {
                             spread_buf.push((inst.overlay_name.clone(), target_uuid, inst.strength));
@@ -484,6 +505,92 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     }
 
     Ok(())
+}
+
+/// A field's value, as far as `==` can tell values apart: values that are
+/// equal get the same key (numbers of any kind by their f64 value, which
+/// may also give some unequal ones the same key; that only costs a check).
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum FieldKey { Num(u64), Str(String), Bool(bool), Nil }
+
+fn field_key(v: &Value) -> Option<FieldKey> {
+    let num = |f: f64| FieldKey::Num(if f == 0.0 { 0 } else { f.to_bits() });
+    Some(match v {
+        Value::Int(i) => num(*i as f64),
+        Value::Float(f) => num(*f),
+        Value::Pct(p) => num(*p),
+        Value::Str(s) => FieldKey::Str(s.to_string()),
+        Value::Bool(b) => FieldKey::Bool(*b),
+        Value::Nil => FieldKey::Nil,
+        _ => return None,
+    })
+}
+
+/// The candidates grouped by one field's value, made once per spread pass
+/// (nothing changes a field while overlays spread). `other`: those whose
+/// value has no key (a list, an object), always checked.
+struct FieldGroups {
+    by: HashMap<FieldKey, std::rc::Rc<Vec<(Value, usize)>>>,
+    other: Vec<(Value, usize)>,
+}
+
+/// For a `spreads where` condition that only reads and has a part
+/// `target >> F == E` (E not naming `target`): the candidates whose `F`
+/// can equal E for this spreader, in the order they were made. The others
+/// fail that part (an object without `F` fails the condition too), so the
+/// condition needn't run on them; nothing random is skipped, as the
+/// condition only reads. None: every candidate.
+#[allow(clippy::too_many_arguments)]
+fn same_field(
+    vm: &mut Vm,
+    condition: &goblin_ast::Expr,
+    parts: &[&goblin_ast::Expr],
+    hosts: &[String],
+    all: &[(Value, usize)],
+    groups: &mut HashMap<(Vec<String>, String), FieldGroups>,
+    self_ref: &Value,
+    self_at: usize,
+) -> Option<std::rc::Rc<Vec<(Value, usize)>>> {
+    use goblin_ast::Expr as E;
+    if !reads(vm, condition) { return None; }
+    let field_of_target = |e: &E| match e {
+        E::Member(o, f, _) if matches!(&**o, E::Ident(n, _) if n == "target") => Some(f.clone()),
+        _ => None,
+    };
+    let (field, other_side) = parts.iter().find_map(|c| {
+        let E::Binary(l, op, r, _) = c else { return None };
+        if op != "==" { return None; }
+        match (field_of_target(l), field_of_target(r)) {
+            (Some(f), _) if !names(r, "target") => Some((f, &**r)),
+            (_, Some(f)) if !names(l, "target") => Some((f, &**l)),
+            _ => None,
+        }
+    })?;
+    let e = vm.tick_formula(other_side, &["self", "target"]).ok()?;
+    let want = vm.run_tick_formula_ref(&e, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()?;
+    let key = field_key(&want)?;
+    let g = groups.entry((hosts.to_vec(), field.clone())).or_insert_with(|| {
+        let store = &vm.session.object_store;
+        let mut by: HashMap<FieldKey, Vec<(Value, usize)>> = HashMap::new();
+        let mut other = Vec::new();
+        for (r, i) in all {
+            let Some((_, Value::Object(o))) = store.get_index(*i) else { other.push((r.clone(), *i)); continue };
+            match o.fields.get(field.as_str()) {
+                // No such field: the condition fails (an error there is false).
+                None => {}
+                Some(v) => match field_key(v) {
+                    Some(k) => by.entry(k).or_default().push((r.clone(), *i)),
+                    None => other.push((r.clone(), *i)),
+                },
+            }
+        }
+        FieldGroups { by: by.into_iter().map(|(k, v)| (k, std::rc::Rc::new(v))).collect(), other }
+    });
+    let same = g.by.get(&key).cloned().unwrap_or_default();
+    if g.other.is_empty() { return Some(same); }
+    let mut both: Vec<(Value, usize)> = same.iter().chain(g.other.iter()).cloned().collect();
+    both.sort_by_key(|(_, i)| *i);
+    Some(std::rc::Rc::new(both))
 }
 
 // ── Spawn pass ────────────────────────────────────────────────────────────────
