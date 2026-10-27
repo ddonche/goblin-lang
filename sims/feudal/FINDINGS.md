@@ -23,7 +23,7 @@ move up to the realm, and the realm crowns the strongest of them; the
 others swear to him.
 
 Over 200 years: 3 lords leave Brennor for Caddis with their lands and
-households, Caddis crowns 4 kings and Aldmark 1, about 300 nobles inherit
+households, Caddis crowns 4 kings and Aldmark 1, about 180 nobles inherit
 and 40 die without heirs, and all 72 estates stay held by some realm.
 200 years take 4.4 s on 4 threads (8.9 s on 1), 100 to 140 nobles.
 
