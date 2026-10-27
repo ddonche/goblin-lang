@@ -1,0 +1,37 @@
+/// known-gap: interp can't hold a builtin in a variable, and its formulas can't call actions
+/// The decision memo keeps an action's answer only when nothing else can
+/// change it: a closure's answer depends on what it captured (`one` and
+/// `ten` share code), and a global holding a builtin that draws random
+/// numbers counts as drawing them.
+act mk(n)
+    act add(x)
+        return x + n
+    xx
+    return add
+xx
+one | mk(1)
+ten | mk(10)
+job | shuffle
+act pick_ok(x)
+    y | job([1, 2, 3, 4, 5])
+    return true
+xx
+<>Seer |
+    ~name: ""
+    look | decision against Spot where [ pick_ok(self) ] by [ one(target >> v) + ten(target >> v) ]
+    judge using look
+        >= 0: show(target, score)
+    end
+xx
+<>Spot |
+    ~v: 0
+xx
+act show(s, t, sc)
+    say("{s >> name} picks {t >> v} with score {sc}")
+xx
+:rand_seed(7)
+s <> Seer | name: "Sib"
+a <> Spot | v: 1
+b <> Spot | v: 2
+tick()
+say(:shuffle([1, 2, 3, 4, 5, 6, 7, 8]))

@@ -1637,7 +1637,7 @@ impl Vm {
                 // While a decision is worked out, an action that only reads
                 // gives the answer it gave for these arguments before.
                 let mark = if self.memo.is_some() {
-                    match self.memo_call(&func_rc, func_idx)? {
+                    match self.memo_call(&func_rc, !upvalues.is_empty(), func_idx)? {
                         Ok(mark) => mark,
                         Err(answer) => {
                             self.stack.truncate(func_idx);
@@ -5257,11 +5257,10 @@ impl Vm {
         let key = Rc::as_ptr(f) as usize;
         if let Some((_, r)) = self.reads_only.get(&key) { return *r; }
         let session = &self.session;
-        let globals = |g: u16| -> Option<Rc<FunctionObject>> {
+        let globals = |g: u16| -> Option<Value> {
             let t = session.get_global(g as usize)?;
             match &session.resolve(t.addr).ok()?.value {
-                Value::Function(f) => Some(f.clone()),
-                Value::Closure(c) => Some(c.func.clone()),
+                v @ (Value::Function(_) | Value::Closure(_) | Value::Builtin(_)) => Some(v.clone()),
                 _ => None,
             }
         };
@@ -5288,7 +5287,9 @@ impl Vm {
 
     /// A call while the memo is on: Err(answer) when it was worked out
     /// before, else what the call's frame does with the memo.
-    fn memo_call(&mut self, f: &Rc<FunctionObject>, func_idx: usize) -> Result<Result<Option<crate::memo::Mark>, Value>, GoblinError> {
+    /// `captures`: the callee is a closure holding captured values, which
+    /// its answer may depend on: it runs every time.
+    fn memo_call(&mut self, f: &Rc<FunctionObject>, captures: bool, func_idx: usize) -> Result<Result<Option<crate::memo::Mark>, Value>, GoblinError> {
         use crate::memo::{Arg, Mark};
         if !self.fn_reads_only(f) {
             let m = self.memo.as_mut().unwrap();
@@ -5296,7 +5297,7 @@ impl Vm {
             m.changing += 1;
             return Ok(Ok(Some(Mark::Changes)));
         }
-        if self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
+        if captures || self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
         let mut args = Vec::with_capacity(self.stack.len() - func_idx - 1);
         for i in func_idx + 1..self.stack.len() {
             let v = self.resolve_op(self.stack[i].clone())?;
