@@ -22,8 +22,9 @@ xx
 act eat(w, s)
     say("{w >> name} eats {s >> name} in pen {w >> pen}")
     /// The sheep runs to pen 2: the next wolf in pen 1 can't find it.
+    /// (Losing a little fat keeps Dot the fattest, so Cy's pick is not a tie.)
     s >> pen |= 2
-    s >> fat |= 0
+    s >> fat |= s >> fat - 1
 xx
 a <> Wolf | name: "Ash", pen: 1
 b <> Wolf | name: "Bo", pen: 1.0
