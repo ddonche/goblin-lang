@@ -5690,8 +5690,7 @@ impl Vm {
         let (field, part) = tree.field_equal(0, &has_field)?;
         let env = self.predicate_env(func, cells)?;
         let mut at = vec![usize::MAX - 1; 1 + env.upvalues.len() + env.globals.len()];
-        let want = self.run_formula_part(part, &[("it", &Value::Nil)], &mut at, &env)?;
-        let key = crate::store::field_key(&want)?;
+        let key = self.run_formula_key(part, &[("it", &Value::Nil)], &mut at, &env)?;
         Some(self.session.object_store.with_field(class, field, &key))
     }
 
