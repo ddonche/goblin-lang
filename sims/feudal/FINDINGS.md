@@ -22,10 +22,11 @@ held up to his liege. When a king dies without a child, his lords and lands
 move up to the realm, and the realm crowns the strongest of them; the
 others swear to him.
 
-Over 200 years: 3 lords leave Brennor for Caddis with their lands and
-households, Caddis crowns 4 kings and Aldmark 1, about 180 nobles inherit
-and 40 die without heirs, and all 72 estates stay held by some realm.
-200 years take 4.4 s on 4 threads (8.9 s on 1), 100 to 140 nobles.
+Over 200 years, 20 lords change kingdoms with their lands and households
+(the realms trade the lead: Aldmark holds 2 estates at year 100 and 66 at
+year 200), Caddis crowns 5 kings, about 150 nobles inherit and 34 die
+without heirs, and all 72 estates stay held by some realm. 200 years take
+5.1 s on 4 threads (7.8 s on 1), 60 to 140 nobles.
 
 `check.sh`: 100 years match `expected.txt`, two runs match, and 1 thread
 matches 4.

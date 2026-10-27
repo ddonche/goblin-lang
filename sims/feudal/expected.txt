@@ -6,36 +6,32 @@ year 25:
   estates 72, held by no realm 0
 year 50:
   Aldmark: king Arden (36), 30 nobles, 24 estates; crowned 0, inherited 10, escheated 3, granted 10, sold 0, seized 7, defected 0, arrived 0
-  Brennor: king Fenwick (42), 18 nobles, 11 estates; crowned 0, inherited 6, escheated 1, granted 3, sold 1, seized 2, defected 2, arrived 0
-  Caddis: king Ivers (41), 45 nobles, 37 estates; crowned 3, inherited 13, escheated 3, granted 10, sold 2, seized 6, defected 0, arrived 2
+  Brennor: king Fenwick (42), 11 nobles, 6 estates; crowned 0, inherited 7, escheated 0, granted 3, sold 1, seized 2, defected 3, arrived 0
+  Caddis: king Ivers (41), 52 nobles, 42 estates; crowned 3, inherited 13, escheated 3, granted 9, sold 2, seized 5, defected 0, arrived 3
   estates 72, held by no realm 0
 year 75:
-  Aldmark: king Arden (61), 27 nobles, 24 estates; crowned 0, inherited 18, escheated 3, granted 17, sold 0, seized 12, defected 0, arrived 0
-  Brennor: king Fenwick (44), 21 nobles, 11 estates; crowned 0, inherited 10, escheated 3, granted 9, sold 1, seized 4, defected 2, arrived 0
-  Caddis: king Ivers (16), 45 nobles, 37 estates; crowned 3, inherited 25, escheated 5, granted 24, sold 2, seized 14, defected 0, arrived 2
+  Aldmark: king Arden (61), 27 nobles, 16 estates; crowned 0, inherited 13, escheated 4, granted 15, sold 0, seized 9, defected 2, arrived 1
+  Brennor: king Fenwick (43), 20 nobles, 10 estates; crowned 0, inherited 13, escheated 1, granted 6, sold 1, seized 2, defected 5, arrived 2
+  Caddis: king Ivers (19), 57 nobles, 46 estates; crowned 3, inherited 27, escheated 8, granted 23, sold 3, seized 14, defected 0, arrived 4
   estates 72, held by no realm 0
 year 100:
-  Aldmark: king Arden (57), 35 nobles, 24 estates; crowned 0, inherited 24, escheated 3, granted 21, sold 0, seized 12, defected 0, arrived 0
-  Brennor: king Fenwick (26), 20 nobles, 11 estates; crowned 0, inherited 15, escheated 3, granted 12, sold 1, seized 4, defected 2, arrived 0
-  Caddis: king Ivers (41), 62 nobles, 37 estates; crowned 3, inherited 38, escheated 6, granted 30, sold 2, seized 16, defected 0, arrived 2
+  Aldmark: king Arden (31), 4 nobles, 2 estates; crowned 0, inherited 18, escheated 4, granted 22, sold 0, seized 12, defected 4, arrived 2
+  Brennor: king Fenwick (35), 65 nobles, 63 estates; crowned 0, inherited 19, escheated 2, granted 8, sold 1, seized 2, defected 6, arrived 5
+  Caddis: king Ivers (44), 29 nobles, 7 estates; crowned 3, inherited 40, escheated 8, granted 37, sold 4, seized 25, defected 3, arrived 4
   estates 72, held by no realm 0
 
 the realms at the end:
-  Aldmark: king Arden, 2 estates of his own, gold 3010
-    Elsing (65): 6 estates, 6 in his household
-    Bracken (23): 5 estates, 9 in his household
-  Brennor: king Fenwick, 2 estates of his own, gold -53
-    Fenwick (43): 1 estates, 1 in his household
-    Jessop (33): 2 estates, 6 in his household
-    Fenwick (30): 1 estates, 3 in his household
-  Caddis: king Ivers, 2 estates of his own, gold 2586
-    Ivers (45): 1 estates, 2 in his household
-    Norwood (43): 11 estates, 2 in his household
-    Ivers (37): 1 estates, 4 in his household
-    Lorne (36): 7 estates, 8 in his household
-    Ivers (35): 1 estates, 3 in his household
-    Holt (34): 1 estates, 3 in his household
-    Marsh (33): 1 estates, 4 in his household
-    Ivers (33): 1 estates, 1 in his household
-    Ivers (29): 1 estates, 2 in his household
-    Ivers (22): 1 estates, 2 in his household
+  Aldmark: king Arden, 2 estates of his own, gold 1562
+  Brennor: king Fenwick, 2 estates of his own, gold 856
+    Elsing (65): 5 estates, 8 in his household
+    Norwood (31): 8 estates, 3 in his household
+    Jessop (28): 15 estates, 2 in his household
+    Bracken (45): 3 estates, 8 in his household
+    Lorne (37): 5 estates, 10 in his household
+  Caddis: king Ivers, 2 estates of his own, gold 3167
+    Ivers (47): 0 estates, 1 in his household
+    Ivers (43): 0 estates, 4 in his household
+    Marsh (36): 1 estates, 3 in his household
+    Ivers (36): 0 estates, 2 in his household
+    Holt (28): 1 estates, 4 in his household
+    Orme (20): 1 estates, 0 in his household

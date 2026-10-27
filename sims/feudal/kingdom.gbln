@@ -74,8 +74,9 @@ xx
         self >> age >= 16 and self >> loyalty < 20 and :is_type(self >> owner, "Noble")
         and target >> n != kingdom(self) and strength(self) * 2 > strength(self >> owner)
     ] by [ 0 - target >> seized ]
+    /// The best-scored realm (fewest seizures) is the choice, whatever its score.
     judge using defect
-        >= 0: defect(target)
+        else: defect(target)
     end
     sell | decision against Noble where [
         self >> gold < 0 and target >> owner == self >> owner and target >> gold >= 60 and estates(self) >= 2
@@ -254,11 +255,15 @@ act inherit(d)
 xx
 
 /// An empty throne: the realm holds the old king's vassals and lands. The
-/// strongest of them is crowned; the others swear to him, and he takes the
-/// lands.
+/// strongest of them (or the only one) is crowned; the others swear to him,
+/// and he takes the lands.
 act crown(r)
     claimants | :objects("Noble", it >> owner == r)
-    if :len(claimants) <= 1
+    if :len(claimants) == 0
+        return nil
+    xx
+    /// One claimant and no lands left with the realm: he already reigns.
+    if :len(claimants) == 1 and :len(:objects("Estate", it >> owner == r)) == 0
         return nil
     xx
     king | nil
