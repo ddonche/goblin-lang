@@ -25,9 +25,6 @@ xx
     name: ""
     owner: nil
 xx
-act keep(st, msg)
-    return st
-xx
 act make(i)
     m <> Meadow | n: i
     r <> Rabbit | name: "r{i}", owner: m
@@ -39,7 +36,7 @@ act make(i)
 xx
 meadows | []
 repeat :range(1, 4) as i
-    :put_last!(meadows, :actor(make(i), keep))
+    :put_last!(meadows, :actor(make(i)))
 xx
 act show(t)
     names | []

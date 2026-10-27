@@ -393,6 +393,8 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
 }
 
 fn call_handler(vm: &mut Vm, state: &mut Value, handler: &Value, msg: Value) -> Result<(), GoblinError> {
+    // `:actor(meadow)` has no handler: the region only runs what it owns.
+    if matches!(handler, Value::Nil) { return Ok(()); }
     let st = std::mem::replace(state, Value::Nil);
     let next = vm.call_callable(handler.clone(), vec![st, msg])?;
     if matches!(next, Value::Nil) {
