@@ -5,6 +5,13 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): overlays spread much faster with `spreads where`. The condition
+  is compiled once and reads objects where they live, only the classes the
+  overlay `hosts` are tried (it used to try every object, so a class it may
+  not go on could catch it), and a part like `target >> town == self >> town`
+  tries only the objects whose field matches. Simple formulas, `where`
+  conditions and `:objects` predicates also run faster. Epidemic sim, 4,000
+  people, 60 days, 1 thread: 141 s -> 19 s.
 - Strings: a `{...}` placeholder can hold text in quotes and nested braces:
   `say("estates {:len(:objects("Estate"))}")` and `say("{r{"winner"}} wins")`
   work (the inner quote used to end the string, and the first `}` ended the
