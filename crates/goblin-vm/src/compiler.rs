@@ -3396,9 +3396,13 @@ impl Compiler {
             if bare == "objects" {
                 if let [cls @ Expr::Str(..), pred] = args {
                     if let Some((var, var_expr)) = owner_test(pred) {
-                        if self.resolve_load(&var).is_ok() {
+                        if self.resolve_load(&var).is_ok() && only_reads(pred) {
                             self.compile_expr(cls)?;
-                            self.compile_expr(&var_expr)?;
+                            // The holder is read by a call, so a variable that
+                            // can't be read (its object was erased) makes the
+                            // VM fall back to the plain scan, where the
+                            // predicate failing means no match.
+                            self.compile_predicate_lambda(&var_expr)?;
                             let vidx = self.add_constant(Value::Str(var.into()));
                             self.emit(Opcode::LoadConst(vidx));
                             self.compile_predicate_lambda(pred)?;
@@ -3463,6 +3467,28 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
         _ => None,
     };
     if reads_owner(l) { var(r) } else if reads_owner(r) { var(l) } else { None }
+}
+
+/// Whether a query predicate only reads: names, literals, fields,
+/// operators, indexes and calls to builtins that change nothing. Then
+/// running it on fewer objects changes nothing but the result.
+fn only_reads(e: &Expr) -> bool {
+    match e {
+        Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) | Expr::Str(..) => true,
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x),
+        Expr::Array(xs, _) => xs.iter().all(only_reads),
+        Expr::FreeCall(name, args, _) => {
+            let bare = name.trim_start_matches(':');
+            name.starts_with(':') && !bare.ends_with('!') && builtin_by_name(bare).is_some()
+                && !matches!(bare, "pick" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str" | "shuffle"
+                    | "sample_weighted" | "secure_pick" | "secure_random" | "secure_shuffle" | "uuid_v4" | "uuid_v7"
+                    | "print" | "println" | "eprint" | "eprintln" | "say" | "write_text" | "append_file" | "write_json")
+                && !bare.starts_with("grab_random") && !bare.ends_with("_random")
+                && args.iter().all(only_reads)
+        }
+        _ => false,
+    }
 }
 
 fn parse_number(raw: &str) -> Result<Value, GoblinError> {

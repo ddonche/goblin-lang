@@ -5,6 +5,7 @@
 /// When a holder is erased, its `on erase:` action runs first (for
 /// `delete_object!` as for an erase transition); whatever it still holds
 /// then moves up to what held it. `owned_by` reads the same list.
+/// A predicate that calls an action runs on every item, as always.
 <>Place |
     ~name: ""
     ~owner: nil
@@ -51,6 +52,7 @@ say(names(pack))
 say(names(cave))
 delete_object!(pack)
 say(names(hero))
+say(:len(:objects("Item", it >> owner == pack)))
 say(:len(:objects("Item", it >> owner == hero and it >> magic == 1)))
 smith <> Shop | name: "smith", owner: world
 axe <> Item | name: "axe", owner: smith
@@ -59,3 +61,15 @@ delete_object!(smith)
 say(:len(:objects("Item")))
 say(:len(:owned_by(hero)))
 say(:owned_by(cave)[0] >> name)
+act touch(x)
+    x >> magic |= x >> magic + 10
+    return true
+xx
+say(:len(:objects("Item", touch(it) and it >> owner == hero)))
+n | 0
+repeat :objects("Item") as x
+    if x >> magic >= 10
+        n |= n + 1
+    xx
+xx
+say(n)
