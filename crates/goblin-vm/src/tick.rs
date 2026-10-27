@@ -1064,6 +1064,9 @@ fn names(e: &goblin_ast::Expr, who: &str) -> bool {
 ///   holds (its contents list) can pass.
 /// The targets left out would have failed the condition at or before that
 /// point, and what came before changes nothing, so the result is the same.
+/// It stops at the first condition that names `target` and isn't the
+/// ownership test. The caller uses it only when scoring changes nothing
+/// either (so who holds what stays as it was while the targets are scored).
 fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
     use goblin_ast::Expr as E;
     if !all.iter().any(|(t, _)| t != self_ref) { return None; }
@@ -1079,13 +1082,16 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
                 _ => return None,
             }
         }
-        let E::Binary(l, op, r, _) = c else { continue };
-        if op != "==" { continue; }
+        // The first condition that names `target` must be the ownership
+        // test: a target it leaves out would have stopped there, before any
+        // later condition could run (or fail with an error).
+        let E::Binary(l, op, r, _) = c else { return None };
+        if op != "==" { return None; }
         let owner_of_target = |e: &E| matches!(e, E::Member(o, f, _)
             if f == crate::store::OWNER_FIELD && matches!(&**o, E::Ident(n, _) if n == "target"));
         let holder = if owner_of_target(l) && !names(r, "target") { r }
             else if owner_of_target(r) && !names(l, "target") { l }
-            else { continue };
+            else { return None };
         let has_owner = vm.session.classes.get(class)
             .is_some_and(|c| c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD));
         if !has_owner { return None; }
@@ -1153,11 +1159,11 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     };
     // Fewer candidates, same result: see `narrow`.
     let target_candidates = match &decision.filter {
-        Some(f) => match narrow(vm, f, &decision.target_class, &self_ref, self_at, &target_candidates) {
+        Some(f) if crate::compiler::only_reads(&decision.formula) => match narrow(vm, f, &decision.target_class, &self_ref, self_at, &target_candidates) {
             Some(fewer) => std::rc::Rc::new(fewer),
             None => target_candidates,
         },
-        None => target_candidates,
+        _ => target_candidates,
     };
     let mut scored: Vec<(usize, f64)> = Vec::with_capacity(target_candidates.len());
     for (k, (target, target_at)) in target_candidates.iter().enumerate() {
