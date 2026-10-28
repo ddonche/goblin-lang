@@ -4,13 +4,13 @@
 /// to with :move!. The state holds only the person; the bag and the coins
 /// in it come along because they belong to the person.
 <>Person |
-    ~name: ""
+    name: ""
 xx
 <>Bag |
-    ~owner: nil
+    owner: nil
 xx
 <>Coin |
-    ~owner: nil
+    owner: nil
     ~worth: 1
 xx
 act make_region(name, rich)

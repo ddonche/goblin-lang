@@ -17,7 +17,7 @@ act pick_ok(x)
     return true
 xx
 <>Seer |
-    ~name: ""
+    name: ""
     look | decision against Spot where [ pick_ok(self) ] by [ one(target >> v) + ten(target >> v) ]
     judge using look
         >= 0: show(target, score)

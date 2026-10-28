@@ -5,17 +5,17 @@
 /// realm. (Copies used to travel with him; writing through one wiped the
 /// lord's and the realm's real changes.)
 <>Realm |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     ~arrived: 0
 xx
 <>Lord |
     ~gold: 0
-    ~owner: nil
+    owner: nil
 xx
 <>Squire |
     ~go: 0
-    ~owner: nil
+    owner: nil
     every 1 tick
         serve(self)
     end

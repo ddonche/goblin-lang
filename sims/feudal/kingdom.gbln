@@ -39,8 +39,8 @@ all_realms | []
 
 <>Realm |
     ~n: 0
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     ~crowned: 0
     ~inherited: 0
     ~escheated: 0
@@ -55,16 +55,16 @@ all_realms | []
 xx
 
 <>Noble |
-    ~name: ""
-    ~house: ""
+    name: ""
+    house: ""
     ~age: 20
     ~lifespan: 60
     ~gold: 0
     ~loyalty: 50
     ~vows: 0
     /// The noble whose child this is (nil for the first generation).
-    ~parent: nil
-    ~owner: nil
+    parent: nil
+    owner: nil
     on erase: inherit
     every 1 tick
         self >> age |= self >> age + 1
@@ -103,9 +103,9 @@ xx
 xx
 
 <>Estate |
-    ~name: ""
+    name: ""
     ~yield: 5
-    ~owner: nil
+    owner: nil
     every 1 tick
         if :is_type(self >> owner, "Noble")
             self >> owner >> gold |= self >> owner >> gold + self >> yield

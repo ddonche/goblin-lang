@@ -4,7 +4,7 @@
 /// order the objects were made in. It orders only that class's decisions:
 /// the other classes keep their places in the pass.
 <>F |
-    ~name: ""
+    name: ""
     ~speed: 0
     move | decision against T by [ 1 ]
     judge using move
@@ -13,8 +13,8 @@
     order by [ self >> speed ] desc
 xx
 <>S |
-    ~name: ""
-    ~rank: ""
+    name: ""
+    rank: ""
     move | decision against T by [ 1 ]
     judge using move
         >= 0: go(target)

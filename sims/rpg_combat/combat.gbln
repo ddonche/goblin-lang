@@ -12,10 +12,10 @@
 loud | false
 
 <>Fighter |
-    ~name: ""
+    name: ""
     /// 0: the party, 1: the monsters.
     ~side: 0
-    ~role: ""
+    role: ""
     ~hp: 10
     ~max_hp: 10
     ~atk: 4

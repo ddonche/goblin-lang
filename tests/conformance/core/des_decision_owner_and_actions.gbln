@@ -4,9 +4,9 @@
 /// contents list); a condition that doesn't name `target` is checked once.
 /// Either way the result is what checking every target gives.
 <>Lord |
-    ~name: ""
+    name: ""
     ~gold: 0
-    ~owner: nil
+    owner: nil
     reward | decision against Knight where [ target >> owner == self and target >> deeds > 0 ] by [ worth(target) ]
     judge using reward
         >= 0: pay(target)
@@ -17,10 +17,10 @@
     end
 xx
 <>Knight |
-    ~name: ""
+    name: ""
     ~deeds: 0
     ~purse: 0
-    ~owner: nil
+    owner: nil
 xx
 act worth(k)
     return k >> deeds * 10 + k >> purse

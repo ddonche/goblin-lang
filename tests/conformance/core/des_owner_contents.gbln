@@ -7,25 +7,25 @@
 /// then moves up to what held it. `owned_by` reads the same list.
 /// A predicate that calls an action runs on every item, as always.
 <>Place |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Person |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Bag |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Item |
-    ~name: ""
+    name: ""
     ~magic: 0
-    ~owner: nil
+    owner: nil
 xx
 <>Shop |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
     on erase: burn
 xx
 act burn(shop)

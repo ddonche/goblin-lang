@@ -5,13 +5,13 @@
 /// strings by text, and an object without the field never.
 <>P |
     ~town: 0
-    ~name: ""
+    name: ""
 xx
 <>Rock |
     ~town: 0
 xx
 <>Q |
-    ~name: ""
+    name: ""
 xx
 <>S |
     ~town: 0

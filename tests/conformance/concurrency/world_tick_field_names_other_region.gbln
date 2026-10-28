@@ -3,13 +3,13 @@
 /// running the world reads through it, and so does the region during a
 /// tick. (It used to read nil outside the region.)
 <>Realm |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Lord |
-    ~name: ""
-    ~owner: nil
-    ~sees: ""
+    name: ""
+    owner: nil
+    sees: ""
     every 1 tick
         if self >> owner != nil
             self >> sees |= self >> owner >> name

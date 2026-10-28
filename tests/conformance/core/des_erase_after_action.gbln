@@ -4,7 +4,7 @@
 /// tick is gone: it doesn't act later that tick and isn't chosen again.
 /// Its `on erase:` action still runs first.
 <>F |
-    ~name: ""
+    name: ""
     ~side: 0
     ~hp: 3
     hit | decision against F where [ target >> side != self >> side ] by [ 1 - target >> hp / 10 ]

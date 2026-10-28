@@ -1,0 +1,14 @@
+/// `~` keeps a number as its real value instead of a 0..1 trait.
+<>Farm |
+    name: ""
+    ~age: 0
+    ~gold: 12.5
+    luck: .4
+xx
+f <> Farm | name: "Hilltop"
+f >> age |= f >> age + 3
+f >> luck |= f >> luck + 2
+a | f >> age
+g | f >> gold
+l | f >> luck
+say("Hilltop: age {a}, gold {g}, luck {l}")

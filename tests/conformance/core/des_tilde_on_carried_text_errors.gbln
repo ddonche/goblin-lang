@@ -1,0 +1,12 @@
+/// `~` on a carried field that is not a number is an error too.
+<>Town |
+    name: "Ash"
+    ~people: 10
+    transition mutate when self >> people > 100
+        into Town
+        carries:
+            ~name: "City"
+        end
+    end
+xx
+say("never printed")

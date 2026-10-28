@@ -3,7 +3,7 @@
 /// erases it before anything acts that tick: it doesn't act, and nobody
 /// picks it.
 <>G |
-    ~name: ""
+    name: ""
     ~hp: 2
     shout | decision against G by [ 1 ]
     judge using shout

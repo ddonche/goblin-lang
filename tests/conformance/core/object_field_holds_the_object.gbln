@@ -7,7 +7,7 @@
     ~food: 10
 xx
 <>Person |
-    ~home: nil
+    home: nil
 xx
 v <> Village | food: 10
 p <> Person | home: v

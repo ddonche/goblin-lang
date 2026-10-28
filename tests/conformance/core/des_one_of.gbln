@@ -3,7 +3,7 @@
 /// stops at the first whose judge runs an action: an object that heals
 /// doesn't also attack. A decision outside the group still runs.
 <>F |
-    ~name: ""
+    name: ""
     ~side: 0
     ~hp: 10
     ~max_hp: 10

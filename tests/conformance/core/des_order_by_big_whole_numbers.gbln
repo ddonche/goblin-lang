@@ -2,7 +2,7 @@
 /// `order by` compares whole numbers exactly, even past 2^53, where two
 /// numbers can look the same as decimals.
 <>F |
-    ~name: ""
+    name: ""
     ~key: 0
     move | decision against T by [ 1 ]
     judge using move

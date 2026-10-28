@@ -6,7 +6,7 @@
 x | 1
 lost | [3, 5]
 <>P |
-    ~name: "pip"
+    name: "pip"
     ~hp: 7
 xx
 p <> P | name: "pip"

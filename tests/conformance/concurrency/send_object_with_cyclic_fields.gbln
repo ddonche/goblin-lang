@@ -4,7 +4,7 @@
 /// copy); a field whose object was erased arrives as nil.
 <>N |
     ~v: 0
-    ~next: nil
+    next: nil
 xx
 a <> N | v: 1
 b <> N | v: 2

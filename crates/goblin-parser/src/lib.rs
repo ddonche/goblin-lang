@@ -32,6 +32,22 @@ macro_rules! s_help_site {
     }};
 }
 
+/// True for a field value that is plainly not a number (a string, nil,
+/// a bool, a list, ...). `~` on such a field is an error.
+fn not_a_number(e: &PExpr) -> bool {
+    matches!(e, PExpr::Str(_) | PExpr::StrInterp(_) | PExpr::BlobStr(_) | PExpr::Nil
+        | PExpr::Bool(_) | PExpr::Char(_) | PExpr::Array(_) | PExpr::Object(_)
+        | PExpr::Date(_) | PExpr::DateTime { .. } | PExpr::Time(_))
+}
+
+fn tilde_error(fname: &str) -> String {
+    s_help_site!(
+        "P0917",
+        &format!("'~{fname}' starts as something that is not a number: '~' is only for number fields"),
+        &format!("'~' keeps a number as its real value instead of a 0..1 trait; write '{fname}: ...' without it"),
+    )
+}
+
 #[derive(Debug, Clone)]
 enum PExpr {
     Array(Vec<PExpr>),
@@ -4129,6 +4145,11 @@ impl<'t> Parser<'t> {
             }
 
             let fexpr = self.parse_assign()?;
+            // `~` marks a number as a real value (not a 0..1 trait); on a
+            // field that starts as anything else it means nothing.
+            if raw && not_a_number(&fexpr) {
+                return Err(tilde_error(&fname));
+            }
             fields.push((fname, fexpr, readonly, nullable, raw, None));
 
             // Skip layout after the value
@@ -8393,6 +8414,9 @@ impl<'t> Parser<'t> {
                         if !self.eat_op(":") { break; }
                         self.skip_layout_inline();
                         let fval_pe = self.parse_coalesce()?;
+                        if raw_prefix && not_a_number(&fval_pe) {
+                            return Err(tilde_error(&fname));
+                        }
                         let fval = self.lower_expr(fval_pe);
                         fields.push((fname, fval));
                     }

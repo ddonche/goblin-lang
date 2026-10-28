@@ -4,12 +4,12 @@
 /// for different holders gives each holder's own items, and a holder that
 /// was erased holds nothing.
 <>Bag |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Item |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 a <> Bag | name: "a"
 b <> Bag | name: "b"

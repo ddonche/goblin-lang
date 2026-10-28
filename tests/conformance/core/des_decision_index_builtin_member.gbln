@@ -3,7 +3,7 @@
 /// field named `is_int`, so the field index is not used for it: with 40
 /// targets the decision still finds them all (an object is not an int).
 <>Hunter |
-    ~name: ""
+    name: ""
     pick | decision against Prey where [ target >> is_int == false ] by [ target >> n ]
     judge using pick
         >= 0: take(target)
@@ -11,7 +11,7 @@
 xx
 <>Prey |
     ~n: 0
-    ~is_int: true
+    is_int: true
 xx
 act take(h, p)
     say("{h >> name} takes {p >> n}")

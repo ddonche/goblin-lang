@@ -3,16 +3,16 @@
 /// every target: here it divides by zero for the knight nobody holds, and
 /// the tick stops with that error.
 <>Lord |
-    ~name: ""
+    name: ""
     reward | decision against Knight where [ 10 / target >> deeds > 1 and target >> owner == self ] by [ target >> deeds ]
     judge using reward
         >= 0: pay(target)
     end
 xx
 <>Knight |
-    ~name: ""
+    name: ""
     ~deeds: 0
-    ~owner: nil
+    owner: nil
 xx
 act pay(l, k)
     say("{l >> name} pays {k >> name}")

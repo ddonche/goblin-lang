@@ -4,7 +4,7 @@
 /// decision does nothing. It sits between the target class and `by`, and
 /// can go before or after `margin`.
 <>F |
-    ~name: ""
+    name: ""
     ~side: 0
     ~hp: 10
     ~max_hp: 10
