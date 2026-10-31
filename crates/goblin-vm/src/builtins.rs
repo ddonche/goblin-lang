@@ -44,7 +44,7 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
             Value::Object(mut o) => {
                 if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
                 seen.push(o.uuid.clone());
-                let fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+                let fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, f)| (k.clone(), match f {
                         Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
                         other => other.clone(),

@@ -168,11 +168,15 @@ impl PartialEq<GStr> for str { fn eq(&self, o: &GStr) -> bool { self == o.0.as_s
 impl PartialEq<GStr> for &str { fn eq(&self, o: &GStr) -> bool { *self == o.0.as_str() } }
 impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == o.0.s } }
 
+/// An object's fields, by name. Fx hashing: field names are short and come
+/// from the program, so they need no protection against chosen keys.
+pub type FieldMap = indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>;
+
 /// An object instance: the payload of `Value::Object`.
 #[derive(Debug, Clone)]
 pub struct ObjectVal {
     pub class_name: String,
-    pub fields: Rc<indexmap::IndexMap<String, Value>>,
+    pub fields: Rc<FieldMap>,
     /// Shared by the copies of an object (they never change after it is
     /// made), so copying an object doesn't copy them.
     pub readonly_fields: Rc<std::collections::BTreeSet<String>>,

@@ -1125,7 +1125,7 @@ pub(crate) fn adopt_value(v: Value, s: &mut Session) -> Value { adopt(v, s) }
 fn adopt(v: Value, s: &mut Session) -> Value {
     match v {
         Value::Object(mut o) => {
-            let fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+            let fields: crate::value::FieldMap = o.fields.iter()
                 .map(|(k, x)| (k.clone(), adopt(x.clone(), s))).collect();
             o.fields = std::rc::Rc::new(fields);
             let uuid = o.uuid.clone();

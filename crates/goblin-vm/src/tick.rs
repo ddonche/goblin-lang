@@ -7,7 +7,7 @@
 ///   4. all_grids tick_db_commit
 ///   5. des_flush_pending
 ///   6. end_tick on TickRunner
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use indexmap::IndexMap;
 
 use crate::error::GoblinError;
@@ -323,8 +323,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
     let mut spread_buf: Vec<(String, String, f64)> = Vec::new(); // (overlay_name, host_uuid, strength)
     // `spreads where`: the objects each `hosts` list allows, with where they sit.
-    let mut candidate_lists: std::collections::HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = std::collections::HashMap::new();
-    let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::new();
+    let mut candidate_lists: HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = HashMap::default();
+    let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::default();
 
     for inst in &instances_snap {
         let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
@@ -559,7 +559,7 @@ fn same_field(
     let key = field_key(&want)?;
     let g = groups.entry((hosts.to_vec(), field.clone())).or_insert_with(|| {
         let store = &vm.session.object_store;
-        let mut by: HashMap<FieldKey, Vec<(Value, usize)>> = HashMap::new();
+        let mut by: HashMap<FieldKey, Vec<(Value, usize)>> = HashMap::default();
         let mut other = Vec::new();
         for (r, i) in all {
             let Some((_, Value::Object(o))) = store.get_index(*i) else { other.push((r.clone(), *i)); continue };
@@ -648,7 +648,7 @@ fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         if def.transitions.is_empty() { continue; }
 
         // Build self object for trigger evaluation
-        let mut self_fields = IndexMap::new();
+        let mut self_fields = crate::value::FieldMap::default();
         self_fields.insert("strength".to_string(), Value::Float(inst.strength));
         self_fields.insert("age".to_string(), Value::Int(inst.age as i64));
         self_fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
@@ -1049,7 +1049,7 @@ fn order_candidates(vm: &mut Vm, mut candidates: Vec<(String, String)>) -> Resul
 struct Targets {
     seen: Option<(usize, String)>,
     /// A `Value::Ref` to each object, with where it sits in the store.
-    by_class: std::collections::HashMap<String, std::rc::Rc<Vec<(Value, usize)>>>,
+    by_class: HashMap<String, std::rc::Rc<Vec<(Value, usize)>>>,
 }
 
 impl Targets {
@@ -1451,7 +1451,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             _ => None,
         }).collect();
 
-    let mut erased: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut erased: rustc_hash::FxHashSet<String> = Default::default();
 
     for (self_uuid, class_name) in &candidates {
         if erased.contains(self_uuid) { continue; }
@@ -1487,7 +1487,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                     let classes = vm.session.classes.clone();
                     if let Some(child_decl) = classes.get(&child_class) {
                         let new_uuid = uuid::Uuid::new_v4().to_string();
-                        let mut fields = IndexMap::new();
+                        let mut fields = crate::value::FieldMap::default();
                         for fd in &child_decl.fields {
                             if let Some(ref default_expr) = fd.default {
                                 if let Ok(v) = vm.eval_tick_expr(default_expr, vec![]) {
@@ -1834,7 +1834,7 @@ fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinErr
 
 fn erase_changed(vm: &mut Vm, mut touched: Vec<String>) -> Result<(), GoblinError> {
     use goblin_ast::TransitionKind;
-    let mut seen = std::collections::HashSet::with_capacity(touched.len());
+    let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(touched.len(), Default::default());
     touched.retain(|u| seen.insert(u.clone()));
     let classes = vm.session.classes.clone();
     for uuid in touched {

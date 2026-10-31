@@ -10,7 +10,7 @@
 //! order: by sending region, then in the order sent. So a world gives the
 //! same result on any number of threads.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
@@ -213,7 +213,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
             }
             in_flight_overlays = old.in_flight_overlays;
         }
-        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: HashSet::new(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), places: places.clone() });
+        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: HashSet::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), places: places.clone() });
         // Before the first tick, every region reports its objects, so the
         // first tick already sees the whole world.
         let outs = round(vm, &actors, &ids, true)?;
@@ -227,7 +227,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     let w = vm.session.world.as_mut().unwrap();
     w.tick += 1;
     // Who owns what, after this tick.
-    let mut owner: HashMap<&str, usize> = HashMap::new();
+    let mut owner: HashMap<&str, usize> = HashMap::default();
     for (i, o) in outs.iter().enumerate() {
         for (u, _) in &o.snapshot.objects { owner.insert(u.as_str(), i); }
     }
@@ -282,7 +282,7 @@ fn refresh_view(vm: &mut Vm) {
     let flying: Vec<(String, PValue)> = w.in_flight.iter().map(|(u, p, _)| (u.clone(), p.clone())).collect();
     // Last tick's copies are brought up to date field by field (see
     // `refresh_copy`); they go back in snapshot order, as before.
-    let mut copies: HashMap<String, Value> = HashMap::with_capacity(old.len());
+    let mut copies: HashMap<String, Value> = HashMap::with_capacity_and_hasher(old.len(), Default::default());
     for u in &old {
         if let Some(slot) = vm.session.object_store.get_mut(u) {
             copies.insert(u.clone(), std::mem::replace(slot, Value::Nil));
@@ -290,7 +290,7 @@ fn refresh_view(vm: &mut Vm) {
     }
     vm.session.object_store.retain(|k, _| !old.contains(k));
     let mut fp = FromPortable::new();
-    let mut view = HashSet::new();
+    let mut view = HashSet::default();
     for s in &snaps {
         for (u, p) in &s.objects {
             let v = match copies.remove(u) {
@@ -377,7 +377,7 @@ pub(crate) fn view_overlays(vm: &mut Vm) -> Vec<crate::session::OverlayInstance>
 /// tick with the other regions' objects in view, then the region's handler
 /// with `{"tick": n}`. Returns its snapshot and what it sends.
 pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
-    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: HashSet::new(), remote_overlays: HashSet::new(), sent: Vec::new(), places: job.places.clone() });
+    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: HashSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), places: job.places.clone() });
     let r = region_steps(vm, state, handler, job);
     let ctx = vm.session.region.take();
     // Whatever happened, no other region's object stays here.
@@ -494,7 +494,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     // `before` keeps each copy's fields as they arrived: a change this tick
     // makes the object its own fields, so the two compare by pointer.
     let mut copies = std::mem::take(&mut vm.session.remote_copies);
-    let mut before: Vec<(String, std::rc::Rc<IndexMap<String, Value>>)> = Vec::new();
+    let mut before: Vec<(String, std::rc::Rc<crate::value::FieldMap>)> = Vec::new();
     for snap in &job.remote {
         for (uuid, p) in &snap.objects {
             if vm.session.object_store.contains_key(uuid) { continue; }
@@ -542,7 +542,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         c.sent.extend(changes);
         let remote = std::mem::take(&mut c.remote);
         // Keep the copies, with the fields they arrived with, for next tick.
-        let mut kept = std::collections::HashMap::with_capacity(before.len());
+        let mut kept = HashMap::with_capacity_and_hasher(before.len(), Default::default());
         for (uuid, old) in before {
             if let Some(slot) = vm.session.object_store.get_mut(&uuid) {
                 let mut v = std::mem::replace(slot, Value::Nil);
