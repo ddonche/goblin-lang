@@ -43,7 +43,7 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
             },
             Value::Object(mut o) => {
                 if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
-                seen.push(o.uuid[..].to_string());
+                seen.push(o.uuid.to_string());
                 let fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, f)| (k.clone(), match f {
                         Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
@@ -3788,8 +3788,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // owned_by(owner): the objects whose owner_id is owner's uuid
             // (direct children only), as the interpreter's object_store scan.
             let owner_uuid = match args.first() {
-                Some(Value::Object(o)) => o.uuid[..].to_string(),
-                Some(Value::Str(s)) => s.to_string(),
+                Some(Value::Object(o)) => o.uuid.clone(),
+                Some(Value::Str(s)) => s.to_string().into(),
                 _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
             };
             let at = owned_places(&session.object_store, &owner_uuid);
@@ -3819,8 +3819,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
             }
             let root_uuid = match args.first() {
-                Some(Value::Object(o)) => o.uuid[..].to_string(),
-                Some(Value::Str(s)) => s.to_string(),
+                Some(Value::Object(o)) => o.uuid.clone(),
+                Some(Value::Str(s)) => s.to_string().into(),
                 _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
             };
             Ok(Value::Str(build_tree(&root_uuid, &session.object_store, 0).into()))

@@ -168,6 +168,78 @@ impl PartialEq<GStr> for str { fn eq(&self, o: &GStr) -> bool { self == o.0.as_s
 impl PartialEq<GStr> for &str { fn eq(&self, o: &GStr) -> bool { *self == o.0.as_str() } }
 impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == o.0.s } }
 
+/// An object's id: its text, held once per thread. Every copy of an id
+/// shares that one text (`ObjId::from` looks it up), so copying an id copies
+/// no text and two ids are the same id when they point at the same text.
+/// It hashes and compares like its text, so maps keyed by ids can be
+/// looked up with a `&str`.
+#[derive(Clone)]
+pub struct ObjId(Rc<str>);
+
+thread_local! {
+    static IDS: RefCell<(rustc_hash::FxHashSet<Rc<str>>, usize)> = RefCell::new((Default::default(), 1024));
+}
+
+impl ObjId {
+    pub fn as_str(&self) -> &str { &self.0 }
+    /// The text, copied (without going through `Display`).
+    #[allow(clippy::inherent_to_string_shadow_display)]
+    pub fn to_string(&self) -> String { String::from(&*self.0) }
+}
+
+impl From<&str> for ObjId {
+    fn from(s: &str) -> ObjId {
+        IDS.with(|t| {
+            let (set, next_clean) = &mut *t.borrow_mut();
+            if let Some(r) = set.get(s) { return ObjId(r.clone()); }
+            // Drop the ids nothing holds any more, now and then.
+            if set.len() >= *next_clean {
+                set.retain(|r| Rc::strong_count(r) > 1);
+                *next_clean = (set.len() * 2).max(1024);
+            }
+            let r: Rc<str> = s.into();
+            set.insert(r.clone());
+            ObjId(r)
+        })
+    }
+}
+impl From<String> for ObjId { fn from(s: String) -> ObjId { ObjId::from(s.as_str()) } }
+impl From<&String> for ObjId { fn from(s: &String) -> ObjId { ObjId::from(s.as_str()) } }
+impl From<Rc<str>> for ObjId { fn from(s: Rc<str>) -> ObjId { ObjId::from(&*s) } }
+
+impl std::ops::Deref for ObjId {
+    type Target = str;
+    fn deref(&self) -> &str { &self.0 }
+}
+impl std::borrow::Borrow<str> for ObjId { fn borrow(&self) -> &str { &self.0 } }
+impl AsRef<str> for ObjId { fn as_ref(&self) -> &str { &self.0 } }
+impl PartialEq for ObjId {
+    fn eq(&self, o: &ObjId) -> bool { Rc::ptr_eq(&self.0, &o.0) || *self.0 == *o.0 }
+}
+impl Eq for ObjId {}
+impl PartialEq<str> for ObjId { fn eq(&self, o: &str) -> bool { &*self.0 == o } }
+impl PartialEq<&str> for ObjId { fn eq(&self, o: &&str) -> bool { &*self.0 == *o } }
+impl PartialEq<String> for ObjId { fn eq(&self, o: &String) -> bool { &*self.0 == o.as_str() } }
+impl PartialEq<ObjId> for String { fn eq(&self, o: &ObjId) -> bool { self.as_str() == &*o.0 } }
+impl PartialEq<ObjId> for str { fn eq(&self, o: &ObjId) -> bool { self == &*o.0 } }
+impl PartialEq<ObjId> for &str { fn eq(&self, o: &ObjId) -> bool { *self == &*o.0 } }
+impl PartialEq<ObjId> for GStr { fn eq(&self, o: &ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0 } }
+impl PartialEq<&ObjId> for GStr { fn eq(&self, o: &&ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0 } }
+impl Default for ObjId { fn default() -> ObjId { ObjId::from("") } }
+/// A map keyed by ids can be looked up with a `String` too.
+impl indexmap::Equivalent<ObjId> for String { fn equivalent(&self, k: &ObjId) -> bool { self.as_str() == &*k.0 } }
+impl PartialOrd for ObjId { fn partial_cmp(&self, o: &ObjId) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
+impl Ord for ObjId { fn cmp(&self, o: &ObjId) -> std::cmp::Ordering { self.0.cmp(&o.0) } }
+impl std::hash::Hash for ObjId {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) { (*self.0).hash(h) }
+}
+impl std::fmt::Display for ObjId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }
+}
+impl std::fmt::Debug for ObjId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&*self.0, f) }
+}
+
 /// An object's fields, by name. Fx hashing: field names are short and come
 /// from the program, so they need no protection against chosen keys.
 pub type FieldMap = indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>;
@@ -183,7 +255,7 @@ pub struct ObjectVal {
     /// made), so copying an object doesn't copy them.
     pub readonly_fields: Rc<std::collections::BTreeSet<String>>,
     pub trait_fields: Rc<std::collections::BTreeSet<String>>,
-    pub uuid: Rc<str>,
+    pub uuid: ObjId,
 }
 
 /// An enum variant value: the payload of `Value::Enum`.
@@ -227,7 +299,7 @@ pub enum Value {
     // ── Object/type system ───────────────────────────────────────────────────
     /// Boxed so the large payload does not widen every Value.
     Object(Box<ObjectVal>),
-    Ref(String),
+    Ref(ObjId),
     GridRef { grid_id: Rc<str>, x: i32, y: i32 },
     /// Boxed so the large payload does not widen every Value.
     Enum(Box<EnumVal>),

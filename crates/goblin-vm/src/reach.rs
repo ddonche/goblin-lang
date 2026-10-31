@@ -255,13 +255,13 @@ impl Walk<'_> {
             Value::Pair(a, b) => self.value(a, session) & self.value(b, session),
             Value::Formatted(v, _) | Value::CtrlReturn(v) => self.value(v, session),
             Value::Object(o) => {
-                if self.objects.insert(o.uuid[..].to_string()) {
+                if self.objects.insert(o.uuid.to_string()) {
                     for f in o.fields.values() { self.value(f, session); }
                 }
                 false
             }
             Value::Ref(uuid) => {
-                if self.objects.insert(uuid.clone()) {
+                if self.objects.insert(uuid.to_string()) {
                     if let Some(obj) = session.object_store.get(uuid) {
                         let obj = obj.clone();
                         self.value(&obj, session);

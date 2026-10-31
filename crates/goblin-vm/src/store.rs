@@ -6,17 +6,17 @@
 //! `get_mut` changes an object's fields; an object's class only changes by
 //! `insert` or `replace`.
 
-use crate::value::Value;
+use crate::value::{ObjId as Id, Value};
 use indexmap::{IndexMap, IndexSet};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
-type Map = IndexMap<String, Value, FxBuildHasher>;
+type Map = IndexMap<Id, Value, FxBuildHasher>;
 
 #[derive(Default, Clone, Debug)]
 pub struct ObjectStore {
     map: Map,
     /// Class name -> ids of that class's objects, in creation order.
-    by_class: FxHashMap<String, IndexSet<String, FxBuildHasher>>,
+    by_class: FxHashMap<String, IndexSet<Id, FxBuildHasher>>,
     /// Ownership: each object whose `owner` field holds another object, by
     /// that owner, and the other way round. Kept by every change that goes
     /// through the methods here; a field write calls `refile_owner`.
@@ -24,15 +24,15 @@ pub struct ObjectStore {
     /// its visitors' copies every tick and puts them back the next), so
     /// readers skip ids that are not in `map`; they are cleared once there
     /// are twice as many as the most objects the store has held (`peak`).
-    contents: FxHashMap<String, IndexSet<String, FxBuildHasher>>,
-    owner_of: FxHashMap<String, String>,
+    contents: FxHashMap<Id, IndexSet<Id, FxBuildHasher>>,
+    owner_of: FxHashMap<Id, Id>,
     peak: usize,
     /// Equality indexes, made the first time something looks objects up by
     /// a field's value (`target >> meadow == self >> meadow`): by (class,
     /// field). Brought up to date with the objects changed since (`dirty`)
     /// when next used.
     indexes: FxHashMap<(String, String), FieldIndex>,
-    dirty: Vec<String>,
+    dirty: Vec<Id>,
     /// Too many changes to track one by one: the indexes are made again.
     stale: bool,
 }
@@ -42,7 +42,7 @@ pub struct ObjectStore {
 /// also give some unequal ones the same key; that only costs a check).
 /// Objects are equal when they are the same object, so they key by id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum FieldKey { Num(u64), Str(String), Bool(bool), Nil, Obj(String) }
+pub enum FieldKey { Num(u64), Str(String), Bool(bool), Nil, Obj(Id) }
 
 pub fn field_key(v: &Value) -> Option<FieldKey> {
     let num = |f: f64| FieldKey::Num(if f == 0.0 { 0 } else { f.to_bits() });
@@ -53,8 +53,8 @@ pub fn field_key(v: &Value) -> Option<FieldKey> {
         Value::Str(s) => FieldKey::Str(s.to_string()),
         Value::Bool(b) => FieldKey::Bool(*b),
         Value::Nil => FieldKey::Nil,
-        Value::Object(o) => FieldKey::Obj(o.uuid[..].to_string()),
-        Value::Ref(u) => FieldKey::Obj(u.to_string()),
+        Value::Object(o) => FieldKey::Obj(o.uuid.clone()),
+        Value::Ref(u) => FieldKey::Obj(u.clone()),
         _ => return None,
     })
 }
@@ -66,14 +66,14 @@ enum Filed { Key(FieldKey), Other, Missing }
 /// The objects of one class by one field's value.
 #[derive(Default, Clone, Debug)]
 struct FieldIndex {
-    by: FxHashMap<FieldKey, IndexSet<String, FxBuildHasher>>,
+    by: FxHashMap<FieldKey, IndexSet<Id, FxBuildHasher>>,
     /// Objects whose value has no key (a list, an object): always candidates.
-    other: IndexSet<String, FxBuildHasher>,
-    filed: FxHashMap<String, Filed>,
+    other: IndexSet<Id, FxBuildHasher>,
+    filed: FxHashMap<Id, Filed>,
 }
 
 impl FieldIndex {
-    fn unfile(&mut self, uuid: &str) {
+    fn unfile(&mut self, uuid: &Id) {
         match self.filed.remove(uuid) {
             Some(Filed::Key(k)) => {
                 if let Some(set) = self.by.get_mut(&k) {
@@ -86,13 +86,13 @@ impl FieldIndex {
         }
     }
 
-    fn file(&mut self, uuid: &str, at: Filed) {
+    fn file(&mut self, uuid: &Id, at: Filed) {
         match &at {
-            Filed::Key(k) => { self.by.entry(k.clone()).or_default().insert(uuid.to_string()); }
-            Filed::Other => { self.other.insert(uuid.to_string()); }
+            Filed::Key(k) => { self.by.entry(k.clone()).or_default().insert(uuid.clone()); }
+            Filed::Other => { self.other.insert(uuid.clone()); }
             Filed::Missing => {}
         }
-        self.filed.insert(uuid.to_string(), at);
+        self.filed.insert(uuid.clone(), at);
     }
 }
 
@@ -110,16 +110,16 @@ fn filed_as(v: Option<&Value>, class: &str, field: &str) -> Option<Filed> {
 pub const OWNER_FIELD: &str = "owner";
 
 /// The id of the object an `owner` field names, if it names one.
-fn owner_in(v: &Value) -> Option<&str> {
+fn owner_in(v: &Value) -> Option<&Id> {
     let Value::Object(o) = v else { return None };
     owner_in_value(o.fields.get(OWNER_FIELD)?)
 }
 
 /// The id of the object a field value names, if it names one.
-fn owner_in_value(f: &Value) -> Option<&str> {
+fn owner_in_value(f: &Value) -> Option<&Id> {
     match f {
-        Value::Ref(u) if !u.starts_with(crate::vm::OVERLAY_RECORD) => Some(u.as_str()),
-        Value::Object(x) => Some(&*x.uuid),
+        Value::Ref(u) if !u.starts_with(crate::vm::OVERLAY_RECORD) => Some(u),
+        Value::Object(x) => Some(&x.uuid),
         _ => None,
     }
 }
@@ -139,24 +139,24 @@ impl std::ops::Deref for ObjectStore {
 }
 
 impl<'a> IntoIterator for &'a ObjectStore {
-    type Item = (&'a String, &'a Value);
-    type IntoIter = indexmap::map::Iter<'a, String, Value>;
+    type Item = (&'a crate::value::ObjId, &'a Value);
+    type IntoIter = indexmap::map::Iter<'a, crate::value::ObjId, Value>;
     fn into_iter(self) -> Self::IntoIter { self.map.iter() }
 }
 
 impl ObjectStore {
-    fn file(&mut self, uuid: &str, class: &str) {
+    fn file(&mut self, uuid: &Id, class: &str) {
         match self.by_class.get_mut(class) {
-            Some(set) => { set.insert(uuid.to_string()); }
+            Some(set) => { set.insert(uuid.clone()); }
             None => {
                 let mut set = IndexSet::default();
-                set.insert(uuid.to_string());
+                set.insert(uuid.clone());
                 self.by_class.insert(class.to_string(), set);
             }
         }
     }
 
-    fn unfile(&mut self, uuid: &str, class: &str) {
+    fn unfile(&mut self, uuid: &Id, class: &str) {
         if let Some(set) = self.by_class.get_mut(class) {
             set.shift_remove(uuid);
             if set.is_empty() { self.by_class.remove(class); }
@@ -164,8 +164,8 @@ impl ObjectStore {
     }
 
     /// Files `uuid` under the owner its `owner` field names now.
-    fn set_owner(&mut self, uuid: &str, owner: Option<&str>) {
-        if self.owner_of.get(uuid).map(String::as_str) == owner { return; }
+    fn set_owner(&mut self, uuid: &Id, owner: Option<&Id>) {
+        if self.owner_of.get(uuid) == owner { return; }
         if let Some(old) = self.owner_of.remove(uuid) {
             if let Some(set) = self.contents.get_mut(&old) {
                 set.shift_remove(uuid);
@@ -174,33 +174,37 @@ impl ObjectStore {
         }
         if let Some(o) = owner {
             match self.contents.get_mut(o) {
-                Some(set) => { set.insert(uuid.to_string()); }
+                Some(set) => { set.insert(uuid.clone()); }
                 None => {
                     let mut set = IndexSet::default();
-                    set.insert(uuid.to_string());
-                    self.contents.insert(o.to_string(), set);
+                    set.insert(uuid.clone());
+                    self.contents.insert(o.clone(), set);
                 }
             }
-            self.owner_of.insert(uuid.to_string(), o.to_string());
+            self.owner_of.insert(uuid.clone(), o.clone());
         }
     }
 
     /// After a write to an object's fields: files it under the owner its
     /// `owner` field names now.
     pub fn refile_owner(&mut self, uuid: &str) {
-        let owner = self.map.get(uuid).and_then(owner_in).map(str::to_string);
-        self.set_owner(uuid, owner.as_deref());
+        let Some((k, v)) = self.map.get_key_value(uuid) else {
+            if let Some((k, _)) = self.owner_of.get_key_value(uuid) { let k = k.clone(); self.set_owner(&k, None); }
+            return;
+        };
+        let (k, owner) = (k.clone(), owner_in(v).cloned());
+        self.set_owner(&k, owner.as_ref());
     }
 
     /// The id of the object `uuid`'s `owner` field names, if it names one.
     pub fn holder_of(&self, uuid: &str) -> Option<&str> {
         if !self.map.contains_key(uuid) { return None; }
-        self.owner_of.get(uuid).map(String::as_str)
+        self.owner_of.get(uuid).map(Id::as_str)
     }
 
     /// `holder_of` for an object known to be in the store.
     pub fn holder_of_present(&self, uuid: &str) -> Option<&str> {
-        self.owner_of.get(uuid).map(String::as_str)
+        self.owner_of.get(uuid).map(Id::as_str)
     }
 
     /// About how many objects `owner` contains (copies dropped by `retain`
@@ -213,14 +217,14 @@ impl ObjectStore {
     /// names it), in the order they came to it.
     pub fn contents_of(&self, owner: &str) -> impl Iterator<Item = &str> {
         let map = &self.map;
-        self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str)).filter(move |u| map.contains_key(*u))
+        self.contents.get(owner).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u)).map(Id::as_str)
     }
 
     /// The places of what `owner` contains, of `class` when one is given,
     /// in creation order: one lookup per object held.
     pub fn contents_at(&self, owner: &str, class: Option<&str>) -> Vec<usize> {
         let Some(set) = self.contents.get(owner) else { return Vec::new() };
-        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u.as_str()) {
+        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u) {
             Some((i, _, Value::Object(o))) if class.is_none_or(|c| &*o.class_name == c) => Some(i),
             Some((i, _, _)) if class.is_none() => Some(i),
             _ => None,
@@ -260,22 +264,24 @@ impl ObjectStore {
             Some(Value::Object(o)) => o.fields.get(OWNER_FIELD).cloned().unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
-        let up = if owner_in_value(&up) == Some(uuid) { Value::Nil } else { up };
+        let up = if owner_in_value(&up).is_some_and(|o| o.as_str() == uuid) { Value::Nil } else { up };
         for k in kids {
             self.touched(&k);
             if let Some(Value::Object(o)) = self.map.get_mut(&k) {
                 std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.to_string(), up.clone());
             }
-            self.refile_owner(&k);
+            let owner = self.map.get(&k).and_then(owner_in).cloned();
+            self.set_owner(&k, owner.as_ref());
         }
     }
 
     /// Add an object, or replace the one with this id (keeping its place).
-    pub fn insert(&mut self, uuid: String, v: Value) -> Option<Value> {
+    pub fn insert(&mut self, uuid: impl Into<Id>, v: Value) -> Option<Value> {
+        let uuid: Id = uuid.into();
         self.touched(&uuid);
         let new_class = class_of(&uuid, &v).map(str::to_string);
         match owner_in(&v) {
-            Some(o) => self.set_owner(&uuid, Some(o)),
+            Some(o) => { let o = o.clone(); self.set_owner(&uuid, Some(&o)) }
             None => if self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, None); },
         }
         let old = self.map.insert(uuid.clone(), v);
@@ -289,19 +295,19 @@ impl ObjectStore {
 
     /// Put `v` in place of the object with this id (`overwrite!`).
     pub fn replace(&mut self, uuid: &str, v: Value) {
-        if self.map.contains_key(uuid) { self.insert(uuid.to_string(), v); }
+        if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.insert(k, v); }
     }
 
     pub fn shift_remove(&mut self, uuid: &str) -> Option<Value> {
-        self.touched(uuid);
-        let old = self.map.shift_remove(uuid)?;
-        if self.owner_of.contains_key(uuid) { self.set_owner(uuid, None); }
-        if let Some(c) = class_of(uuid, &old).map(str::to_string) { self.unfile(uuid, &c); }
+        let (_, k, old) = self.map.shift_remove_full(uuid)?;
+        self.touched(&k);
+        if self.owner_of.contains_key(&k) { self.set_owner(&k, None); }
+        if let Some(c) = class_of(&k, &old).map(str::to_string) { self.unfile(&k, &c); }
         Some(old)
     }
 
     /// Keep only the objects `keep` says yes to.
-    pub fn retain(&mut self, mut keep: impl FnMut(&String, &mut Value) -> bool) {
+    pub fn retain(&mut self, mut keep: impl FnMut(&crate::value::ObjId, &mut Value) -> bool) {
         let before = self.map.len();
         self.peak = self.peak.max(before);
         // `keep` may change the objects it keeps.
@@ -328,15 +334,17 @@ impl ObjectStore {
     /// An object to change in place. Its fields may change; its class must
     /// not (use `replace`).
     pub fn get_mut(&mut self, uuid: &str) -> Option<&mut Value> {
-        self.touched(uuid);
+        if !self.indexes.is_empty() && !self.stale {
+            if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.touched(&k); }
+        }
         self.map.get_mut(uuid)
     }
 
     /// `uuid` may change: the indexes look at it again when next used.
-    fn touched(&mut self, uuid: &str) {
+    fn touched(&mut self, uuid: &Id) {
         if self.indexes.is_empty() || self.stale { return; }
         if self.dirty.len() > self.map.len() + 64 { self.stale = true; self.dirty.clear(); return; }
-        self.dirty.push(uuid.to_string());
+        self.dirty.push(uuid.clone());
     }
 
     /// The places of the objects of `class` whose `field` may equal a value
@@ -354,7 +362,7 @@ impl ObjectStore {
         }
         if !self.indexes.contains_key(&id) {
             let mut ix = FieldIndex::default();
-            for u in self.of_class(class) {
+            for u in self.by_class.get(class).into_iter().flatten() {
                 if let Some(f) = filed_as(self.map.get(u), class, field) { ix.file(u, f); }
             }
             self.indexes.insert(id.clone(), ix);
@@ -363,8 +371,8 @@ impl ObjectStore {
             let dirty = std::mem::take(&mut self.dirty);
             for ((c, f), ix) in self.indexes.iter_mut() {
                 for u in &dirty {
-                    let now = filed_as(self.map.get(u.as_str()), c, f);
-                    if ix.filed.get(u.as_str()) == now.as_ref() { continue; }
+                    let now = filed_as(self.map.get(u), c, f);
+                    if ix.filed.get(u) == now.as_ref() { continue; }
                     ix.unfile(u);
                     if let Some(now) = now { ix.file(u, now); }
                 }
@@ -372,7 +380,7 @@ impl ObjectStore {
         }
         let ix = &self.indexes[&id];
         let mut at: Vec<usize> = ix.by.get(key).into_iter().flatten().chain(ix.other.iter())
-            .filter_map(|u| self.map.get_index_of(u.as_str()))
+            .filter_map(|u| self.map.get_index_of(u))
             .collect();
         at.sort_unstable();
         at
@@ -380,7 +388,7 @@ impl ObjectStore {
 
     /// The ids of a class's objects, in creation order.
     pub fn of_class(&self, class: &str) -> impl Iterator<Item = &str> {
-        self.by_class.get(class).into_iter().flat_map(|s| s.iter().map(String::as_str))
+        self.by_class.get(class).into_iter().flat_map(|s| s.iter().map(Id::as_str))
     }
 
     /// Where the objects of the classes `wanted` says yes to sit in the
@@ -388,7 +396,7 @@ impl ObjectStore {
     pub fn places_of(&self, mut wanted: impl FnMut(&str) -> bool) -> Vec<usize> {
         let mut at: Vec<usize> = Vec::new();
         for (class, set) in &self.by_class {
-            if wanted(class) { at.extend(set.iter().filter_map(|u| self.map.get_index_of(u.as_str()))); }
+            if wanted(class) { at.extend(set.iter().filter_map(|u| self.map.get_index_of(u))); }
         }
         at.sort_unstable();
         at
@@ -562,10 +570,10 @@ mod tests {
     #[test]
     fn contents_follow_writes_removals_and_erases() {
         let mut s = ObjectStore::default();
-        s.insert("hero".into(), owned("P", "hero", None));
-        s.insert("bag".into(), owned("B", "bag", Some("hero")));
-        s.insert("a".into(), owned("I", "a", Some("bag")));
-        s.insert("b".into(), owned("I", "b", Some("bag")));
+        s.insert("hero", owned("P", "hero", None));
+        s.insert("bag", owned("B", "bag", Some("hero")));
+        s.insert("a", owned("I", "a", Some("bag")));
+        s.insert("b", owned("I", "b", Some("bag")));
         assert_eq!(s.contents_of("bag").collect::<Vec<_>>(), ["a", "b"]);
         // A field write, then refile.
         if let Some(Value::Object(o)) = s.get_mut("a") {
@@ -594,19 +602,19 @@ mod tests {
         // back the next: the lists don't show them meanwhile, and keep
         // their places when they return.
         let mut s = ObjectStore::default();
-        s.insert("town".into(), owned("T", "town", None));
-        for u in ["a", "b", "c"] { s.insert(u.into(), owned("P", u, Some("town"))); }
+        s.insert("town", owned("T", "town", None));
+        for u in ["a", "b", "c"] { s.insert(u, owned("P", u, Some("town"))); }
         s.retain(|k, _| k != "a" && k != "b");
         assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["c"]);
         assert_eq!(s.holder_of("a"), None);
         assert_eq!(s.all_contents_of("town"), ["c"]);
-        s.insert("b".into(), owned("P", "b", Some("town")));
-        s.insert("a".into(), owned("P", "a", Some("town")));
+        s.insert("b", owned("P", "b", Some("town")));
+        s.insert("a", owned("P", "a", Some("town")));
         assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["a", "b", "c"]);
         // Back with another owner, or none.
         s.retain(|k, _| k != "a" && k != "b");
-        s.insert("a".into(), owned("P", "a", None));
-        s.insert("b".into(), owned("P", "b", Some("c")));
+        s.insert("a", owned("P", "a", None));
+        s.insert("b", owned("P", "b", Some("c")));
         assert_eq!(s.contents_of("town").collect::<Vec<_>>(), ["c"]);
         assert_eq!(s.contents_of("c").collect::<Vec<_>>(), ["b"]);
         assert_eq!(s.holder_of("a"), None);
@@ -615,7 +623,7 @@ mod tests {
     #[test]
     fn classes_follow_inserts_removals_and_replacements() {
         let mut s = ObjectStore::default();
-        for (c, u) in [("A", "1"), ("B", "2"), ("A", "3"), ("A", "4")] { s.insert(u.into(), obj(c, u)); }
+        for (c, u) in [("A", "1"), ("B", "2"), ("A", "3"), ("A", "4")] { s.insert(u, obj(c, u)); }
         assert_eq!(s.of_class("A").collect::<Vec<_>>(), ["1", "3", "4"]);
         s.shift_remove("3");
         assert_eq!(s.of_class("A").collect::<Vec<_>>(), ["1", "4"]);
@@ -625,7 +633,7 @@ mod tests {
         s.retain(|k, _| k != "2" && k != "4");
         assert_eq!(s.count_of("A"), 0);
         assert_eq!(s.of_class("B").collect::<Vec<_>>(), ["1"]);
-        s.insert("overlay:1:7".into(), obj("Sick", "overlay:1:7"));
+        s.insert("overlay:1:7", obj("Sick", "overlay:1:7"));
         assert_eq!(s.count_of("Sick"), 0);
     }
 

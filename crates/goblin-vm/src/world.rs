@@ -201,7 +201,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
         let mut flying = vec![Arc::new(Snapshot::default()); ids.len()];
         let (mut in_flight, mut in_flight_overlays) = (Vec::new(), Vec::new());
         if let Some(old) = vm.session.world.take() {
-            vm.session.object_store.retain(|k, _| !old.view.contains(k));
+            vm.session.object_store.retain(|k, _| !old.view.contains(k.as_str()));
             for (k, items) in old.inbox.into_iter().enumerate() {
                 if let Some(j) = at(&old.ids[k]) { inbox[j] = items; }
             }
@@ -242,9 +242,9 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
             if let (Dest::Actor(a), Item::Arrive(x)) = (dest, item) {
                 if let Some(&j) = by_id.get(a) {
                     owner.insert(&*x.uuid, j);
-                    in_flight.push((x.uuid[..].to_string(), x.object.clone(), j));
+                    in_flight.push((x.uuid.clone(), x.object.clone(), j));
                     in_flight_overlays.extend(x.overlays.iter().cloned());
-                    flying[j].objects.push((x.uuid[..].to_string(), x.object.clone()));
+                    flying[j].objects.push((x.uuid.clone(), x.object.clone()));
                     flying[j].overlays.extend(x.overlays.iter().cloned());
                 }
             }
@@ -288,7 +288,7 @@ fn refresh_view(vm: &mut Vm) {
             copies.insert(u.clone(), std::mem::replace(slot, Value::Nil));
         }
     }
-    vm.session.object_store.retain(|k, _| !old.contains(k));
+    vm.session.object_store.retain(|k, _| !old.contains(k.as_str()));
     let mut fp = FromPortable::new();
     let mut view = HashSet::default();
     for s in &snaps {
@@ -383,7 +383,7 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     // Whatever happened, no other region's object stays here.
     if let Some(c) = &ctx {
         if !c.remote.is_empty() {
-            vm.session.object_store.retain(|k, _| !c.remote.contains(k));
+            vm.session.object_store.retain(|k, _| !c.remote.contains(k.as_str()));
             vm.session.overlay_instances.retain(|i| !c.remote.contains(&i.host_uuid));
         }
     }
@@ -550,7 +550,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
                 kept.insert(uuid, v);
             }
         }
-        vm.session.object_store.retain(|k, _| !remote.contains(k));
+        vm.session.object_store.retain(|k, _| !remote.contains(k.as_str()));
         vm.session.overlay_instances.retain(|i| !remote.contains(&i.host_uuid));
         vm.session.remote_copies = kept;
     }
@@ -626,7 +626,7 @@ fn snapshot_of(vm: &Vm) -> Result<Snapshot, GoblinError> {
     let mut tp = ToPortable::new(&vm.session).objects_by_id();
     let mut objects = Vec::with_capacity(vm.session.object_store.len());
     for (u, v) in &vm.session.object_store {
-        if matches!(v, Value::Object(_)) { objects.push((u.clone(), tp.value(v)?)); }
+        if matches!(v, Value::Object(_)) { objects.push((u.to_string(), tp.value(v)?)); }
     }
     let mut overlays = Vec::with_capacity(vm.session.overlay_instances.len());
     for i in &vm.session.overlay_instances { overlays.push(overlay_to_p(i, &mut tp)?); }
@@ -775,7 +775,7 @@ pub(crate) fn is_remote(vm: &Vm, uuid: &str) -> bool {
 pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<(), GoblinError> {
     let uuid = match obj {
         Value::Ref(u) => u.clone(),
-        Value::Object(o) => o.uuid[..].to_string(),
+        Value::Object(o) => o.uuid.clone(),
         other => return Err(err(format!("C0125: move-object: :move!(obj, region) moves an object; got {}", other.type_name()))),
     };
     let Some(to) = crate::actor::actor_of(region).map(|a| crate::actor::actor_id(&a)) else {
@@ -785,7 +785,7 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
         if !c.regions.contains(&to) {
             return Err(err("C0125: move-object: that actor is not one of the regions in this tick(regions)"));
         }
-        if c.remote.contains(&uuid) {
+        if c.remote.contains(uuid.as_str()) {
             return Err(err("C0125: move-object: this object belongs to another region; only the region that holds it can move it"));
         }
         if !vm.session.object_store.contains_key(&uuid) {
@@ -803,7 +803,7 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
         let Some(i) = owner else {
             return Err(err("C0125: move-object: this object is in none of the regions"));
         };
-        if i != j { w.inbox[i].push(Item::MoveTo { uuid, to }); }
+        if i != j { w.inbox[i].push(Item::MoveTo { uuid: uuid.to_string(), to }); }
         return Ok(());
     }
     Err(err("C0125: move-object: :move!(obj, region) moves an object between the regions of tick(regions); there are none here"))
@@ -862,12 +862,12 @@ fn send_one(ss: &mut crate::session::Session, uuid: &str, to: u64) -> Result<(),
 fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
     let v = fp.value(&a.object, &mut vm.session);
     let s = &mut vm.session;
-    s.object_store.insert(a.uuid[..].to_string(), v);
+    s.object_store.insert(a.uuid.clone(), v);
     s.moved_away.remove(&a.uuid);
-    if let Some(n) = &a.name { s.object_names.insert(a.uuid[..].to_string(), n.clone()); }
+    if let Some(n) = &a.name { s.object_names.insert(a.uuid.clone(), n.clone()); }
     for (k, v) in &a.links { s.link_offsets.insert(k.clone(), v.clone()); }
     for (k, v) in &a.link_defs { s.object_link_defs.insert(k.clone(), std::rc::Rc::new(v.clone())); }
-    if let Some(d) = &a.decision { s.object_decisions.insert(a.uuid[..].to_string(), std::rc::Rc::new(d.clone())); }
+    if let Some(d) = &a.decision { s.object_decisions.insert(a.uuid.clone(), std::rc::Rc::new(d.clone())); }
     for o in &a.overlays {
         let inst = overlay_from_p(o, fp, &mut vm.session);
         vm.session.overlay_instances.push(inst);
@@ -904,7 +904,7 @@ fn move_to_holders(vm: &mut Vm, places: &[(String, u64)], me: u64) -> Result<(),
         if let Some(h) = s.object_store.holder_of(u) {
             if !is_remote(h) && s.object_store.contains_key(h) && !places.iter().any(|(r, _)| r == h) { continue; }
         }
-        leaving.push((u.clone(), to));
+        leaving.push((u.to_string(), to));
     }
     for (u, to) in leaving { send_away(&mut vm.session, &u, to)?; }
     Ok(())
@@ -923,7 +923,7 @@ fn hand_new_contents(vm: &mut Vm) -> Result<(), GoblinError> {
         if let Some(h) = vm.session.object_store.holder_of(u) {
             if !w.view.contains(h) && vm.session.object_store.contains_key(h) { continue; }
         }
-        if let Some(to) = holding_region(&vm.session, u, &places) { sent.push((u.clone(), to)); }
+        if let Some(to) = holding_region(&vm.session, u, &places) { sent.push((u.to_string(), to)); }
     }
     for (u, to) in sent {
         let contents: Vec<String> = vm.session.object_store.all_contents_of(&u);
@@ -938,7 +938,7 @@ fn hand_new_contents(vm: &mut Vm) -> Result<(), GoblinError> {
             // one region sends another.
             if let Item::Arrive(a) = &item {
                 let f = Arc::make_mut(&mut w.flying[j]);
-                f.objects.push((a.uuid[..].to_string(), a.object.clone()));
+                f.objects.push((a.uuid.clone(), a.object.clone()));
                 f.overlays.extend(a.overlays.iter().cloned());
             }
             w.inbox[j].push(item);

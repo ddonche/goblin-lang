@@ -37,8 +37,8 @@ impl Arg {
             Value::Int(i) => Arg::Int(*i),
             Value::Float(f) => Arg::Float(f.to_bits()),
             Value::Str(s) => Arg::Str(s.to_string()),
-            Value::Ref(u) => Arg::Obj(u.clone()),
-            Value::Object(o) => Arg::Obj(o.uuid[..].to_string()),
+            Value::Ref(u) => Arg::Obj(u.to_string()),
+            Value::Object(o) => Arg::Obj(o.uuid.to_string()),
             _ => return None,
         })
     }

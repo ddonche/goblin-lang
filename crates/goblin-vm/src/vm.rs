@@ -598,7 +598,7 @@ impl Vm {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(val)
                 };
@@ -614,7 +614,7 @@ impl Vm {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
                 };
@@ -632,7 +632,7 @@ impl Vm {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
                     self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), cast);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
                 };
@@ -1371,7 +1371,7 @@ impl Vm {
                 let obj_val = self.stack_pop()?;
                 let uuid = match obj_val {
                     Value::Ref(u) => u,
-                    Value::Object(o) => o.uuid[..].to_string(),
+                    Value::Object(o) => o.uuid.clone(),
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
                 let new_val = entry_of(&self.session, new_val);
@@ -1993,13 +1993,13 @@ impl Vm {
                     // builtin erases it (its contents move up).
                     BuiltinId::DeleteObject if arg_vals.len() == 3 => {
                         let uuid = match &arg_vals[0] {
-                            Value::Object(o) => Some(o.uuid[..].to_string()),
+                            Value::Object(o) => Some(o.uuid.clone()),
                             Value::Ref(u) => Some(u.clone()),
                             _ => None,
                         };
                         if let Some(u) = uuid {
                             let elsewhere = crate::world::in_view(&self.session, &u)
-                                || self.session.region.as_ref().is_some_and(|c| c.remote.contains(&u));
+                                || self.session.region.as_ref().is_some_and(|c| c.remote.contains(u.as_str()));
                             if !elsewhere { crate::tick::run_on_erase(self, &u)?; }
                         }
                     }
@@ -2663,9 +2663,9 @@ impl Vm {
                         let name = if is_local {
                             self.session.object_names.get(&*o.uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| host_var_name.clone())
                         } else { host_var_name.clone() };
-                        (name, o.uuid[..].to_string())
+                        (name, o.uuid.clone())
                     }
-                    Value::Str(s) => (host_var_name.clone(), s.to_string()),
+                    Value::Str(s) => (host_var_name.clone(), crate::value::ObjId::from(s.as_ref() as &str)),
                     _ => return Err(GoblinError::Runtime("overlay apply: host must be an object or string".into())),
                 };
                 let def = self.session.overlay_defs.get(overlay_name.as_str())
@@ -2688,7 +2688,7 @@ impl Vm {
                 let inst = OverlayInstance {
                     overlay_name: overlay_name.clone(),
                     host_var,
-                    host_uuid: host_uuid.clone(),
+                    host_uuid: host_uuid.to_string(),
                     strength,
                     age: 0,
                     ticks_remaining: duration,
@@ -2706,7 +2706,7 @@ impl Vm {
                 let host_val = self.pop_value()?;
                 // An object host is matched by identity, so `detach X from
                 // target` inside an action finds the overlay put on the real host.
-                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid[..].to_string()), Value::Ref(u) => Some(u.clone()), _ => None };
+                let host_uuid = match &host_val { Value::Object(o) => Some(o.uuid.clone()), Value::Ref(u) => Some(u.clone()), _ => None };
                 // A region's object: its region takes the overlay off next tick.
                 if let Some(u) = &host_uuid {
                     if crate::world::detach_in_region(&mut self.session, u, &overlay_name) { return Ok(()); }
@@ -2808,15 +2808,15 @@ impl Vm {
                 // only, whatever other variables hold it or held it before.
                 let key = match self.stack_pop()? {
                     Value::Ref(uuid) => uuid,
-                    Value::Object(o) => o.uuid[..].to_string(),
-                    _ => var_name,
+                    Value::Object(o) => o.uuid.clone(),
+                    _ => var_name.into(),
                 };
                 let mut d = *def;
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
                 self.tick_exprs.clear();
-                self.session.object_decisions.insert(key, std::rc::Rc::new(d));
+                self.session.object_decisions.insert(key.to_string(), std::rc::Rc::new(d));
             }
 
             Opcode::UnitDecl(i) => {
@@ -3290,8 +3290,8 @@ impl Vm {
                 Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
             };
             match v {
-                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) => Some(u.clone()),
-                Value::Object(o) => Some(o.uuid[..].to_string()),
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) => Some(u.to_string()),
+                Value::Object(o) => Some(o.uuid.to_string()),
                 _ => None,
             }
         };
@@ -3546,7 +3546,7 @@ impl Vm {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
-                    self.session.alloc_value(Value::Ref(uuid))
+                    self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(val)
                 };
@@ -3560,7 +3560,7 @@ impl Vm {
         let val = if let Some(uuid) = registered_uuid(&val) {
             self.session.touch(&uuid);
                     self.session.object_store.insert(uuid.clone(), val);
-            Value::Ref(uuid)
+            Value::Ref(uuid.into())
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
             // A frozen value stays frozen for the reads still pending.
@@ -5350,7 +5350,7 @@ impl Vm {
                     let id = |v: &Fv| -> Option<Option<String>> {
                         let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x };
                         match x {
-                            Value::Object(o) => Some(Some(o.uuid[..].to_string())),
+                            Value::Object(o) => Some(Some(o.uuid.to_string())),
                             Value::Ref(u) => Some(if self.session.object_store.contains_key(u.as_str()) { Some(u.to_string()) } else { None }),
                             _ => None,
                         }
@@ -5554,7 +5554,7 @@ impl Vm {
                     return Ok(Value::Ref(u.clone()));
                 },
                 Value::Object(o) => if let Some(Value::Object(stored)) = store.get(&*o.uuid) {
-                    if stored.class_name == o.class_name { return Ok(Value::Ref(o.uuid[..].to_string())); }
+                    if stored.class_name == o.class_name { return Ok(Value::Ref(o.uuid.clone())); }
                 },
                 _ => {}
             }
@@ -5567,7 +5567,7 @@ impl Vm {
             // Same class as the stored object: an overlay record carries its
             // host's uuid but is not the host.
             Value::Object(o) if matches!(self.session.object_store.get(&*o.uuid),
-                Some(Value::Object(stored)) if stored.class_name == o.class_name) => Value::Ref(o.uuid[..].to_string()),
+                Some(Value::Object(stored)) if stored.class_name == o.class_name) => Value::Ref(o.uuid.clone()),
             other => other,
         }
     }
@@ -5652,7 +5652,7 @@ impl Vm {
         };
         let owner_uuid = match &owner {
             Value::Ref(u) => Some(u.clone()),
-            Value::Object(o) => Some(o.uuid[..].to_string()),
+            Value::Object(o) => Some(o.uuid.clone()),
             _ => None,
         };
         let usable = self.session.classes.get(class).is_some_and(|c|
@@ -5937,7 +5937,7 @@ impl Vm {
     pub(crate) fn link_end(&self, v: &Value, name: &str) -> Result<String, GoblinError> {
         match v {
             Value::Ref(u) => Ok(u.to_string()),
-            Value::Object(o) => Ok(o.uuid[..].to_string()),
+            Value::Object(o) => Ok(o.uuid.to_string()),
             other => Err(GoblinError::Runtime(format!(
                 "R1225: link-not-object: `{name}` in a link holds {}, not an object", other.type_name()))),
         }
@@ -6012,10 +6012,10 @@ impl Vm {
     /// no owner (the interpreter's `clone_object`).
     fn vm_clone_object(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
         let source_uuid = match args.first() {
-            Some(Value::Object(o)) => o.uuid[..].to_string(),
+            Some(Value::Object(o)) => o.uuid.clone(),
             Some(Value::Str(s)) => match self.lookup_var(s) {
-                Some(Value::Object(o)) => o.uuid[..].to_string(),
-                _ => s.to_string(),
+                Some(Value::Object(o)) => o.uuid.clone(),
+                _ => s.to_string().into(),
             },
             _ => return Err(GoblinError::Runtime("A0414: clone-object-bad-source: clone_object() argument must be an object".into())),
         };
@@ -6240,7 +6240,7 @@ impl Vm {
             Value::Ref(_) | Value::Object(_) => {
                 let uuid = match &container {
                     Value::Ref(uuid) => uuid.clone(),
-                    Value::Object(o) => o.uuid[..].to_string(),
+                    Value::Object(o) => o.uuid.clone(),
                     _ => unreachable!("matched Ref or Object"),
                 };
                 let Value::Str(field) = key else {
@@ -6310,16 +6310,16 @@ fn entry_out(session: &crate::session::Session, v: Value) -> Value {
 fn entry_of(session: &crate::session::Session, v: Value) -> Value {
     match &v {
         Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) && session.object_store.contains_key(&*o.uuid) =>
-            Value::Ref(o.uuid[..].to_string()),
+            Value::Ref(o.uuid.clone()),
         _ => v,
     }
 }
 
 /// The id an object bound to a variable is stored under, or None for a
 /// value that stays as it is (not an object, or an overlay record).
-fn registered_uuid(v: &Value) -> Option<String> {
+fn registered_uuid(v: &Value) -> Option<crate::value::ObjId> {
     match v {
-        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) => Some(o.uuid[..].to_string()),
+        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) => Some(o.uuid.clone()),
         _ => None,
     }
 }
@@ -6590,6 +6590,18 @@ mod tests {
 
     fn make_vm() -> Vm {
         Vm::new(Session::new(GcMode::Off))
+    }
+
+    /// Ids made from the same text share it, compare equal to it, and an
+    /// id nothing holds is dropped from the thread's table later.
+    #[test]
+    fn object_ids_share_their_text() {
+        let a = crate::value::ObjId::from("id-a");
+        let b = crate::value::ObjId::from(String::from("id-a"));
+        assert!(std::ptr::eq(a.as_str(), b.as_str()));
+        assert!(a == b && a == *"id-a" && "id-a" == a.to_string());
+        let c = crate::value::ObjId::from("id-c");
+        assert!(a != c);
     }
 
     /// A `~` field is a trait even when the object starts it as nil, so a

@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: an object id is held once per thread and shared by every copy of
+  it (`ObjId`); the object store, ownership lists and field indexes key
+  by it. Copying a reference copies no text. Epidemic -8%, predator-prey
+  -7%, feudal -5% instructions.
 - VM: object ids and class names are copied without going through text
   formatting (a slowdown from #136), and an object passed to an action is
   passed as a reference without copying the object first. Action call +

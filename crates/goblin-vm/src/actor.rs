@@ -861,13 +861,13 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
     while let Some(v) = stack.pop() {
         match &v {
             Value::Ref(u) => {
-                if out.insert(u.clone()) {
+                if out.insert(u.to_string()) {
                     if let Some(o) = session.object_store.get(u.as_str()) { stack.push(o.clone()); }
                 }
             }
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
-                let first = out.insert(o.uuid[..].to_string());
+                let first = out.insert(o.uuid.to_string());
                 if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
                     if first { stack.extend(stored.fields.values().cloned()); }
                 }
@@ -887,7 +887,7 @@ fn contents_of_graph(graph: &mut HashSet<String>, session: &Session) -> Vec<Stri
         for c in session.object_store.all_contents_of(&u) {
             if graph.contains(c.as_str()) { continue; }
             let mut more = HashSet::new();
-            graph_of(&Value::Ref(c.clone()), session, &mut more);
+            graph_of(&Value::Ref(c.clone().into()), session, &mut more);
             for m in more { if graph.insert(m.clone()) { todo.push(m); } }
         }
     }
@@ -1024,7 +1024,7 @@ impl Vm {
             Err(e) => { LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst); return Err(e); }
         };
 
-        let origin = match &state { Value::Object(o) => Some(o.uuid[..].to_string()), Value::Ref(u) => Some(u.clone()), _ => None };
+        let origin = match &state { Value::Object(o) => Some(o.uuid.to_string()), Value::Ref(u) => Some(u.to_string()), _ => None };
         let sched = sched();
         let worker = sched.next.fetch_add(1, Ordering::Relaxed) % sched.workers.len();
         let shared = Arc::new(ActorShared {
@@ -1094,7 +1094,7 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
         _ => format!("handed-off:{var}"),
     };
     session.handed_off.insert(uuid.clone(), var.to_string());
-    Value::Ref(uuid)
+    Value::Ref(uuid.into())
 }
 
 /// The error for reading an object that is gone.
@@ -1128,8 +1128,8 @@ fn adopt(v: Value, s: &mut Session) -> Value {
             let fields: crate::value::FieldMap = o.fields.iter()
                 .map(|(k, x)| (k.clone(), adopt(x.clone(), s))).collect();
             o.fields = std::rc::Rc::new(fields);
-            let uuid = o.uuid[..].to_string();
-            s.object_store.insert(uuid.clone(), Value::Object(o));
+            let uuid = o.uuid.clone();
+            s.object_store.insert(uuid.to_string(), Value::Object(o));
             Value::Ref(uuid)
         }
         other => other,

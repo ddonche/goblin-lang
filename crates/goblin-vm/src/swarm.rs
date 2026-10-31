@@ -247,8 +247,8 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
         for (k, v) in m { out.insert(k.clone(), tp.value(v)?); }
         token_store.insert(ns.clone(), out);
     }
-    fn pairs<'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a String, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
-        m.map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
+    fn pairs<'a, K: AsRef<str> + 'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a K, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
+        m.map(|(k, v)| Ok((k.as_ref().to_owned(), tp.value(v)?))).collect()
     }
     let object_store = match handed {
         Some(_) => Vec::new(),
@@ -275,8 +275,8 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
 /// variable holds a reference, as `StoreLocal` does.
 pub(crate) fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     if let Value::Object(ref o) = v {
-        let uuid = o.uuid[..].to_string();
-        session.object_store.insert(uuid.clone(), v);
+        let uuid = o.uuid.clone();
+        session.object_store.insert(uuid.to_string(), v);
         session.alloc_value(Value::Ref(uuid))
     } else {
         session.alloc_value(v)

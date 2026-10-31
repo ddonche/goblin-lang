@@ -201,12 +201,12 @@ impl<'s> ToPortable<'s> {
             Value::CtrlSkip => PValue::CtrlSkip,
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
-            Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid[..].to_string()),
-            Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid.as_str()) => PValue::ObjRef(uuid.clone()),
+            Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid.to_string()),
+            Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid.as_str()) => PValue::ObjRef(uuid.to_string()),
             Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
-            Value::Object(o) if self.visiting.contains(&*o.uuid) => PValue::ObjRef(o.uuid[..].to_string()),
+            Value::Object(o) if self.visiting.contains(&*o.uuid) => PValue::ObjRef(o.uuid.to_string()),
             Value::Object(o) => {
-                self.visiting.insert(o.uuid[..].to_string());
+                self.visiting.insert(o.uuid.to_string());
                 let fields = self.object_fields(&o.fields);
                 self.visiting.remove(&*o.uuid);
                 PValue::Object {
@@ -214,18 +214,18 @@ impl<'s> ToPortable<'s> {
                     fields: fields?,
                     readonly_fields: (*o.readonly_fields).clone(),
                     trait_fields: (*o.trait_fields).clone(),
-                    uuid: o.uuid[..].to_string(),
+                    uuid: o.uuid.to_string(),
                 }
             }
             // An object reference crosses as the object itself.
             Value::Ref(uuid) if self.stays_home(uuid).is_some() => self.stays_home(uuid).unwrap(),
-            Value::Ref(uuid) if self.visiting.contains(uuid.as_str()) => PValue::ObjRef(uuid.clone()),
+            Value::Ref(uuid) if self.visiting.contains(uuid.as_str()) => PValue::ObjRef(uuid.to_string()),
             Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                 Some(obj) => self.value(&obj.clone())?,
                 None => match self.session.handed_off.get(uuid.as_str()) {
-                    Some(var) => PValue::HandedOff { uuid: uuid.clone(), var: var.clone() },
+                    Some(var) => PValue::HandedOff { uuid: uuid.to_string(), var: var.clone() },
                     None => match self.session.moved_away.get(uuid.as_str()) {
-                        Some(var) => PValue::Moved { uuid: uuid.clone(), var: var.clone() },
+                        Some(var) => PValue::Moved { uuid: uuid.to_string(), var: var.clone() },
                         None => return Err(crate::actor::missing_object(self.session, uuid)),
                     },
                 },
@@ -304,7 +304,7 @@ impl<'s> ToPortable<'s> {
                         && !self.session.handed_off.contains_key(u.as_str())
                         && !self.session.moved_away.contains_key(u.as_str())
                         && self.stays_home(u).is_none() {
-                        out.push((k.clone(), PValue::ObjRef(u.clone())));
+                        out.push((k.clone(), PValue::ObjRef(u.to_string())));
                         continue;
                     }
                 }
@@ -442,7 +442,7 @@ impl FromPortable {
                     trait_fields: Rc::new(trait_fields.clone()),
                     uuid: uuid.as_str().into(),
                 })));
-                Value::Ref(uuid.clone())
+                Value::Ref(uuid.clone().into())
             }
             PValue::Nil => Value::Nil,
             PValue::Unit => Value::Unit,
@@ -508,17 +508,17 @@ impl FromPortable {
             PValue::Handle(h) => Value::Handle(h.clone()),
             PValue::HandedOff { uuid, var } => {
                 session.handed_off.insert(uuid.clone(), var.clone());
-                Value::Ref(uuid.clone())
+                Value::Ref(uuid.clone().into())
             }
             PValue::KeptHome { uuid, var } => {
                 session.kept_home.insert(uuid.clone(), var.clone());
-                Value::Ref(uuid.clone())
+                Value::Ref(uuid.clone().into())
             }
             PValue::Moved { uuid, var } => {
                 session.moved_away.insert(uuid.clone(), var.clone());
-                Value::Ref(uuid.clone())
+                Value::Ref(uuid.clone().into())
             }
-            PValue::ObjRef(uuid) => Value::Ref(uuid.clone()),
+            PValue::ObjRef(uuid) => Value::Ref(uuid.clone().into()),
             PValue::Shared(inner) => self.shared_value(inner, session),
             PValue::World(_) => Value::Nil,
         }
