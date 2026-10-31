@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- goblin uses the mimalloc allocator. The sims ran about a quarter of
+  their instructions inside glibc malloc/free; epidemic -26%, predator-prey
+  -23%, feudal -18% instructions.
 - VM: `:objects("Item", it >> owner == x)` returns x's contents without
   testing each one again, and the holder may be a field path
   (`it >> owner == f >> owner`) as well as a variable. Feudal 6%,

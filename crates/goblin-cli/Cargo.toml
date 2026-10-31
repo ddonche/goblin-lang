@@ -4,6 +4,7 @@ version = "0.49.0"
 edition = "2024"
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 goblin_lexer = { package = "goblin-lexer", path = "../goblin-lexer" }
 goblin-diagnostics = { path = "../goblin-diagnostics" }
 goblin-parser = { path = "../goblin-parser" } 
