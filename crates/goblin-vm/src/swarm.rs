@@ -275,7 +275,7 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
 /// variable holds a reference, as `StoreLocal` does.
 pub(crate) fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     if let Value::Object(ref o) = v {
-        let uuid = o.uuid.clone();
+        let uuid = o.uuid.to_string();
         session.object_store.insert(uuid.clone(), v);
         session.alloc_value(Value::Ref(uuid))
     } else {

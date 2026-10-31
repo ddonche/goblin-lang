@@ -268,7 +268,7 @@ impl Vm {
     /// an object included (it keys by id). None: work it out the usual way.
     pub(crate) fn run_formula_key(&self, n: &Node, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<crate::store::FieldKey> {
         match self.tree_eval(n, args, at, env) {
-            Ok(Tv::Obj(o, _)) => Some(crate::store::FieldKey::Obj(o.uuid.clone())),
+            Ok(Tv::Obj(o, _)) => Some(crate::store::FieldKey::Obj(o.uuid.to_string())),
             Ok(Tv::Other(v)) => crate::store::field_key(v),
             Ok(v) => crate::store::field_key(&plain(v)?),
             Err(Stop::False) => crate::store::field_key(&Value::Bool(false)),

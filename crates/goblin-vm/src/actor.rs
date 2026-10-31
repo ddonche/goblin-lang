@@ -867,8 +867,8 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
             }
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
-                let first = out.insert(o.uuid.clone());
-                if let Some(Value::Object(stored)) = session.object_store.get(o.uuid.as_str()) {
+                let first = out.insert(o.uuid.to_string());
+                if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
                     if first { stack.extend(stored.fields.values().cloned()); }
                 }
                 stack.extend(o.fields.values().cloned());
@@ -927,7 +927,7 @@ fn count_refs(v: &Value, graph: &HashSet<String>, n: &mut usize) {
     match v {
         Value::Ref(u) => if graph.contains(u.as_str()) { *n += 1 },
         Value::Object(o) => {
-            if graph.contains(o.uuid.as_str()) { *n += 1; return; }
+            if graph.contains(&*o.uuid) { *n += 1; return; }
             for x in o.fields.values() { count_refs(x, graph, n) }
         }
         Value::Frozen(_) => {}
@@ -1024,7 +1024,7 @@ impl Vm {
             Err(e) => { LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst); return Err(e); }
         };
 
-        let origin = match &state { Value::Object(o) => Some(o.uuid.clone()), Value::Ref(u) => Some(u.clone()), _ => None };
+        let origin = match &state { Value::Object(o) => Some(o.uuid.to_string()), Value::Ref(u) => Some(u.clone()), _ => None };
         let sched = sched();
         let worker = sched.next.fetch_add(1, Ordering::Relaxed) % sched.workers.len();
         let shared = Arc::new(ActorShared {
@@ -1128,7 +1128,7 @@ fn adopt(v: Value, s: &mut Session) -> Value {
             let fields: crate::value::FieldMap = o.fields.iter()
                 .map(|(k, x)| (k.clone(), adopt(x.clone(), s))).collect();
             o.fields = std::rc::Rc::new(fields);
-            let uuid = o.uuid.clone();
+            let uuid = o.uuid.to_string();
             s.object_store.insert(uuid.clone(), Value::Object(o));
             Value::Ref(uuid)
         }

@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: an object's class name and id are shared strings, so copying an
+  object (reading `:objects(...)`, passing it to an action) copies no
+  text. Predator-prey 7%, feudal 6% fewer instructions.
 - VM: making an object (`x <> Class | ...`) no longer copies the whole
   class declaration first. Epidemic 3%, predator-prey 6%, feudal 4%
   fewer instructions.
