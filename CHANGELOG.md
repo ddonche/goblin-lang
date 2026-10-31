@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: an object id hashes by where its one copy of the text is, not by
+  reading the text, and the store is looked up by id (`IdKey`; text is
+  found among the ids held). Feudal -7%, predator-prey -7%, epidemic -2%
+  instructions.
 - VM: `:len`, `:count(x)`, `:is_empty` and `:has` read their list in place
   instead of copying it first. 50k `:len(:objects(...))` calls -18%,
   feudal -1.4%, predator-prey -1% instructions.

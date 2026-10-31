@@ -1667,7 +1667,7 @@ impl Vm {
                     for a in arg_vals.iter_mut() {
                         if let Value::Ref(u) = a {
                             if !u.starts_with(OVERLAY_RECORD) {
-                                if let Some(o) = self.session.object_store.get(u.as_str()) { *a = o.clone(); }
+                                if let Some(o) = self.session.object_store.get(u) { *a = o.clone(); }
                             }
                         }
                     }
@@ -3090,7 +3090,7 @@ impl Vm {
         }) else { return false };
         match self.session.read_value(&t) {
             Ok(Value::Object(o)) => o.fields.contains_key(name),
-            Ok(Value::Ref(u)) => matches!(self.session.object_store.get(u.as_str()), Some(Value::Object(o)) if o.fields.contains_key(name)),
+            Ok(Value::Ref(u)) => matches!(self.session.object_store.get(&u), Some(Value::Object(o)) if o.fields.contains_key(name)),
             _ => false,
         }
     }
@@ -3271,7 +3271,7 @@ impl Vm {
         };
         let obj = match held {
             Value::Object(o) => o,
-            Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+            Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                 Some(Value::Object(o)) => o,
                 _ => return None,
             },
@@ -3279,7 +3279,7 @@ impl Vm {
         };
         Some(obj.fields.get(name).cloned().map(|v| match v {
             Value::Ref(ref u) if keep_ref && !u.starts_with(OVERLAY_RECORD)
-                && self.session.object_store.contains_key(u.as_str()) => v,
+                && self.session.object_store.contains_key(u) => v,
             v => entry_out(&self.session, v),
         }).ok_or_else(|| GoblinError::Runtime(format!(
             "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
@@ -3296,7 +3296,7 @@ impl Vm {
                 Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
             };
             match v {
-                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) => Some(u.to_string()),
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u) => Some(u.to_string()),
                 Value::Object(o) => Some(o.uuid.to_string()),
                 _ => None,
             }
@@ -3368,7 +3368,7 @@ impl Vm {
         fn is_obj(s: &crate::session::Session, v: &Value) -> bool {
             match v {
                 Value::Object(_) => true,
-                Value::Ref(uuid) => s.object_store.contains_key(uuid.as_str()),
+                Value::Ref(uuid) => s.object_store.contains_key(uuid),
                 Value::Frozen(f) => is_obj(s, &f.value),
                 _ => false,
             }
@@ -3487,7 +3487,7 @@ impl Vm {
                     Some(Operand::Ref(t)) if self.call_stack.last().unwrap().get_hard_type_lock(slot).is_none() => {
                         match &self.session.get_stash(t)?.value {
                             Value::Ref(u) if !u.starts_with(OVERLAY_RECORD)
-                                && self.session.object_store.contains_key(u.as_str()) => {
+                                && self.session.object_store.contains_key(u) => {
                                 let v = Value::Ref(u.clone());
                                 self.stack.pop();
                                 v
@@ -3498,7 +3498,7 @@ impl Vm {
                     _ => self.stack_pop_raw()?,
                 };
                 if let Value::Ref(u) = &val {
-                    if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) {
+                    if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u) {
                         let u = u.clone();
                         self.note_object_name(&u, NameOf::Local(slot as usize));
                     }
@@ -3526,8 +3526,8 @@ impl Vm {
                 let val = if let Some(lock) = self.call_stack.last().and_then(|f| f.get_hard_type_lock(slot).map(|s| s.to_string())) {
                     // A cast works on the object, not on its id.
                     let val = match val {
-                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u.as_str()) =>
-                            self.session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(&u) =>
+                            self.session.object_store.get(&u).cloned().unwrap_or(Value::Nil),
                         v => v,
                     };
                     crate::builtins::cast_value_to_lock(val, &lock)?
@@ -5213,7 +5213,7 @@ impl Vm {
                             let pos = at.get_mut(slot)?;
                             if *pos == UNSEEN {
                                 *pos = match a {
-                                    Value::Ref(uuid) => self.session.object_store.get_index_of(uuid.as_str()).unwrap_or(usize::MAX),
+                                    Value::Ref(uuid) => self.session.object_store.get_index_of(uuid).unwrap_or(usize::MAX),
                                     _ => usize::MAX,
                                 };
                             }
@@ -5231,7 +5231,7 @@ impl Vm {
                             Value::Object(o) => &**o,
                             Value::Ref(uuid) => match self.session.object_store.get_index(*pos) {
                                 Some((k, Value::Object(o))) if k == uuid => &**o,
-                                _ => match self.session.object_store.get(uuid.as_str()) {
+                                _ => match self.session.object_store.get(uuid) {
                                     Some(Value::Object(o)) => &**o,
                                     _ => return None,
                                 },
@@ -5239,7 +5239,7 @@ impl Vm {
                             _ => return None,
                         },
                         // A field that names an object (`target >> owner >> gold`).
-                        Fv::Val(Value::Ref(uuid)) => match self.session.object_store.get(uuid.as_str()) {
+                        Fv::Val(Value::Ref(uuid)) => match self.session.object_store.get(uuid) {
                             Some(Value::Object(o)) => &**o,
                             _ => return None,
                         },
@@ -5275,7 +5275,7 @@ impl Vm {
                     let it: &Value = value_at(0)?;
                     let obj = match it {
                         Value::Object(o) => Some(&**o),
-                        Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                        Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                             Some(Value::Object(o)) => Some(&**o),
                             _ => None,
                         },
@@ -5357,7 +5357,7 @@ impl Vm {
                         let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x };
                         match x {
                             Value::Object(o) => Some(Some(o.uuid.to_string())),
-                            Value::Ref(u) => Some(if self.session.object_store.contains_key(u.as_str()) { Some(u.to_string()) } else { None }),
+                            Value::Ref(u) => Some(if self.session.object_store.contains_key(u) { Some(u.to_string()) } else { None }),
                             _ => None,
                         }
                     };
@@ -5556,7 +5556,7 @@ impl Vm {
         if let Operand::Ref(t) = &op {
             let store = &self.session.object_store;
             match &self.session.get_stash(t)?.value {
-                Value::Ref(u) => if let Some(Value::Object(_)) = store.get(u.as_str()) {
+                Value::Ref(u) => if let Some(Value::Object(_)) = store.get(u) {
                     return Ok(Value::Ref(u.clone()));
                 },
                 Value::Object(o) => if let Some(Value::Object(stored)) = store.get(&*o.uuid) {
@@ -5651,7 +5651,7 @@ impl Vm {
         let field = |v: &Value, f: &str| -> Option<Value> {
             let o = match v {
                 Value::Object(o) => o,
-                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => match store.get(u.as_str()) {
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => match store.get(u) {
                     Some(Value::Object(o)) => o,
                     _ => return None,
                 },
@@ -5667,7 +5667,7 @@ impl Vm {
             Value::Object(o) => o.uuid.clone(),
             _ => return None,
         };
-        self.session.object_store.get_index_of(owner.as_str())?;
+        self.session.object_store.get_index_of(&owner)?;
         let usable = self.session.classes.get(q.class.as_str()).is_some_and(|c|
             c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
         if !usable { return None; }
@@ -5731,7 +5731,7 @@ impl Vm {
                     Some(at) => Some(at),
                     None => {
                         let store = &self.session.object_store;
-                        Some(store.of_class(c).filter_map(|u| store.get_index_of(u)).collect())
+                        Some(store.of_class_ids(c).filter_map(|u| store.get_index_of(u)).collect())
                     }
                 }
             }
@@ -6001,7 +6001,7 @@ impl Vm {
     fn lookup_var_ref(&self, name: &str, direct: Option<(&crate::value::FunctionObject, &[(&str, &Value)])>) -> Option<Value> {
         let deref = |v: &Value| -> Option<Value> {
             match v {
-                Value::Ref(uuid) => self.session.object_store.contains_key(uuid.as_str()).then(|| v.clone()),
+                Value::Ref(uuid) => self.session.object_store.contains_key(uuid).then(|| v.clone()),
                 Value::Frozen(f) => Some(f.value.clone()),
                 other => Some(other.clone_fast()),
             }
@@ -6354,7 +6354,7 @@ fn query_args(args: Vec<Value>, what: &'static str) -> Result<(Option<String>, O
 fn entry_out(session: &crate::session::Session, v: Value) -> Value {
     match &v {
         Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) =>
-            session.object_store.get(u.as_str()).cloned().unwrap_or(Value::Nil),
+            session.object_store.get(u).cloned().unwrap_or(Value::Nil),
         _ => v,
     }
 }
@@ -6654,6 +6654,20 @@ mod tests {
         assert!(a == b && a == *"id-a" && "id-a" == a.to_string());
         let c = crate::value::ObjId::from("id-c");
         assert!(a != c);
+    }
+
+    /// A store keyed by ids finds an object by its id or by the id's text,
+    /// and text no id has finds nothing (and makes no id).
+    #[test]
+    fn store_finds_ids_by_id_or_text() {
+        let mut s = crate::store::ObjectStore::default();
+        s.insert("obj-1", Value::Int(1));
+        let id = crate::value::ObjId::from(String::from("obj-1"));
+        assert!(matches!(s.get(&id), Some(Value::Int(1))));
+        assert!(matches!(s.get("obj-1"), Some(Value::Int(1))));
+        assert!(s.get("obj-unknown-xyz").is_none());
+        assert!(crate::value::ObjId::existing("obj-unknown-xyz").is_none());
+        assert_eq!(s.get_index_of(&id), Some(0));
     }
 
     /// A `~` field is a trait even when the object starts it as nil, so a

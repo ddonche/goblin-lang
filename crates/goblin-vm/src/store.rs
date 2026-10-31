@@ -6,7 +6,7 @@
 //! `get_mut` changes an object's fields; an object's class only changes by
 //! `insert` or `replace`.
 
-use crate::value::{ObjId as Id, Value};
+use crate::value::{IdKey, ObjId as Id, Value};
 use indexmap::{IndexMap, IndexSet};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
@@ -145,6 +145,19 @@ impl<'a> IntoIterator for &'a ObjectStore {
 }
 
 impl ObjectStore {
+    // Lookups by id or by an id's text (in front of the map's own, which
+    // take only an id).
+    #[inline]
+    pub fn get(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Value> { self.map.get(&*uuid.id()?) }
+    #[inline]
+    pub fn get_index_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.map.get_index_of(&*uuid.id()?) }
+    #[inline]
+    pub fn contains_key(&self, uuid: &(impl IdKey + ?Sized)) -> bool { uuid.id().is_some_and(|u| self.map.contains_key(&*u)) }
+    #[inline]
+    pub fn get_full(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(usize, &Id, &Value)> { self.map.get_full(&*uuid.id()?) }
+    #[inline]
+    pub fn get_key_value(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(&Id, &Value)> { self.map.get_key_value(&*uuid.id()?) }
+
     fn file(&mut self, uuid: &Id, class: &str) {
         match self.by_class.get_mut(class) {
             Some(set) => { set.insert(uuid.clone()); }
@@ -187,7 +200,9 @@ impl ObjectStore {
 
     /// After a write to an object's fields: files it under the owner its
     /// `owner` field names now.
-    pub fn refile_owner(&mut self, uuid: &str) {
+    pub fn refile_owner(&mut self, uuid: &(impl IdKey + ?Sized)) {
+        let Some(uuid) = uuid.id() else { return };
+        let uuid: &Id = &uuid;
         let Some((k, v)) = self.map.get_key_value(uuid) else {
             if let Some((k, _)) = self.owner_of.get_key_value(uuid) { let k = k.clone(); self.set_owner(&k, None); }
             return;
@@ -197,33 +212,38 @@ impl ObjectStore {
     }
 
     /// The id of the object `uuid`'s `owner` field names, if it names one.
-    pub fn holder_of(&self, uuid: &str) -> Option<&str> {
+    pub fn holder_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Id> {
+        let uuid = uuid.id()?;
+        let uuid: &Id = &uuid;
         if !self.map.contains_key(uuid) { return None; }
-        self.owner_of.get(uuid).map(Id::as_str)
+        self.owner_of.get(uuid)
     }
 
     /// `holder_of` for an object known to be in the store.
-    pub fn holder_of_present(&self, uuid: &str) -> Option<&str> {
-        self.owner_of.get(uuid).map(Id::as_str)
+    pub fn holder_of_present(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Id> {
+        let uuid = uuid.id()?;
+        let uuid: &Id = &uuid;
+        self.owner_of.get(uuid)
     }
 
     /// About how many objects `owner` contains (copies dropped by `retain`
     /// may still count).
-    pub fn contents_len(&self, owner: &str) -> usize {
-        self.contents.get(owner).map_or(0, |s| s.len())
+    pub fn contents_len(&self, owner: &(impl IdKey + ?Sized)) -> usize {
+        let Some(owner) = owner.id() else { return 0 };
+        self.contents.get(&*owner).map_or(0, |s| s.len())
     }
 
     /// The ids of what `owner` contains (the objects whose `owner` field
     /// names it), in the order they came to it.
-    pub fn contents_of(&self, owner: &str) -> impl Iterator<Item = &str> {
+    pub fn contents_of(&self, owner: &(impl IdKey + ?Sized)) -> impl Iterator<Item = &str> {
         let map = &self.map;
-        self.contents.get(owner).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u)).map(Id::as_str)
+        owner.id().and_then(|o| self.contents.get(&*o)).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u)).map(Id::as_str)
     }
 
     /// The places of what `owner` contains, of `class` when one is given,
     /// in creation order: one lookup per object held.
-    pub fn contents_at(&self, owner: &str, class: Option<&str>) -> Vec<usize> {
-        let Some(set) = self.contents.get(owner) else { return Vec::new() };
+    pub fn contents_at(&self, owner: &(impl IdKey + ?Sized), class: Option<&str>) -> Vec<usize> {
+        let Some(set) = owner.id().and_then(|o| self.contents.get(&*o)) else { return Vec::new() };
         let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u) {
             Some((i, _, Value::Object(o))) if class.is_none_or(|c| &*o.class_name == c) => Some(i),
             Some((i, _, _)) if class.is_none() => Some(i),
@@ -258,13 +278,15 @@ impl ObjectStore {
     /// it (its own `owner`, nil when it has none), so nothing is left
     /// belonging to an object that is gone. An `on erase:` action that wants
     /// something else for them runs before this and moves or erases them.
-    pub fn move_contents_up(&mut self, uuid: &str) {
+    pub fn move_contents_up(&mut self, uuid: &(impl IdKey + ?Sized)) {
+        let Some(id) = uuid.id() else { return };
+        let uuid: &Id = &id;
         let Some(kids) = self.contents.get(uuid).map(|s| s.iter().cloned().collect::<Vec<_>>()) else { return };
         let up = match self.map.get(uuid) {
             Some(Value::Object(o)) => o.fields.get(OWNER_FIELD).cloned().unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
-        let up = if owner_in_value(&up).is_some_and(|o| o.as_str() == uuid) { Value::Nil } else { up };
+        let up = if owner_in_value(&up).is_some_and(|o| o == uuid) { Value::Nil } else { up };
         for k in kids {
             self.touched(&k);
             if let Some(Value::Object(o)) = self.map.get_mut(&k) {
@@ -294,11 +316,15 @@ impl ObjectStore {
     }
 
     /// Put `v` in place of the object with this id (`overwrite!`).
-    pub fn replace(&mut self, uuid: &str, v: Value) {
+    pub fn replace(&mut self, uuid: &(impl IdKey + ?Sized), v: Value) {
+        let Some(uuid) = uuid.id() else { return };
+        let uuid: &Id = &uuid;
         if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.insert(k, v); }
     }
 
-    pub fn shift_remove(&mut self, uuid: &str) -> Option<Value> {
+    pub fn shift_remove(&mut self, uuid: &(impl IdKey + ?Sized)) -> Option<Value> {
+        let uuid = uuid.id()?;
+        let uuid: &Id = &uuid;
         let (_, k, old) = self.map.shift_remove_full(uuid)?;
         self.touched(&k);
         if self.owner_of.contains_key(&k) { self.set_owner(&k, None); }
@@ -318,14 +344,14 @@ impl ObjectStore {
         // thousands of copies a tick), and without copying the ids.
         let map = &self.map;
         for set in self.by_class.values_mut() {
-            set.retain(|u| map.contains_key(u.as_str()));
+            set.retain(|u| map.contains_key(u));
         }
         self.by_class.retain(|_, set| !set.is_empty());
         if self.owner_of.len() > 2 * self.peak + 64 {
-            self.owner_of.retain(|u, _| map.contains_key(u.as_str()));
+            self.owner_of.retain(|u, _| map.contains_key(u));
             let owner_of = &self.owner_of;
             for set in self.contents.values_mut() {
-                set.retain(|u| owner_of.contains_key(u.as_str()));
+                set.retain(|u| owner_of.contains_key(u));
             }
             self.contents.retain(|_, set| !set.is_empty());
         }
@@ -333,7 +359,9 @@ impl ObjectStore {
 
     /// An object to change in place. Its fields may change; its class must
     /// not (use `replace`).
-    pub fn get_mut(&mut self, uuid: &str) -> Option<&mut Value> {
+    pub fn get_mut(&mut self, uuid: &(impl IdKey + ?Sized)) -> Option<&mut Value> {
+        let uuid = uuid.id()?;
+        let uuid: &Id = &uuid;
         if !self.indexes.is_empty() && !self.stale {
             if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.touched(&k); }
         }
@@ -388,7 +416,11 @@ impl ObjectStore {
 
     /// The ids of a class's objects, in creation order.
     pub fn of_class(&self, class: &str) -> impl Iterator<Item = &str> {
-        self.by_class.get(class).into_iter().flat_map(|s| s.iter().map(Id::as_str))
+        self.of_class_ids(class).map(Id::as_str)
+    }
+
+    pub fn of_class_ids(&self, class: &str) -> impl Iterator<Item = &Id> {
+        self.by_class.get(class).into_iter().flat_map(|s| s.iter())
     }
 
     /// Where the objects of the classes `wanted` says yes to sit in the

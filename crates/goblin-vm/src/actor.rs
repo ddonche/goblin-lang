@@ -862,7 +862,7 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
         match &v {
             Value::Ref(u) => {
                 if out.insert(u.to_string()) {
-                    if let Some(o) = session.object_store.get(u.as_str()) { stack.push(o.clone()); }
+                    if let Some(o) = session.object_store.get(u) { stack.push(o.clone()); }
                 }
             }
             Value::Object(o) => {
@@ -893,7 +893,7 @@ fn contents_of_graph(graph: &mut HashSet<String>, session: &Session) -> Vec<Stri
     }
     let mut added: Vec<(usize, String)> = graph.iter()
         .filter(|u| !start.contains(u.as_str()))
-        .filter_map(|u| session.object_store.get_index_of(u.as_str()).map(|i| (i, u.clone())))
+        .filter_map(|u| session.object_store.get_index_of(u).map(|i| (i, u.clone())))
         .collect();
     added.sort();
     added.into_iter().map(|(_, u)| u).collect()
@@ -1010,7 +1010,7 @@ impl Vm {
             if !contents.is_empty() {
                 let mut objs = Vec::with_capacity(contents.len());
                 for u in &contents {
-                    if let Some(v) = self.session.object_store.get(u.as_str()) { objs.push((u.clone(), tp.value(v)?)); }
+                    if let Some(v) = self.session.object_store.get(u) { objs.push((u.clone(), tp.value(v)?)); }
                 }
                 image = image.with_contents(objs);
             }
@@ -1072,7 +1072,7 @@ impl Vm {
             }
         }
         for u in &graph {
-            self.session.object_store.shift_remove(u.as_str());
+            self.session.object_store.shift_remove(u);
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
         }
         // Actors that already ended need no shutdown; forget them, so a
@@ -1138,7 +1138,7 @@ fn adopt(v: Value, s: &mut Session) -> Value {
 
 fn deref(v: Value, s: &Session) -> Value {
     match v {
-        Value::Ref(u) => s.object_store.get(u.as_str()).cloned().unwrap_or(Value::Ref(u)),
+        Value::Ref(u) => s.object_store.get(&u).cloned().unwrap_or(Value::Ref(u)),
         other => other,
     }
 }

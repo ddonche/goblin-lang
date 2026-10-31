@@ -202,7 +202,7 @@ impl<'s> ToPortable<'s> {
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
             Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid.to_string()),
-            Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid.as_str()) => PValue::ObjRef(uuid.to_string()),
+            Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid) => PValue::ObjRef(uuid.to_string()),
             Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
             Value::Object(o) if self.visiting.contains(&*o.uuid) => PValue::ObjRef(o.uuid.to_string()),
             Value::Object(o) => {
@@ -300,7 +300,7 @@ impl<'s> ToPortable<'s> {
             // isn't, as an erased one does).
             if self.by_id {
                 if let Value::Ref(u) = v {
-                    if !u.starts_with(crate::vm::OVERLAY_RECORD) && !self.session.object_store.contains_key(u.as_str())
+                    if !u.starts_with(crate::vm::OVERLAY_RECORD) && !self.session.object_store.contains_key(u)
                         && !self.session.handed_off.contains_key(u.as_str())
                         && !self.session.moved_away.contains_key(u.as_str())
                         && self.stays_home(u).is_none() {
@@ -309,7 +309,7 @@ impl<'s> ToPortable<'s> {
                     }
                 }
             }
-            let gone = matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u.as_str())
+            let gone = matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u)
                 && !self.session.handed_off.contains_key(u.as_str())
                 && !self.session.moved_away.contains_key(u.as_str())
                 && self.stays_home(u).is_none());

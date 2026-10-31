@@ -286,11 +286,11 @@ impl Vm {
                     if let Some((k, Value::Object(o))) = store.get_index(*pos) {
                         if k == uuid { return Ok(Tv::Obj(o, arg)); }
                     }
-                    let (i, _, o) = store.get_full(uuid.as_str()).ok_or(Stop::Fallback)?;
+                    let (i, _, o) = store.get_full(uuid).ok_or(Stop::Fallback)?;
                     *pos = i;
                     return match o { Value::Object(o) => Ok(Tv::Obj(o, arg)), _ => Err(Stop::Fallback) };
                 }
-                match store.get(uuid.as_str()) {
+                match store.get(uuid) {
                     Some(Value::Object(o)) => Ok(Tv::Obj(o, arg)),
                     _ => Err(Stop::Fallback),
                 }
@@ -361,7 +361,7 @@ impl Vm {
                 let it = args.first().ok_or(Stop::Fallback)?.1;
                 let obj = match it {
                     Value::Object(o) => Some(&**o),
-                    Value::Ref(uuid) => match self.session.object_store.get(uuid.as_str()) {
+                    Value::Ref(uuid) => match self.session.object_store.get(uuid) {
                         Some(Value::Object(o)) => Some(&**o),
                         _ => None,
                     },

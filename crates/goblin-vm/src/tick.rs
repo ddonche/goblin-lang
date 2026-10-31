@@ -190,7 +190,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         // In the order the overlays were applied, once they are gone. An
         // error in the action stops the tick, as one in an `every` block does.
         for (action, host) in ended.into_iter().rev() {
-            if vm.session.object_store.contains_key(host.as_str()) {
+            if vm.session.object_store.contains_key(&host) {
                 call_object_action(vm, &host, &action, Vec::new())?;
             }
         }
@@ -199,7 +199,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     // ── Pass 7: Remove orphaned overlays ─────────────────────────────────────
     {
         let orphans: Vec<(String, String, OverlayInstanceId)> = vm.session.overlay_instances.iter()
-            .filter(|inst| !vm.session.object_store.contains_key(inst.host_uuid.as_str()))
+            .filter(|inst| !vm.session.object_store.contains_key(&inst.host_uuid))
             .map(|inst| (inst.host_var.clone(), inst.overlay_name.clone(), inst.des_id))
             .collect();
         for (host_var, overlay_name, des_id) in &orphans {
@@ -209,7 +209,7 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         }
         if !orphans.is_empty() {
             let store = &vm.session.object_store;
-            vm.session.overlay_instances.retain(|inst| store.contains_key(inst.host_uuid.as_str()));
+            vm.session.overlay_instances.retain(|inst| store.contains_key(&inst.host_uuid));
         }
     }
 
@@ -334,7 +334,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 SpreadRule::Channel { channel, rate } => {
                     // To the objects the host has a link to on that channel;
                     // each catches it with chance rate x strength.
-                    let host_class = match vm.session.object_store.get(inst.host_uuid.as_str()) {
+                    let host_class = match vm.session.object_store.get(&inst.host_uuid) {
                         Some(Value::Object(o)) => o.class_name[..].to_string(),
                         _ => continue,
                     };
@@ -395,7 +395,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 }
 
                 SpreadRule::Ownership { rate } => {
-                    let host_uuid = match vm.session.object_store.get(inst.host_uuid.as_str()) {
+                    let host_uuid = match vm.session.object_store.get(&inst.host_uuid) {
                         Some(Value::Object(o)) => o.uuid.clone(),
                         _ => continue,
                     };
@@ -428,7 +428,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     let amount = inst.strength * rate;
                     let chance = amount;
                     if amount <= 0.0 { continue; }
-                    let Some(self_at) = vm.session.object_store.get_index_of(inst.host_uuid.as_str()) else { continue };
+                    let Some(self_at) = vm.session.object_store.get_index_of(&inst.host_uuid) else { continue };
                     let self_ref = Value::Ref(inst.host_uuid.clone().into());
                     // The condition is compiled once and reads `self` and
                     // `target` where they live, as a decision's `where` does.
@@ -591,7 +591,7 @@ fn spawn_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     for inst in &instances_snap {
         let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
         for rule in &def.spawn_rules {
-            let host_val = match vm.session.object_store.get(inst.host_uuid.as_str()).cloned() {
+            let host_val = match vm.session.object_store.get(&inst.host_uuid).cloned() {
                 Some(v) => v, None => continue,
             };
             let fires = vm.eval_tick_expr_bool(
@@ -907,7 +907,7 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for e in &class.every {
             if tick % e.ticks as i64 != 0 { continue; }
             // Erased by an earlier block this tick: nothing to run.
-            if !vm.session.object_store.contains_key(uuid.as_str()) { break; }
+            if !vm.session.object_store.contains_key(&uuid) { break; }
             let Some(f) = vm.session.compiled_methods.get(&(class_name.clone(), e.action.clone())).cloned() else { continue };
             let me = Value::Ref(uuid.clone().into());
             with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), vec![me]).map(|_| ()))?;
@@ -924,7 +924,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         let store = &vm.session.object_store;
         let mut at = store.places_of(|c| vm.session.classes.get(c).is_some_and(|c| c.decision.is_some()));
         for uuid in vm.session.object_decisions.keys() {
-            if let Some(i) = store.get_index_of(uuid.as_str()) { at.push(i); }
+            if let Some(i) = store.get_index_of(uuid) { at.push(i); }
         }
         at.sort_unstable();
         at.dedup();
@@ -974,7 +974,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         let mut done_groups: Vec<usize> = Vec::new();
         for &(name, decision, judge) in &list {
             // Erased by an earlier decision's action: nothing more to decide.
-            if !vm.session.object_store.contains_key(self_uuid.as_str()) { break; }
+            if !vm.session.object_store.contains_key(&self_uuid) { break; }
             let Some(g) = group_of(name) else {
                 decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
                 continue;
@@ -982,7 +982,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             if done_groups.contains(&g) { continue; }
             done_groups.push(g);
             for member in &class.one_of[g] {
-                if !vm.session.object_store.contains_key(self_uuid.as_str()) { break; }
+                if !vm.session.object_store.contains_key(&self_uuid) { break; }
                 let Some(&(n, d, j)) = list.iter().find(|(n, _, _)| n == member) else { continue };
                 if decide(vm, &mut targets, &self_uuid, n, d, j)? { break; }
             }
@@ -1061,8 +1061,8 @@ impl Targets {
             self.seen = Some(now);
         }
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
-            store.of_class(class)
-                .filter_map(|u| store.get_index_of(u).map(|i| (Value::Ref(u.to_string().into()), i)))
+            store.of_class_ids(class)
+                .filter_map(|u| store.get_index_of(u).map(|i| (Value::Ref(u.clone()), i)))
                 .collect()
         )).clone()
     }
@@ -1194,11 +1194,11 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
             for (t, _) in all {
                 if t == self_ref { continue; }
                 let Value::Ref(u) = t else { return None };
-                let mut cur: &str = u.as_str();
+                let mut cur: &crate::value::ObjId = u;
                 for _ in 0..depth - 1 {
                     let h = store.holder_of_present(cur)?;
                     match store.get_full(h) {
-                        Some((_, k, Value::Object(o))) if o.fields.contains_key(crate::store::OWNER_FIELD) => cur = k.as_str(),
+                        Some((_, k, Value::Object(o))) if o.fields.contains_key(crate::store::OWNER_FIELD) => cur = k,
                         _ => return None,
                     }
                 }
@@ -1295,7 +1295,7 @@ fn score_targets(
 
 fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
     let self_uuid = self_uuid.to_string();
-    let margin = match vm.session.object_store.get(self_uuid.as_str()) {
+    let margin = match vm.session.object_store.get(&self_uuid) {
         Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
         Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
             Value::Float(f) => Some(*f),
@@ -1308,7 +1308,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
     let self_ref = Value::Ref(self_uuid.clone().into());
-    let self_at = vm.session.object_store.get_index_of(self_uuid.as_str()).unwrap_or(usize::MAX);
+    let self_at = vm.session.object_store.get_index_of(&self_uuid).unwrap_or(usize::MAX);
 
     let target_candidates = targets.of(vm, &decision.target_class);
     let is_self = |v: &Value| matches!(v, Value::Ref(u) if *u == self_uuid);
@@ -1317,7 +1317,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // A formula that fails, or gives something other than a number, stops
     // the tick with an error: a decision never does nothing silently.
     let formula_error = |vm: &Vm, what: String| {
-        let class = match vm.session.object_store.get(self_uuid.as_str()) {
+        let class = match vm.session.object_store.get(&self_uuid) {
             Some(Value::Object(o)) => o.class_name[..].to_string(),
             _ => String::new(),
         };
@@ -1397,7 +1397,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         // The action gets the objects as they are now (nothing above
         // changes them), the same values it was given before.
         let (Some(self_val), Some(_)) = (
-            vm.session.object_store.get(self_uuid.as_str()).cloned(),
+            vm.session.object_store.get(&self_uuid).cloned(),
             vm.session.object_store.get(&best_target_uuid).cloned(),
         ) else { return Ok(false) };
         // The class's own action of that name (`act govern(target)` in the
@@ -1836,7 +1836,7 @@ fn erase_changed(vm: &mut Vm, mut touched: Vec<String>) -> Result<(), GoblinErro
     touched.retain(|u| seen.insert(u.clone()));
     let classes = vm.session.classes.clone();
     for uuid in touched {
-        let class_name = match vm.session.object_store.get(uuid.as_str()) {
+        let class_name = match vm.session.object_store.get(&uuid) {
             Some(Value::Object(o)) => &o.class_name,
             _ => continue,
         };

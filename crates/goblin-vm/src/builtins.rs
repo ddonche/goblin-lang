@@ -37,7 +37,7 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
         match v {
             Value::Ref(u) if seen.iter().any(|x| *x == u) => Value::Ref(u),
             Value::Ref(u) if u.starts_with(crate::vm::OVERLAY_RECORD) => Value::Ref(u),
-            Value::Ref(u) => match s.object_store.get(u.as_str()) {
+            Value::Ref(u) => match s.object_store.get(&u) {
                 Some(o) => walk(o.clone(), s, seen),
                 None => Value::Nil,
             },
@@ -2725,7 +2725,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
                 // An object is of its class: `:is_type(r, "Rabbit")`.
                 (Value::Object(o), name) => &*o.class_name == name,
-                (Value::Ref(u), name) => matches!(session.object_store.get(u.as_str()),
+                (Value::Ref(u), name) => matches!(session.object_store.get(u),
                     Some(Value::Object(o)) if &*o.class_name == name),
                 _ => false,
             };
@@ -3856,7 +3856,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             session.object_store.move_contents_up(uuid.as_str());
-            session.object_store.shift_remove(uuid.as_str());
+            session.object_store.shift_remove(&uuid);
             Ok(Value::Nil)
         }
         BuiltinId::DeleteOverlaysOn if args.len() == 3 => {

@@ -55,7 +55,7 @@ pub fn run(path: &Path) -> Result<(), GoblinError> {
             let Some(Some(t)) = s.globals.get(i) else { continue };
             let v = s.get_stash(t)?.value.clone();
             let v = match v {
-                crate::value::Value::Ref(u) => s.object_store.get(u.as_str()).cloned()
+                crate::value::Value::Ref(u) => s.object_store.get(&u).cloned()
                     .unwrap_or(crate::value::Value::Ref(u)),
                 other => other,
             };

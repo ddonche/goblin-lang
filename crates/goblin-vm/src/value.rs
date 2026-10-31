@@ -182,6 +182,11 @@ thread_local! {
 
 impl ObjId {
     pub fn as_str(&self) -> &str { &self.0 }
+    /// The id with this text, if this thread holds one (an object with
+    /// that id can only exist then).
+    pub fn existing(s: &str) -> Option<ObjId> {
+        IDS.with(|t| t.borrow().0.get(s).map(|r| ObjId(r.clone())))
+    }
     /// The text, copied (without going through `Display`).
     #[allow(clippy::inherent_to_string_shadow_display)]
     pub fn to_string(&self) -> String { String::from(&*self.0) }
@@ -203,6 +208,17 @@ impl From<&str> for ObjId {
         })
     }
 }
+/// What a map keyed by ids can be looked up with: an id, or its text
+/// (found among the ids this thread holds; text no id has finds nothing).
+pub trait IdKey {
+    fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>>;
+}
+impl IdKey for ObjId { #[inline] fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>> { Some(std::borrow::Cow::Borrowed(self)) } }
+impl IdKey for str { fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>> { ObjId::existing(self).map(std::borrow::Cow::Owned) } }
+impl IdKey for String { fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>> { self.as_str().id() } }
+impl IdKey for GStr { fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>> { AsRef::<str>::as_ref(self).id() } }
+impl<T: IdKey + ?Sized> IdKey for &T { #[inline] fn id(&self) -> Option<std::borrow::Cow<'_, ObjId>> { (**self).id() } }
+
 impl From<String> for ObjId { fn from(s: String) -> ObjId { ObjId::from(s.as_str()) } }
 impl From<&String> for ObjId { fn from(s: &String) -> ObjId { ObjId::from(s.as_str()) } }
 impl From<Rc<str>> for ObjId { fn from(s: Rc<str>) -> ObjId { ObjId::from(&*s) } }
@@ -211,7 +227,6 @@ impl std::ops::Deref for ObjId {
     type Target = str;
     fn deref(&self) -> &str { &self.0 }
 }
-impl std::borrow::Borrow<str> for ObjId { fn borrow(&self) -> &str { &self.0 } }
 impl AsRef<str> for ObjId { fn as_ref(&self) -> &str { &self.0 } }
 impl PartialEq for ObjId {
     fn eq(&self, o: &ObjId) -> bool { Rc::ptr_eq(&self.0, &o.0) || *self.0 == *o.0 }
@@ -226,12 +241,14 @@ impl PartialEq<ObjId> for &str { fn eq(&self, o: &ObjId) -> bool { *self == &*o.
 impl PartialEq<ObjId> for GStr { fn eq(&self, o: &ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0 } }
 impl PartialEq<&ObjId> for GStr { fn eq(&self, o: &&ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0 } }
 impl Default for ObjId { fn default() -> ObjId { ObjId::from("") } }
-/// A map keyed by ids can be looked up with a `String` too.
-impl indexmap::Equivalent<ObjId> for String { fn equivalent(&self, k: &ObjId) -> bool { self.as_str() == &*k.0 } }
 impl PartialOrd for ObjId { fn partial_cmp(&self, o: &ObjId) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
 impl Ord for ObjId { fn cmp(&self, o: &ObjId) -> std::cmp::Ordering { self.0.cmp(&o.0) } }
+/// Ids are held once per thread (see `From<&str>`), so two ids with the
+/// same text are the same allocation: an id hashes by where its text is,
+/// without reading the text. Maps keyed by ids are looked up with an id,
+/// never with text (`ObjId::existing` finds the id for a text).
 impl std::hash::Hash for ObjId {
-    fn hash<H: std::hash::Hasher>(&self, h: &mut H) { (*self.0).hash(h) }
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) { (Rc::as_ptr(&self.0) as *const u8 as usize).hash(h) }
 }
 impl std::fmt::Display for ObjId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0) }

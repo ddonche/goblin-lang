@@ -714,7 +714,8 @@ fn leave_if_held_elsewhere(s: &mut crate::session::Session, uuid: &str) -> Resul
     let Some(c) = s.region.as_ref() else { return Ok(()) };
     if c.places.is_empty() || c.remote.contains(uuid) || !s.object_store.contains_key(uuid) { return Ok(()); }
     let (me, places) = (c.me, c.places.clone());
-    match holding_region(s, uuid, &places) {
+    let Some(id) = crate::value::ObjId::existing(uuid) else { return Ok(()) };
+    match holding_region(s, &id, &places) {
         Some(to) if to != me => send_away(s, uuid, to),
         _ => Ok(()),
     }
@@ -814,7 +815,7 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
 /// `owner` names it, at any depth) goes too, after it.
 fn send_away(s: &mut crate::session::Session, uuid: &str, to: u64) -> Result<(), GoblinError> {
     let contents: Vec<String> = s.object_store.all_contents_of(uuid).into_iter()
-        .filter(|c| s.object_store.contains_key(c.as_str())
+        .filter(|c| s.object_store.contains_key(c)
             && !s.region.as_ref().is_some_and(|r| r.remote.contains(c.as_str())))
         .collect();
     send_one(s, uuid, to)?;
@@ -878,11 +879,11 @@ fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
 
 /// The region whose object holds `uuid`, at some depth (following `owner`),
 /// or that object itself. None when the chain ends without reaching one.
-fn holding_region(s: &crate::session::Session, uuid: &str, places: &[(String, u64)]) -> Option<u64> {
+fn holding_region(s: &crate::session::Session, uuid: &crate::value::ObjId, places: &[(String, u64)]) -> Option<u64> {
     let mut at = uuid;
     // An `owner` chain can't loop (ownership is a tree), but stop anyway.
     for _ in 0..100_000 {
-        if let Some((_, a)) = places.iter().find(|(r, _)| r == at) { return Some(*a); }
+        if let Some((_, a)) = places.iter().find(|(r, _)| *r == *at) { return Some(*a); }
         at = s.object_store.holder_of(at)?;
     }
     None
@@ -902,7 +903,7 @@ fn move_to_holders(vm: &mut Vm, places: &[(String, u64)], me: u64) -> Result<(),
         if to == me { continue; }
         // What holds it is here and goes too: it goes along with that.
         if let Some(h) = s.object_store.holder_of(u) {
-            if !is_remote(h) && s.object_store.contains_key(h) && !places.iter().any(|(r, _)| r == h) { continue; }
+            if !is_remote(h) && s.object_store.contains_key(h) && !places.iter().any(|(r, _)| *r == *h) { continue; }
         }
         leaving.push((u.to_string(), to));
     }
@@ -921,7 +922,7 @@ fn hand_new_contents(vm: &mut Vm) -> Result<(), GoblinError> {
         if w.view.contains(u.as_str()) { continue; }
         // Its holder is the program's own too: it goes along with that one.
         if let Some(h) = vm.session.object_store.holder_of(u) {
-            if !w.view.contains(h) && vm.session.object_store.contains_key(h) { continue; }
+            if !w.view.contains(h.as_str()) && vm.session.object_store.contains_key(h) { continue; }
         }
         if let Some(to) = holding_region(&vm.session, u, &places) { sent.push((u.to_string(), to)); }
     }
