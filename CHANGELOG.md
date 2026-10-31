@@ -5,12 +5,15 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): in a region, setting an object's `owner` to another region's
+  object sends it at once, with what it holds, as `:move!` does; it does
+  nothing more in its old region that tick (it used to graze or hunt there
+  against the new region's objects until the tick ended).
 - Sims: epidemic, predator-prey and feudal rewritten around ownership. A
   person's or animal's `owner` is its town or meadow, and moving one is
   setting `owner`. Regions are `:actor(x)` with no handler, and there is no
-  list of regions to pass around and no `:move!`. Epidemic and feudal give
-  the same output; predator-prey's draws fall differently (new
-  `expected.txt`) and it still cycles. 62/102/301 lines instead of
+  list of regions to pass around and no `:move!`. All three give the same
+  output as before. 62/102/301 lines instead of
   71/115/312; bench/vs_mesa README updated.
 - DES (VM): faster when objects are compared by `owner`. `target >> owner
   == @owner` compares the two ids without looking either object up;

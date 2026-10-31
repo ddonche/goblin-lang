@@ -124,6 +124,7 @@ to the next meadow, and the runtime hands the animal to that meadow's
 region. So finding 4 (posting the list of meadows to every region, and
 `meadow_day`) is gone. The `meadow` number field, kept in step by hand, is
 gone too. Decisions and the hunt count read `target >> owner == @owner`.
-Same rules; the random draws fall differently, so `expected.txt` is new,
-and the populations still cycle about every 90 days. #130 made the runtime
-do these lookups through its index instead of scans.
+Same rules and the same output as before. A moving animal leaves its
+meadow as soon as its `owner` changes, so it doesn't graze or hunt there
+that day (the runtime was fixed for this in the same PR). #130 made the
+runtime do these lookups through its index instead of scans.

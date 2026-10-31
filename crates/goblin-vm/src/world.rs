@@ -114,6 +114,8 @@ pub struct RegionCtx {
     /// The overlays those objects have: (overlay, host).
     pub(crate) remote_overlays: HashSet<(String, String)>,
     pub(crate) sent: Vec<(Dest, Item)>,
+    /// Which region holds each region's object (see `holding_region`).
+    pub(crate) places: Arc<Vec<(String, u64)>>,
 }
 
 /// The main program's side: the regions of the current world, their last
@@ -375,7 +377,7 @@ pub(crate) fn view_overlays(vm: &mut Vm) -> Vec<crate::session::OverlayInstance>
 /// tick with the other regions' objects in view, then the region's handler
 /// with `{"tick": n}`. Returns its snapshot and what it sends.
 pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
-    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: HashSet::new(), remote_overlays: HashSet::new(), sent: Vec::new() });
+    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: HashSet::new(), remote_overlays: HashSet::new(), sent: Vec::new(), places: job.places.clone() });
     let r = region_steps(vm, state, handler, job);
     let ctx = vm.session.region.take();
     // Whatever happened, no other region's object stays here.
@@ -446,7 +448,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             Item::Arrive(_) => {}
             Item::MoveTo { uuid, to } => {
                 // Gone meanwhile (erased): nothing to move.
-                if vm.session.object_store.contains_key(uuid) { send_away(vm, uuid, *to)?; }
+                if vm.session.object_store.contains_key(uuid) { send_away(&mut vm.session, uuid, *to)?; }
             }
             Item::Change { uuid, field, change } => apply_change(vm, uuid, field, change, &mut fp),
             Item::Erase { uuid } => {
@@ -696,12 +698,26 @@ fn send_to_owner(s: &mut crate::session::Session, uuid: &str, item: Item) -> boo
 /// value goes to the region, which sets it at the start of the next tick.
 /// The program's copy already has it, so it reads back what it wrote.
 pub(crate) fn after_view_write(s: &mut crate::session::Session, uuid: &str, field: &str) -> Result<(), GoblinError> {
+    if field == crate::store::OWNER_FIELD { leave_if_held_elsewhere(s, uuid)?; }
     if !in_view(s, uuid) { return Ok(()); }
     let Some(Value::Object(o)) = s.object_store.get(uuid) else { return Ok(()) };
     let Some(v) = o.fields.get(field) else { return Ok(()) };
     let p = ToPortable::new(s).objects_by_id().value(v)?;
     send_to_owner(s, uuid, Item::Change { uuid: uuid.to_string(), field: field.to_string(), change: Change::Set(p) });
     Ok(())
+}
+
+/// In a region: one of its objects whose `owner` now leads to another
+/// region's object leaves now, with what it holds, as `:move!` sends it, so
+/// it does nothing more here this tick.
+fn leave_if_held_elsewhere(s: &mut crate::session::Session, uuid: &str) -> Result<(), GoblinError> {
+    let Some(c) = s.region.as_ref() else { return Ok(()) };
+    if c.places.is_empty() || c.remote.contains(uuid) || !s.object_store.contains_key(uuid) { return Ok(()); }
+    let (me, places) = (c.me, c.places.clone());
+    match holding_region(s, uuid, &places) {
+        Some(to) if to != me => send_away(s, uuid, to),
+        _ => Ok(()),
+    }
 }
 
 /// `delete_object!` on a region's object: its region erases it at the start
@@ -776,7 +792,7 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
             return Err(crate::actor::missing_object(&vm.session, &uuid));
         }
         if to == c.me { return Ok(()); }
-        return send_away(vm, &uuid, to);
+        return send_away(&mut vm.session, &uuid, to);
     }
     if let Some(w) = vm.session.world.as_mut() {
         let Some(j) = w.ids.iter().position(|id| *id == to) else {
@@ -796,18 +812,18 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<()
 /// Takes an object of this region, and what goes along with it, out of the
 /// session and sends it to region `to`. What it contains (objects whose
 /// `owner` names it, at any depth) goes too, after it.
-fn send_away(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
-    let contents: Vec<String> = vm.session.object_store.all_contents_of(uuid).into_iter()
-        .filter(|c| vm.session.object_store.contains_key(c.as_str())
-            && !vm.session.region.as_ref().is_some_and(|r| r.remote.contains(c.as_str())))
+fn send_away(s: &mut crate::session::Session, uuid: &str, to: u64) -> Result<(), GoblinError> {
+    let contents: Vec<String> = s.object_store.all_contents_of(uuid).into_iter()
+        .filter(|c| s.object_store.contains_key(c.as_str())
+            && !s.region.as_ref().is_some_and(|r| r.remote.contains(c.as_str())))
         .collect();
-    send_one(vm, uuid, to)?;
-    for c in &contents { send_one(vm, c, to)?; }
+    send_one(s, uuid, to)?;
+    for c in &contents { send_one(s, c, to)?; }
     Ok(())
 }
 
-fn send_one(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
-    let s = &vm.session;
+fn send_one(ss: &mut crate::session::Session, uuid: &str, to: u64) -> Result<(), GoblinError> {
+    let s = &*ss;
     let Some(v) = s.object_store.get(uuid) else { return Ok(()) };
     let mut tp = ToPortable::new(s).objects_by_id();
     let object = tp.value(v)?;
@@ -828,7 +844,7 @@ fn send_one(vm: &mut Vm, uuid: &str, to: u64) -> Result<(), GoblinError> {
     links.sort_by(|a, b| a.0.cmp(&b.0));
     let decision = s.object_decisions.get(uuid).map(|d| (**d).clone());
     drop(tp);
-    let s = &mut vm.session;
+    let s = ss;
     s.object_store.shift_remove(uuid);
     let places = s.overlay_instances.on_host(uuid).to_vec();
     s.overlay_instances.take_at(&places);
@@ -890,7 +906,7 @@ fn move_to_holders(vm: &mut Vm, places: &[(String, u64)], me: u64) -> Result<(),
         }
         leaving.push((u.clone(), to));
     }
-    for (u, to) in leaving { send_away(vm, &u, to)?; }
+    for (u, to) in leaving { send_away(&mut vm.session, &u, to)?; }
     Ok(())
 }
 

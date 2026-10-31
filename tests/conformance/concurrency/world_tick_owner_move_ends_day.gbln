@@ -1,0 +1,47 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Setting `owner` to another region's object sends the object at once, as
+/// `:move!` does: it does nothing more in its old region that tick (no
+/// decision there against the new region's objects), and acts in its new
+/// region from the next tick.
+<>Meadow |
+    n: 0
+xx
+<>Grass |
+    owner: nil
+    ~bites: 0
+xx
+<>Rabbit |
+    owner: nil
+    every 1 tick
+        if @owner >> n == 1
+            @owner |= :objects("Meadow", it >> n == 2)[0]
+        xx
+    end
+    graze | decision against Grass where [ target >> owner == @owner ]
+    judge using graze
+        >= 0: eat(target)
+    end
+xx
+act eat(r, g)
+    g >> bites |= g >> bites + 1
+xx
+act make(i)
+    m <> Meadow | n: i
+    g <> Grass | owner: m
+    if i == 1
+        r <> Rabbit | owner: m
+    xx
+    return m
+xx
+meadows | []
+repeat :range(1, 3) as i
+    :put_last!(meadows, :actor(make(i)))
+xx
+repeat :range(1, 4) as t
+    tick(meadows)
+    bites | []
+    repeat :objects("Grass") as g
+        :put_last!(bites, "{g >> owner >> n}:{g >> bites}")
+    xx
+    say("tick {t}: {bites}")
+xx
