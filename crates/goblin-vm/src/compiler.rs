@@ -3464,7 +3464,11 @@ impl Compiler {
                             let vidx = self.add_constant(Value::Str(var.into()));
                             self.emit(Opcode::LoadConst(vidx));
                             self.compile_predicate_lambda(pred)?;
-                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 4));
+                            // When the test is the whole predicate, the
+                            // contents list is the answer: nothing to check.
+                            let whole = matches!(pred, Expr::Binary(_, op, _, _) if op == "==");
+                            self.emit(if whole { Opcode::LoadTrue } else { Opcode::LoadFalse });
+                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 5));
                             return Ok(Some(()));
                         }
                     }
@@ -3520,10 +3524,15 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
         Expr::Member(o, f, _) => f == crate::store::OWNER_FIELD && matches!(&**o, Expr::Ident(n, _) if n == "it"),
         _ => false,
     };
-    let var = |e: &Expr| match e {
-        Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some((n.clone(), e.clone())),
-        _ => None,
-    };
+    // `x`, or a field path from x (`f >> owner`): read once, before the query.
+    fn root(e: &Expr) -> Option<&String> {
+        match e {
+            Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some(n),
+            Expr::Member(o, _, _) => root(o),
+            _ => None,
+        }
+    }
+    let var = |e: &Expr| root(e).map(|n| (n.clone(), e.clone()));
     if reads_owner(l) { var(r) } else if reads_owner(r) { var(l) } else { None }
 }
 

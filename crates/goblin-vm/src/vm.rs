@@ -5616,6 +5616,8 @@ impl Vm {
         let (Some(Value::Str(class)), Some(owner), Some(Value::Str(var)), Some(pred)) = (it.next(), it.next(), it.next(), it.next()) else {
             return Err(GoblinError::Runtime("objects: bad arguments".into()));
         };
+        // The predicate is only `it >> owner == x`: what x contains matches it.
+        let only_owner = matches!(it.next(), Some(Value::Bool(true)));
         let class: &str = class.as_ref();
         let var: &str = var.as_ref();
         // `owner` is a call that reads the holder's variable.
@@ -5647,7 +5649,7 @@ impl Vm {
             })
             .collect();
         ids.sort_unstable();
-        self.objects_among(Some(ids), Some(pred))
+        self.objects_among(Some(ids), if only_owner { None } else { Some(pred) })
     }
 
     /// `:objects(...)`: every object, or a class's objects (read from the

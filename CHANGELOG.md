@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: `:objects("Item", it >> owner == x)` returns x's contents without
+  testing each one again, and the holder may be a field path
+  (`it >> owner == f >> owner`) as well as a variable. Feudal 6%,
+  predator-prey 6% fewer instructions.
 - VM: an object's class name and id are shared strings, so copying an
   object (reading `:objects(...)`, passing it to an action) copies no
   text. Predator-prey 7%, feudal 6% fewer instructions.
