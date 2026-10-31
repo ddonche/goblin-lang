@@ -116,7 +116,8 @@ pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option
             | Opcode::ToPct | Opcode::MakePair | Opcode::MakeRange | Opcode::MakeRangeInclusive
             | Opcode::TryBegin(_) | Opcode::TryEnd | Opcode::StringInterpVals(..) | Opcode::ProgramVar(_)
             | Opcode::TupleSplit(_) | Opcode::ArrayPushToLocal(_) | Opcode::AppendLocal(_)
-            | Opcode::RepeatNext(_) | Opcode::RepeatStart(..) | Opcode::RepeatIdx(..) => true,
+            | Opcode::RepeatNext(_) | Opcode::RepeatStart(..) | Opcode::RepeatIdx(..)
+            | Opcode::ObjectsOwned(_) => true,
             Opcode::CallBuiltin(id, _) => builtin_reads(id),
             Opcode::Fused(i) => matches!(f.op_data.get(i as usize), Some(OpData::Fused(x)) if matches!(x.kind, FusedKind::Read)),
             Opcode::MakeClosure(i) => match f.constants.get(i as usize) {

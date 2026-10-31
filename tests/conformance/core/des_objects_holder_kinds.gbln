@@ -1,0 +1,52 @@
+/// known-gap: interp has no contents list (owner is a plain field there)
+/// `:objects("Item", it >> owner == x)` gives the same answer however x is
+/// held: a global, a local, a variable an inner action captured, a field
+/// path. When x isn't an object, or the class has a field named like x
+/// (there the name reads the field), the predicate decides alone.
+<>Bag |
+    name: ""
+    owner: nil
+xx
+<>Item |
+    name: ""
+    owner: nil
+xx
+<>Tag |
+    name: ""
+    bag: nil
+    owner: nil
+xx
+a <> Bag | name: "a"
+b <> Bag | name: "b"
+x <> Item | name: "x", owner: a
+y <> Item | name: "y", owner: a
+z <> Item | name: "z", owner: b
+t <> Tag | name: "t", owner: a, bag: b
+u <> Tag | name: "u", owner: b, bag: b
+act names(xs)
+    out | []
+    repeat xs as i
+        :put_last!(out, i >> name)
+    xx
+    return out
+xx
+act local_holder()
+    h | b
+    return names(:objects("Item", it >> owner == h))
+xx
+act captured(h)
+    act inner()
+        return names(:objects("Item", it >> owner == h))
+    xx
+    return inner()
+xx
+say(names(:objects("Item", it >> owner == a)))
+say(local_holder())
+say(captured(a))
+say(names(:objects("Item", it >> owner == t >> owner)))
+say(names(:objects("Item", it >> owner == 5)))
+n | nil
+say(names(:objects("Item", it >> owner == n)))
+bag | a
+say(names(:objects("Tag", it >> owner == bag)))
+say(names(:objects("Tag", it >> owner == x >> owner >> owner)))

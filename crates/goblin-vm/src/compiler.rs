@@ -3455,6 +3455,36 @@ impl Compiler {
                 if let [cls @ Expr::Str(..), pred] = args {
                     if let Some((var, var_expr)) = owner_test(pred) {
                         if self.resolve_load(&var).is_ok() && only_reads(pred) {
+                            // When the test is the whole predicate, the
+                            // contents list is the answer: nothing to check.
+                            let whole = matches!(pred, Expr::Binary(_, op, _, _) if op == "==");
+                            // A variable, or a field path from one, giving an
+                            // object: read its contents at once, without
+                            // building the closures.
+                            // `x >> a >> b`: the fields read from x, in order.
+                            fn fields(e: &Expr, out: &mut Vec<String>) -> bool {
+                                match e {
+                                    Expr::Ident(..) => true,
+                                    Expr::Member(o, f, _) => { let ok = fields(o, out); out.push(f.clone()); ok }
+                                    _ => false,
+                                }
+                            }
+                            let mut path = Vec::new();
+                            let quick = match (fields(&var_expr, &mut path), whole) {
+                                (true, true) => {
+                                    let load = self.resolve_load(&var).map_err(|e| self.locate_err(e))?;
+                                    match load {
+                                        Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
+                                            let Expr::Str(class, _) = cls else { unreachable!() };
+                                            let qi = self.op_data(crate::opcode::OpData::ObjectsOwned(Box::new(crate::opcode::ObjectsOwned {
+                                                class: class.clone(), var: var.clone(), load, path, skip: 0 })));
+                                            Some((self.emit(Opcode::ObjectsOwned(qi)), qi))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
                             self.compile_expr(cls)?;
                             // The holder is read by a call, so a variable that
                             // can't be read (its object was erased) makes the
@@ -3464,11 +3494,13 @@ impl Compiler {
                             let vidx = self.add_constant(Value::Str(var.into()));
                             self.emit(Opcode::LoadConst(vidx));
                             self.compile_predicate_lambda(pred)?;
-                            // When the test is the whole predicate, the
-                            // contents list is the answer: nothing to check.
-                            let whole = matches!(pred, Expr::Binary(_, op, _, _) if op == "==");
                             self.emit(if whole { Opcode::LoadTrue } else { Opcode::LoadFalse });
                             self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 5));
+                            if let Some((at, qi)) = quick {
+                                let skip = (self.scope().bytecode.len() - at - 1) as u32;
+                                if let crate::opcode::OpData::ObjectsOwned(q) = &mut self.scope_mut().op_data[qi as usize] { q.skip = skip; }
+                                self.scope_mut().unused_nil = None;
+                            }
                             return Ok(Some(()));
                         }
                     }

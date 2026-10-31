@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: `:objects("X", it >> owner == x)` reads x (a variable, or a field
+  path from one) and its contents at once, without building the query's two
+  closures; an action doing it still counts as only reading. Feudal -12%
+  instructions.
 - VM: an object id is held once per thread and shared by every copy of
   it (`ObjId`); the object store, ownership lists and field indexes key
   by it. Copying a reference copies no text. Epidemic -8%, predator-prey

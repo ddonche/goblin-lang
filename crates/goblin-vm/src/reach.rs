@@ -175,7 +175,10 @@ impl Walk<'_> {
                 _ => {}
             }
         }
-        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_))) { self.all = true; return; }
+        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_) | OpData::ObjectsOwned(_))) { self.all = true; return; }
+        for d in &f.op_data {
+            if let OpData::ObjectsOwned(q) = d { if let Opcode::LoadGlobal(i) = q.load { self.mark(i as usize); } }
+        }
         // Labels hold the source text of an index path, for error messages
         // only (`st{"biz"}[b]`): they read nothing by name, so their words
         // count as plain words (a constant can be shared with a real use).

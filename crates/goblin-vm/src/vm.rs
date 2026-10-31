@@ -1182,6 +1182,12 @@ impl Vm {
                 self.stack.push(Operand::Val(Value::Int(n)));
                 return self.store_local_op(slot, false);
             }
+            Opcode::ObjectsOwned(idx) => {
+                if let Some((found, skip)) = self.objects_owned(idx) {
+                    self.stack.push(Operand::Val(found));
+                    self.call_stack.last_mut().unwrap().ip += skip as usize;
+                }
+            }
             Opcode::QuickSet(idx) => {
                 if let Some(skip) = self.quick_set(idx)? {
                     self.call_stack.last_mut().unwrap().ip += skip as usize;
@@ -5623,6 +5629,52 @@ impl Vm {
         };
         self.session.object_store.get_index_of(uuid)?;
         Some(v)
+    }
+
+    /// `Opcode::ObjectsOwned`: what the query's own steps would give (see
+    /// `vm_objects_in`), when its holder variable holds an object in the
+    /// store, with the steps to skip. None when the steps must run.
+    #[inline(never)]
+    fn objects_owned(&mut self, idx: u16) -> Option<(Value, u32)> {
+        let func = self.call_stack.last().unwrap().func.clone();
+        let crate::opcode::OpData::ObjectsOwned(q) = &func.op_data[idx as usize] else { unreachable!("ObjectsOwned without its data") };
+        let frame = self.call_stack.last().unwrap();
+        let t = match q.load {
+            Opcode::LoadLocal(s) => frame.locals.get(s as usize)?.clone()?,
+            Opcode::LoadUpvalue(u) => frame.upvalues.get(u as usize)?.get(),
+            Opcode::LoadGlobal(g) => self.session.get_global(g as usize)?.clone(),
+            _ => return None,
+        };
+        // Each field is read as `>>` reads it: from the object a variable
+        // holds, or from the store for an id.
+        let store = &self.session.object_store;
+        let field = |v: &Value, f: &str| -> Option<Value> {
+            let o = match v {
+                Value::Object(o) => o,
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => match store.get(u.as_str()) {
+                    Some(Value::Object(o)) => o,
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(o.fields.get(f)?.clone_fast())
+        };
+        let root = &self.session.get_stash(&t).ok()?.value;
+        let mut held: Option<Value> = None;
+        for f in &q.path { held = Some(field(held.as_ref().unwrap_or(root), f)?); }
+        let owner = match held.as_ref().unwrap_or(root) {
+            Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => u.clone(),
+            Value::Object(o) => o.uuid.clone(),
+            _ => return None,
+        };
+        self.session.object_store.get_index_of(owner.as_str())?;
+        let usable = self.session.classes.get(q.class.as_str()).is_some_and(|c|
+            c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
+        if !usable { return None; }
+        let store = &self.session.object_store;
+        let found = store.contents_at(&owner, Some(q.class.as_str())).into_iter()
+            .filter_map(|i| store.get_index(i).map(|(_, v)| v.clone())).collect();
+        Some((Value::Array(found), q.skip))
     }
 
     /// `:objects("Class", it >> owner == x ...)` (from the compiler): x's
