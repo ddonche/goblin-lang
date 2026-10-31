@@ -6589,7 +6589,7 @@ mod tests {
             relation: None, default: None,
             span: goblin_diagnostics::Span::new("t", 0, 0, 0, 0, 0, 0),
         };
-        let mut fields = indexmap::IndexMap::<String, Value>::new();
+        let mut fields = crate::value::FieldMap::default();
         fields.insert("mood".into(), Value::Nil);
         let traits = trait_fields_of(&mut fields, &[decl]);
         assert!(traits.contains("mood"));
