@@ -1447,9 +1447,11 @@ impl Vm {
                     }
                 };
                 let rhs = self.pop_value()?;
-                let class = self.session.classes.get(class_name.as_str())
-                    .ok_or_else(|| GoblinError::Runtime(format!("unknown class '{}'", class_name)))?
-                    .clone();
+                // The class table is shared, so holding it costs a count, not
+                // a copy of the class.
+                let classes = std::rc::Rc::clone(&self.session.classes);
+                let class = classes.get(class_name.as_str())
+                    .ok_or_else(|| GoblinError::Runtime(format!("unknown class '{}'", class_name)))?;
 
                 let uuid = uuid::Uuid::new_v4().to_string();
 

@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: making an object (`x <> Class | ...`) no longer copies the whole
+  class declaration first. Epidemic 3%, predator-prey 6%, feudal 4%
+  fewer instructions.
 - VM: `pick ...` passes its settings straight to the pick instead of
   building a map on every call, and picking one item no longer makes a
   hash table. Epidemic 12%, predator-prey 6%, feudal 1% fewer
