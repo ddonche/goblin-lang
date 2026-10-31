@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: `pick ...` passes its settings straight to the pick instead of
+  building a map on every call, and picking one item no longer makes a
+  hash table. Epidemic 12%, predator-prey 6%, feudal 1% fewer
+  instructions; same draws, output unchanged.
 - VM: object fields and the DES id sets and indexes use a faster hash
   (Fx instead of SipHash). Epidemic 12%, predator-prey 7% and feudal 6%
   fewer instructions; output unchanged.

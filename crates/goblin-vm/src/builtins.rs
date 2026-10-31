@@ -946,118 +946,20 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Collection(c) if c.is_map() => crate::collections::to_pairs(&c).into_iter().filter_map(|(k, v)| if let Value::Str(s) = k { Some((s.into_string(), v)) } else { None }).collect(),
                 other => return Err(GoblinError::type_error("map (pick config)", other.type_name(), "pick")),
             };
-            let get_num = |k: &str| -> Option<f64> { match cfg.get(k)? { Value::Float(n) => Some(*n), Value::Int(i) => Some(*i as f64), Value::Str(s) => s.parse::<f64>().ok(), _ => None } };
-            let count_f = get_num("count_expr").or_else(|| get_num("count")).unwrap_or(1.0);
-            // Config checks, as in the interpreter: count is a positive integer, digits >= 1,
-            // there is some source, and numeric range bounds are integers.
-            if !count_f.is_finite() || count_f < 1.0 || count_f.fract() != 0.0 {
-                return Err(GoblinError::Runtime("pick: 'count' must be a positive integer".into()));
+            pick_with(session, &|k| cfg.get(k))
+        }
+        BuiltinId::PickSet => {
+            let mask = match args.first() { Some(Value::Int(m)) => *m as u32, _ => return Err(GoblinError::Runtime("pick: bad settings".into())) };
+            let mut at = [usize::MAX; PICK_KEYS.len()];
+            let mut next = 1;
+            for (i, slot) in at.iter_mut().enumerate() {
+                if mask & (1 << i) != 0 { *slot = next; next += 1; }
             }
-            if let Some(d) = get_num("digits") {
-                if (d as i64) < 1 { return Err(GoblinError::Runtime("pick: 'digits' must be a positive integer (>= 1)".into())); }
-            }
-            let has_src = matches!(cfg.get("src"), Some(Value::Array(_) | Value::Seq(_) | Value::Map(_) | Value::MapOrd(_) | Value::Collection(_) | Value::Str(_)));
-            let has_range = cfg.contains_key("range_start") && cfg.contains_key("range_end");
-            if !has_src && !has_range && get_num("digits").is_none() {
-                return Err(GoblinError::Runtime("pick needs a source: `from <collection>` or a numeric form".into()));
-            }
-            if !has_src && has_range {
-                let one_char = |k: &str| matches!(cfg.get(k), Some(Value::Str(s)) if s.len() == 1);
-                if !(one_char("range_start") && one_char("range_end")) {
-                    for k in ["range_start", "range_end"] {
-                        match get_num(k) {
-                            None => return Err(GoblinError::Runtime("pick: range bounds must be numbers or single characters".into())),
-                            Some(x) if x.fract() != 0.0 => return Err(GoblinError::Runtime("pick: range bounds must be integers".into())),
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            let n_out = count_f as usize;
-            let allow_dups = match cfg.get("allow_dups") { Some(Value::Bool(b)) => *b, _ => false };
-            // collection source
-            let src = cfg.get("src");
-            match src {
-                Some(Value::Array(arr)) => {
-                    if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
-                    if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
-                    let out: Vec<Value> = if allow_dups {
-                        (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
-                    } else {
-                        let mut result = Vec::with_capacity(n_out);
-                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
-                        result
-                    };
-                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
-                }
-                Some(Value::Collection(c)) => {
-                    let arr = crate::collections::to_vec(&c);
-                    if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
-                    if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
-                    let out: Vec<Value> = if allow_dups {
-                        (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
-                    } else {
-                        let mut result = Vec::with_capacity(n_out);
-                        for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
-                        result
-                    };
-                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
-                }
-                Some(Value::Map(map)) => {
-                    let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                    if entries.is_empty() { return Err(GoblinError::Runtime("pick: empty src map".into())); }
-                    if !allow_dups && n_out > entries.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, entries.len()))); }
-                    let out: Vec<Value> = if allow_dups {
-                        (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
-                    } else {
-                        let mut result = Vec::with_capacity(n_out);
-                        for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
-                        result
-                    };
-                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
-                }
-                // numeric or char range
-                _ => {
-                    let get_char = |k: &str| -> Option<char> {
-                        match cfg.get(k)? {
-                            Value::Char(c) => Some(*c),
-                            Value::Str(s) if s.len() == 1 => s.chars().next(),
-                            _ => None,
-                        }
-                    };
-                    let inclusive = match cfg.get("range_inclusive") { Some(Value::Bool(b)) => *b, _ => false };
-                    // char range
-                    if let (Some(sc), Some(ec)) = (get_char("range_start"), get_char("range_end")) {
-                        let pool: Vec<char> = if inclusive { (sc..=ec).collect() } else { (sc..ec).collect() };
-                        if pool.is_empty() { return Err(GoblinError::Runtime("pick: empty char range".into())); }
-                        let out: Vec<Value> = if allow_dups {
-                            (0..n_out).map(|_| Value::Char(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
-                        } else {
-                            if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique chars", n_out, pool.len()))); }
-                            let mut result = Vec::with_capacity(n_out);
-                            for k in pick_indices(session, pool.len(), n_out) { result.push(Value::Char(pool[k])); }
-                            result
-                        };
-                        // char picks always join into a string (matching interpreter behaviour)
-                        let joined: String = out.iter().map(|v| match v { Value::Char(c) => *c, _ => '?' }).collect();
-                        return Ok(Value::Str(joined.into()));
-                    }
-                    let range_start = get_num("range_start").unwrap_or(1.0) as i64;
-                    let range_end   = get_num("range_end").unwrap_or(100.0) as i64;
-                    if range_end <= range_start { return Err(GoblinError::Runtime("pick: range_end must be > range_start".into())); }
-                    let range = (range_end - range_start) as u64;
-                    let out: Vec<Value> = if allow_dups {
-                        (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect()
-                    } else {
-                        let len = range as usize;
-                        if n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, len))); }
-                        let mut result = Vec::with_capacity(n_out);
-                        for k in pick_indices(session, len, n_out) { result.push(Value::Int(range_start + k as i64)); }
-                        result
-                    };
-                    if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
-                }
-            }
+            if next != args.len() { return Err(GoblinError::Runtime("pick: bad settings".into())); }
+            pick_with(session, &|k| {
+                let i = PICK_KEYS.iter().position(|n| *n == k)?;
+                args.get(at[i])
+            })
         }
 
         BuiltinId::ReadText => {
@@ -5692,11 +5594,131 @@ fn fisher_yates_shuffle(items: &mut Vec<Value>, session: &mut Session) {
     }
 }
 
+/// The settings `pick` takes, in the order the parser writes them.
+pub(crate) const PICK_KEYS: [&str; 9] = ["count_expr", "count", "range_start", "range_end", "range_inclusive", "src", "allow_dups", "unique", "digits"];
+
+/// `pick`, given its settings by name (`count`, `range_start`, `src`, ...).
+fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>) -> Result<Value, GoblinError> {
+    let get_num = |k: &str| -> Option<f64> { match get(k)? { Value::Float(n) => Some(*n), Value::Int(i) => Some(*i as f64), Value::Str(s) => s.parse::<f64>().ok(), _ => None } };
+    let count_f = get_num("count_expr").or_else(|| get_num("count")).unwrap_or(1.0);
+    // Config checks, as in the interpreter: count is a positive integer, digits >= 1,
+    // there is some source, and numeric range bounds are integers.
+    if !count_f.is_finite() || count_f < 1.0 || count_f.fract() != 0.0 {
+        return Err(GoblinError::Runtime("pick: 'count' must be a positive integer".into()));
+    }
+    if let Some(d) = get_num("digits") {
+        if (d as i64) < 1 { return Err(GoblinError::Runtime("pick: 'digits' must be a positive integer (>= 1)".into())); }
+    }
+    let has_src = matches!(get("src"), Some(Value::Array(_) | Value::Seq(_) | Value::Map(_) | Value::MapOrd(_) | Value::Collection(_) | Value::Str(_)));
+    let has_range = get("range_start").is_some() && get("range_end").is_some();
+    if !has_src && !has_range && get_num("digits").is_none() {
+        return Err(GoblinError::Runtime("pick needs a source: `from <collection>` or a numeric form".into()));
+    }
+    if !has_src && has_range {
+        let one_char = |k: &str| matches!(get(k), Some(Value::Str(s)) if s.len() == 1);
+        if !(one_char("range_start") && one_char("range_end")) {
+            for k in ["range_start", "range_end"] {
+                match get_num(k) {
+                    None => return Err(GoblinError::Runtime("pick: range bounds must be numbers or single characters".into())),
+                    Some(x) if x.fract() != 0.0 => return Err(GoblinError::Runtime("pick: range bounds must be integers".into())),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let n_out = count_f as usize;
+    let allow_dups = match get("allow_dups") { Some(Value::Bool(b)) => *b, _ => false };
+    // collection source
+    let src = get("src");
+    match src {
+        Some(Value::Array(arr)) => {
+            if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+            if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
+            let out: Vec<Value> = if allow_dups {
+                (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
+            } else {
+                let mut result = Vec::with_capacity(n_out);
+                for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
+                result
+            };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+        Some(Value::Collection(c)) => {
+            let arr = crate::collections::to_vec(&c);
+            if arr.is_empty() { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+            if !allow_dups && n_out > arr.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, arr.len()))); }
+            let out: Vec<Value> = if allow_dups {
+                (0..n_out).map(|_| arr[rng_bounded(session, arr.len() as u64) as usize].clone()).collect()
+            } else {
+                let mut result = Vec::with_capacity(n_out);
+                for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
+                result
+            };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+        Some(Value::Map(map)) => {
+            let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            if entries.is_empty() { return Err(GoblinError::Runtime("pick: empty src map".into())); }
+            if !allow_dups && n_out > entries.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, entries.len()))); }
+            let out: Vec<Value> = if allow_dups {
+                (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
+            } else {
+                let mut result = Vec::with_capacity(n_out);
+                for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
+                result
+            };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+        // numeric or char range
+        _ => {
+            let get_char = |k: &str| -> Option<char> {
+                match get(k)? {
+                    Value::Char(c) => Some(*c),
+                    Value::Str(s) if s.len() == 1 => s.chars().next(),
+                    _ => None,
+                }
+            };
+            let inclusive = match get("range_inclusive") { Some(Value::Bool(b)) => *b, _ => false };
+            // char range
+            if let (Some(sc), Some(ec)) = (get_char("range_start"), get_char("range_end")) {
+                let pool: Vec<char> = if inclusive { (sc..=ec).collect() } else { (sc..ec).collect() };
+                if pool.is_empty() { return Err(GoblinError::Runtime("pick: empty char range".into())); }
+                let out: Vec<Value> = if allow_dups {
+                    (0..n_out).map(|_| Value::Char(pool[rng_bounded(session, pool.len() as u64) as usize])).collect()
+                } else {
+                    if n_out > pool.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique chars", n_out, pool.len()))); }
+                    let mut result = Vec::with_capacity(n_out);
+                    for k in pick_indices(session, pool.len(), n_out) { result.push(Value::Char(pool[k])); }
+                    result
+                };
+                // char picks always join into a string (matching interpreter behaviour)
+                let joined: String = out.iter().map(|v| match v { Value::Char(c) => *c, _ => '?' }).collect();
+                return Ok(Value::Str(joined.into()));
+            }
+            let range_start = get_num("range_start").unwrap_or(1.0) as i64;
+            let range_end   = get_num("range_end").unwrap_or(100.0) as i64;
+            if range_end <= range_start { return Err(GoblinError::Runtime("pick: range_end must be > range_start".into())); }
+            let range = (range_end - range_start) as u64;
+            let out: Vec<Value> = if allow_dups {
+                (0..n_out).map(|_| Value::Int(range_start + rng_bounded(session, range) as i64)).collect()
+            } else {
+                let len = range as usize;
+                if n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} unique ints", n_out, len))); }
+                let mut result = Vec::with_capacity(n_out);
+                for k in pick_indices(session, len, n_out) { result.push(Value::Int(range_start + k as i64)); }
+                result
+            };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+    }
+}
+
 /// `n` distinct positions out of `0..len`, in the order a partial
 /// Fisher-Yates shuffle of `0..len` gives them (same random draws), without
 /// building the whole list: only the swapped positions are remembered.
 fn pick_indices(session: &mut Session, len: usize, n: usize) -> Vec<usize> {
-    let mut moved: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    if n == 1 { return vec![rng_bounded(session, len as u64) as usize]; }
+    let mut moved: rustc_hash::FxHashMap<usize, usize> = Default::default();
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let j = i + rng_bounded(session, (len - i) as u64) as usize;
