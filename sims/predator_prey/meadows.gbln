@@ -1,7 +1,8 @@
 /// Predator and prey on DES: rabbits eat grass, foxes eat rabbits, and both
-/// starve without food. Each meadow is a region; tick(meadows) runs one day
-/// in all of them at once, and animals now and then wander to the next
-/// meadow (`:move!`).
+/// starve without food. Each meadow is a region (an actor that owns the
+/// meadow and what is in it); tick(meadows) runs one day in all of them at
+/// once. Now and then an animal wanders to the next meadow: setting its
+/// `owner` moves it there.
 ///
 ///   Grass   one patch per meadow; grows back 80 a day, up to 400.
 ///   Rabbit  burns 1 energy a day; grazes (decision `graze`); has a kit
@@ -25,11 +26,12 @@ if :env("MEADOWS") != ""
     n_meadows |= :int(:env("MEADOWS"))
 xx
 
-/// The meadows, for wandering: each learns the list once all exist.
-all_meadows | []
+<>Meadow |
+    n: 0
+xx
 
 <>Grass |
-    ~meadow: 0
+    owner: nil
     ~amount: 400
     every 1 tick
         @amount |= :min(400, @amount + 80)
@@ -37,20 +39,18 @@ all_meadows | []
 xx
 
 <>Rabbit |
-    /// Only for counting: nothing can ask an object its class (FINDINGS.md, 1).
-    ~meadow: 0
+    owner: nil
     ~energy: 6
-    ~born: 0
     every 1 tick
         @energy |= @energy - 1
         if @energy >= 10 and (pick 1 from 1...4) == 1
             @energy |= @energy - 5
-            kit <> Rabbit | meadow: @meadow, energy: 4, born: 1
+            kit <> Rabbit | owner: @owner, energy: 4
         xx
         wander(self)
     end
     graze | decision against Grass where [
-        target >> meadow == @meadow and target >> amount >= 1
+        target >> owner == @owner and target >> amount >= 1
     ] by [ target >> amount ]
     judge using graze
         >= 0: eat_grass(target)
@@ -60,19 +60,18 @@ xx
 xx
 
 <>Fox |
-    ~meadow: 0
+    owner: nil
     ~energy: 12
-    ~born: 0
     every 1 tick
         @energy |= @energy - 1
         if @energy >= 25 and (pick 1 from 1...4) == 1
             @energy |= @energy - 12
-            cub <> Fox | meadow: @meadow, energy: 10, born: 1
+            cub <> Fox | owner: @owner, energy: 10
         xx
         wander(self)
     end
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ @energy < 30 and target >> meadow == @meadow ]
+    hunt | decision against Rabbit where [ @energy < 30 and target >> owner == @owner ]
     judge using hunt
         >= 0: catch(target)
     end
@@ -86,9 +85,9 @@ act eat_grass(r, g)
 xx
 
 /// The more rabbits in the meadow, the likelier a hunt succeeds: a few
-/// rabbits hide well. Counting them takes a scan (FINDINGS.md, 2).
+/// rabbits hide well.
 act catch(f, r)
-    here | :len(:objects("Rabbit", it >> meadow == f >> meadow))
+    here | :len(:objects("Rabbit", it >> owner == f >> owner))
     if (pick 1 from 1...(here + 400)) <= here
         r >> energy |= 0
         f >> energy |= :min(40, f >> energy + 8)
@@ -98,40 +97,26 @@ xx
 /// One animal in twenty a day wanders to the next meadow.
 act wander(a)
     if n_meadows > 1 and (pick 1 from 1...20) == 1
-        to | (a >> meadow + 1) % n_meadows
-        a >> meadow |= to
-        :move!(a, all_meadows[to])
+        next | (a >> owner >> n + 1) % n_meadows
+        a >> owner |= :objects("Meadow", it >> n == next)[0]
     xx
 xx
 
-act make_meadow(m)
-    things | []
-    g <> Grass | meadow: m
-    :put_last!(things, g)
+act make_meadow(n)
+    meadow <> Meadow | n: n
+    g <> Grass | owner: meadow
     repeat :range(0, 100)
-        r <> Rabbit | meadow: m, energy: 4 + (pick 1 from 0...6)
-        :put_last!(things, r)
+        r <> Rabbit | owner: meadow, energy: 4 + (pick 1 from 0...6)
     xx
     repeat :range(0, 5)
-        f <> Fox | meadow: m, energy: 8 + (pick 1 from 0...8)
-        :put_last!(things, f)
+        f <> Fox | owner: meadow, energy: 8 + (pick 1 from 0...8)
     xx
-    return {"m": m, "things": things}
-xx
-
-act meadow_day(st, msg)
-    if :has(msg, "meadows")
-        all_meadows |= msg{"meadows"}
-    xx
-    return st
+    return meadow
 xx
 
 meadows | []
-repeat :range(0, n_meadows) as m
-    :put_last!(meadows, :actor(make_meadow(m), meadow_day))
-xx
-repeat meadows as md
-    :post(md, {"meadows": meadows})
+repeat :range(0, n_meadows) as n
+    :put_last!(meadows, :actor(make_meadow(n)))
 xx
 
 say("predator and prey: {n_meadows} meadows, {days} days")

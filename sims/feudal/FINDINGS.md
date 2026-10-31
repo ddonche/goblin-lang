@@ -67,3 +67,11 @@ avoids the question by asking about ownership instead ("an estate held by
 another vassal of my liege": `target >> owner >> owner == self >> owner`),
 which is also the more feudal rule. No change proposed; noting it because
 the first version of the sim reached for the slow form.
+
+## Rewritten without the region list (2026-10-27)
+
+A defecting noble now only sets `owner` to the other king. The runtime
+hands him, with all he holds, to that kingdom's region (#126). So
+`:move!`, the posted list of realms and the `kingdom_year` handler are
+gone, and the realms are made with `:actor(make_kingdom(k))`. `vows` is a
+bool. Same output as before.

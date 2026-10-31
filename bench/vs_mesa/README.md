@@ -20,13 +20,13 @@ Python docstrings and `#`).
 
 | Sim | Goblin | Goblin without `xx`/`end` lines | Mesa |
 |---|---|---|---|
-| epidemic | 71 | 53 | 58 |
-| predator-prey | 115 | 86 | 84 |
-| feudal | 312 | 234 | 241 |
+| epidemic | 62 | 46 | 58 |
+| predator-prey | 102 | 75 | 84 |
+| feudal | 301 | 226 | 241 |
 
-The two come out about even.
+Without `xx`/`end` lines Goblin is 6–21% shorter than Mesa; counting them, it is 7–25% longer.
 
-- Goblin spends 15–20 lines per sim on regions: one actor per town, meadow or kingdom, so `tick(regions)` runs them on all cores. Mesa has no such step.
+- Regions cost Goblin a few lines per sim: one `:actor(...)` per town, meadow or kingdom, so `tick(regions)` runs them on all cores. Moving something to another region is setting its `owner`; there is no handler and no list of regions to pass around (before #129/#130 this took 15–20 lines). Mesa has no such step.
 - Mesa spends lines on what DES gives Goblin:
   - Ownership: `Held` keeps each holder's list in feudal.py by hand, and a dead noble's holdings move up by hand.
   - Timed overlays: a sickness that lasts N days and then ends.
@@ -39,12 +39,12 @@ Times are wall-clock on one machine with 4 cores; repeated runs vary by about 10
 
 | Sim | Goblin 1 thread | Goblin 4 threads | Mesa (1 thread) |
 |---|---|---|---|
-| epidemic 4×100 people, 120 days | 1.19 s | 0.74 s | 0.11 s |
-| epidemic 4×1000 people, 60 days | 20.7 s | 8.8 s | 8.0 s |
-| predator-prey, 360 days | 21.2 s | 7.3 s | 4.8 s |
-| feudal, 200 years | 4.4 s | 3.0 s | 0.41 s |
+| epidemic 4×100 people, 120 days | 0.80 s | 0.39 s | 0.09 s |
+| epidemic 4×1000 people, 60 days | 15.5 s | 6.2 s | 5.8 s |
+| predator-prey, 360 days | 14.8 s | 5.1 s | 3.7 s |
+| feudal, 200 years | 3.7 s | 2.2 s | 0.36 s |
 
-On one core, Mesa is 2.5–11× faster. Goblin on 4 threads draws level only on the large epidemic. Before #121–#124:
+On one core, Mesa is 2.7–10× faster. Goblin on 4 threads draws level only on the large epidemic. This table was measured after the sims were rewritten on `owner` (#130 and the PR after it); this run's machine was faster than the earlier one (Mesa took 4.8 s on predator-prey there, 3.7 s here). Before #121–#124:
 - epidemic 4×1000 took 141 s on one thread;
 - predator-prey took 31 s;
 - feudal took 6.6 s.

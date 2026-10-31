@@ -1,7 +1,8 @@
 /// An epidemic on DES: a sickness spreads between people in the same town,
 /// lasts a while, and either kills or leaves its host immune. Each town is
-/// a region; tick(towns) runs one day in all of them at once, and people
-/// now and then travel to the next town (`:move!`), carrying it with them.
+/// a region (an actor that owns the town and the people in it); tick(towns)
+/// runs one day in all of them at once. Now and then a person travels to
+/// the next town: setting `owner` moves them there, sickness and all.
 ///
 ///   Sick    overlay: costs 1 health a day for 8 days; when it ends the
 ///           host is immune.
@@ -20,17 +21,18 @@ if :env("PEOPLE") != ""
     people_per_town |= :int(:env("PEOPLE"))
 xx
 
-all_towns | []
+<>Town |
+    n: 0
+xx
 
 <>Person |
-    ~town: 0
+    owner: nil
     ~health: 10
-    ~immune: 0
+    immune: false
     every 1 tick
         if n_towns > 1 and (pick 1 from 1...30) == 1
-            to | (@town + 1) % n_towns
-            @town |= to
-            :move!(self, all_towns[to])
+            next | (@owner >> n + 1) % n_towns
+            @owner |= :objects("Town", it >> n == next)[0]
         xx
     end
     transition erase when @health <= 0
@@ -40,7 +42,7 @@ xx
 overlay Sick |
     hosts Person
     lasts 8 ticks
-    spreads where target >> town == @town and target >> immune == 0 at .004 per tick
+    spreads where target >> owner == @owner and target >> immune == false at .004 per tick
     each tick:
         health - 1
     end
@@ -48,35 +50,24 @@ overlay Sick |
 end
 
 act recover(p)
-    p >> immune |= 1
+    p >> immune |= true
 xx
 
-act make_town(t)
-    things | []
-    repeat :range(0, people_per_town)
-        p <> Person | town: t, health: 6 + (pick 1 from 0...8)
+act make_town(n)
+    town <> Town | n: n
+    repeat :range(0, people_per_town) as i
+        p <> Person | owner: town, health: 6 + (pick 1 from 0...8)
         /// Patient zero, in town 0.
-        if t == 0 and :len(things) == 0
+        if n == 0 and i == 0
             overlay Sick on p at 1
         xx
-        :put_last!(things, p)
     xx
-    return {"t": t, "things": things}
-xx
-
-act town_day(st, msg)
-    if :has(msg, "towns")
-        all_towns |= msg{"towns"}
-    xx
-    return st
+    return town
 xx
 
 towns | []
-repeat :range(0, n_towns) as t
-    :put_last!(towns, :actor(make_town(t), town_day))
-xx
-repeat towns as tw
-    :post(tw, {"towns": towns})
+repeat :range(0, n_towns) as n
+    :put_last!(towns, :actor(make_town(n)))
 xx
 
 say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
@@ -85,7 +76,7 @@ repeat :range(1, days + 1) as d
     if d % 5 == 0 or d == days
         alive | :len(:objects("Person"))
         sick | :len(:overlays(it >> overlay_name == "Sick"))
-        immune | :len(:objects(it >> immune == 1))
+        immune | :len(:objects("Person", it >> immune))
         say("day {d}: alive {alive}, sick {sick}, immune {immune}, dead {n_towns * people_per_town - alive}")
     xx
 xx
