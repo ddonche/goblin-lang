@@ -1194,6 +1194,9 @@ pub enum BuiltinId {
     SweepEnd,
     // slice expr: (recv, start_or_nil, end_or_nil) → array/str
     SliceExpr,
+    /// `pick` with its settings given in place: (mask, values...). Bit i of
+    /// mask says `PICK_KEYS[i]` is given; the values follow in that order.
+    PickSet,
     // slice3 expr: (recv, start_or_nil, end_or_nil, step_or_nil) → array/str
     Slice3Expr,
     // grid[x,y] expr: (grid_str_or_ref, x, y) → GridRef

@@ -1517,6 +1517,27 @@ impl Compiler {
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
                 }
+                // `pick ...`: the parser hands its settings over as a map; when
+                // they are the known ones in the parser's order, pass them in
+                // place instead of building a map on every pick.
+                if bare_name == "pick" && args.len() == 1 {
+                    if let Expr::Object(props, _) = &args[0] {
+                        let keys = &crate::builtins::PICK_KEYS;
+                        let mut mask = 0i64;
+                        let mut last = None;
+                        let in_order = props.iter().all(|(k, _)| match keys.iter().position(|n| n == k) {
+                            Some(i) if last.is_none_or(|l| i > l) => { last = Some(i); mask |= 1 << i; true }
+                            _ => false,
+                        });
+                        if in_order {
+                            let idx = self.add_constant(Value::Int(mask));
+                            self.emit(Opcode::LoadConst(idx));
+                            for (_, v) in props { self.compile_expr(v)?; }
+                            self.emit(Opcode::CallBuiltin(BuiltinId::PickSet, (props.len() + 1) as u8));
+                            return Ok(());
+                        }
+                    }
+                }
                 // `raw "…"`: the literal is kept exactly as written, so it is
                 // loaded as a constant and never interpolated.
                 if bare_name == "raw" && args.len() == 1 {
