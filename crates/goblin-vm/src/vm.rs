@@ -5641,14 +5641,7 @@ impl Vm {
         let (Some(owner_uuid), true) = (owner_uuid, usable) else {
             return self.vm_objects_query(Some(class), Some(pred));
         };
-        let store = &self.session.object_store;
-        let mut ids: Vec<usize> = store.contents_of(&owner_uuid)
-            .filter_map(|u| match store.get_full(u) {
-                Some((i, _, Value::Object(o))) if &*o.class_name == class => Some(i),
-                _ => None,
-            })
-            .collect();
-        ids.sort_unstable();
+        let ids = self.session.object_store.contents_at(&owner_uuid, Some(class));
         self.objects_among(Some(ids), if only_owner { None } else { Some(pred) })
     }
 

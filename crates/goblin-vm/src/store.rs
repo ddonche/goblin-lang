@@ -216,6 +216,19 @@ impl ObjectStore {
         self.contents.get(owner).into_iter().flat_map(|s| s.iter().map(String::as_str)).filter(move |u| map.contains_key(*u))
     }
 
+    /// The places of what `owner` contains, of `class` when one is given,
+    /// in creation order: one lookup per object held.
+    pub fn contents_at(&self, owner: &str, class: Option<&str>) -> Vec<usize> {
+        let Some(set) = self.contents.get(owner) else { return Vec::new() };
+        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u.as_str()) {
+            Some((i, _, Value::Object(o))) if class.is_none_or(|c| &*o.class_name == c) => Some(i),
+            Some((i, _, _)) if class.is_none() => Some(i),
+            _ => None,
+        }).collect();
+        at.sort_unstable();
+        at
+    }
+
     /// Everything `uuid` contains, at any depth (what it holds, what those
     /// hold, ...), in the order they were put there, each once.
     pub fn all_contents_of(&self, uuid: &str) -> Vec<String> {

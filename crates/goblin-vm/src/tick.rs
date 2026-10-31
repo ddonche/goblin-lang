@@ -1234,13 +1234,11 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         for _ in 0..depth - 1 {
             level = level.iter().flat_map(|h| store.contents_of(h).map(str::to_string)).collect();
         }
-        let mut fewer: Vec<(Value, usize)> = level.iter().flat_map(|h| store.contents_of(h))
-            .filter_map(|u| match store.get_full(u) {
-                Some((i, _, Value::Object(o))) if &*o.class_name == class => Some((Value::Ref(u.to_string()), i)),
-                _ => None,
-            })
+        let mut at: Vec<usize> = level.iter().flat_map(|h| store.contents_at(h, Some(class))).collect();
+        at.sort_unstable();
+        let fewer: Vec<(Value, usize)> = at.into_iter()
+            .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
             .collect();
-        fewer.sort_by_key(|(_, i)| *i);
         return Some(fewer);
     }
     None

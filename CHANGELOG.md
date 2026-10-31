@@ -5,6 +5,8 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: owner queries look each held object up once instead of twice;
+  feudal -2%, predator-prey -1% instructions.
 - VM: the class, action and object-name tables use Fx hashing; epidemic
   -1%, predator-prey -2%, feudal -2.4% instructions.
 - goblin uses the mimalloc allocator. The sims ran about a quarter of
