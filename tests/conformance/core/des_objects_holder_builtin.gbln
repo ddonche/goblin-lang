@@ -1,0 +1,25 @@
+/// known-gap: interp has no contents list (owner is a plain field there)
+/// `it >> owner == bags >> get_random` picks a holder again for each
+/// object, so the query is not the contents of one holder.
+:rand_seed(3)
+<>Bag |
+    name: ""
+    owner: nil
+xx
+<>Item |
+    name: ""
+    owner: nil
+xx
+bags | []
+repeat :range(0, 4) as n
+    b <> Bag | name: "b{n}"
+    :put_last!(bags, b)
+xx
+repeat :range(0, 40) as n
+    i <> Item | name: "i{n}", owner: bags[n % 4]
+xx
+counts | []
+repeat :range(0, 5) as t
+    :put_last!(counts, :len(:objects("Item", it >> owner == bags >> get_random)))
+xx
+say(counts)

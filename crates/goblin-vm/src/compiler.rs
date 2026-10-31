@@ -3525,10 +3525,12 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
         _ => false,
     };
     // `x`, or a field path from x (`f >> owner`): read once, before the query.
+    // A step that names a builtin (`xs >> get_random`) may give a new
+    // answer for each object, so it is not read once.
     fn root(e: &Expr) -> Option<&String> {
         match e {
             Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some(n),
-            Expr::Member(o, _, _) => root(o),
+            Expr::Member(o, f, _) if crate::vm::member_builtin(f).is_none() => root(o),
             _ => None,
         }
     }
