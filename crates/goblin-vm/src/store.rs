@@ -253,6 +253,13 @@ impl ObjectStore {
         at
     }
 
+    /// How many of what `owner` contains are objects of `class` (as
+    /// `contents_at(owner, Some(class)).len()`, without listing them).
+    pub fn contents_count(&self, owner: &Id, class: &str) -> usize {
+        let Some(set) = self.contents.get(owner) else { return 0 };
+        set.iter().filter(|u| matches!(self.map.get(*u), Some(Value::Object(o)) if &*o.class_name == class)).count()
+    }
+
     /// Everything `uuid` contains, at any depth (what it holds, what those
     /// hold, ...), in the order they were put there, each once.
     pub fn all_contents_of(&self, uuid: &str) -> Vec<String> {

@@ -534,6 +534,8 @@ pub struct ObjectsOwned {
     pub path: Vec<String>,
     /// Steps to skip when done: the query's own steps.
     pub skip: u32,
+    /// Inside `:len(...)`: give how many, and skip the `:len` call too.
+    pub count: bool,
 }
 
 /// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).

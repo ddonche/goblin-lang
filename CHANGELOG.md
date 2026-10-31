@@ -5,6 +5,8 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: `:len(:objects("X", it >> owner == x))` counts what x holds without
+  listing (and copying) it. Feudal -5%, predator-prey -2% instructions.
 - VM: an object id hashes by where its one copy of the text is, not by
   reading the text, and the store is looked up by id (`IdKey`; text is
   found among the ids held). Feudal -7%, predator-prey -7%, epidemic -2%

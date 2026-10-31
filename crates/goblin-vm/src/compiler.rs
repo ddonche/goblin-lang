@@ -3477,7 +3477,7 @@ impl Compiler {
                                         Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
                                             let Expr::Str(class, _) = cls else { unreachable!() };
                                             let qi = self.op_data(crate::opcode::OpData::ObjectsOwned(Box::new(crate::opcode::ObjectsOwned {
-                                                class: class.clone(), var: var.clone(), load, path, skip: 0 })));
+                                                class: class.clone(), var: var.clone(), load, path, skip: 0, count: false })));
                                             Some((self.emit(Opcode::ObjectsOwned(qi)), qi))
                                         }
                                         _ => None,
@@ -3518,8 +3518,22 @@ impl Compiler {
             self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
             return Ok(Some(()));
         }
+        let start = self.scope().bytecode.len();
         for arg in args { self.compile_expr(arg)?; }
         self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+        // `:len(:objects("X", it >> owner == x))`: the quick owner query
+        // counts x's contents instead of listing them, and skips the call too.
+        if bid == BuiltinId::Len && args.len() == 1 {
+            let end = self.scope().bytecode.len();
+            if let Some(Opcode::ObjectsOwned(qi)) = self.scope().bytecode.get(start).copied() {
+                if let crate::opcode::OpData::ObjectsOwned(q) = &mut self.scope_mut().op_data[qi as usize] {
+                    if start + 1 + q.skip as usize + 1 == end {
+                        q.skip += 1;
+                        q.count = true;
+                    }
+                }
+            }
+        }
         Ok(Some(()))
     }
 

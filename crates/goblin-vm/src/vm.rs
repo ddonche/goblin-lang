@@ -5672,6 +5672,9 @@ impl Vm {
             c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
         if !usable { return None; }
         let store = &self.session.object_store;
+        if q.count {
+            return Some((Value::Int(store.contents_count(&owner, q.class.as_str()) as i64), q.skip));
+        }
         let found = store.contents_at(&owner, Some(q.class.as_str())).into_iter()
             .filter_map(|i| store.get_index(i).map(|(_, v)| v.clone())).collect();
         Some((Value::Array(found), q.skip))
