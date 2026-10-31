@@ -1,0 +1,31 @@
+/// known-gap: interp formulas can't call actions
+/// Decisions remember what actions that only read gave, from one decision
+/// to the next, until something runs that can change the world: here the
+/// first agent's action fills the box, so the second agent's `where` sees
+/// a full box and does nothing.
+<>Box |
+    n: 0
+xx
+act level(b)
+    return b >> n
+xx
+act fill(a, b)
+    b >> n |= b >> n + 1
+    say("{a >> name} fills the box")
+xx
+<>Agent |
+    name: ""
+    want | decision against Box where [ level(target) == 0 ] by [ 1 ]
+    judge using want
+        >= 0: fill(target)
+    end
+xx
+box <> Box | n: 0
+a1 <> Agent | name: "first"
+a2 <> Agent | name: "second"
+a3 <> Agent | name: "third"
+tick()
+say(box >> n)
+box >> n |= 0
+tick()
+say(box >> n)

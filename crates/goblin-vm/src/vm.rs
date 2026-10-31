@@ -158,6 +158,9 @@ pub struct Vm {
     /// On while a DES decision is worked out: answers of actions that only
     /// read, by arguments (memo.rs).
     pub(crate) memo: Option<Box<crate::memo::Memo>>,
+    /// During a decision pass: the memo of the decisions worked out since
+    /// anything last changed, kept for the next one (see `tick::decide`).
+    pub(crate) memo_kept: Option<Box<crate::memo::Memo>>,
     /// Whether each function seen only reads (memo.rs), kept with it.
     reads_only: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
     /// The operand stack `run_formula_in` uses, kept between runs.
@@ -189,7 +192,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default() }
     }
 
     /// Run a top-level function. Returns the final return value.

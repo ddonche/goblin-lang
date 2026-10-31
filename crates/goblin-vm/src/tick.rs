@@ -941,6 +941,13 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     let candidates = order_candidates(vm, candidates)?;
 
     let mut targets = Targets::default();
+    vm.memo_kept = None;
+    let out = decide_all(vm, &mut targets, candidates);
+    vm.memo_kept = None;
+    out
+}
+
+fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>) -> Result<(), GoblinError> {
     for (self_uuid, class_name) in candidates {
         // Borrow the definitions (an Rc copy, not a deep one), so each
         // formula keeps its address for the tick-expr cache. Taken per
@@ -976,7 +983,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             // Erased by an earlier decision's action: nothing more to decide.
             if !vm.session.object_store.contains_key(&self_uuid) { break; }
             let Some(g) = group_of(name) else {
-                decide(vm, &mut targets, &self_uuid, name, decision, judge)?;
+                decide(vm, targets, &self_uuid, name, decision, judge)?;
                 continue;
             };
             if done_groups.contains(&g) { continue; }
@@ -984,7 +991,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             for member in &class.one_of[g] {
                 if !vm.session.object_store.contains_key(&self_uuid) { break; }
                 let Some(&(n, d, j)) = list.iter().find(|(n, _, _)| n == member) else { continue };
-                if decide(vm, &mut targets, &self_uuid, n, d, j)? { break; }
+                if decide(vm, targets, &self_uuid, n, d, j)? { break; }
             }
         }
     }
@@ -1338,12 +1345,23 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // While the targets are scored nothing changes, so an action the
     // condition or the formula calls that only reads gives the same answer
     // for the same arguments: it runs once (memo.rs).
+    // The answers stay good for the next decision (this object's or the
+    // next one's) as long as nothing changes in between: they are kept
+    // until a judge runs an action, or a decision's own steps may change
+    // things.
     let memo = decision.filter.as_ref().is_none_or(|f| reads(vm, f)) && reads(vm, &decision.formula);
-    if memo { vm.memo = Some(Box::default()); }
+    if memo { vm.memo = Some(vm.memo_kept.take().unwrap_or_default()); } else { vm.memo_kept = None; }
+    let epoch = vm.memo.as_ref().map(|m| m.epoch);
     let scored = score_targets(vm, decision, &formula, filter.as_deref(), &self_ref, self_at, target_candidates, &is_self, &formula_error);
-    vm.memo = None;
+    if let Some(m) = vm.memo.take() {
+        // A call that may have changed things ran: nothing is kept.
+        if m.changing == 0 && Some(m.epoch) == epoch && scored.is_ok() { vm.memo_kept = Some(m); }
+    }
     let (target_candidates, scored) = scored?;
     if scored.is_empty() { return Ok(false); }
+    // A judge condition that may change things, or an action, ends what
+    // was kept.
+    if !judge.arms.iter().all(|a| a.condition.as_ref().is_none_or(|c| reads(vm, c))) { vm.memo_kept = None; }
     // A score is exactly the number the formula gives: nothing rescales or
     // clamps it. `margin` is in the formula's own units, and the judge sees
     // the same number.
@@ -1428,6 +1446,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
         let _ = self_val;
         // An action that returns false didn't act: in a `one of` group the
         // next decision gets its turn.
+        vm.memo_kept = None;
         let out = action_result(vm, &self_uuid, &action_name, args)?;
         return Ok(!matches!(out, Value::Bool(false)));
     }

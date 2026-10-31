@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: in a decision pass, what actions that only read gave is kept from one
+  decision to the next (and the next object's) until a judge runs an
+  action or something that may change the world runs. Feudal -6%
+  instructions.
 - VM: `:len(:objects("X", it >> owner == x))` counts what x holds without
   listing (and copying) it. Feudal -5%, predator-prey -2% instructions.
 - VM: an object id hashes by where its one copy of the text is, not by

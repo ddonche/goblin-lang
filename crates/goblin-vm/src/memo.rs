@@ -26,7 +26,7 @@ pub(crate) enum Arg {
     Float(u64),
     Str(String),
     /// An object: by its id (nothing changes it while the memo is on).
-    Obj(String),
+    Obj(crate::value::ObjId),
 }
 
 impl Arg {
@@ -37,8 +37,8 @@ impl Arg {
             Value::Int(i) => Arg::Int(*i),
             Value::Float(f) => Arg::Float(f.to_bits()),
             Value::Str(s) => Arg::Str(s.to_string()),
-            Value::Ref(u) => Arg::Obj(u.to_string()),
-            Value::Object(o) => Arg::Obj(o.uuid.to_string()),
+            Value::Ref(u) => Arg::Obj(u.clone()),
+            Value::Object(o) => Arg::Obj(o.uuid.clone()),
             _ => return None,
         })
     }
