@@ -120,13 +120,13 @@ pub struct ToPortable<'s> {
     share: bool,
     /// Short texts converted so far: map keys and words like "wage" repeat
     /// in every item, so each is converted once.
-    strs: std::collections::HashSet<Arc<str>>,
+    strs: rustc_hash::FxHashSet<Arc<str>>,
     /// For an actor: the objects handed to it. Any other object of the
     /// session stays behind instead of crossing as a copy.
     home: Option<std::collections::HashSet<String>>,
     /// Objects being copied right now (an object and the objects its fields
     /// reach): a field that comes back to one of them is a cycle.
-    visiting: std::collections::HashSet<String>,
+    visiting: rustc_hash::FxHashSet<String>,
     /// Between regions: an object another value names crosses as its id,
     /// not as a copy, so it reads the object where it lives.
     by_id: bool,
@@ -292,7 +292,7 @@ impl<'s> ToPortable<'s> {
 
     /// An object's fields. A field naming an object that was erased reads
     /// nil, so it crosses as nil.
-    fn object_fields(&mut self, m: &indexmap::IndexMap<String, Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
+    fn object_fields(&mut self, m: &crate::value::FieldMap) -> Result<Vec<(String, PValue)>, GoblinError> {
         let mut out = Vec::with_capacity(m.len());
         for (k, v) in m {
             // Between regions an object another region holds is named by its
@@ -569,7 +569,7 @@ impl FromPortable {
         vs.iter().map(|v| self.value(v, session)).collect()
     }
 
-    fn fields(&mut self, m: &[(String, PValue)], session: &mut Session) -> indexmap::IndexMap<String, Value> {
+    fn fields<S: std::hash::BuildHasher + Default>(&mut self, m: &[(String, PValue)], session: &mut Session) -> indexmap::IndexMap<String, Value, S> {
         m.iter().map(|(k, v)| (k.clone(), self.value(v, session))).collect()
     }
 

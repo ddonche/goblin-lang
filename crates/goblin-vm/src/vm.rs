@@ -1467,7 +1467,7 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("class instantiation requires a map, got {}", other.type_name()))),
                 };
 
-                let mut fields = indexmap::IndexMap::new();
+                let mut fields = crate::value::FieldMap::default();
                 let mut readonly_fields = std::collections::BTreeSet::new();
 
                 // `id` and `type` are reserved (R0412); `id: "{id}"` is the
@@ -5799,7 +5799,7 @@ impl Vm {
     /// host, strength, age, time left, count and own fields.
     fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
         use indexmap::IndexMap;
-        let mut fields: IndexMap<String, Value> = IndexMap::new();
+        let mut fields: crate::value::FieldMap = Default::default();
         fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
         fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
         fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
@@ -6616,7 +6616,7 @@ mod tests {
     }
 
     fn nation(uuid: &str, military: Value) -> Value {
-        let mut fields = indexmap::IndexMap::new();
+        let mut fields = crate::value::FieldMap::default();
         fields.insert("military".to_string(), military);
         fields.insert("name".to_string(), Value::Str("France".into()));
         Value::Object(Box::new(crate::value::ObjectVal {
@@ -7081,7 +7081,7 @@ fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usi
 /// (`~fear: .2`). A trait stays in 0..1; its starting value is clamped
 /// here. Every other number is a plain value, whatever it starts at.
 pub(crate) fn trait_fields_of(
-    fields: &mut indexmap::IndexMap<String, Value>,
+    fields: &mut crate::value::FieldMap,
     decls: &[goblin_ast::FieldDecl],
 ) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();

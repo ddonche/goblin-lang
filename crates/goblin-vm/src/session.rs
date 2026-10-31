@@ -165,7 +165,7 @@ pub struct Session {
     pub(crate) region: Option<crate::world::RegionCtx>,
     /// In a region: its copies of the other regions' objects, kept between
     /// ticks so the next tick rebuilds only the fields that changed.
-    pub(crate) remote_copies: HashMap<String, crate::value::Value>,
+    pub(crate) remote_copies: rustc_hash::FxHashMap<String, crate::value::Value>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -369,7 +369,7 @@ impl Session {
             kept_home: HashMap::new(),
             world: None,
             region: None,
-            remote_copies: HashMap::new(),
+            remote_copies: Default::default(),
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -701,7 +701,7 @@ impl Session {
 
             // Object: deep clone fields
             Value::Object(o) => {
-                let new_fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+                let new_fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
                 self.alloc_value(Value::Object(Box::new(crate::value::ObjectVal {

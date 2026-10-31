@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: object fields and the DES id sets and indexes use a faster hash
+  (Fx instead of SipHash). Epidemic 12%, predator-prey 7% and feudal 6%
+  fewer instructions; output unchanged.
 - DES (VM): `~` now means a trait. `~fear: .2` stays in 0..1 (its starting
   value is clamped too); every other number field is a plain value,
   whatever it starts at. Before, a field that started in 0..1 (0 and 1
