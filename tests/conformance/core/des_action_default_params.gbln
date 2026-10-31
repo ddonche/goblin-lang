@@ -2,7 +2,7 @@
 /// An action called by DES (here `on end:`) may leave out parameters that
 /// have defaults, as a call written in Goblin may.
 <>P |
-    ~n: 0
+    n: 0
     act finish(k | 5)
         self >> n |= self >> n + k
     end

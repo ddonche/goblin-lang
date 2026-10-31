@@ -3,7 +3,7 @@
 /// action, `:invoke`) may roll dice inside it, so like `pick` it is checked
 /// once a tick, at the end, however many actions change the object.
 <>Mote |
-    ~age: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
     end

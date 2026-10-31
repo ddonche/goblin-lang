@@ -185,6 +185,11 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()
@@ -239,6 +244,11 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()
@@ -321,6 +331,11 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()

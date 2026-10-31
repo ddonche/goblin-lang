@@ -5,8 +5,8 @@
 /// Its `on erase:` action still runs first.
 <>F |
     name: ""
-    ~side: 0
-    ~hp: 3
+    side: 0
+    hp: 3
     hit | decision against F where [ target >> side != self >> side ] by [ 1 - target >> hp / 10 ]
     judge using hit
         >= 0: strike(target)

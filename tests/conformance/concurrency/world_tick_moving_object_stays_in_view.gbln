@@ -3,9 +3,9 @@
 /// workers every tick, and a worker that moves on tick 2 is paid on tick 3,
 /// the tick it arrives, as on every other tick.
 <>Shop |
-    ~code: 0
-    ~cash: 100
-    ~wage: 10
+    code: 0
+    cash: 100
+    wage: 10
     every 1 tick
         repeat :objects(it >> employer == self >> code)
             it >> money |= it >> money + self >> wage
@@ -14,9 +14,9 @@
     end
 xx
 <>Worker |
-    ~employer: 0
-    ~money: 0
-    ~mover: 0
+    employer: 0
+    money: 0
+    mover: 0
     every 2 ticks
         if self >> mover == 1 and new_home != nil
             self >> mover |= 2

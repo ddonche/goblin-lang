@@ -5,8 +5,8 @@
 /// still has its link to b (7 + 3), and on tick 5 b (in west) its link to
 /// a (5). (One prints a tick after the other, so the order is fixed.)
 <>P |
-    ~n: 0
-    ~age: 0
+    n: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
         if self >> age == 3 + self >> n

@@ -4,13 +4,13 @@
 /// `rest()` gives it nothing, and `tip(target, score > .5)` gives the
 /// program action the buyer, the shop and a value worked out from `score`.
 <>Shop |
-    ~stock: 0
-    ~sold: 0
-    ~tips: 0
+    stock: 0
+    sold: 0
+    tips: 0
 xx
 <>Buyer |
-    ~spent: 0
-    ~rests: 0
+    spent: 0
+    rests: 0
     want: 1
     score | decision against Shop by [
         target >> stock

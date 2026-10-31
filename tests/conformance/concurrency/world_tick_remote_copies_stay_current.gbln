@@ -5,7 +5,7 @@
 /// owner and is not kept in its copy.
 :rand_seed(3)
 <>Sheep |
-    ~fat: 10
+    fat: 10
     mood: "calm"
     every 1 tick
         self >> fat |= self >> fat + 3
@@ -18,7 +18,7 @@
 xx
 <>Wolf |
     hunger: .5
-    ~saw: 0
+    saw: 0
     seen_mood: "none"
     score | decision against Sheep by [
         self >> hunger

@@ -6,7 +6,7 @@
 /// one step a tick for it; before, it counted a step twice).
 <>Meadow |
     n: 0
-    ~seen: 0
+    seen: 0
     every 1 tick
         self >> seen |= :len(:objects("Rabbit"))
     end
@@ -14,7 +14,7 @@ xx
 <>Rabbit |
     name: ""
     owner: nil
-    ~age: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
         if :is_type(self >> owner, "Bag")
@@ -25,7 +25,7 @@ xx
 <>Bag |
     name: ""
     owner: nil
-    ~steps: 0
+    steps: 0
 xx
 act make(i)
     m <> Meadow | n: i

@@ -3,13 +3,13 @@
 /// judge that uses its name. They run in the order written, every tick.
 :rand_seed(5)
 <>Shop |
-    ~open: 1
+    open: 1
     hiring: .9
     cheap: .8
 xx
 <>Person |
-    ~bought: 0
-    ~jobs: 0
+    bought: 0
+    jobs: 0
     shop | decision against Shop by [
         target >> cheap
     ]

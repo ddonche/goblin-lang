@@ -3,7 +3,7 @@
 /// a field whose object was erased shows nil, and an object met again
 /// inside itself shows as a reference, so a cycle prints once.
 <>Village |
-    ~food: 10
+    food: 10
 xx
 <>Person |
     home: nil

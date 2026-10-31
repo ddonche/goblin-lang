@@ -3,7 +3,7 @@
 /// object itself, so they work on objects made inside an action, which
 /// have no variable of their own. The variable's name still works.
 <>F |
-    ~hp: 10
+    hp: 10
 xx
 overlay Guarded |
     lasts 2 ticks

@@ -3,8 +3,8 @@
 /// stops the tick with an error that names the decision. Here a comparison
 /// gives a bool, and a bool times a number is a type error.
 <>F |
-    ~side: 0
-    ~hp: 10
+    side: 0
+    hp: 10
     attack | decision against F by [
         (target >> side != self >> side) * (target >> hp)
     ]

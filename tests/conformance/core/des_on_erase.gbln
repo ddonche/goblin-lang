@@ -4,11 +4,11 @@
 /// goes to the town fund before he is gone. A class action of that name
 /// runs with `self`; otherwise a program action gets the object.
 <>Fund |
-    ~cash: 0
+    cash: 0
 xx
 <>Person |
-    ~age: 0
-    ~money: 0
+    age: 0
+    money: 0
     on erase: settle_estate
     every 1 tick
         self >> age |= self >> age + 1
@@ -17,7 +17,7 @@ xx
     end
 xx
 <>Dog |
-    ~age: 0
+    age: 0
     on erase: bury
     every 1 tick
         self >> age |= self >> age + 1

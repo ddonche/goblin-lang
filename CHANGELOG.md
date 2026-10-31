@@ -5,6 +5,14 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES (VM): `~` now means a trait. `~fear: .2` stays in 0..1 (its starting
+  value is clamped too); every other number field is a plain value,
+  whatever it starts at. Before, a field that started in 0..1 (0 and 1
+  included) silently became a trait and `~` opted out, so a counter like
+  `defected: 0` stopped at 1. A matrix row keeps a field's `~`, and an object a `spawn` transition
+  makes gets its class's traits. Tests,
+  sims and `tests/test.gbln` are switched over (`~` dropped from plain
+  numbers, added to the 0..1 fields); every sim gives the same output.
 - DES (VM): in a region, setting an object's `owner` to another region's
   object sends it at once, with what it holds, as `:move!` does; it does
   nothing more in its old region that tick (it used to graze or hunt there

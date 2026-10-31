@@ -15,7 +15,7 @@
     end
 xx
 <>Land |
-    ~yield: 0
+    yield: 0
     owner: nil
 xx
 <>Peer |

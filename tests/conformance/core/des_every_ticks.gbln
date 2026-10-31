@@ -3,8 +3,8 @@
 /// `self` the object, on every tick N divides, before decisions. An error
 /// in the block stops the tick.
 <>Person |
-    ~age: 0
-    ~money: 0
+    age: 0
+    money: 0
     every 1 tick
         self >> age |= self >> age + 1
     end
@@ -13,7 +13,7 @@
     xx
 xx
 <>Clock |
-    ~left: 2
+    left: 2
     every 1 tick
         self >> left |= self >> left - 1
         if self >> left < 0

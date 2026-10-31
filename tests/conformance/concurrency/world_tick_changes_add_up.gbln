@@ -5,7 +5,7 @@
 /// another during a tick arrives at the start of the next one.
 :rand_seed(9)
 <>Sheep |
-    ~fat: 10
+    fat: 10
 xx
 <>Wolf |
     hunger: .5

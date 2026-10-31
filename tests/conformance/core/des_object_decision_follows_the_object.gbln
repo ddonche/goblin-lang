@@ -5,9 +5,9 @@
 /// Bob keeps the class's decision (the most stock), Ann's own picks the
 /// least stock.
 <>Shop |
-    ~stock: 0
-    ~ann: 0
-    ~bob: 0
+    stock: 0
+    ann: 0
+    bob: 0
 xx
 <>Buyer |
     who: 0

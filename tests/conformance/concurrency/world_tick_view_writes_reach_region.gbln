@@ -5,8 +5,8 @@
 /// same way. A region changes its own objects as before.
 <>Person |
     health: .9
-    ~gold: 0
-    ~x: 0
+    gold: 0
+    x: 0
 xx
 overlay Hurt |
     hosts Person

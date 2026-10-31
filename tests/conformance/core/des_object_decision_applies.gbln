@@ -5,10 +5,10 @@
 /// Bob keeps the class's (the most stock); Cy's own one spreads over both.
 :rand_seed(5)
 <>Shop |
-    ~stock: 0
-    ~ann: 0
-    ~bob: 0
-    ~cy: 0
+    stock: 0
+    ann: 0
+    bob: 0
+    cy: 0
 xx
 <>Buyer |
     who: 0

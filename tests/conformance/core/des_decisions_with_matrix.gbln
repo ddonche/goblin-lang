@@ -5,8 +5,8 @@
     hiring: .9
 xx
 <>Person |
-    ~bought: 0
-    ~jobs: 0
+    bought: 0
+    jobs: 0
     shop | decision against Shop by [
         target >> cheap
     ]

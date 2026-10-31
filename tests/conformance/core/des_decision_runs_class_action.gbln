@@ -2,11 +2,11 @@
 /// A decision's judge can call an action written inside the class: it runs
 /// with `self` as the deciding object and the arm's `target`.
 <>Shop |
-    ~stock: 0
-    ~sold: 0
+    stock: 0
+    sold: 0
 xx
 <>Buyer |
-    ~spent: 0
+    spent: 0
     score | decision against Shop by [
         target >> stock
     ]

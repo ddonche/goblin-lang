@@ -4,10 +4,10 @@
 /// constant formula scores that constant (it was squeezed to .5).
 <>Spot |
     shade: 0
-    ~picked: 0
+    picked: 0
 xx
 <>Walker |
-    ~steps: 0
+    steps: 0
     rest | decision against Spot by [
         target >> shade * 40
     ]
@@ -17,7 +17,7 @@ xx
     end
 xx
 <>Child |
-    ~steps: 0
+    steps: 0
     play | decision against Spot by [ 7 ]
     judge using play
         == 7: sit(target, play)

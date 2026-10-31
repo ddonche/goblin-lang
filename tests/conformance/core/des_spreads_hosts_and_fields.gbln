@@ -4,17 +4,17 @@
 /// exactly the objects whose field matches: numbers by value (1 and 1.0),
 /// strings by text, and an object without the field never.
 <>P |
-    ~town: 0
+    town: 0
     name: ""
 xx
 <>Rock |
-    ~town: 0
+    town: 0
 xx
 <>Q |
     name: ""
 xx
 <>S |
-    ~town: 0
+    town: 0
 xx
 /// `target >> is_nil` is the builtin, not a field: every S catches it.
 overlay Odd |

@@ -3,9 +3,9 @@
 /// tick 2, the same tick the shop in another region pays it. The pay
 /// follows it to its new region, so no money is lost.
 <>Shop |
-    ~code: 0
-    ~cash: 100
-    ~wage: 10
+    code: 0
+    cash: 100
+    wage: 10
     every 2 ticks
         repeat :objects(it >> employer == self >> code)
             it >> money |= it >> money + self >> wage
@@ -14,9 +14,9 @@
     end
 xx
 <>Worker |
-    ~employer: 0
-    ~money: 0
-    ~mover: 0
+    employer: 0
+    money: 0
+    mover: 0
     every 2 ticks
         if self >> mover == 1 and new_home != nil
             self >> mover |= 2

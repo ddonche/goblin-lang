@@ -44,7 +44,7 @@ fn tilde_error(fname: &str) -> String {
     s_help_site!(
         "P0917",
         &format!("'~{fname}' starts as something that is not a number: '~' is only for number fields"),
-        &format!("'~' keeps a number as its real value instead of a 0..1 trait; write '{fname}: ...' without it"),
+        &format!("'~' makes a number a trait that stays in 0..1; write '{fname}: ...' without it"),
     )
 }
 
@@ -4183,7 +4183,7 @@ impl<'t> Parser<'t> {
             }
 
             let fexpr = self.parse_assign()?;
-            // `~` marks a number as a real value (not a 0..1 trait); on a
+            // `~` marks a number as a trait (kept in 0..1); on a
             // field that starts as anything else it means nothing.
             if raw && not_a_number(&fexpr) {
                 return Err(tilde_error(&fname));

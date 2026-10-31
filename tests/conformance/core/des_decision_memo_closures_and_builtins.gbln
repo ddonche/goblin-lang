@@ -24,7 +24,7 @@ xx
     end
 xx
 <>Spot |
-    ~v: 0
+    v: 0
 xx
 act show(s, t, sc)
     say("{s >> name} picks {t >> v} with score {sc}")

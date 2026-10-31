@@ -1,4 +1,4 @@
-/// `~` keeps a number as its real value; on a text field it is an error.
+/// `~` makes a number a 0..1 trait; on a text field it is an error.
 <>Farm |
     ~name: "Hilltop"
 xx

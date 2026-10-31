@@ -20,7 +20,7 @@ xx
 xx
 <>Item |
     name: ""
-    ~magic: 0
+    magic: 0
     owner: nil
 xx
 <>Shop |

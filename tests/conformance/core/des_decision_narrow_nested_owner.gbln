@@ -5,7 +5,7 @@
 <>Lord |
     name: ""
     owner: nil
-    ~realm: 0
+    realm: 0
     seize | decision against Land where [ target >> owner >> owner == self >> owner and target >> owner != self ] by [ target >> worth ]
     judge using seize
         >= 0: take(target)
@@ -13,7 +13,7 @@
 xx
 <>Land |
     name: ""
-    ~worth: 0
+    worth: 0
     owner: nil
 xx
 act take(l, e)

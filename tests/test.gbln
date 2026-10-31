@@ -7,34 +7,34 @@ For multiple lines
 
 <>Kingdom |
     kind: "polity"
-    aggression: .5
-    cooperation: .5 <---- this is a fucking inline comment
-    fear: .5
-    ambition: .5
+    ~aggression: .5
+    ~cooperation: .5 <---- this is a fucking inline comment
+    ~fear: .5
+    ~ambition: .5
 
-    cohesion: .5
-    stability: .5
-    succession: .5
+    ~cohesion: .5
+    ~stability: .5
+    ~succession: .5
 
-    honor: .5
-    spirituality: .5
-    openness: .5
-    discipline: .5
-    power: .5
+    ~honor: .5
+    ~spirituality: .5
+    ~openness: .5
+    ~discipline: .5
+    ~power: .5
 
-    ~population: 500000
+    population: 500000
 
-    ~gold: 500
-    ~food: 500
-    ~iron: 300
-    ~mana: 100
-    ~wood: 300
-    ~horses: 100
-    ~stone: 250
-    ~relics: 10
-    ~ships: 20
+    gold: 500
+    food: 500
+    iron: 300
+    mana: 100
+    wood: 300
+    horses: 100
+    stone: 250
+    relics: 10
+    ships: 20
 
-    margin: .08
+    ~margin: .08
 
     act trade(target)
         resources | ["gold", "food", "iron", "mana", "wood", "horses", "stone", "relics", "ships"]
@@ -1380,18 +1380,18 @@ end
 
 <>Empire |
     kind: "polity"
-    aggression: .75
-    cooperation: .35
-    fear: .45
-    ambition: .85
-    cohesion: .65
-    stability: .65
-    succession: .45
-    honor: .45
-    spirituality: .35
-    openness: .25
-    discipline: .85
-    power: .7
+    ~aggression: .75
+    ~cooperation: .35
+    ~fear: .45
+    ~ambition: .85
+    ~cohesion: .65
+    ~stability: .65
+    ~succession: .45
+    ~honor: .45
+    ~spirituality: .35
+    ~openness: .25
+    ~discipline: .85
+    ~power: .7
     population: 400000
     gold: 300
     food: 800
@@ -1402,7 +1402,7 @@ end
     stone: 250
     relics: 4
     ships: 10
-    margin: .09
+    ~margin: .09
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -1524,18 +1524,18 @@ end
 
 <>Theocracy |
     kind: "polity"
-    aggression: .35
-    cooperation: .45
-    fear: .35
-    ambition: .55
-    cohesion: .85
-    stability: .75
-    succession: .65
-    honor: .7
-    spirituality: .9
-    openness: .25
-    discipline: .65
-    power: .55
+    ~aggression: .35
+    ~cooperation: .45
+    ~fear: .35
+    ~ambition: .55
+    ~cohesion: .85
+    ~stability: .75
+    ~succession: .65
+    ~honor: .7
+    ~spirituality: .9
+    ~openness: .25
+    ~discipline: .65
+    ~power: .55
     population: 300000
     gold: 250
     food: 700
@@ -1546,7 +1546,7 @@ end
     stone: 250
     relics: 12
     ships: 8
-    margin: .06
+    ~margin: .06
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -1668,18 +1668,18 @@ end
 
 <>TradeLeague |
     kind: "polity"
-    aggression: .2
-    cooperation: .85
-    fear: .25
-    ambition: .65
-    cohesion: .45
-    stability: .75
-    succession: .75
-    honor: .55
-    spirituality: .35
-    openness: .9
-    discipline: .45
-    power: .55
+    ~aggression: .2
+    ~cooperation: .85
+    ~fear: .25
+    ~ambition: .65
+    ~cohesion: .45
+    ~stability: .75
+    ~succession: .75
+    ~honor: .55
+    ~spirituality: .35
+    ~openness: .9
+    ~discipline: .45
+    ~power: .55
     population: 300000
     gold: 800
     food: 900
@@ -1690,7 +1690,7 @@ end
     stone: 250
     relics: 4
     ships: 80
-    margin: .08
+    ~margin: .08
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -1812,18 +1812,18 @@ end
 
 <>WarlordState |
     kind: "polity"
-    aggression: .85
-    cooperation: .15
-    fear: .65
-    ambition: .8
-    cohesion: .35
-    stability: .25
-    succession: .2
-    honor: .25
-    spirituality: .25
-    openness: .15
-    discipline: .55
-    power: .45
+    ~aggression: .85
+    ~cooperation: .15
+    ~fear: .65
+    ~ambition: .8
+    ~cohesion: .35
+    ~stability: .25
+    ~succession: .2
+    ~honor: .25
+    ~spirituality: .25
+    ~openness: .15
+    ~discipline: .55
+    ~power: .45
     population: 200000
     gold: 150
     food: 400
@@ -1834,7 +1834,7 @@ end
     stone: 120
     relics: 1
     ships: 2
-    margin: .14
+    ~margin: .14
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -1956,18 +1956,18 @@ end
 
 <>RebelFederation |
     kind: "polity"
-    aggression: .55
-    cooperation: .55
-    fear: .45
-    ambition: .65
-    cohesion: .45
-    stability: .35
-    succession: .35
-    honor: .55
-    spirituality: .35
-    openness: .55
-    discipline: .35
-    power: .35
+    ~aggression: .55
+    ~cooperation: .55
+    ~fear: .45
+    ~ambition: .65
+    ~cohesion: .45
+    ~stability: .35
+    ~succession: .35
+    ~honor: .55
+    ~spirituality: .35
+    ~openness: .55
+    ~discipline: .35
+    ~power: .35
     population: 160000
     gold: 120
     food: 350
@@ -1978,7 +1978,7 @@ end
     stone: 100
     relics: 1
     ships: 3
-    margin: .13
+    ~margin: .13
 
     transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
@@ -2099,11 +2099,11 @@ end
 end
 
 <>Faction |
-    loyalty: .5
-    greed: .5
-    influence: .5
-    militancy: .5
-    margin: .08
+    ~loyalty: .5
+    ~greed: .5
+    ~influence: .5
+    ~militancy: .5
+    ~margin: .08
 
     transition split when (self >> loyalty) < .5 and (self >> greed) > .8 and (self >> influence) > .75
         into Faction, Faction

@@ -405,7 +405,7 @@ pub struct FieldDecl {
     pub private: bool,
     pub nullable: bool,      // true if field has `?` suffix
     pub readonly: bool,      // true if field has `!` prefix
-    pub raw: bool,           // true if field has `~` prefix — opts out of trait inference
+    pub raw: bool,           // true if field has `~` prefix. VM: a 0..1 trait (clamped); other numbers are plain. The interpreter still reads it as "not a trait".
     pub relation: Option<RelationDef>,
     pub default: Option<Expr>,
     pub span: Span,

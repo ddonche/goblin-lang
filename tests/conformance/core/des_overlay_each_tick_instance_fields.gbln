@@ -4,9 +4,9 @@
 /// in any order (`each tick:` before `modifies:`), and a field named `each`
 /// can be changed.
 <>F |
-    ~hp: 20
-    ~def: 0
-    ~each: 0
+    hp: 20
+    def: 0
+    each: 0
 xx
 overlay Bleed |
     rate: 2

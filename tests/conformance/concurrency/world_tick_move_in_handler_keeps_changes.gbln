@@ -5,7 +5,7 @@
 /// and pays the worker in the same tick; no pay is lost. On tick 4, the
 /// tick it arrives, the shop still sees it and pays it (the pay is in transit).
 <>Shop |
-    ~cash: 100
+    cash: 100
     every 2 ticks
         if homes != nil
             :post(homes, {"move": 1})
@@ -17,7 +17,7 @@
     end
 xx
 <>Worker |
-    ~money: 0
+    money: 0
 xx
 homes | nil
 away | nil

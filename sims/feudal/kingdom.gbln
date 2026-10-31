@@ -41,14 +41,14 @@ realm_names | ["Aldmark", "Brennor", "Caddis"]
     name: ""
     /// A realm is held by no one; a realm's `owner` is nil.
     owner: nil
-    ~crowned: 0
-    ~inherited: 0
-    ~escheated: 0
-    ~granted: 0
-    ~sold: 0
-    ~seized: 0
-    ~defected: 0
-    ~arrived: 0
+    crowned: 0
+    inherited: 0
+    escheated: 0
+    granted: 0
+    sold: 0
+    seized: 0
+    defected: 0
+    arrived: 0
     every 1 tick
         crown(self)
     end
@@ -57,9 +57,9 @@ xx
 <>Noble |
     name: ""
     house: ""
-    ~age: 20
+    age: 20
     lifespan: 60
-    ~gold: 0
+    gold: 0
     loyalty: 50
     vows: false
     /// The noble whose child this is (nil for the first generation).

@@ -2,11 +2,11 @@
 /// A decision can leave out `by [ ... ]`: every target that passes its
 /// `where` scores the same, 1, and the judge sees that score.
 <>Village |
-    ~n: 0
-    ~food: 0
+    n: 0
+    food: 0
 xx
 <>P |
-    ~village: 0
+    village: 0
     eat | decision against Village where [ target >> n == self >> village ]
     judge using eat
         >= 1: take(target)

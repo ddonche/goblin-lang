@@ -5,7 +5,7 @@
     cheap: .8
 xx
 <>Person |
-    ~bought: 0
+    bought: 0
     judge using score
         >= .5: buy(target)
     end

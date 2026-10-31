@@ -3,8 +3,8 @@
 /// so other changes to the field meanwhile stay, and two overlays on one
 /// field can end in either order.
 <>F |
-    ~hp: 20
-    ~def: 2
+    hp: 20
+    def: 2
 xx
 overlay Weak |
     lasts 3 ticks

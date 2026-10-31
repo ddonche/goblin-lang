@@ -4,7 +4,7 @@
 /// object, and an erased object reads as nil from a field.
 <>Box |
     name: ""
-    ~gold: 0
+    gold: 0
     owner: nil
 xx
 top <> Box | name: "top"

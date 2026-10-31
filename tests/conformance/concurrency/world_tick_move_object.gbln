@@ -6,8 +6,8 @@
 /// program can move an object too: its region moves it at the start of the
 /// next tick, so it arrives a tick later (one tick it is in flight).
 <>Walker |
-    ~age: 0
-    ~marked: 0
+    age: 0
+    marked: 0
     every 1 tick
         self >> age |= self >> age + 1
     end

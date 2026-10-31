@@ -3,8 +3,8 @@
 /// `where` and `by`. Another object's field is still `target >> name`.
 <>F |
     name: ""
-    ~hp: 10
-    ~side: 0
+    hp: 10
+    side: 0
     act report()
         say("{@name}: hp {@hp}, same as {self >> hp}")
     xx

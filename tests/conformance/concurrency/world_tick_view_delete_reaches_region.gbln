@@ -5,7 +5,7 @@
 /// object's `on erase:` there.
 <>Person |
     health: .9
-    ~n: 0
+    n: 0
     on erase: farewell
 xx
 act farewell(p)
