@@ -11,7 +11,7 @@
 xx
 <>Knight |
     name: ""
-    ~deeds: 0
+    deeds: 0
     owner: nil
 xx
 act pay(l, k)

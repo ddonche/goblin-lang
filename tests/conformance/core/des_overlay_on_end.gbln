@@ -5,8 +5,8 @@
 /// nothing. A class action of that name runs with `self`; otherwise a
 /// program action gets the host.
 <>Person |
-    ~kids: 0
-    ~fevers: 0
+    kids: 0
+    fevers: 0
     act recover()
         self >> fevers |= self >> fevers + 1
     end

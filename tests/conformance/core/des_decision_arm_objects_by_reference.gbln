@@ -3,11 +3,11 @@
 /// `strike(target, target, self)` changes one dummy twice, and reads through
 /// `me` the change it made through `self`.
 <>Dummy |
-    ~hp: 10
+    hp: 10
 xx
 <>Fighter |
-    ~want: 1
-    ~seen: 5
+    want: 1
+    seen: 5
     pick_one | decision against Dummy by [
         target >> hp
     ]

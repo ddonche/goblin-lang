@@ -11,7 +11,7 @@ xx
 xx
 <>Coin |
     owner: nil
-    ~worth: 1
+    worth: 1
 xx
 act make_region(name, rich)
     folk | []

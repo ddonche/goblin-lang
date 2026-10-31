@@ -4,7 +4,7 @@
 /// a tenth of the town catches it on the first day; at 1 all of it; at 0
 /// none. Below .15 it used to reach nobody, and above it everyone at once.
 <>P |
-    ~town: 0
+    town: 0
 xx
 overlay Cold |
     hosts P

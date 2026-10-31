@@ -27,7 +27,7 @@ xx
 
 <>Person |
     owner: nil
-    ~health: 10
+    health: 10
     immune: false
     every 1 tick
         if n_towns > 1 and (pick 1 from 1...30) == 1

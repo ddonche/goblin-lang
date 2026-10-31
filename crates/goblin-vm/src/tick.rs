@@ -1050,8 +1050,6 @@ struct Targets {
     seen: Option<(usize, String)>,
     /// A `Value::Ref` to each object, with where it sits in the store.
     by_class: std::collections::HashMap<String, std::rc::Rc<Vec<(Value, usize)>>>,
-    /// Per decision (by address): whether its formula reads a `~` field.
-    real: std::collections::HashMap<usize, bool>,
 }
 
 impl Targets {
@@ -1068,65 +1066,12 @@ impl Targets {
                 .collect()
         )).clone()
     }
-
-    /// Whether `decision`'s formula reads a field declared with `~` (an
-    /// actual value, not a 0..1 trait) on `self` or `target`.
-    fn reads_real(&mut self, vm: &Vm, self_class: &str, decision: &goblin_ast::DecisionDef) -> bool {
-        let key = decision as *const _ as usize;
-        if let Some(&r) = self.real.get(&key) { return r; }
-        let is_real = |class: &str, field: &str| vm.session.classes.get(class)
-            .map(|c| c.fields.iter().any(|f| f.name == field && f.raw))
-            .unwrap_or(false);
-        let mut fields = Vec::new();
-        member_reads(&decision.formula, &mut fields);
-        // A link is an actual value too (on the scale it was declared
-        // with), so a formula that reads one is scored the same way.
-        let r = fields.iter().any(|(who, field)| match who.as_str() {
-            "self" => is_real(self_class, field),
-            _ => is_real(&decision.target_class, field),
-        }) || calls_link_score(&decision.formula);
-        self.real.insert(key, r);
-        r
-    }
 }
 
 /// The decision written for one object (`x score | decision against ...`),
 /// kept under the id of the object `x` held when it was declared.
 fn object_decision(session: &crate::session::Session, uuid: &str) -> Option<std::rc::Rc<goblin_ast::DecisionDef>> {
     session.object_decisions.get(uuid).cloned()
-}
-
-/// Whether a formula reads a link (`:link_score(...)`).
-fn calls_link_score(e: &goblin_ast::Expr) -> bool {
-    use goblin_ast::Expr as E;
-    match e {
-        E::FreeCall(n, args, _) | E::NsCall(_, n, args, _) =>
-            n.trim_start_matches(':') == "link_score" || args.iter().any(calls_link_score),
-        E::Member(o, _, _) | E::OptMember(o, _, _) | E::Prefix(_, o, _) | E::Postfix(o, _, _) => calls_link_score(o),
-        E::Binary(l, _, r, _) | E::Index(l, r, _) | E::IndexMap(l, r, _) => calls_link_score(l) || calls_link_score(r),
-        E::Call(r, _, args, _) | E::OptCall(r, _, args, _) => calls_link_score(r) || args.iter().any(calls_link_score),
-        E::Array(xs, _) => xs.iter().any(calls_link_score),
-        E::Object(kv, _) => kv.iter().any(|(_, v)| calls_link_score(v)),
-        _ => false,
-    }
-}
-
-/// The `self >> field` / `target >> field` reads in a formula.
-fn member_reads(e: &goblin_ast::Expr, out: &mut Vec<(String, String)>) {
-    use goblin_ast::Expr as E;
-    match e {
-        E::Member(obj, field, _) | E::OptMember(obj, field, _) => match obj.as_ref() {
-            E::Ident(who, _) if who == "self" || who == "target" => out.push((who.clone(), field.clone())),
-            other => member_reads(other, out),
-        },
-        E::Binary(l, _, r, _) => { member_reads(l, out); member_reads(r, out); }
-        E::Prefix(_, x, _) | E::Postfix(x, _, _) => member_reads(x, out),
-        E::FreeCall(_, args, _) | E::NsCall(_, _, args, _) | E::Array(args, _) => args.iter().for_each(|a| member_reads(a, out)),
-        E::Call(recv, _, args, _) | E::OptCall(recv, _, args, _) => { member_reads(recv, out); args.iter().for_each(|a| member_reads(a, out)) }
-        E::Index(a, b, _) | E::IndexMap(a, b, _) => { member_reads(a, out); member_reads(b, out) }
-        E::Object(kv, _) => kv.iter().for_each(|(_, v)| member_reads(v, out)),
-        _ => {}
-    }
 }
 
 /// The conjuncts of `a and b and c`, in order.
@@ -1550,12 +1495,12 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                                 }
                             }
                         }
-                        use std::collections::BTreeSet;
+                        let traits = crate::vm::trait_fields_of(&mut fields, &child_decl.fields);
                         let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
                             class_name: child_class.clone(),
                             fields: std::rc::Rc::new(fields),
                             readonly_fields: Default::default(),
-                            trait_fields: Default::default(),
+                            trait_fields: std::rc::Rc::new(traits),
                             uuid: new_uuid.clone(),
                         }));
                         vm.session.object_store.insert(new_uuid, child_obj);

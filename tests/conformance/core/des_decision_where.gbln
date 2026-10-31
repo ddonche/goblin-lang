@@ -5,9 +5,9 @@
 /// can go before or after `margin`.
 <>F |
     name: ""
-    ~side: 0
-    ~hp: 10
-    ~max_hp: 10
+    side: 0
+    hp: 10
+    max_hp: 10
     attack | decision against F where [
         target >> side != self >> side and target >> hp > 0
     ] by [

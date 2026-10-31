@@ -2,7 +2,7 @@
 /// The change after `offset` is any number expression, read whole with the
 /// usual precedence.
 <>P |
-    ~n: 0
+    n: 0
 xx
 link P trust -100...100
 a <> P | n: 1

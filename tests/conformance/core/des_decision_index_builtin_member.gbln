@@ -10,7 +10,7 @@
     end
 xx
 <>Prey |
-    ~n: 0
+    n: 0
     is_int: true
 xx
 act take(h, p)

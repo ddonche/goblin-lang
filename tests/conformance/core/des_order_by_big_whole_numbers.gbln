@@ -3,7 +3,7 @@
 /// numbers can look the same as decimals.
 <>F |
     name: ""
-    ~key: 0
+    key: 0
     move | decision against T by [ 1 ]
     judge using move
         >= 0: go(target)
@@ -11,7 +11,7 @@
     order by [ self >> key ] desc
 xx
 <>T |
-    ~n: 0
+    n: 0
 xx
 act go(f, t)
     a | f >> name

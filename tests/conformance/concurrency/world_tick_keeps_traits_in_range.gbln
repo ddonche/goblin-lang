@@ -1,9 +1,9 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// Changes to a trait (a 0..1 field) from several regions add up, and the
+/// Changes to a trait (a `~` field, kept in 0..1) from several regions add up, and the
 /// result stays in 0..1, as a write inside one region does.
 :rand_seed(3)
 <>Sheep |
-    wool: .5
+    ~wool: .5
 xx
 <>Wolf |
     hunger: .5

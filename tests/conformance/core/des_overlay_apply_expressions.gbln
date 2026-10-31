@@ -3,8 +3,8 @@
 /// and the number of ticks, worked out when the statement runs. A number
 /// on its own works as before.
 <>F |
-    ~hp: 10
-    ~power: 6
+    hp: 10
+    power: 6
 xx
 overlay Stunned |
 end

@@ -5,10 +5,10 @@
 /// goes over them. An erased object leaves its class; an unknown class
 /// name is an error.
 <>Rabbit |
-    ~age: 0
+    age: 0
 xx
 <>Fox |
-    ~age: 0
+    age: 0
 xx
 a <> Rabbit | age: 1
 b <> Fox | age: 2

@@ -2,7 +2,7 @@
 /// An error inside a decision's action stops the tick, as one in an `every`
 /// block does, so a mistake there is not mistaken for "nothing happened".
 <>Shop |
-    ~stock: 0
+    stock: 0
 xx
 <>Buyer |
     margin: 0

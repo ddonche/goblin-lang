@@ -43,8 +43,8 @@ overlay Pregnant |
 end
 
 <>Fund |
-    ~fund_of: 0
-    ~cash: 0
+    fund_of: 0
+    cash: 0
     /// The weekly benefit: 120 for each adult here without work, while
     /// the fund has it.
     every 7 ticks
@@ -77,13 +77,13 @@ end
 xx
 
 <>Business |
-    ~code: 0
-    ~district: 0
-    ~cash: 6000
-    ~price: 15
-    ~wage: 400
-    ~staff: 0
-    ~sales: 0
+    code: 0
+    district: 0
+    cash: 6000
+    price: 15
+    wage: 400
+    staff: 0
+    sales: 0
     /// 1 or 0: open, and hiring. Traits, so decisions can score them.
     open: 1
     hiring: 0
@@ -130,12 +130,12 @@ xx
 xx
 
 <>Resident |
-    ~age: 0
-    ~money: 500
-    ~district: 0
-    ~job: -1
-    ~expecting: 0
-    ~moves: 0
+    age: 0
+    money: 500
+    district: 0
+    job: -1
+    expecting: 0
+    moves: 0
     on erase: settle_estate
     every 1 tick
         @age |= @age + 1

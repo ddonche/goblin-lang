@@ -13,7 +13,7 @@ xx
 <>Rabbit |
     name: ""
     owner: nil
-    ~age: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
         if self >> name == "bun" and self >> age == 2

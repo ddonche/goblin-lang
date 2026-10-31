@@ -2,14 +2,14 @@
 /// method calls, indexing, after `**`, `//` and `%`, and as `say`'s
 /// argument without parentheses.
 <>Home |
-    ~food: 3
+    food: 3
 xx
 <>P |
     name: "ann"
-    ~hp: 120
+    hp: 120
     tags: ["a", "b"]
     home: nil
-    ~n: 2
+    n: 2
     act go()
         @hp |= @hp - 1
         @home >> food |= @home >> food + 1

@@ -2,7 +2,7 @@
     kind: "polity"
     strength: .5
 
-    ~population: 500000
+    population: 500000
 end
 
 @Kingdom matrix

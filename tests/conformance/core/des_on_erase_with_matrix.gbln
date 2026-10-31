@@ -1,7 +1,7 @@
 /// known-gap: interp has no `on erase:` in classes
 /// Objects made by a matrix keep their class's `on erase:` action.
 <>Person |
-    ~age: 0
+    age: 0
     on erase: bury
     every 1 tick
         self >> age |= self >> age + 1

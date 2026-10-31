@@ -4,7 +4,7 @@
 /// `:overlays_of(x)` and `:overlay_strength` read the host's own list. An
 /// overlay taken off leaves the lists; an unknown overlay name is an error.
 <>P |
-    ~n: 0
+    n: 0
 xx
 overlay Sick |
 end

@@ -7,14 +7,14 @@
 <>Realm |
     name: ""
     owner: nil
-    ~arrived: 0
+    arrived: 0
 xx
 <>Lord |
-    ~gold: 0
+    gold: 0
     owner: nil
 xx
 <>Squire |
-    ~go: 0
+    go: 0
     owner: nil
     every 1 tick
         serve(self)

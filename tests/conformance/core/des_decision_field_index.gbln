@@ -7,7 +7,7 @@
 /// class has one, else the variable.
 <>Wolf |
     name: ""
-    ~pen: 0
+    pen: 0
     hunt | decision against Sheep where [ target >> pen == self >> pen ] by [ target >> fat ]
     judge using hunt
         >= 0: eat(target)
@@ -15,8 +15,8 @@
 xx
 <>Sheep |
     name: ""
-    ~pen: 0
-    ~fat: 0
+    pen: 0
+    fat: 0
     color: ""
 xx
 act eat(w, s)

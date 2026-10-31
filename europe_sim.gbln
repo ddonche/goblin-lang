@@ -14,10 +14,10 @@
 
     /// Raw resource fields are material constraints.
     /// They should matter whenever an action requires ships, armies, food, fuel, industrial capacity, or political spending.
-    ~gold:   500
-    ~oil:    200
-    ~grain:  400
-    ~steel:  200
+    gold:   500
+    oil:    200
+    grain:  400
+    steel:  200
 
     /// Limited military attack.
     /// The judge decides when this is selected.

@@ -8,7 +8,7 @@
 xx
 <>Grass |
     owner: nil
-    ~bites: 0
+    bites: 0
 xx
 <>Rabbit |
     owner: nil

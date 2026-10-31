@@ -1,0 +1,17 @@
+/// known-gap: interp reads `~` the old way (a real value)
+/// An object a `spawn` transition makes gets its class's `~` traits: they
+/// stay in 0..1, its plain numbers do not.
+<>Hive |
+    ~calm: .5
+    bees: 2
+    transition spawn when @bees >= 2
+        into Hive
+    end
+xx
+h <> Hive | calm: .5
+tick()
+repeat :objects("Hive") as x
+    x >> calm |= x >> calm + 5
+    x >> bees |= x >> bees + 5
+    say("{x >> calm} {x >> bees}")
+xx

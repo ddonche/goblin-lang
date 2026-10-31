@@ -2,7 +2,7 @@
 /// An `each tick:` change that takes a whole-number field past the largest
 /// whole number is an error (R1221), not a wrapped or crashed value.
 <>C |
-    ~n: 0
+    n: 0
 xx
 overlay Up |
     lasts 3 ticks

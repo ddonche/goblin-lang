@@ -6,7 +6,7 @@
 /// means (here, in a decision's `where`).
 <>Nation |
     name: ""
-    ~gold: 0
+    gold: 0
     act praise(target)
         self link to target on respect offset +3
     xx

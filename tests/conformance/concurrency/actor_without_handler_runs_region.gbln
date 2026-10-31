@@ -6,7 +6,7 @@
 xx
 <>Rabbit |
     owner: nil
-    ~age: 0
+    age: 0
     every 1 tick
         @age |= @age + 1
     end

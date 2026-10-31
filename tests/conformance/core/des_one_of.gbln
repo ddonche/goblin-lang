@@ -4,9 +4,9 @@
 /// doesn't also attack. A decision outside the group still runs.
 <>F |
     name: ""
-    ~side: 0
-    ~hp: 10
-    ~max_hp: 10
+    side: 0
+    hp: 10
+    max_hp: 10
     heal | decision against F margin 0 where [ target >> side == self >> side and target >> hp * 2 < target >> max_hp ] by [
         1 - target >> hp / target >> max_hp
     ]

@@ -2,7 +2,7 @@
 /// In a DES `every` block, a write through a field that holds an object
 /// changes that object: two people eat from one village each tick.
 <>Village |
-    ~food: 10
+    food: 10
 xx
 <>Person |
     home: nil

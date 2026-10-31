@@ -25,17 +25,17 @@ xx
 all_villages | []
 
 <>Village |
-    ~village: 0
-    ~food: 200
-    ~wood: 0
-    ~huts: 6
-    ~land: 80
-    ~harvest: 4
-    ~pop: 0
-    ~born: 0
-    ~graves: 0
-    ~sent: 0
-    ~month: 0
+    village: 0
+    food: 200
+    wood: 0
+    huts: 6
+    land: 80
+    harvest: 4
+    pop: 0
+    born: 0
+    graves: 0
+    sent: 0
+    month: 0
     every 1 tick
         @month |= @month + 1
         @pop |= :len(:objects("Person", it >> village == @village))
@@ -61,10 +61,10 @@ overlay Winter |
 end
 
 <>Person |
-    ~village: 0
-    ~age: 0
-    ~hungry: 0
-    ~dead: 0
+    village: 0
+    age: 0
+    hungry: 0
+    dead: 0
     on erase: bury
     every 1 tick
         @age |= @age + 1

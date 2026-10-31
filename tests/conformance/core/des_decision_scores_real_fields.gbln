@@ -3,8 +3,8 @@
 /// here the cheapest shop scores -10 and the dearest -30, and the judge
 /// compares against that same number.
 <>Shop |
-    ~price: 0
-    ~sold: 0
+    price: 0
+    sold: 0
 xx
 <>Buyer |
     hunger: .5

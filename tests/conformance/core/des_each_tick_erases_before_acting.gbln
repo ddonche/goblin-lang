@@ -4,7 +4,7 @@
 /// picks it.
 <>G |
     name: ""
-    ~hp: 2
+    hp: 2
     shout | decision against G by [ 1 ]
     judge using shout
         >= 0: yell(target)

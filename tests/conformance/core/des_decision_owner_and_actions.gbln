@@ -5,7 +5,7 @@
 /// Either way the result is what checking every target gives.
 <>Lord |
     name: ""
-    ~gold: 0
+    gold: 0
     owner: nil
     reward | decision against Knight where [ target >> owner == self and target >> deeds > 0 ] by [ worth(target) ]
     judge using reward
@@ -18,8 +18,8 @@
 xx
 <>Knight |
     name: ""
-    ~deeds: 0
-    ~purse: 0
+    deeds: 0
+    purse: 0
     owner: nil
 xx
 act worth(k)

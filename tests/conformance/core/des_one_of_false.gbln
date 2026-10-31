@@ -4,7 +4,7 @@
 /// ends the group. Outside a group the result changes nothing.
 <>P |
     name: ""
-    ~brave: 0
+    brave: 0
     flee | decision against P by [ 1 ]
     judge using flee
         >= 0: run_away(target)

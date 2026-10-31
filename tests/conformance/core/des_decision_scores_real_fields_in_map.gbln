@@ -2,8 +2,8 @@
 /// A `~` field read inside a map literal scores the same as a plain read:
 /// the cheapest shop scores -10.
 <>Shop |
-    ~price: 0
-    ~sold: 0
+    price: 0
+    sold: 0
 xx
 <>Buyer |
     hunger: .5

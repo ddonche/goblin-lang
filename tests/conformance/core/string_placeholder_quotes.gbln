@@ -3,7 +3,7 @@
 /// inner quote doesn't end the string, and the placeholder ends at its own
 /// `}`. Braces that don't start an expression are text, as before.
 <>Estate |
-    ~n: 0
+    n: 0
     owner: nil
 xx
 <>Lord |

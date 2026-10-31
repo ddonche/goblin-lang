@@ -3,8 +3,8 @@
 /// it runs out included, and nothing is taken back when it ends (unlike
 /// `modifies:`). The changes see `strength` and the overlay's fields.
 <>F |
-    ~hp: 20
-    ~def: 2
+    hp: 20
+    def: 2
 xx
 overlay Poisoned |
     lasts 3 ticks

@@ -1509,7 +1509,7 @@ impl Vm {
                     };
                     fields.insert(field.name.clone(), value);
                 }
-                let trait_fields = infer_trait_fields(&fields, &class.fields);
+                let trait_fields = trait_fields_of(&mut fields, &class.fields);
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
@@ -7077,25 +7077,25 @@ fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usi
     (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }
 
-/// The trait fields of a new object, as the interpreter infers them: every
-/// numeric field whose value is in 0..1 (0 and 1 included), except `id` and
-/// fields marked `~`, which hold real values.
-pub(crate) fn infer_trait_fields(
-    fields: &indexmap::IndexMap<String, Value>,
+/// The trait fields of a new object: the fields its class marks with `~`
+/// (`~fear: .2`). A trait stays in 0..1; its starting value is clamped
+/// here. Every other number is a plain value, whatever it starts at.
+pub(crate) fn trait_fields_of(
+    fields: &mut indexmap::IndexMap<String, Value>,
     decls: &[goblin_ast::FieldDecl],
 ) -> std::collections::BTreeSet<String> {
-    fields.iter()
-        .filter(|(k, v)| {
-            *k != "id"
-                && !decls.iter().any(|d| d.raw && &d.name == *k)
-                && match v {
-                    Value::Float(f) => (0.0..=1.0).contains(f),
-                    Value::Int(i) => (0..=1).contains(i),
-                    _ => false,
-                }
-        })
-        .map(|(k, _)| k.clone())
-        .collect()
+    let mut out = std::collections::BTreeSet::new();
+    for d in decls.iter().filter(|d| d.raw) {
+        let Some(v) = fields.get_mut(&d.name) else { continue };
+        *v = match *v {
+            Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+            Value::Int(i) if (0..=1).contains(&i) => Value::Int(i),
+            Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+            _ => continue,
+        };
+        out.insert(d.name.clone());
+    }
+    out
 }
 
 /// Where a variable lives, for [`Vm::note_object_name`].

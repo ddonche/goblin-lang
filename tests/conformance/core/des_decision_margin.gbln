@@ -5,9 +5,9 @@
 /// with no margin of its own, uses the object's `margin` (0): only the best.
 :rand_seed(3)
 <>Shop |
-    ~stock: 0
-    ~sold: 0
-    ~visits: 0
+    stock: 0
+    sold: 0
+    visits: 0
 xx
 <>Buyer |
     margin: 0

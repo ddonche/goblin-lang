@@ -2,7 +2,7 @@
 /// field: that is `@hp |= ...`) reports why when it is called, instead of
 /// going missing.
 <>P |
-    ~hp: 5
+    hp: 5
     act hurt()
         hp |= hp - 1
     xx

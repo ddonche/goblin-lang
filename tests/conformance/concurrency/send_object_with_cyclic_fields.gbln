@@ -3,7 +3,7 @@
 /// also when they point back at each other (a cycle stays a cycle in the
 /// copy); a field whose object was erased arrives as nil.
 <>N |
-    ~v: 0
+    v: 0
     next: nil
 xx
 a <> N | v: 1

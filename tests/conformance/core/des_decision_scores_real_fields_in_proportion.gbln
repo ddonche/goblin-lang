@@ -3,8 +3,8 @@
 /// and 8, so a margin of 2 keeps all three shops in the running.
 :rand_seed(4)
 <>Shop |
-    ~stock: 0
-    ~sold: 0
+    stock: 0
+    sold: 0
 xx
 <>Buyer |
     margin: 2

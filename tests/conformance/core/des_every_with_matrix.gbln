@@ -1,7 +1,7 @@
 /// known-gap: interp has no `every N ticks` blocks (VM only, owner 2026-10-25)
 /// Objects made by a matrix keep their class's `every` blocks.
 <>Person |
-    ~age: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
     end
