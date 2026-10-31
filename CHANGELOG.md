@@ -5,6 +5,8 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: the class, action and object-name tables use Fx hashing; epidemic
+  -1%, predator-prey -2%, feudal -2.4% instructions.
 - goblin uses the mimalloc allocator. The sims ran about a quarter of
   their instructions inside glibc malloc/free; epidemic -26%, predator-prey
   -23%, feudal -18% instructions.

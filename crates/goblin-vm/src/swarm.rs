@@ -61,7 +61,7 @@ pub(crate) struct Program {
     named_values: Vec<(String, PValue)>,
     action_file_map: Vec<(String, Vec<(String, PValue)>)>,
     compiled_methods: Vec<((String, String), Arc<PFunction>)>,
-    classes: HashMap<String, goblin_ast::ClassDecl>,
+    classes: HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>,
     enums: HashMap<String, goblin_ast::EnumDecl>,
     unit_registry: HashMap<String, goblin_ast::UnitDecl>,
     module_aliases: HashMap<(String, String), String>,
@@ -79,10 +79,10 @@ struct Tables {
     global_names: Rc<Vec<String>>,
     global_type_locks: Rc<HashMap<u32, String>>,
     global_hard_type_locks: Rc<HashMap<u32, String>>,
-    named_values: Rc<HashMap<String, Value>>,
+    named_values: Rc<HashMap<String, Value, rustc_hash::FxBuildHasher>>,
     action_file_map: Rc<HashMap<String, Vec<(String, Value)>>>,
     compiled_methods: Rc<HashMap<(String, String), Rc<crate::value::FunctionObject>>>,
-    classes: Rc<HashMap<String, goblin_ast::ClassDecl>>,
+    classes: Rc<HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>,
     enums: Rc<HashMap<String, goblin_ast::EnumDecl>>,
     unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     module_aliases: Rc<HashMap<(String, String), String>>,
@@ -288,7 +288,7 @@ fn build_tables(p: &Program, fp: &mut FromPortable, s: &mut Session) -> Tables {
     for ((c, m), f) in &p.compiled_methods {
         compiled_methods.insert((c.clone(), m.clone()), fp.function(f, s));
     }
-    let mut named_values = HashMap::with_capacity(p.named_values.len());
+    let mut named_values = HashMap::with_capacity_and_hasher(p.named_values.len(), Default::default());
     for (k, v) in &p.named_values { named_values.insert(k.clone(), fp.value(v, s)); }
     let mut action_file_map = HashMap::with_capacity(p.action_file_map.len());
     for (file, list) in &p.action_file_map {

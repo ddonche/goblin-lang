@@ -15,7 +15,7 @@
 //! variable by a name computed at run time (`:clone_object("x")`, DES ticks
 //! and links, `:resolve_token`) make every global reachable.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use crate::opcode::{OpData, Opcode};
@@ -43,22 +43,22 @@ pub(crate) struct Base {
 
 impl Base {
     pub(crate) fn of(session: &Session) -> Base {
-        let mut tokens: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut tokens: HashMap<String, Vec<usize>> = HashMap::default();
         for (i, name) in session.global_names.iter().enumerate() {
             tokens.entry(name.clone()).or_default().push(i);
             if let Some((_, short)) = name.rsplit_once("::") {
                 tokens.entry(short.to_string()).or_default().push(i);
             }
         }
-        let empty = HashSet::new();
+        let empty = HashSet::default();
         let mut w = Walk {
             base_seen: &empty,
             tokens: &tokens,
-            seen: HashSet::new(),
+            seen: HashSet::default(),
             slots: vec![false; session.globals.len()],
             all: false,
             pending: Vec::new(),
-            objects: HashSet::new(),
+            objects: HashSet::default(),
             maybe: Vec::new(),
         };
         for v in session.named_values.values() { w.value(v, session); }
@@ -108,11 +108,11 @@ pub(crate) fn reachable(base: &Base, roots: &[&Value], session: &Session) -> Opt
     let mut w = Walk {
         base_seen: &base.seen,
         tokens: &base.tokens,
-        seen: HashSet::new(),
+        seen: HashSet::default(),
         slots,
         all: false,
         pending,
-        objects: HashSet::new(),
+        objects: HashSet::default(),
         maybe: base.maybe.clone(),
     };
     for r in roots { w.value(r, session); }

@@ -204,7 +204,7 @@ pub struct Session {
     /// whether that variable is top-level). DES
     /// overlays report their host by this name (`host_var`), as the
     /// interpreter does, also for overlays that spread or spawn onto it.
-    pub object_names: HashMap<String, (String, bool)>,
+    pub object_names: HashMap<String, (String, bool), rustc_hash::FxBuildHasher>,
 
     /// Active overlay instances.
     pub overlay_instances: crate::store::OverlayList,
@@ -216,7 +216,7 @@ pub struct Session {
     pub grid_store: GridStore,
 
     /// Class definitions registered at runtime.
-    pub classes: Rc<HashMap<String, ClassDecl>>,
+    pub classes: Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>,
 
     /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
@@ -262,7 +262,7 @@ pub struct Session {
     /// Named function registry for `invoke`/`summon`/`provoke` and GLAM namespace dispatch.
     /// Actions are stored under both bare names ("create_shard") and qualified names
     /// ("graveyard::create_shard") when registered during a `use glam` import.
-    pub named_values: Rc<HashMap<String, Value>>,
+    pub named_values: Rc<HashMap<String, Value, rustc_hash::FxBuildHasher>>,
 
     /// The namespace of the GLAM currently being imported, if any.
     /// Set by UseGlam before importing the GLAM entry file; cleared after.
@@ -379,7 +379,7 @@ impl Session {
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
             object_store: Default::default(),
-            object_names: HashMap::new(),
+            object_names: Default::default(),
             overlay_instances: Default::default(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
