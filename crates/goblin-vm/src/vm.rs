@@ -6580,6 +6580,22 @@ mod tests {
         Vm::new(Session::new(GcMode::Off))
     }
 
+    /// A `~` field is a trait even when the object starts it as nil, so a
+    /// number written to it later is clamped.
+    #[test]
+    fn nil_tilde_field_is_still_a_trait() {
+        let decl = goblin_ast::FieldDecl {
+            name: "mood".into(), private: false, nullable: true, readonly: false, raw: true,
+            relation: None, default: None,
+            span: goblin_diagnostics::Span::new("t", 0, 0, 0, 0, 0, 0),
+        };
+        let mut fields = indexmap::IndexMap::<String, Value>::new();
+        fields.insert("mood".into(), Value::Nil);
+        let traits = trait_fields_of(&mut fields, &[decl]);
+        assert!(traits.contains("mood"));
+        assert!(matches!(fields.get("mood"), Some(Value::Nil)));
+    }
+
     fn simple_func(bytecode: Vec<Opcode>, constants: Vec<Value>) -> FunctionObject {
         FunctionObject {
             op_data: Vec::new(),
@@ -7090,6 +7106,9 @@ pub(crate) fn trait_fields_of(
 ) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     for d in decls.iter().filter(|d| d.raw) {
+        // A `~` field is a trait whatever it starts as (nil included), so
+        // a number written to it later is clamped too.
+        out.insert(d.name.clone());
         let Some(v) = fields.get_mut(&d.name) else { continue };
         *v = match *v {
             Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
@@ -7097,7 +7116,6 @@ pub(crate) fn trait_fields_of(
             Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
             _ => continue,
         };
-        out.insert(d.name.clone());
     }
     out
 }
