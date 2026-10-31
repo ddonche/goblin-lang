@@ -43,7 +43,7 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
             },
             Value::Object(mut o) => {
                 if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
-                seen.push(o.uuid.to_string());
+                seen.push(o.uuid[..].to_string());
                 let fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, f)| (k.clone(), match f {
                         Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
@@ -3788,7 +3788,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // owned_by(owner): the objects whose owner_id is owner's uuid
             // (direct children only), as the interpreter's object_store scan.
             let owner_uuid = match args.first() {
-                Some(Value::Object(o)) => o.uuid.to_string(),
+                Some(Value::Object(o)) => o.uuid[..].to_string(),
                 Some(Value::Str(s)) => s.to_string(),
                 _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
             };
@@ -3819,7 +3819,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
             }
             let root_uuid = match args.first() {
-                Some(Value::Object(o)) => o.uuid.to_string(),
+                Some(Value::Object(o)) => o.uuid[..].to_string(),
                 Some(Value::Str(s)) => s.to_string(),
                 _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
             };
@@ -5405,7 +5405,7 @@ pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
         if let Some(entity) = session.des_store.get(handle) {
-            let class = entity.class_name.to_string();
+            let class = entity.class_name[..].to_string();
             session.des_index.remove_all(handle, &class, None);
         }
         session.des_store.erase(handle);

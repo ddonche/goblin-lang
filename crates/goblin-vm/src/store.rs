@@ -53,7 +53,7 @@ pub fn field_key(v: &Value) -> Option<FieldKey> {
         Value::Str(s) => FieldKey::Str(s.to_string()),
         Value::Bool(b) => FieldKey::Bool(*b),
         Value::Nil => FieldKey::Nil,
-        Value::Object(o) => FieldKey::Obj(o.uuid.to_string()),
+        Value::Object(o) => FieldKey::Obj(o.uuid[..].to_string()),
         Value::Ref(u) => FieldKey::Obj(u.to_string()),
         _ => return None,
     })

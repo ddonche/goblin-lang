@@ -5,6 +5,10 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: object ids and class names are copied without going through text
+  formatting (a slowdown from #136), and an object passed to an action is
+  passed as a reference without copying the object first. Action call +
+  field read loop -10%; feudal -2.8%, epidemic and predator-prey -1.5%.
 - VM: owner queries look each held object up once instead of twice;
   feudal -2%, predator-prey -1% instructions.
 - VM: the class, action and object-name tables use Fx hashing; epidemic

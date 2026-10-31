@@ -242,9 +242,9 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
             if let (Dest::Actor(a), Item::Arrive(x)) = (dest, item) {
                 if let Some(&j) = by_id.get(a) {
                     owner.insert(&*x.uuid, j);
-                    in_flight.push((x.uuid.to_string(), x.object.clone(), j));
+                    in_flight.push((x.uuid[..].to_string(), x.object.clone(), j));
                     in_flight_overlays.extend(x.overlays.iter().cloned());
-                    flying[j].objects.push((x.uuid.to_string(), x.object.clone()));
+                    flying[j].objects.push((x.uuid[..].to_string(), x.object.clone()));
                     flying[j].overlays.extend(x.overlays.iter().cloned());
                 }
             }
@@ -775,7 +775,7 @@ pub(crate) fn is_remote(vm: &Vm, uuid: &str) -> bool {
 pub(crate) fn move_object(vm: &mut Vm, obj: &Value, region: &Value) -> Result<(), GoblinError> {
     let uuid = match obj {
         Value::Ref(u) => u.clone(),
-        Value::Object(o) => o.uuid.to_string(),
+        Value::Object(o) => o.uuid[..].to_string(),
         other => return Err(err(format!("C0125: move-object: :move!(obj, region) moves an object; got {}", other.type_name()))),
     };
     let Some(to) = crate::actor::actor_of(region).map(|a| crate::actor::actor_id(&a)) else {
@@ -862,12 +862,12 @@ fn send_one(ss: &mut crate::session::Session, uuid: &str, to: u64) -> Result<(),
 fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
     let v = fp.value(&a.object, &mut vm.session);
     let s = &mut vm.session;
-    s.object_store.insert(a.uuid.to_string(), v);
+    s.object_store.insert(a.uuid[..].to_string(), v);
     s.moved_away.remove(&a.uuid);
-    if let Some(n) = &a.name { s.object_names.insert(a.uuid.to_string(), n.clone()); }
+    if let Some(n) = &a.name { s.object_names.insert(a.uuid[..].to_string(), n.clone()); }
     for (k, v) in &a.links { s.link_offsets.insert(k.clone(), v.clone()); }
     for (k, v) in &a.link_defs { s.object_link_defs.insert(k.clone(), std::rc::Rc::new(v.clone())); }
-    if let Some(d) = &a.decision { s.object_decisions.insert(a.uuid.to_string(), std::rc::Rc::new(d.clone())); }
+    if let Some(d) = &a.decision { s.object_decisions.insert(a.uuid[..].to_string(), std::rc::Rc::new(d.clone())); }
     for o in &a.overlays {
         let inst = overlay_from_p(o, fp, &mut vm.session);
         vm.session.overlay_instances.push(inst);
@@ -938,7 +938,7 @@ fn hand_new_contents(vm: &mut Vm) -> Result<(), GoblinError> {
             // one region sends another.
             if let Item::Arrive(a) = &item {
                 let f = Arc::make_mut(&mut w.flying[j]);
-                f.objects.push((a.uuid.to_string(), a.object.clone()));
+                f.objects.push((a.uuid[..].to_string(), a.object.clone()));
                 f.overlays.extend(a.overlays.iter().cloned());
             }
             w.inbox[j].push(item);

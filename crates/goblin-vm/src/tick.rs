@@ -263,7 +263,7 @@ fn each_tick_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         vm.session.touch(&host);
         let Some(Value::Object(o)) = vm.session.object_store.get_mut(&host) else { continue };
         let is_trait: Vec<bool> = deltas.iter().map(|(f, _)| o.trait_fields.contains(f)).collect();
-        let class = o.class_name.to_string();
+        let class = o.class_name[..].to_string();
         let fields = std::rc::Rc::make_mut(&mut o.fields);
         for ((field, d), t) in deltas.into_iter().zip(is_trait) {
             let Some(v) = fields.get_mut(&field) else {
@@ -335,7 +335,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     // To the objects the host has a link to on that channel;
                     // each catches it with chance rate x strength.
                     let host_class = match vm.session.object_store.get(&inst.host_uuid) {
-                        Some(Value::Object(o)) => o.class_name.to_string(),
+                        Some(Value::Object(o)) => o.class_name[..].to_string(),
                         _ => continue,
                     };
                     let candidates: Vec<String> = vm.session.object_store.of_class(&host_class)
@@ -396,7 +396,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
 
                 SpreadRule::Ownership { rate } => {
                     let host_uuid = match vm.session.object_store.get(&inst.host_uuid) {
-                        Some(Value::Object(o)) => o.uuid.to_string(),
+                        Some(Value::Object(o)) => o.uuid[..].to_string(),
                         _ => continue,
                     };
                     let candidates: Vec<String> = vm.session.object_store.iter()
@@ -897,7 +897,7 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     let selves: Vec<(String, String)> = store.places_of(|c| classes.get(c).is_some_and(|c| !c.every.is_empty()))
         .into_iter()
         .filter_map(|i| match store.get_index(i) {
-            Some((u, Value::Object(o))) => Some((u.clone(), o.class_name.to_string())),
+            Some((u, Value::Object(o))) => Some((u.clone(), o.class_name[..].to_string())),
             _ => None,
         })
         .filter(|(u, _)| !crate::world::is_remote(vm, u))
@@ -933,7 +933,7 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             let Some((uuid, Value::Object(o))) = store.get_index(i) else { continue };
             // Another region's object decides in its own region.
             if !crate::world::is_remote(vm, uuid) {
-                out.push((uuid.clone(), o.class_name.to_string()));
+                out.push((uuid.clone(), o.class_name[..].to_string()));
             }
         }
         out
@@ -1213,7 +1213,7 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         let h = h.ok()?;
         let uuid = match &h {
             Value::Ref(u) => u.clone(),
-            Value::Object(o) => o.uuid.to_string(),
+            Value::Object(o) => o.uuid[..].to_string(),
             _ => return None,
         };
         // `target >> owner == x` when x holds more than the class has (a
@@ -1318,7 +1318,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // the tick with an error: a decision never does nothing silently.
     let formula_error = |vm: &Vm, what: String| {
         let class = match vm.session.object_store.get(&self_uuid) {
-            Some(Value::Object(o)) => o.class_name.to_string(),
+            Some(Value::Object(o)) => o.class_name[..].to_string(),
             _ => String::new(),
         };
         GoblinError::Runtime(format!("R1220: decision-formula: decision `{name}` of {class} (against {}): {what}", decision.target_class))
@@ -1445,7 +1445,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         .into_iter()
         .filter_map(|i| match store.get_index(i) {
             Some((uuid, Value::Object(o))) if !crate::world::is_remote(vm, uuid) =>
-                Some((uuid.clone(), o.class_name.to_string())),
+                Some((uuid.clone(), o.class_name[..].to_string())),
             _ => None,
         }).collect();
 
@@ -1569,7 +1569,7 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
 /// The class declaration of A's link on `channel` (`link Nation trade 0...1`).
 fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
     let class = match vm.session.object_store.get(from) {
-        Some(Value::Object(o)) => o.class_name.to_string(),
+        Some(Value::Object(o)) => o.class_name[..].to_string(),
         _ => return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into())),
     };
     vm.session.link_defs.get(&(class.clone(), channel.to_string())).cloned().ok_or_else(|| GoblinError::Runtime(format!(
@@ -1795,7 +1795,7 @@ fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, args: Vec<Value>) -
 /// object is gone).
 fn action_result(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<Value, GoblinError> {
     let class_name = match vm.session.object_store.get(uuid) {
-        Some(Value::Object(o)) => o.class_name.to_string(),
+        Some(Value::Object(o)) => o.class_name[..].to_string(),
         Some(_) => String::new(),
         None => return Ok(Value::Nil),
     };
@@ -1901,7 +1901,7 @@ fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), G
 pub(crate) fn run_on_erase(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
     if vm.session.des_erasing.iter().any(|u| u == uuid) { return Ok(()); }
     let class = match vm.session.object_store.get(uuid) {
-        Some(Value::Object(o)) => o.class_name.to_string(),
+        Some(Value::Object(o)) => o.class_name[..].to_string(),
         _ => return Ok(()),
     };
     let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) else { return Ok(()) };

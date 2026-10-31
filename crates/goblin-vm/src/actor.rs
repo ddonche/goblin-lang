@@ -867,7 +867,7 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
             }
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
-                let first = out.insert(o.uuid.to_string());
+                let first = out.insert(o.uuid[..].to_string());
                 if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
                     if first { stack.extend(stored.fields.values().cloned()); }
                 }
@@ -1024,7 +1024,7 @@ impl Vm {
             Err(e) => { LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst); return Err(e); }
         };
 
-        let origin = match &state { Value::Object(o) => Some(o.uuid.to_string()), Value::Ref(u) => Some(u.clone()), _ => None };
+        let origin = match &state { Value::Object(o) => Some(o.uuid[..].to_string()), Value::Ref(u) => Some(u.clone()), _ => None };
         let sched = sched();
         let worker = sched.next.fetch_add(1, Ordering::Relaxed) % sched.workers.len();
         let shared = Arc::new(ActorShared {
@@ -1128,7 +1128,7 @@ fn adopt(v: Value, s: &mut Session) -> Value {
             let fields: crate::value::FieldMap = o.fields.iter()
                 .map(|(k, x)| (k.clone(), adopt(x.clone(), s))).collect();
             o.fields = std::rc::Rc::new(fields);
-            let uuid = o.uuid.to_string();
+            let uuid = o.uuid[..].to_string();
             s.object_store.insert(uuid.clone(), Value::Object(o));
             Value::Ref(uuid)
         }
