@@ -5,6 +5,9 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: `:len`, `:count(x)`, `:is_empty` and `:has` read their list in place
+  instead of copying it first. 50k `:len(:objects(...))` calls -18%,
+  feudal -1.4%, predator-prey -1% instructions.
 - VM: `:objects("X", it >> owner == x)` reads x (a variable, or a field
   path from one) and its contents at once, without building the query's two
   closures; an action doing it still counts as only reading. Feudal -12%

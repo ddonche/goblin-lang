@@ -156,6 +156,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             format!("builtin {:?}: expected arg {i}", id)
         ))
     };
+    // An argument read in place, for builtins that only look at it (a
+    // copy of a big list costs more than the answer).
+    let peek = |i: usize| -> Result<&Value, GoblinError> {
+        args.get(i).ok_or_else(|| GoblinError::Runtime(
+            format!("builtin {:?}: expected arg {i}", id)
+        ))
+    };
     let expect_n = |n: usize| -> Result<(), GoblinError> {
         if args.len() != n {
             Err(GoblinError::ArityMismatch { expected: n, got: args.len(), name: format!("{:?}", id) })
@@ -526,7 +533,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             // `count` resolves to Len; `count(s, sub)` is the occurrence count.
             if args.len() == 2 { return dispatch(BuiltinId::Count, args, session); }
             expect_n(1)?;
-            Ok(match read(0)? {
+            Ok(match peek(0)? {
                 Value::Str(s)        => Value::Int(s.chars().count() as i64),
                 Value::Array(a)      => Value::Int(a.len() as i64),
                 Value::Map(m)        => Value::Int(m.len() as i64),
@@ -1045,30 +1052,30 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             if args.len() != 2 {
                 return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "has".into() });
             }
-            let container = read(0)?;
-            let needle = read(1)?;
+            let container = peek(0)?;
+            let needle = peek(1)?;
             // A map key must be a scalar (str, char, number or bool), as in the interpreter.
             if container.is_map_like()
                 && !matches!(needle, Value::Str(_) | Value::Char(_) | Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Bool(_)) {
                 return Err(GoblinError::type_error("str, char, number or bool key", needle.type_name(), "has"));
             }
-            let result = match &container {
-                Value::Str(s) => match &needle {
+            let result = match container {
+                Value::Str(s) => match needle {
                     Value::Str(sub) => s.contains(sub.as_str()),
                     Value::Char(c)  => s.contains(*c),
                     _ => return Err(GoblinError::type_error("str or char", needle.type_name(), "has needle for string")),
                 },
-                Value::Array(arr) => arr.iter().any(|x| x == &needle),
-                Value::Seq(s)     => s.items.iter().any(|x| x == &needle),
+                Value::Array(arr) => arr.iter().any(|x| x == needle),
+                Value::Seq(s)     => s.items.iter().any(|x| x == needle),
                 Value::Map(m) => {
-                    let k = value_to_map_key(&needle);
+                    let k = value_to_map_key(needle);
                     m.contains_key(&k)
                 }
                 Value::MapOrd(m) => {
-                    let k = value_to_map_key(&needle);
+                    let k = value_to_map_key(needle);
                     m.contains_key(&k)
                 }
-                Value::Collection(c) => collections::has(c, &needle),
+                Value::Collection(c) => collections::has(c, needle),
                 Value::Nil | Value::Unit => false,
                 _ => return Err(GoblinError::type_error("string, array, or map", container.type_name(), "has")),
             };
@@ -1076,13 +1083,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::Count => {
             match args.len() {
-                1 => Ok(match read(0)? {
+                1 => Ok(match peek(0)? {
                     Value::Array(a)      => Value::Int(a.len() as i64),
                     Value::Map(m)        => Value::Int(m.len() as i64),
                     Value::MapOrd(m)     => Value::Int(m.len() as i64),
                     Value::Seq(s)        => Value::Int(s.len() as i64),
                     Value::Str(s)        => Value::Int(s.chars().count() as i64),
-                    Value::Collection(c) => Value::Int(collections::count(&c) as i64),
+                    Value::Collection(c) => Value::Int(collections::count(c) as i64),
                     other => return Err(GoblinError::type_error("collection or str", other.type_name(), "count")),
                 }),
                 2 => match (read(0)?, read(1)?) {
@@ -1808,7 +1815,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── Collections query (legacy) ─────────────────────────────────────────
         BuiltinId::IsEmpty => {
             expect_n(1)?;
-            match read(0)? {
+            match peek(0)? {
                 Value::Collection(c) => Ok(Value::Bool(c.is_empty())),
                 Value::Array(a)      => Ok(Value::Bool(a.is_empty())),
                 Value::Map(m)        => Ok(Value::Bool(m.is_empty())),
