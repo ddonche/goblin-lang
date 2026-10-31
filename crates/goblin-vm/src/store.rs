@@ -99,7 +99,7 @@ impl FieldIndex {
 /// Where `v` goes in the index of `field` (None: not an object of `class`).
 fn filed_as(v: Option<&Value>, class: &str, field: &str) -> Option<Filed> {
     let Some(Value::Object(o)) = v else { return None };
-    if o.class_name != class { return None; }
+    if &*o.class_name != class { return None; }
     Some(match o.fields.get(field) {
         None => Filed::Missing,
         Some(f) => match field_key(f) { Some(k) => Filed::Key(k), None => Filed::Other },
@@ -119,7 +119,7 @@ fn owner_in(v: &Value) -> Option<&str> {
 fn owner_in_value(f: &Value) -> Option<&str> {
     match f {
         Value::Ref(u) if !u.starts_with(crate::vm::OVERLAY_RECORD) => Some(u.as_str()),
-        Value::Object(x) => Some(x.uuid.as_str()),
+        Value::Object(x) => Some(&*x.uuid),
         _ => None,
     }
 }
@@ -128,7 +128,7 @@ fn owner_in_value(f: &Value) -> Option<&str> {
 /// (`overlay:` ids) carry their overlay's name and are not filed.
 fn class_of<'a>(uuid: &str, v: &'a Value) -> Option<&'a str> {
     match v {
-        Value::Object(o) if !uuid.starts_with(crate::vm::OVERLAY_RECORD) => Some(o.class_name.as_str()),
+        Value::Object(o) if !uuid.starts_with(crate::vm::OVERLAY_RECORD) => Some(&*o.class_name),
         _ => None,
     }
 }

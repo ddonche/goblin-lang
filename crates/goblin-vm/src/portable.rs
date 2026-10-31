@@ -201,20 +201,20 @@ impl<'s> ToPortable<'s> {
             Value::CtrlSkip => PValue::CtrlSkip,
             Value::CtrlStop => PValue::CtrlStop,
             Value::CtrlReturn(v) => PValue::CtrlReturn(Box::new(self.value(v)?)),
-            Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid.clone()),
+            Value::Object(o) if self.by_id && !self.visiting.is_empty() => PValue::ObjRef(o.uuid.to_string()),
             Value::Ref(uuid) if self.by_id && self.session.object_store.contains_key(uuid.as_str()) => PValue::ObjRef(uuid.clone()),
             Value::Object(o) if self.stays_home(&o.uuid).is_some() => self.stays_home(&o.uuid).unwrap(),
-            Value::Object(o) if self.visiting.contains(o.uuid.as_str()) => PValue::ObjRef(o.uuid.clone()),
+            Value::Object(o) if self.visiting.contains(&*o.uuid) => PValue::ObjRef(o.uuid.to_string()),
             Value::Object(o) => {
-                self.visiting.insert(o.uuid.clone());
+                self.visiting.insert(o.uuid.to_string());
                 let fields = self.object_fields(&o.fields);
-                self.visiting.remove(o.uuid.as_str());
+                self.visiting.remove(&*o.uuid);
                 PValue::Object {
-                    class_name: o.class_name.clone(),
+                    class_name: o.class_name.to_string(),
                     fields: fields?,
                     readonly_fields: (*o.readonly_fields).clone(),
                     trait_fields: (*o.trait_fields).clone(),
-                    uuid: o.uuid.clone(),
+                    uuid: o.uuid.to_string(),
                 }
             }
             // An object reference crosses as the object itself.
@@ -436,11 +436,11 @@ impl FromPortable {
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } if self.adopt => {
                 let fields = Rc::new(self.fields(fields, session));
                 session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
-                    class_name: class_name.clone(),
+                    class_name: class_name.as_str().into(),
                     fields,
                     readonly_fields: Rc::new(readonly_fields.clone()),
                     trait_fields: Rc::new(trait_fields.clone()),
-                    uuid: uuid.clone(),
+                    uuid: uuid.as_str().into(),
                 })));
                 Value::Ref(uuid.clone())
             }
@@ -465,11 +465,11 @@ impl FromPortable {
             PValue::CtrlStop => Value::CtrlStop,
             PValue::CtrlReturn(v) => Value::CtrlReturn(Box::new(self.value(v, session))),
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
-                class_name: class_name.clone(),
+                class_name: class_name.as_str().into(),
                 fields: Rc::new(self.fields(fields, session)),
                 readonly_fields: Rc::new(readonly_fields.clone()),
                 trait_fields: Rc::new(trait_fields.clone()),
-                uuid: uuid.clone(),
+                uuid: uuid.as_str().into(),
             })),
             PValue::Enum { enum_name, variant_name, fields } => Value::Enum(Box::new(EnumVal {
                 enum_name: enum_name.clone(),
