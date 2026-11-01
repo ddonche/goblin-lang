@@ -1,18 +1,22 @@
-/// known-gap: interp takes only a plain number after `offset`
-/// The change after `offset` is any number expression, read whole with the
-/// usual precedence.
+/// known-gap: interp has no link blocks or :link! (new DES syntax); the interpreter is being retired
+/// `:link!(a, b, link, change[, ticks])`: the change is any number
+/// expression; with ticks, it lasts that long.
 <>P |
-    ~n: 0
+    n: 0
 xx
-link P trust -100...100
+link trust
+    hosts: P
+    range: -100...100
+    score => 0
+xx
 a <> P | n: 1
 b <> P | n: 2
 amount | 4
-a link to b on trust offset 2 * amount
+:link!(a, b, trust, 2 * amount)
 say(:link_score(a, b, "trust"))
-a link to b on trust offset -amount + 1
+:link!(a, b, trust, -amount + 1)
 say(:link_score(a, b, "trust"))
-a link to b on trust offset +.5
+:link!(a, b, trust, .5)
 say(:link_score(a, b, "trust"))
-a link to b on trust offset -10 for 3 ticks
+:link!(a, b, trust, -10, 3)
 say(:link_score(a, b, "trust"))

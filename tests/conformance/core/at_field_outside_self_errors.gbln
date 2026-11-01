@@ -1,0 +1,6 @@
+/// `@name` needs a `self`: in a plain action (or at the top level) it is an
+/// error before anything runs.
+say("never printed")
+act f()
+    return @hp
+xx

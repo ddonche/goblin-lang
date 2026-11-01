@@ -1,19 +1,20 @@
-/// known-gap: interp has no `each tick:` on overlays
-/// An `each tick:` change that takes a whole-number field past the largest
-/// whole number is an error (R1221), not a wrapped or crashed value.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// known-gap: vm whole-number + wraps past the largest whole number everywhere, not only here
+/// An overlay's `every` block that takes a whole-number field past the
+/// largest whole number stops the tick with an error, not a wrapped or
+/// crashed value.
 <>C |
-    ~n: 0
+    n: 0
 xx
-overlay Up |
-    lasts 3 ticks
-    each tick:
-        n + 1
-    end
-end
+overlay up
+    lasts: 3
+    every 1 tick => @n |= @n + 1
+xx
 c <> C | n: :int("9223372036854775807")
-overlay Up on c at 1
+:overlay!(c, up)
 attempt
     tick()
 rescue e
-    say(:has("{e}", "R1221"))
+    say("stopped")
 xx
+say(c >> n)

@@ -1,0 +1,32 @@
+/// known-gap: interp has no `dup: stronger`; the interpreter is being retired
+/// `dup: stronger`: of two copies, the one with the higher intensity stays;
+/// on a tie the one already there stays. In an overlay class it decides
+/// between any two members; in one overlay, between two copies of it.
+<>Kingdom |
+    order: 0
+xx
+<^>Faith |
+    hosts: Kingdom
+    dup: stronger
+xx
+overlay sun_creed <^> Faith
+xx
+overlay ash_rite <^> Faith
+xx
+overlay blessing
+    dup: stronger
+xx
+k <> Kingdom | order: 0
+:overlay!(k, sun_creed, .5)
+:overlay!(k, ash_rite, .4)
+say(:overlays_of(k))
+:overlay!(k, ash_rite, .5)
+say(:overlays_of(k))
+:overlay!(k, ash_rite, .7)
+say(:overlays_of(k))
+:overlay!(k, blessing, .3)
+:overlay!(k, blessing, .6)
+say(:len(:overlays(k, blessing)))
+repeat :overlays(k, blessing)
+    say(it >> intensity)
+xx

@@ -1,0 +1,37 @@
+/// known-gap: interp has no contents list (owner is a plain field there)
+/// `:objects("Item", it >> owner == x)` and `:objects("Item", it >> owner
+/// == p >> owner)`: the holder can be a variable or a field path from one.
+/// Either way the answer is what that holder contains, of that class, in
+/// the order the objects were made; an item handed to another holder leaves
+/// the first one's list, and a path that reaches nil holds nothing.
+<>Bag |
+    name: ""
+    owner: nil
+xx
+<>Item |
+    name: ""
+    heavy: false
+    owner: nil
+xx
+a <> Bag | name: "a"
+b <> Bag | name: "b"
+x <> Item | name: "x", owner: b
+y <> Item | name: "y", owner: a
+z <> Item | name: "z", owner: a, heavy: true
+inner <> Bag | name: "inner", owner: a
+act names(xs)
+    out | []
+    repeat xs as i
+        :put_last!(out, i >> name)
+    xx
+    return out
+xx
+say(names(:objects("Item", it >> owner == a)))
+say(names(:objects("Item", it >> owner == y >> owner)))
+say(names(:objects("Item", it >> owner == y >> owner and it >> heavy)))
+say(names(:objects("Bag", it >> owner == z >> owner)))
+x >> owner |= a
+say(names(:objects("Item", it >> owner == a)))
+say(names(:objects("Item", it >> owner == b)))
+say(names(:objects("Item", it >> owner == a >> owner)))
+say(names(:objects("Item", it >> owner == inner >> owner >> owner)))

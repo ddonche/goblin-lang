@@ -1,0 +1,80 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// While a decision scores its targets, an action that only reads gives the
+/// same answer for the same arguments, so the runtime may use the first
+/// answer again. The result is what running it every time gives: answers
+/// follow the arguments, an action that writes or prints runs every time,
+/// and what it changes is seen by the reads after it.
+<>Lord |
+    name: ""
+    owner: nil
+    decision prize
+        targets: Land where (target >> owner) != self and might(self) >= 2 * might(target >> owner)
+        score => (target >> yield) + might(target >> owner)
+    xx
+    judge
+        prize and (prize >> score) >= 0: take(self, prize >> target)
+    xx
+xx
+<>Land |
+    yield: 0
+    owner: nil
+xx
+<>Peer |
+    name: ""
+    decision spot
+        targets: Land where note(target) and seen() > 0
+        score => seen()
+    xx
+    judge
+        spot and (spot >> score) >= 0: show(self, spot >> target)
+    xx
+xx
+<>Scout |
+    name: ""
+    decision spot
+        targets: Land where apply(note, target) and seen() > 0
+        score => seen()
+    xx
+    judge
+        spot and (spot >> score) >= 0: show(self, spot >> target)
+    xx
+xx
+looks | 0
+act apply(job, x)
+    return job(x)
+xx
+act might(l)
+    return :len(:objects("Land", it >> owner == l))
+xx
+act note(x)
+    looks |= looks + 1
+    say("looking at land {x >> yield}")
+    return true
+xx
+act seen()
+    return looks
+xx
+act take(l, x)
+    say("{l >> name} takes land {x >> yield}")
+    x >> owner |= l
+xx
+act show(p, x)
+    say("{p >> name} picks land {x >> yield} after {looks} looks")
+xx
+a <> Lord | name: "Ash"
+b <> Lord | name: "Birch"
+c <> Lord | name: "Cole"
+l1 <> Land | yield: 1, owner: a
+l2 <> Land | yield: 2, owner: a
+l3 <> Land | yield: 3, owner: a
+l4 <> Land | yield: 4, owner: a
+l5 <> Land | yield: 5, owner: b
+l6 <> Land | yield: 6, owner: c
+tick()
+say("Ash {might(a)}, Birch {might(b)}, Cole {might(c)}")
+p <> Peer | name: "Pell"
+tick()
+delete_object!(p)
+looks |= 0
+s <> Scout | name: "Sly"
+tick()

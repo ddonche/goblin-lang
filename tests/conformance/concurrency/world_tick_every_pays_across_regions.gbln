@@ -5,9 +5,9 @@
 /// region's object: on a payday the total is short by the pay in flight,
 /// and it is whole again the tick after.
 <>Shop |
-    ~code: 0
-    ~cash: 100
-    ~wage: 10
+    code: 0
+    cash: 100
+    wage: 10
     every 2 ticks
         repeat :objects(it >> employer == self >> code)
             it >> money |= it >> money + self >> wage
@@ -16,8 +16,8 @@
     end
 xx
 <>Worker |
-    ~employer: 0
-    ~money: 0
+    employer: 0
+    money: 0
 xx
 act make_shop()
     s <> Shop | code: 7

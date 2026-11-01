@@ -33,7 +33,7 @@ The natural way to give a person a home is a field:
 
 ```goblin
 <>Person |
-    ~home: nil
+    home: nil
     every 1 tick
         self >> home >> food |= self >> home >> food - 1
     end

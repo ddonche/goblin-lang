@@ -4,19 +4,19 @@
 <>Person |
     health: .9
 xx
-overlay Sick |
-    decays .1
-    modifies:
-        health - .05
-    end
-end
+overlay sick
+    decays: .1
+    modify
+        @health - .05
+    xx
+xx
 act make()
     p <> Person | health: .8
-    overlay Sick on p at .9
+    :overlay!(p, sick, .9)
     return p
 xx
 act region(st, msg)
-    say(:len(:overlays(it >> overlay_name == "Sick")))
+    say(:len(:overlays(sick)))
     tick()
     repeat st{"people"}
         h | it >> health

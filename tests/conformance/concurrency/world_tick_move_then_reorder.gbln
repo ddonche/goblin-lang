@@ -3,7 +3,7 @@
 /// program ticks the same regions in another order: west moves a walker on
 /// tick 2, and from tick 3 the list is [east, west]. Nothing is lost.
 <>Walker |
-    ~age: 0
+    age: 0
     every 1 tick
         self >> age |= self >> age + 1
     end

@@ -1,22 +1,21 @@
-/// known-gap: interp has no `each tick:` and checks erase only at the end of the tick
-/// An `each tick:` change that brings a host to its erase condition
-/// erases it before anything acts that tick: it doesn't act, and nobody
-/// picks it.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay's `every 1 tick` block that brings a host to its erase
+/// condition erases it before anything acts that tick: it doesn't act,
+/// and nobody picks it.
 <>G |
-    ~name: ""
-    ~hp: 2
-    shout | decision against G by [ 1 ]
-    judge using shout
-        >= 0: yell(target)
-    end
-    transition erase when (self >> hp) <= 0
-    end
+    name: ""
+    hp: 2
+    decision other
+        targets: G
+    xx
+    judge
+        other: yell(self, other >> target)
+    xx
+    transition erase where @hp <= 0
 xx
-overlay Bleeding |
-    each tick:
-        hp - 2
-    end
-end
+overlay bleeding
+    every 1 tick => @hp |= @hp - 2
+xx
 act yell(g, t)
     a | g >> name
     b | t >> name
@@ -25,6 +24,6 @@ xx
 p <> G | name: "p", hp: 2
 q <> G | name: "q", hp: 9
 r <> G | name: "r", hp: 9
-overlay Bleeding on p at 1
+:overlay!(p, bleeding)
 tick()
 say(:len(:objects(it >> name == "p")))

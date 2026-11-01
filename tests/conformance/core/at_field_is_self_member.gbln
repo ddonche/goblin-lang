@@ -1,0 +1,33 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `@name` is `self >> name`: in an action, an `every` block, a decision's
+/// `targets: ... where` and `score`. Another object's field is still `target >> name`.
+<>F |
+    name: ""
+    hp: 10
+    side: 0
+    act report()
+        say("{@name}: hp {@hp}, same as {self >> hp}")
+    xx
+    every 1 tick
+        @hp |= @hp - 1
+    end
+    decision foe
+        targets: F where (target >> side) != @side
+        score => @hp / 10
+        margin: 0
+    xx
+    judge
+        foe and (foe >> score) >= 0: strike(self, foe >> target)
+    xx
+xx
+act strike(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} strikes {b}")
+xx
+x <> F | name: "x", side: 0
+y <> F | name: "y", side: 1, hp: 4
+x.report()
+tick()
+x.report()
+y.report()

@@ -1,0 +1,31 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// A condition that names `target` before the ownership test still runs for
+/// every target: here it divides by zero for the knight nobody holds, and
+/// the tick stops with that error.
+<>Lord |
+    name: ""
+    decision hero
+        targets: Knight where 10 / (target >> deeds) > 1 and (target >> owner) == self
+        score => target >> deeds
+    xx
+    judge
+        hero and (hero >> score) >= 0: pay(self, hero >> target)
+    xx
+xx
+<>Knight |
+    name: ""
+    deeds: 0
+    owner: nil
+xx
+act pay(l, k)
+    say("{l >> name} pays {k >> name}")
+xx
+a <> Lord | name: "Ash"
+k1 <> Knight | name: "Kay", deeds: 2, owner: a
+k2 <> Knight | name: "Lot", deeds: 0
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "R1220"))
+    say(:has("{e}", "division by zero"))
+xx

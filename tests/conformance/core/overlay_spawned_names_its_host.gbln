@@ -1,17 +1,21 @@
-/// An overlay spawned by another names the same host variable.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay that an overlay's block puts on its host names the same
+/// host variable.
 <>Polity |
     stability: .8
 xx
-overlay Dialect |
-    decays .01
-end
-overlay Tongue |
-    decays .0002
-    spawns Dialect when strength > .5:
-        strength .2
-    end
-end
+overlay dialect
+    decays: .01
+xx
+overlay tongue
+    decays: .0002
+    every 1 tick
+        if intensity > .5
+            :overlay!(@, dialect, .2)
+        xx
+    xx
+xx
 rome <> Polity | stability: .8
-overlay Tongue on rome at .9
+:overlay!(rome, tongue, .9)
 tick()
-say(:overlays(it >> overlay_name == "Dialect")[0] >> host_var)
+say(:overlays(dialect)[0] >> host_var)

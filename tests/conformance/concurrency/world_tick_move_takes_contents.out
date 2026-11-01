@@ -1,0 +1,4 @@
+before tick 1: west {coins: 4, bags: 1, wealth: 13}, east {coins: 0, bags: 0, wealth: 0}
+before tick 2: west {coins: 0, bags: 0, wealth: 0}, east {coins: 0, bags: 0, wealth: 0}
+before tick 3: west {coins: 0, bags: 0, wealth: 0}, east {coins: 4, bags: 1, wealth: 13}
+4

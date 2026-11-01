@@ -1,0 +1,27 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// A `modify` line may read `intensity` and the host: it is worked out
+/// again every tick, with the stored values (the film is not read back
+/// into itself). Reading gives the stored value plus the film; a write
+/// sets what reading gives, and the stored value is what is left when the
+/// film comes off.
+<>F |
+    def: 10
+xx
+overlay fade
+    decays: .25
+    modify
+        @def - @def * intensity / 2
+    xx
+xx
+f <> F | def: 10
+:overlay!(f, fade)
+say(f >> def)
+tick()
+say(f >> def)
+f >> def |= f >> def + 1
+say(f >> def)
+tick()
+say(f >> def)
+tick()
+tick()
+say(f >> def)

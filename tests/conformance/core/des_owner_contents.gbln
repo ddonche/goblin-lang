@@ -2,31 +2,31 @@
 /// Ownership is containment: an object's `owner` field names what holds
 /// it. Writing the field is a transfer (dropping an item gives it to the
 /// place). `:objects("Item", it >> owner == x)` is what x holds now.
-/// When a holder is erased, its `on erase:` action runs first (for
+/// When a holder is erased, its `on erase` code runs first (for
 /// `delete_object!` as for an erase transition); whatever it still holds
 /// then moves up to what held it. `owned_by` reads the same list.
 /// A predicate that calls an action runs on every item, as always.
 <>Place |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Person |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Bag |
-    ~name: ""
-    ~owner: nil
+    name: ""
+    owner: nil
 xx
 <>Item |
-    ~name: ""
-    ~magic: 0
-    ~owner: nil
+    name: ""
+    magic: 0
+    owner: nil
 xx
 <>Shop |
-    ~name: ""
-    ~owner: nil
-    on erase: burn
+    name: ""
+    owner: nil
+    on erase => burn(self)
 xx
 act burn(shop)
     repeat :objects("Item", it >> owner == shop) as x

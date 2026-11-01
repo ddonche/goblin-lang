@@ -1,8 +1,9 @@
-/// A field that starts at 0 or 1 is a 0..1 trait like any other; marking it
-/// `~` makes it a real value, so a totaler can total past 1.
+/// known-gap: interp guesses traits from starting values (0 and 1 count)
+/// A number field is a plain value unless marked `~`: one that starts at 0
+/// or 1 counts past 1, a `~` one stays in 0..1.
 <>Tally |
-    n: 0
-    ~total: 0
+    ~n: 0
+    total: 0
 xx
 t <> Tally | n: 0
 t >> n |= t >> n + 1

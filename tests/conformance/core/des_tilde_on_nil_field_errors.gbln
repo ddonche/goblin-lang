@@ -1,0 +1,5 @@
+/// `~` on a field that starts as nil is an error.
+<>Bag |
+    ~owner: nil
+xx
+say("never printed")

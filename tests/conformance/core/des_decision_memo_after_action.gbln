@@ -1,0 +1,34 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// Decisions remember what actions that only read gave, from one decision
+/// to the next, until something runs that can change the world: here the
+/// first agent's action fills the box, so the second agent's `where` sees
+/// a full box and does nothing.
+<>Box |
+    n: 0
+xx
+act level(b)
+    return b >> n
+xx
+act fill(a, b)
+    b >> n |= b >> n + 1
+    say("{a >> name} fills the box")
+xx
+<>Agent |
+    name: ""
+    decision empty
+        targets: Box where level(target) == 0
+        score => 1
+    xx
+    judge
+        empty: fill(self, empty >> target)
+    xx
+xx
+box <> Box | n: 0
+a1 <> Agent | name: "first"
+a2 <> Agent | name: "second"
+a3 <> Agent | name: "third"
+tick()
+say(box >> n)
+box >> n |= 0
+tick()
+say(box >> n)

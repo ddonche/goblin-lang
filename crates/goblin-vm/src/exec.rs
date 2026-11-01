@@ -116,15 +116,31 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         };
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
-        match compiler.compile_action(&pseudo) {
-            Ok(mut func) => {
-                func.global_prefix = prefix.map(str::to_string);
-                std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
-                    (class.name.clone(), action.name.clone()),
-                    std::rc::Rc::new(func),
-                );
+        if class.decide.as_deref() == Some(action.name.as_str()) {
+            compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect();
+        }
+        let compiled = compiler.compile_action(&pseudo).or_else(|e| {
+            // A method that does not compile reports why when it is called,
+            // instead of going missing.
+            let mut msg = format!("class `{}`, action `{}`: {}", class.name, action.name, e);
+            let inner = match &e { GoblinError::WithLocation { inner, .. } => inner.as_ref(), e => e };
+            if let GoblinError::UndefinedVariable { name } = inner {
+                if class.fields.iter().any(|f| f.name == *name) {
+                    msg.push_str(&format!("; did you mean `@{name}`, this object's field (`self >> {name}`)?"));
+                }
             }
-            Err(_) => {}
+            let stub = goblin_ast::ActionDecl { body: goblin_ast::ActionBody::Block(Vec::new()), ..pseudo.clone() };
+            let mut c = Compiler::new();
+            c.is_class_method = true;
+            c.start_error = Some(msg);
+            c.compile_action(&stub)
+        });
+        if let Ok(mut func) = compiled {
+            func.global_prefix = prefix.map(str::to_string);
+            std::rc::Rc::make_mut(&mut session.compiled_methods).insert(
+                (class.name.clone(), action.name.clone()),
+                std::rc::Rc::new(func),
+            );
         }
     }
 }
@@ -171,7 +187,13 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()
@@ -225,7 +247,13 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()
@@ -307,7 +335,13 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                // A matrix row gives a field its values, not its kind: a
+                // field the class marks `~` stays a trait.
+                for f in merged.fields.iter_mut() {
+                    if existing.fields.iter().any(|e| e.name == f.name && e.raw) { f.raw = true; }
+                }
                 let matrix_field_names: std::collections::HashSet<String> =
                     merged.fields.iter().map(|f| f.name.clone()).collect();
                 let extra_fields: Vec<_> = existing.fields.iter()

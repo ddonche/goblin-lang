@@ -1,27 +1,25 @@
-/// known-gap: interp has no `where [ ... ]` on decisions
-/// `where [ condition ]` leaves targets out of a decision before scoring:
-/// only those for which it is true are scored. With none left, the
-/// decision does nothing. It sits between the target class and `by`, and
-/// can go before or after `margin`.
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `targets: Class where condition` leaves targets out of a decision before
+/// scoring: only those for which it is true are scored. With none left, the
+/// pick is nil. `margin:` can go on any line of the block.
 <>F |
-    ~name: ""
-    ~side: 0
-    ~hp: 10
-    ~max_hp: 10
-    attack | decision against F where [
-        target >> side != self >> side and target >> hp > 0
-    ] by [
-        1 - target >> hp / target >> max_hp
-    ]
-    judge using attack
-        >= 0: hit(target)
-    end
-    heal | decision against F margin 0 where [ target >> side == self >> side and target >> hp * 2 < target >> max_hp ] by [
-        1 - target >> hp / target >> max_hp
-    ]
-    judge using heal
-        >= 0: mend(target)
-    end
+    name: ""
+    side: 0
+    hp: 10
+    max_hp: 10
+    decision foe
+        targets: F where (target >> side) != @side and (target >> hp) > 0
+        score => 1 - (target >> hp) / (target >> max_hp)
+    xx
+    decision hurt
+        targets: F where (target >> side) == @side and (target >> hp) * 2 < (target >> max_hp)
+        score => 1 - (target >> hp) / (target >> max_hp)
+        margin: 0
+    xx
+    judge_all
+        foe and (foe >> score) >= 0: hit(self, foe >> target)
+        hurt and (hurt >> score) >= 0: mend(self, hurt >> target)
+    xx
 xx
 act hit(f, t)
     a | f >> name

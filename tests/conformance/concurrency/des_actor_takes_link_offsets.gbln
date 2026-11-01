@@ -1,16 +1,18 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// A link offset on objects handed to an actor goes with them, with the
+/// A link change (`:link!` with ticks) on objects handed to an actor goes with them, with the
 /// ticks it has left: the actor's link scores include it until it runs out.
 <>Person |
     hunger: .4
 xx
-link Person contact 0...1 by [
-    self >> hunger * .5 + target >> hunger * .5
-]
+link contact
+    hosts: Person
+    range: 0...1
+    score => @hunger * .5 + (target >> hunger) * .5
+xx
 act make()
     a <> Person | hunger: .4
     b <> Person | hunger: .4
-    a link to b on contact offset +.3 for 2 ticks
+    :link!(a, b, contact, .3, 2)
     say(:link_score(a, b, "contact"))
     return [a, b]
 xx

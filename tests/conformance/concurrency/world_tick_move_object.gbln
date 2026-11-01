@@ -6,15 +6,15 @@
 /// program can move an object too: its region moves it at the start of the
 /// next tick, so it arrives a tick later (one tick it is in flight).
 <>Walker |
-    ~age: 0
-    ~marked: 0
+    age: 0
+    marked: 0
     every 1 tick
         self >> age |= self >> age + 1
-    end
+    xx
 xx
-overlay Tired |
-    lasts 10 ticks
-end
+overlay tired
+    lasts: 10
+xx
 act make_region(name, n)
     things | []
     repeat :range(0, n)
@@ -30,7 +30,7 @@ act region_day(st, msg)
         if msg{"tick"} == 2 and st{"name"} == "west"
             w | st{"things"}[0]
             w >> marked |= 1
-            overlay Tired on w at 1
+            :overlay!(w, tired)
             :move!(w, st{"peer"})
             attempt
                 a | w >> age
@@ -39,7 +39,7 @@ act region_day(st, msg)
             xx
         xx
         :update!(st{"have"}, :len(:objects(it >> age >= 0)))
-        :update!(st{"tired"}, :len(:overlays(it >> overlay_name == "Tired")))
+        :update!(st{"tired"}, :len(:overlays(tired)))
     xx
     return st
 xx
@@ -60,7 +60,7 @@ repeat :range(1, 7) as d
     repeat :objects(it >> marked == 1)
         age |= it >> age
     xx
-    seen | :len(:overlays(it >> overlay_name == "Tired"))
+    seen | :len(:overlays(tired))
     say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}, tired seen {seen}")
     if d == 2
         say(:has(w{"err"}, "C0125: object-moved"))

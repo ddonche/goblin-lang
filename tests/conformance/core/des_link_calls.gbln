@@ -1,0 +1,33 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `link name` with `hosts:`, `range:` and `score` (default: the low end
+/// of the range). `:link!(a, b, link, change)` moves a's link to b and
+/// keeps it in its range; with ticks the change is taken back when they run
+/// out. `:unlink!(a, b, link)` takes back every change.
+<>K |
+    faith: .5
+xx
+link culture
+    hosts: K
+    range: 0...1
+    score => 1 - :abs((@faith) - (target >> faith))
+xx
+link trade
+    hosts: K
+    range: -10...10
+xx
+a <> K | faith: .2
+b <> K | faith: .7
+say(:link_score(a, b, culture))
+say(:link_score(a, b, trade))
+:link!(a, b, trade, 4)
+say(:link_score(a, b, trade))
+say(:link_score(b, a, trade))
+:link!(a, b, trade, 30)
+say(:link_score(a, b, trade))
+:link!(a, b, culture, .25, 2)
+say(:link_score(a, b, culture))
+tick()
+tick()
+say(:link_score(a, b, culture))
+:unlink!(a, b, trade)
+say(:link_score(a, b, trade))

@@ -1,6 +1,7 @@
 pub mod error;
 pub mod opcode;
 pub mod value;
+pub mod fields;
 pub mod session;
 pub mod store;
 pub mod grid;
@@ -13,6 +14,8 @@ pub mod debug;
 pub mod exec;
 pub mod render;
 pub mod tick;
+pub(crate) mod formula_tree;
+pub(crate) mod memo;
 pub mod reqenv;
 pub mod modcache;
 pub mod sweep;

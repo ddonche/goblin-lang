@@ -7,34 +7,34 @@ For multiple lines
 
 <>Kingdom |
     kind: "polity"
-    aggression: .5
-    cooperation: .5 <---- this is a fucking inline comment
-    fear: .5
-    ambition: .5
+    ~aggression: .5
+    ~cooperation: .5 <---- this is a fucking inline comment
+    ~fear: .5
+    ~ambition: .5
 
-    cohesion: .5
-    stability: .5
-    succession: .5
+    ~cohesion: .5
+    ~stability: .5
+    ~succession: .5
 
-    honor: .5
-    spirituality: .5
-    openness: .5
-    discipline: .5
-    power: .5
+    ~honor: .5
+    ~spirituality: .5
+    ~openness: .5
+    ~discipline: .5
+    ~power: .5
 
-    ~population: 500000
+    population: 500000
 
-    ~gold: 500
-    ~food: 500
-    ~iron: 300
-    ~mana: 100
-    ~wood: 300
-    ~horses: 100
-    ~stone: 250
-    ~relics: 10
-    ~ships: 20
+    gold: 500
+    food: 500
+    iron: 300
+    mana: 100
+    wood: 300
+    horses: 100
+    stone: 250
+    relics: 10
+    ships: 20
 
-    margin: .08
+    ~margin: .08
 
     act trade(target)
         resources | ["gold", "food", "iron", "mana", "wood", "horses", "stone", "relics", "ships"]
@@ -71,7 +71,7 @@ For multiple lines
             target >> fear |= target >> fear - ((target >> cooperation) * .002)
 
             if (self >> spirituality) > .7
-                overlay RootPactFaith on target at .004 for 10 ticks
+                :overlay!(target, root_pact_faith, .004, 10)
             end
         else
             self >> ambition |= self >> ambition - .004
@@ -112,11 +112,11 @@ For multiple lines
         self >> ambition |= self >> ambition - ((self >> stability) * .002)
         target >> ambition |= target >> ambition - ((target >> stability) * .002)
 
-        self link to target on culture offset +.03 for 12 ticks
-        target link to self on culture offset +.03 for 12 ticks
+        :link!(self, target, culture, .03, 12)
+        :link!(target, self, culture, .03, 12)
 
-        self link to target on trade offset +.04 for 12 ticks
-        target link to self on trade offset +.04 for 12 ticks
+        :link!(self, target, trade, .04, 12)
+        :link!(target, self, trade, .04, 12)
 
     end
 
@@ -144,7 +144,7 @@ For multiple lines
         target >> ambition |= target >> ambition + .004
         target >> cooperation |= target >> cooperation + .006
 
-        self link to target on culture offset +.03 for 10 ticks
+        :link!(self, target, culture, .03, 10)
 
     end
 
@@ -166,7 +166,7 @@ For multiple lines
         target >> cooperation |= target >> cooperation - .004
         target >> honor |= target >> honor + .003
 
-        self link to target on border offset +.02 for 8 ticks
+        :link!(self, target, border, .02, 8)
 
     end
 
@@ -204,16 +204,16 @@ For multiple lines
         self >> stability |= self >> stability - .006
         self >> fear |= self >> fear + .004
 
-        overlay WarWeariness on self at .12 for 6 ticks
-        overlay WarWeariness on target at .22 for 8 ticks
+        :overlay!(self, war_weariness, .12, 6)
+        :overlay!(target, war_weariness, .22, 8)
 
         if (target >> food) < 150
-            overlay Famine on target at .06 for 5 ticks
-            overlay FamineMemory on target at .05 for 20 ticks
+            :overlay!(target, famine, .06, 5)
+            :overlay!(target, famine_memory, .05, 20)
         end
 
         if (self >> spirituality) > .6
-            overlay AshenRiteFaith on target at .008 for 10 ticks
+            :overlay!(target, ashen_rite_faith, .008, 10)
         end
 
         self >> power |= ((self >> population) * .0000015) + ((self >> food) * .00008) + ((self >> gold) * .00012) + ((self >> iron) * .00004) + ((self >> horses) * .0008) + ((self >> discipline) * .22) + ((self >> stability) * .18) + ((self >> cohesion) * .12)
@@ -255,11 +255,11 @@ For multiple lines
             self >> stability |= self >> stability - .01
             self >> ambition |= self >> ambition + .006
 
-            overlay WarWeariness on self at .18 for 8 ticks
-            overlay WarWeariness on target at .3 for 10 ticks
+            :overlay!(self, war_weariness, .18, 8)
+            :overlay!(target, war_weariness, .3, 10)
 
             if (target >> food) < 150
-                overlay Famine on target at .08 for 6 ticks
+                :overlay!(target, famine, .08, 6)
             end
         else
             self >> fear |= self >> fear + .012
@@ -317,23 +317,23 @@ For multiple lines
             self >> cohesion |= self >> cohesion - .012
             self >> succession |= self >> succession - .008
 
-            overlay WarWeariness on self at .3 for 12 ticks
-            overlay WarWeariness on target at .45 for 14 ticks
-            overlay Rebellion on target at .15 for 10 ticks
+            :overlay!(self, war_weariness, .3, 12)
+            :overlay!(target, war_weariness, .45, 14)
+            :overlay!(target, rebellion, .15, 10)
 
             if (target >> food) < 200
-                overlay Famine on target at .1 for 6 ticks
+                :overlay!(target, famine, .1, 6)
             end
 
             if (target >> succession) < .35
-                overlay SuccessionCrisis on target at .3 for 10 ticks
+                :overlay!(target, succession_crisis, .3, 10)
             end
 
             self >> spirituality |= self >> spirituality + .01
             target >> spirituality |= target >> spirituality - .01
 
             if (self >> spirituality) > .5
-                overlay AshenRiteFaith on target at .012 for 12 ticks
+                :overlay!(target, ashen_rite_faith, .012, 12)
             end
 
             self >> power |= ((self >> population) * .0000015) + ((self >> food) * .00008) + ((self >> gold) * .00012) + ((self >> iron) * .00004) + ((self >> horses) * .0008) + ((self >> discipline) * .22) + ((self >> stability) * .18) + ((self >> cohesion) * .12)
@@ -387,11 +387,11 @@ For multiple lines
             self >> openness |= self >> openness - ((self >> spirituality) * .004)
             self >> cohesion |= self >> cohesion + ((self >> spirituality) * .004)
 
-            overlay ReligiousFervor on target at .2 for 8 ticks
+            :overlay!(target, religious_fervor, .2, 8)
 
             if (self >> spirituality) > .7
                 self >> honor |= self >> honor + .005
-                overlay SolarCreedFaith on target at .01 for 12 ticks
+                :overlay!(target, solar_creed_faith, .01, 12)
             end
 
             if (self >> relics) > 5
@@ -428,10 +428,10 @@ For multiple lines
             self >> spirituality |= self >> spirituality + .004
             self >> discipline |= self >> discipline - .003
 
-            overlay Corruption on target at .25 for 10 ticks
+            :overlay!(target, corruption, .25, 10)
 
             if (target >> succession) < .35
-                overlay SuccessionCrisis on target at .25 for 8 ticks
+                :overlay!(target, succession_crisis, .25, 8)
             end
         else
             self >> fear |= self >> fear + .008
@@ -482,53 +482,57 @@ For multiple lines
         end
     end
 
-    score | decision against Kingdom by [
-        self >> aggression * .14
-        + self >> ambition * .12
-        + self >> fear * .04
-        + self >> spirituality * .04
+    /// The rival this kingdom deals with, and how hard: the score picks the deed.
+    decision rival
+        targets: Kingdom
+        score => (
+            self >> aggression * .14
+            + self >> ambition * .12
+            + self >> fear * .04
+            + self >> spirituality * .04
 
-        + (self >> aggression * .25 + self >> fear * .2 + self >> ambition * .15 + target >> aggression * .2 - self >> cooperation * .15 - target >> cooperation * .05) * .12
+            + (self >> aggression * .25 + self >> fear * .2 + self >> ambition * .15 + target >> aggression * .2 - self >> cooperation * .15 - target >> cooperation * .05) * .12
 
-        - (self >> cooperation * .3 + self >> openness * .25 + target >> cooperation * .25 + target >> openness * .15 - self >> fear * .05) * .12
-        - (self >> openness * .25 + target >> openness * .25 + self >> spirituality * .15 + target >> spirituality * .15 + self >> honor * .1 + target >> honor * .1) * .10
+            - (self >> cooperation * .3 + self >> openness * .25 + target >> cooperation * .25 + target >> openness * .15 - self >> fear * .05) * .12
+            - (self >> openness * .25 + target >> openness * .25 + self >> spirituality * .15 + target >> spirituality * .15 + self >> honor * .1 + target >> honor * .1) * .10
 
-        - self >> cooperation * .12
-        - self >> honor * .1
-        - self >> stability * .12
-        - self >> cohesion * .1
+            - self >> cooperation * .12
+            - self >> honor * .1
+            - self >> stability * .12
+            - self >> cohesion * .1
 
-        + ((100 - (self >> food)) * .004)
-        + ((100 - (self >> gold)) * .003)
+            + ((100 - (self >> food)) * .004)
+            + ((100 - (self >> gold)) * .003)
 
-        - ((1 - (self >> stability)) * .25)
-        - ((1 - (self >> cohesion)) * .22)
+            - ((1 - (self >> stability)) * .25)
+            - ((1 - (self >> cohesion)) * .22)
 
-        - ((1 - (self >> discipline)) * .15)
+            - ((1 - (self >> discipline)) * .15)
 
-        - (self >> fear * .12)
+            - (self >> fear * .12)
 
-        + ((target >> stability) * .06)
-        + ((1 - (target >> cohesion)) * .05)
-        + ((self >> food) * .00002)
-        + ((self >> gold) * .00002)
-    ]
+            + ((target >> stability) * .06)
+            + ((1 - (target >> cohesion)) * .05)
+            + ((self >> food) * .00002)
+            + ((self >> gold) * .00002)
+        )
+    xx
+    judge
+        rival and (rival >> score) >= .96: self.invade(rival >> target)
+        rival and (rival >> score) >= .82: self.strike(rival >> target)
+        rival and (rival >> score) >= .64: self.raid(rival >> target)
+        rival and (rival >> score) >= .5: self.curse(rival >> target)
+        rival and (rival >> score) >= .42: self.spy(rival >> target)
+        rival and (rival >> score) >= .32: self.denounce(rival >> target)
+        rival and (rival >> score) >= .22: self.bless(rival >> target)
+        rival and (rival >> score) >= .16: self.aid(rival >> target)
+        rival and (rival >> score) >= .1: self.treaty(rival >> target)
+        rival and (rival >> score) >= .04: self.trade(rival >> target)
+        rival: self.govern(rival >> target)
+    xx
 
-    judge using score
-        >= .96: invade(target)
-        >= .82: strike(target)
-        >= .64: raid(target)
-        >= .5: curse(target)
-        >= .42: spy(target)
-        >= .32: denounce(target)
-        >= .22: bless(target)
-        >= .16: aid(target)
-        >= .1: treaty(target)
-        >= .04: trade(target)
-        else: govern(target)
-    end
-
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -553,12 +557,13 @@ For multiple lines
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -583,12 +588,13 @@ For multiple lines
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(RebelFederation) when (self >> power) > (target >> power) * 1.5 and (target >> population) < 90000
+    transition absorb
+        targets: RebelFederation where (self >> power) > (target >> power) * 1.5 and (target >> population) < 90000
         carries:
             aggression: self >> aggression + ((target >> aggression) * .025)
             cooperation: self >> cooperation - .015
@@ -613,13 +619,13 @@ For multiple lines
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .012
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition mutate when (self >> stability) < .16 and (self >> succession) < .18 and (self >> cohesion) > .45 and (self >> discipline) > .45
-        into WarlordState
+    transition mutate where (self >> stability) < .16 and (self >> succession) < .18 and (self >> cohesion) > .45 and (self >> discipline) > .45
+        into: WarlordState
         carries:
             aggression: self >> aggression + .12
             cooperation: self >> cooperation * .55
@@ -644,13 +650,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin + .03
-        end
+        xx
         overlays: transfer
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> stability) < .22 and (self >> spirituality) > .75 and (self >> cohesion) > .5
-        into Theocracy
+    transition mutate where (self >> stability) < .22 and (self >> spirituality) > .75 and (self >> cohesion) > .5
+        into: Theocracy
         carries:
             aggression: self >> aggression
             cooperation: self >> cooperation
@@ -675,13 +681,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition fracture when (self >> stability) < .3 and (self >> cohesion) < .45 and (self >> population) > 250000
-        into WarlordState
+    transition fracture where (self >> stability) < .3 and (self >> cohesion) < .45 and (self >> population) > 250000
+        into: WarlordState
         fragment:
             aggression: self >> aggression + .18
             cooperation: self >> cooperation * .45
@@ -706,13 +712,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships * .8
             margin: .15
-        end
+        xx
         overlays: split
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> aggression) > .72 and (self >> discipline) > .65 and (self >> power) > .6 and (self >> openness) < .40
-        into Empire
+    transition mutate where (self >> aggression) > .72 and (self >> discipline) > .65 and (self >> power) > .6 and (self >> openness) < .40
+        into: Empire
         carries:
             aggression: self >> aggression
             cooperation: self >> cooperation
@@ -737,13 +743,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition mutate when (self >> spirituality) > .72 and (self >> cohesion) > .65 and (self >> openness) < .45
-        into Theocracy
+    transition mutate where (self >> spirituality) > .72 and (self >> cohesion) > .65 and (self >> openness) < .45
+        into: Theocracy
         carries:
             aggression: self >> aggression
             cooperation: self >> cooperation
@@ -768,13 +774,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition mutate when (self >> cooperation) > .72 and (self >> openness) > .70 and (self >> gold) > 500
-        into TradeLeague
+    transition mutate where (self >> cooperation) > .72 and (self >> openness) > .70 and (self >> gold) > 500
+        into: TradeLeague
         carries:
             aggression: self >> aggression
             cooperation: self >> cooperation
@@ -799,13 +805,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition fracture when (self >> stability) < .28 and (self >> cohesion) < .35 and (self >> fear) > .55
-        into RebelFederation
+    transition fracture where (self >> stability) < .28 and (self >> cohesion) < .35 and (self >> fear) > .55
+        into: RebelFederation
         fragment:
             aggression: .55
             cooperation: .45
@@ -830,13 +836,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships * .8
             margin: .13
-        end
+        xx
         overlays: split
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> stability) < .22 and (self >> discipline) > .45 and (self >> aggression) > .65
-        into WarlordState
+    transition mutate where (self >> stability) < .22 and (self >> discipline) > .45 and (self >> aggression) > .65
+        into: WarlordState
         carries:
             aggression: self >> aggression
             cooperation: self >> cooperation
@@ -861,13 +867,13 @@ For multiple lines
             relics: self >> relics
             ships: self >> ships
             margin: self >> margin
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition fracture when (self >> stability) < .22 and (self >> fear) > .70 and (self >> succession) < .25
-        into WarlordState
+    transition fracture where (self >> stability) < .22 and (self >> fear) > .70 and (self >> succession) < .25
+        into: WarlordState
         fragment:
             aggression: self >> aggression + .15
             cooperation: self >> cooperation * .45
@@ -892,13 +898,13 @@ For multiple lines
             stone: self >> stone * .75
             relics: self >> relics
             ships: self >> ships * .8
-        end
+        xx
         overlays: split
         links: reset
-    end
+    xx
 
-    transition split when (self >> cohesion) < .30 and (self >> stability) < .35 and (self >> succession) < .30 and (self >> population) > 300000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .30 and (self >> stability) < .35 and (self >> succession) < .30 and (self >> population) > 300000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -923,7 +929,7 @@ For multiple lines
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         second:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -948,13 +954,13 @@ For multiple lines
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> stability) > .82 and (self >> discipline) > .75 and (self >> honor) > .75 and (self >> succession) > .72 and (self >> population) > 500000
-        into Kingdom
+    transition mutate where (self >> stability) > .82 and (self >> discipline) > .75 and (self >> honor) > .75 and (self >> succession) > .72 and (self >> population) > 500000
+        into: Kingdom
         carries:
             aggression:  (self >> aggression) * .85
             cooperation: (self >> cooperation) + .08
@@ -979,13 +985,13 @@ For multiple lines
             stone:       (self >> stone)
             relics:      (self >> relics)
             ships:       (self >> ships)
-        end
+        xx
         overlays: transfer
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> spirituality) > .80 and (self >> mana) > 400 and (self >> stability) > .65 and (self >> succession) > .55 and (self >> population) > 350000
-        into Kingdom
+    transition mutate where (self >> spirituality) > .80 and (self >> mana) > 400 and (self >> stability) > .65 and (self >> succession) > .55 and (self >> population) > 350000
+        into: Kingdom
         carries:
             aggression:  (self >> aggression) * .85
             cooperation: (self >> cooperation) + .06
@@ -1010,13 +1016,13 @@ For multiple lines
             stone:       (self >> stone)
             relics:      (self >> relics) + 2
             ships:       (self >> ships)
-        end
+        xx
         overlays: transfer
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> aggression) > .78 and (self >> ambition) > .72 and (self >> honor) < .28 and (self >> succession) < .40 and (self >> population) > 250000
-        into Kingdom
+    transition mutate where (self >> aggression) > .78 and (self >> ambition) > .72 and (self >> honor) < .28 and (self >> succession) < .40 and (self >> population) > 250000
+        into: Kingdom
         carries:
             aggression:  1
             cooperation: (self >> cooperation) * .65
@@ -1041,18 +1047,19 @@ For multiple lines
             stone:       (self >> stone)
             relics:      (self >> relics)
             ships:       (self >> ships)
-        end
+        xx
         overlays: transfer
         links: reset
-    end
+    xx
 
-    transition subjugate(Kingdom) when (self >> power) > (target >> power) * 1.8 and (self >> aggression) > .65 and (target >> stability) < .4
+    transition subjugate
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (self >> aggression) > .65 and (target >> stability) < .4
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition fracture when (self >> stability) < .28 and (self >> cohesion) < .22 and (self >> fear) > .72 and (self >> succession) < .28 and (self >> population) > 400000
-        into Kingdom
+    transition fracture where (self >> stability) < .28 and (self >> cohesion) < .22 and (self >> fear) > .72 and (self >> succession) < .28 and (self >> population) > 400000
+        into: Kingdom
         fragment:
             aggression:  (self >> aggression) + .1
             cooperation: (self >> cooperation) * .6
@@ -1077,12 +1084,12 @@ For multiple lines
             stone:       (self >> stone) * .75
             relics:      self >> relics
             ships:       (self >> ships) * .8
-        end
+        xx
         overlays: split
         links: reset
-    end
-    transition spawn when (self >> ambition) > .92 and (self >> stability) > .90 and (self >> succession) > .80 and (self >> gold) > 1200 and (self >> population) > 1200000
-        into Kingdom
+    xx
+    transition spawn where (self >> ambition) > .92 and (self >> stability) > .90 and (self >> succession) > .80 and (self >> gold) > 1200 and (self >> population) > 1200000
+        into: Kingdom
         child:
             aggression:  (self >> aggression) * .7
             cooperation: (self >> cooperation)
@@ -1107,20 +1114,20 @@ For multiple lines
             stone:       (self >> stone) * .18
             relics:      0
             ships:       (self >> ships) * .25
-        end
+        xx
         overlays: drop
         links: reset
-    end
+    xx
 end
 
 act event(target)
     events | [
-        "Plague",
-        "Famine",
+        "plague",
+        "famine",
         "NaturalDisaster",
-        "Depression",
-        "ReligiousSchism",
-        "SuccessionCrisis",
+        "depression",
+        "religious_schism",
+        "succession_crisis",
         "MigrationWave",
         "TradeCollapse",
         "CivilUnrest",
@@ -1133,13 +1140,13 @@ act event(target)
     picked | :get_random(events)
     severity | (pick 1 from 5...25) * .01
 
-    if picked == "Plague"
-        overlay Plague on target at .2 for 6 ticks
+    if picked == "plague"
+        :overlay!(target, plague, .2, 6)
         target >> fear |= target >> fear + (severity * .5)
     end
 
-    if picked == "Famine"
-        overlay Famine on target at .06 for 5 ticks
+    if picked == "famine"
+        :overlay!(target, famine, .06, 5)
         target >> aggression |= target >> aggression + (severity * .06)
     end
 
@@ -1151,7 +1158,7 @@ act event(target)
         target >> fear |= target >> fear + (severity * .4)
     end
 
-    if picked == "Depression"
+    if picked == "depression"
         target >> gold |= target >> gold - (target >> gold * (severity * 2))
         target >> cooperation |= target >> cooperation - (severity * .4)
         target >> stability |= target >> stability - (severity * .5)
@@ -1159,15 +1166,15 @@ act event(target)
         target >> ambition |= target >> ambition + (severity * .2)
     end
 
-    if picked == "ReligiousSchism"
+    if picked == "religious_schism"
         target >> cohesion |= target >> cohesion - (severity * .7)
         target >> spirituality |= target >> spirituality + (severity * .4)
         target >> openness |= target >> openness - (severity * .5)
         target >> fear |= target >> fear + (severity * .3)
     end
 
-    if picked == "SuccessionCrisis"
-        overlay SuccessionCrisis on target at .2 for 8 ticks
+    if picked == "succession_crisis"
+        :overlay!(target, succession_crisis, .2, 8)
         target >> ambition |= target >> ambition + (severity * .3)
     end
 
@@ -1187,7 +1194,7 @@ act event(target)
     end
 
     if picked == "CivilUnrest"
-        overlay Rebellion on target at .2 for 10 ticks
+        :overlay!(target, rebellion, .2, 10)
         target >> fear |= target >> fear + (severity * .3)
     end
 
@@ -1380,18 +1387,18 @@ end
 
 <>Empire |
     kind: "polity"
-    aggression: .75
-    cooperation: .35
-    fear: .45
-    ambition: .85
-    cohesion: .65
-    stability: .65
-    succession: .45
-    honor: .45
-    spirituality: .35
-    openness: .25
-    discipline: .85
-    power: .7
+    ~aggression: .75
+    ~cooperation: .35
+    ~fear: .45
+    ~ambition: .85
+    ~cohesion: .65
+    ~stability: .65
+    ~succession: .45
+    ~honor: .45
+    ~spirituality: .35
+    ~openness: .25
+    ~discipline: .85
+    ~power: .7
     population: 400000
     gold: 300
     food: 800
@@ -1402,9 +1409,10 @@ end
     stone: 250
     relics: 4
     ships: 10
-    margin: .09
+    ~margin: .09
 
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -1429,12 +1437,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -1459,13 +1468,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -1490,7 +1499,7 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
 
         second:
             aggression:  (self >> aggression)
@@ -1516,26 +1525,26 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: inherit
-    end
+    xx
 end
 
 <>Theocracy |
     kind: "polity"
-    aggression: .35
-    cooperation: .45
-    fear: .35
-    ambition: .55
-    cohesion: .85
-    stability: .75
-    succession: .65
-    honor: .7
-    spirituality: .9
-    openness: .25
-    discipline: .65
-    power: .55
+    ~aggression: .35
+    ~cooperation: .45
+    ~fear: .35
+    ~ambition: .55
+    ~cohesion: .85
+    ~stability: .75
+    ~succession: .65
+    ~honor: .7
+    ~spirituality: .9
+    ~openness: .25
+    ~discipline: .65
+    ~power: .55
     population: 300000
     gold: 250
     food: 700
@@ -1546,9 +1555,10 @@ end
     stone: 250
     relics: 12
     ships: 8
-    margin: .06
+    ~margin: .06
 
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -1573,12 +1583,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -1603,13 +1614,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -1634,7 +1645,7 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
 
         second:
             aggression:  (self >> aggression)
@@ -1660,26 +1671,26 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: inherit
-    end
+    xx
 end
 
 <>TradeLeague |
     kind: "polity"
-    aggression: .2
-    cooperation: .85
-    fear: .25
-    ambition: .65
-    cohesion: .45
-    stability: .75
-    succession: .75
-    honor: .55
-    spirituality: .35
-    openness: .9
-    discipline: .45
-    power: .55
+    ~aggression: .2
+    ~cooperation: .85
+    ~fear: .25
+    ~ambition: .65
+    ~cohesion: .45
+    ~stability: .75
+    ~succession: .75
+    ~honor: .55
+    ~spirituality: .35
+    ~openness: .9
+    ~discipline: .45
+    ~power: .55
     population: 300000
     gold: 800
     food: 900
@@ -1690,9 +1701,10 @@ end
     stone: 250
     relics: 4
     ships: 80
-    margin: .08
+    ~margin: .08
 
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -1717,12 +1729,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -1747,13 +1760,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -1778,7 +1791,7 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
 
         second:
             aggression:  (self >> aggression)
@@ -1804,26 +1817,26 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: inherit
-    end
+    xx
 end
 
 <>WarlordState |
     kind: "polity"
-    aggression: .85
-    cooperation: .15
-    fear: .65
-    ambition: .8
-    cohesion: .35
-    stability: .25
-    succession: .2
-    honor: .25
-    spirituality: .25
-    openness: .15
-    discipline: .55
-    power: .45
+    ~aggression: .85
+    ~cooperation: .15
+    ~fear: .65
+    ~ambition: .8
+    ~cohesion: .35
+    ~stability: .25
+    ~succession: .2
+    ~honor: .25
+    ~spirituality: .25
+    ~openness: .15
+    ~discipline: .55
+    ~power: .45
     population: 200000
     gold: 150
     food: 400
@@ -1834,9 +1847,10 @@ end
     stone: 120
     relics: 1
     ships: 2
-    margin: .14
+    ~margin: .14
 
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -1861,12 +1875,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -1891,13 +1906,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -1922,7 +1937,7 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
 
         second:
             aggression:  (self >> aggression)
@@ -1948,26 +1963,26 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: inherit
-    end
+    xx
 end
 
 <>RebelFederation |
     kind: "polity"
-    aggression: .55
-    cooperation: .55
-    fear: .45
-    ambition: .65
-    cohesion: .45
-    stability: .35
-    succession: .35
-    honor: .55
-    spirituality: .35
-    openness: .55
-    discipline: .35
-    power: .35
+    ~aggression: .55
+    ~cooperation: .55
+    ~fear: .45
+    ~ambition: .65
+    ~cohesion: .45
+    ~stability: .35
+    ~succession: .35
+    ~honor: .55
+    ~spirituality: .35
+    ~openness: .55
+    ~discipline: .35
+    ~power: .35
     population: 160000
     gold: 120
     food: 350
@@ -1978,9 +1993,10 @@ end
     stone: 100
     relics: 1
     ships: 3
-    margin: .13
+    ~margin: .13
 
-    transition absorb(Kingdom) when (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
+    transition absorb
+        targets: Kingdom where (self >> power) > (target >> power) * 1.8 and (target >> population) < 50000 and (target >> stability) < .35
         carries:
             aggression: self >> aggression + ((target >> fear) * .04)
             cooperation: self >> cooperation - ((target >> fear) * .03)
@@ -2005,12 +2021,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .01
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition absorb(WarlordState) when (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
+    transition absorb
+        targets: WarlordState where (self >> power) > (target >> power) * 1.6 and (target >> population) < 75000
         carries:
             aggression: self >> aggression + .025
             cooperation: self >> cooperation - .025
@@ -2035,13 +2052,13 @@ end
             relics: self >> relics + target >> relics
             ships: self >> ships + target >> ships
             margin: self >> margin + .015
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition split when (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
-        into Kingdom, Kingdom
+    transition split where (self >> cohesion) < .32 and (self >> stability) < .38 and (self >> succession) < .35 and (self >> population) > 420000
+        into: Kingdom, Kingdom
         first:
             aggression:  (self >> aggression)
             cooperation: (self >> cooperation) * .75
@@ -2066,7 +2083,7 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
 
         second:
             aggression:  (self >> aggression)
@@ -2092,68 +2109,70 @@ end
             stone:       (self >> stone) * .5
             relics:      (self >> relics) * .5
             ships:       (self >> ships) * .5
-        end
+        xx
         overlays: split
         links: inherit
-    end
+    xx
 end
 
 <>Faction |
-    loyalty: .5
-    greed: .5
-    influence: .5
-    militancy: .5
-    margin: .08
+    ~loyalty: .5
+    ~greed: .5
+    ~influence: .5
+    ~militancy: .5
+    ~margin: .08
 
-    transition split when (self >> loyalty) < .5 and (self >> greed) > .8 and (self >> influence) > .75
-        into Faction, Faction
+    transition split where (self >> loyalty) < .5 and (self >> greed) > .8 and (self >> influence) > .75
+        into: Faction, Faction
         first:
             loyalty:   (self >> loyalty)
             greed:     (self >> greed)
             influence: (self >> influence) * .6
             militancy: (self >> militancy) + .1
             margin:    (self >> margin)
-        end
+        xx
         second:
             loyalty:   (self >> loyalty) + .1
             greed:     (self >> greed) * .7
             influence: (self >> influence) * .4
             militancy: (self >> militancy) * .8
             margin:    (self >> margin)
-        end
+        xx
         overlays: split
         links: reset
-    end
+    xx
 
-    transition mutate when (self >> militancy) > .82 and (self >> loyalty) < .72 and (self >> influence) > .7
-        into Faction
+    transition mutate where (self >> militancy) > .82 and (self >> loyalty) < .72 and (self >> influence) > .7
+        into: Faction
         carries:
             loyalty:   .2
             greed:     (self >> greed) + .1
             influence: (self >> influence) * .8
             militancy: 1
             margin:    (self >> margin)
-        end
+        xx
         overlays: transfer
         links: reset
-    end
+    xx
 
-    transition absorb(Faction) when (self >> influence) > (target >> influence) * 2.4 and (self >> greed) > .85
+    transition absorb
+        targets: Faction where (self >> influence) > (target >> influence) * 2.4 and (self >> greed) > .85
         carries:
             loyalty:   (self >> loyalty) - .05
             greed:     (self >> greed)
             influence: (self >> influence) + (target >> influence) * .6
             militancy: (self >> militancy)
             margin:    (self >> margin)
-        end
+        xx
         overlays: transfer
         links: inherit
-    end
+    xx
 
-    transition subjugate(Faction) when (self >> influence) > (target >> influence) * 2.1 and (self >> militancy) > .85
+    transition subjugate
+        targets: Faction where (self >> influence) > (target >> influence) * 2.1 and (self >> militancy) > .85
         overlays: transfer
         links: inherit
-    end
+    xx
 end
 
 <>Kingdom matrix
@@ -2190,98 +2209,90 @@ end
 end
 
 /// Links between nations: one way, each on a 0...1 scale.
-link Kingdom culture 0...1
-link Kingdom trade 0...1
-link Kingdom border 0...1
-link Kingdom arcane 0...1
-link Empire culture 0...1
-link Empire trade 0...1
-link Empire border 0...1
-link Empire arcane 0...1
-link Theocracy culture 0...1
-link Theocracy trade 0...1
-link Theocracy border 0...1
-link Theocracy arcane 0...1
-link TradeLeague culture 0...1
-link TradeLeague trade 0...1
-link TradeLeague border 0...1
-link TradeLeague arcane 0...1
-link WarlordState culture 0...1
-link WarlordState trade 0...1
-link WarlordState border 0...1
-link WarlordState arcane 0...1
-link RebelFederation culture 0...1
-link RebelFederation trade 0...1
-link RebelFederation border 0...1
-link RebelFederation arcane 0...1
-link Faction culture 0...1
-link Faction trade 0...1
-link Faction border 0...1
-link Faction arcane 0...1
+link culture
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation, Faction
+    range: 0...1
+    score => 0
+xx
+link trade
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation, Faction
+    range: 0...1
+    score => 0
+xx
+link border
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation, Faction
+    range: 0...1
+    score => 0
+xx
+link arcane
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation, Faction
+    range: 0...1
+    score => 0
+xx
 
-overlay ReligiousSchism |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .002
-    decays .035
-    modifies:
-        cohesion - .03
-        stability - .02
-        fear + .025
-        spirituality + .02
-        openness - .012
-    end
-end
+overlay religious_schism
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "culture") > 0
+    decays: .035
+    modify
+        @cohesion - .03
+        @stability - .02
+        @fear + .025
+        @spirituality + .02
+        @openness - .012
+    xx
+xx
 
-overlay ReformMovement |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .002
-    decays .03
-    modifies:
-        openness + .025
-        cooperation + .015
-        spirituality - .01
-        cohesion - .012
-    end
-end
+overlay reform_movement
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "culture") > 0
+    decays: .03
+    modify
+        @openness + .025
+        @cooperation + .015
+        @spirituality - .01
+        @cohesion - .012
+    xx
+xx
 
-overlay NobleCoup |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .001
-    decays .04
-    modifies:
-        succession - .055
-        stability - .035
-        fear + .035
-        honor - .025
-        discipline + .012
-    end
-end
+overlay noble_coup
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .001 where :link_score(self, target, "border") > 0
+    decays: .04
+    modify
+        @succession - .055
+        @stability - .035
+        @fear + .035
+        @honor - .025
+        @discipline + .012
+    xx
+xx
 
-overlay MerchantAscendancy |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0025
-    decays .025
-    modifies:
-        cooperation + .025
-        openness + .025
-        cooperation + .006
-        cohesion - .018
-        discipline - .012
-    end
-end
+overlay merchant_ascendancy
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0025 where :link_score(self, target, "trade") > 0
+    decays: .025
+    modify
+        @cooperation + .025
+        @openness + .025
+        @cooperation + .006
+        @cohesion - .018
+        @discipline - .012
+    xx
+xx
 
-overlay HolyMilitia |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .002
-    decays .03
-    modifies:
-        spirituality + .03
-        aggression + .025
-        discipline + .018
-        openness - .025
-        cooperation - .012
-    end
-end
+overlay holy_militia
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "culture") > 0
+    decays: .03
+    modify
+        @spirituality + .03
+        @aggression + .025
+        @discipline + .018
+        @openness - .025
+        @cooperation - .012
+    xx
+xx
 
 <>Faction matrix
     name:       "{name}", Nobles, Merchants, MageOrder, WarPriests, PeasantLeague
@@ -2292,616 +2303,622 @@ end
     margin:     .08,    .06,    .07,       .05,       .04,        .09
 end
 
-overlay WarWeariness |
-    replaces
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    decays .08
-    modifies:
-        stability - .12
-        cohesion - .08
-        aggression - .05
-        fear + .1
-        gold - 15
-        food - 3
-        discipline + .03
-        margin + .015
-    end
-end
+overlay war_weariness
+    dup: replace
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    decays: .08
+    modify
+        @stability - .12
+        @cohesion - .08
+        @aggression - .05
+        @fear + .1
+        @gold - 15
+        @food - 3
+        @discipline + .03
+        @margin + .015
+    xx
+xx
 
-overlay Famine |
-    stacks as outbreaks
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0015
-    decays .14
-    modifies:
-        stability - .035
-        cohesion - .025
-        fear + .035
-        aggression + .012
-        population - 180
-        discipline + .006
-    end
-end
+overlay famine
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0015 where :link_score(self, target, "trade") > 0
+    decays: .14
+    modify
+        @stability - .035
+        @cohesion - .025
+        @fear + .035
+        @aggression + .012
+        @population - 180
+        @discipline + .006
+    xx
+xx
 
-overlay Plague |
-    stacks as infected
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .004
-    decays .22
-    modifies:
-        stability - .035
-        cooperation - .018
-        fear + .04
-        population - 170
-        discipline + .006
-        spirituality + .008
-    end
-end
+overlay plague
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .004 where :link_score(self, target, "trade") > 0
+    decays: .22
+    modify
+        @stability - .035
+        @cooperation - .018
+        @fear + .04
+        @population - 170
+        @discipline + .006
+        @spirituality + .008
+    xx
+xx
 
-overlay WarMemory |
-    stacks as conflicts
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .003
-    decays .025
-    modifies:
-        fear + .045
-        aggression + .012
-        cooperation - .018
-        openness - .01
-        discipline + .01
-    end
-end
+overlay war_memory
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .003 where :link_score(self, target, "border") > 0
+    decays: .025
+    modify
+        @fear + .045
+        @aggression + .012
+        @cooperation - .018
+        @openness - .01
+        @discipline + .01
+    xx
+xx
 
-overlay PlagueMemory |
-    stacks as outbreaks
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .002
-    decays .03
-    modifies:
-        fear + .035
-        cooperation - .01
-        openness - .012
-        spirituality + .008
-    end
-end
+overlay plague_memory
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "trade") > 0
+    decays: .03
+    modify
+        @fear + .035
+        @cooperation - .01
+        @openness - .012
+        @spirituality + .008
+    xx
+xx
 
-overlay FamineMemory |
-    stacks as shortages
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .002
-    decays .03
-    modifies:
-        fear + .04
-        ambition - .01
-        cooperation + .006
-        discipline + .01
-    end
-end
+overlay famine_memory
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "trade") > 0
+    decays: .03
+    modify
+        @fear + .04
+        @ambition - .01
+        @cooperation + .006
+        @discipline + .01
+    xx
+xx
 
-overlay BorderTension |
-    stacks as incidents
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .004
-    decays .045
-    modifies:
-        fear + .035
-        aggression + .018
-        cooperation - .012
-        discipline + .008
-    end
-end
+overlay border_tension
+    dup: stack
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .004 where :link_score(self, target, "border") > 0
+    decays: .045
+    modify
+        @fear + .035
+        @aggression + .018
+        @cooperation - .012
+        @discipline + .008
+    xx
+xx
 
-overlay ReligiousFervor |
-    replaces
-    hosts Kingdom
-    spreads where :link_score(self, target, "culture") > 0 at .012
-    decays .07
-    modifies:
-        spirituality + .18
-        cohesion + .08
-        openness - .12
-        aggression + .05
-        discipline - .04
-        fear - .03
-        margin - .008
-    end
-end
+overlay religious_fervor
+    dup: replace
+    hosts: Kingdom
+    spread: .012 where :link_score(self, target, "culture") > 0
+    decays: .07
+    modify
+        @spirituality + .18
+        @cohesion + .08
+        @openness - .12
+        @aggression + .05
+        @discipline - .04
+        @fear - .03
+        @margin - .008
+    xx
+xx
 
-overlay Corruption |
-    replaces
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .008
-    decays .04
-    modifies:
-        stability - .15
-        discipline - .12
-        honor - .18
-        cooperation - .05
-        gold - 40
-        ambition + .10
-        openness + .06
-        margin + .012
-    end
-end
+overlay corruption
+    dup: replace
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .008 where :link_score(self, target, "culture") > 0
+    decays: .04
+    modify
+        @stability - .15
+        @discipline - .12
+        @honor - .18
+        @cooperation - .05
+        @gold - 40
+        @ambition + .10
+        @openness + .06
+        @margin + .012
+    xx
+xx
 
-overlay Rebellion |
-    replaces
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .0004
-    decays .09
-    modifies:
-        stability - .25
-        cohesion - .2
-        aggression + .12
-        population - 900
-        gold - 30
-        discipline + .02
-        honor + .04
-        margin + .02
-    end
-end
+overlay rebellion
+    dup: replace
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0004 where :link_score(self, target, "culture") > 0
+    decays: .09
+    modify
+        @stability - .25
+        @cohesion - .2
+        @aggression + .12
+        @population - 900
+        @gold - 30
+        @discipline + .02
+        @honor + .04
+        @margin + .02
+    xx
+xx
 
-overlay ArcaneBloom |
-    replaces
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "arcane") > 0 at .01
-    decays .06
-    modifies:
-        spirituality + .12
-        openness + .08
-        stability + .05
-        mana + 35
-    end
-end
+overlay arcane_bloom
+    dup: replace
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .01 where :link_score(self, target, "arcane") > 0
+    decays: .06
+    modify
+        @spirituality + .12
+        @openness + .08
+        @stability + .05
+        @mana + 35
+    xx
+xx
 
-overlay SuccessionCrisis |
-    replaces
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .004
-    decays .05
-    modifies:
-        succession - .18
-        stability - .12
-        cohesion - .08
-        fear + .08
-    end
-end
+overlay succession_crisis
+    dup: replace
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .004 where :link_score(self, target, "culture") > 0
+    decays: .05
+    modify
+        @succession - .18
+        @stability - .12
+        @cohesion - .08
+        @fear + .08
+    xx
+xx
 
-overlay DragonFear |
-    replaces
-    hosts Kingdom
-    spreads where :link_score(self, target, "border") > 0 at .006
-    decays .06
-    modifies:
-        fear + .18
-        stability - .08
-        food - 3
-        horses - 5
-    end
-end
+overlay dragon_fear
+    dup: replace
+    hosts: Kingdom
+    spread: .006 where :link_score(self, target, "border") > 0
+    decays: .06
+    modify
+        @fear + .18
+        @stability - .08
+        @food - 3
+        @horses - 5
+    xx
+xx
 
-overlay UndeadPressure |
-    replaces
-    hosts Kingdom
-    spreads where :link_score(self, target, "border") > 0 at .008
-    decays .05
-    modifies:
-        fear + .14
-        stability - .09
-        population - 1200
-        mana - 10
-    end
-end
+overlay undead_pressure
+    dup: replace
+    hosts: Kingdom
+    spread: .008 where :link_score(self, target, "border") > 0
+    decays: .05
+    modify
+        @fear + .14
+        @stability - .09
+        @population - 1200
+        @mana - 10
+    xx
+xx
 
-overlay TradeCant |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .002
-    decays .018
-    modifies:
-        cooperation + .006
-        openness + .004
-        cohesion - .004
-    end
-end
+overlay trade_cant
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "trade") > 0
+    decays: .018
+    modify
+        @cooperation + .006
+        @openness + .004
+        @cohesion - .004
+    xx
+xx
 
-overlay CreoleIdentity |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .0015
-    decays .01
-    modifies:
-        openness + .01
-        cooperation + .006
-        cohesion - .003
-    end
-end
+overlay creole_identity
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0015 where :link_score(self, target, "culture") > 0
+    decays: .01
+    modify
+        @openness + .01
+        @cooperation + .006
+        @cohesion - .003
+    xx
+xx
 
-overlay ImperialDialect |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .002
-    decays .014
-    modifies:
-        discipline + .008
-        openness - .006
-        cohesion + .004
-    end
-end
+overlay imperial_dialect
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .002 where :link_score(self, target, "border") > 0
+    decays: .014
+    modify
+        @discipline + .008
+        @openness - .006
+        @cohesion + .004
+    xx
+xx
 
-overlay AurelianDialect |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .00035
-    spreads where :link_score(self, target, "trade") > 0 at .00025
-    decays .0012    conflicts DrakmoorImperial
+overlay aurelian_dialect
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00035 where :link_score(self, target, "culture") > 0
+    spread: .00025 where :link_score(self, target, "trade") > 0
+    decays: .0012
+    conflicts: drakmoor_imperial
+    modify
+        @cooperation + .001
+        @openness + .001
+        @cohesion - .001
+    xx
+xx
 
-    modifies:
-        cooperation + .001
-        openness + .001
-        cohesion - .001
-    end
-end
+overlay drakmoor_imperial
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00045 where :link_score(self, target, "border") > 0
+    spread: .00025 where :link_score(self, target, "culture") > 0
+    decays: .001
+    modify
+        @discipline + .0015
+        @aggression + .001
+        @openness - .001
+    xx
+xx
 
-overlay DrakmoorImperial |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .00045
-    spreads where :link_score(self, target, "culture") > 0 at .00025
-    decays .001
-    modifies:
-        discipline + .0015
-        aggression + .001
-        openness - .001
-    end
-end
+overlay valedawn_cant
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0005 where :link_score(self, target, "trade") > 0
+    decays: .0013
+    conflicts: imperial_dialect
+    modify
+        @cooperation + .0015
+        @openness + .0015
+        @cohesion - .001
+    xx
+xx
 
-overlay ValedawnCant |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0005
-    decays .0013    conflicts ImperialDialect
+overlay sylvan_liturgical
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00035 where :link_score(self, target, "culture") > 0
+    decays: .001
+    modify
+        @spirituality + .0015
+        @cohesion + .001
+        @openness - .001
+    xx
+xx
 
-    modifies:
-        cooperation + .0015
-        openness + .0015
-        cohesion - .001
-    end
-end
+overlay depression
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0012 where :link_score(self, target, "trade") > 0
+    decays: .045
+    modify
+        @gold - 8
+        @cooperation - .025
+        @stability - .02
+        @fear + .035
+        @ambition - .015
+        @openness - .012
+    xx
+xx
 
-overlay SylvanLiturgical |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .00035
-    decays .001
-    modifies:
-        spirituality + .0015
-        cohesion + .001
-        openness - .001
-    end
-end
+overlay secularization
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0008 where :link_score(self, target, "trade") > 0
+    spread: .0008 where :link_score(self, target, "culture") > 0
+    decays: .025
+    conflicts: solar_purists, ashen_orthodoxy
+    modify
+        @spirituality - .035
+        @openness + .018
+        @cooperation + .01
+        @cohesion - .008
+    xx
+xx
 
-overlay Depression |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0012
-    decays .045
-    modifies:
-        gold - 8
-        cooperation - .025
-        stability - .02
-        fear + .035
-        ambition - .015
-        openness - .012
-    end
-end
+overlay persecution
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0008 where :link_score(self, target, "border") > 0
+    decays: .035
+    conflicts: solar_reform, root_wanderers
+    modify
+        @fear + .035
+        @openness - .028
+        @cooperation - .012
+        @discipline + .018
+        @cohesion - .012
+    xx
+xx
 
-overlay Secularization |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0008
-    spreads where :link_score(self, target, "culture") > 0 at .0008
-    decays .025
-    conflicts SolarPurists
-    conflicts AshenOrthodoxy
-    modifies:
-        spirituality - .035
-        openness + .018
-        cooperation + .01
-        cohesion - .008
-    end
-end
+overlay syncretism
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0009 where :link_score(self, target, "culture") > 0
+    spread: .0007 where :link_score(self, target, "trade") > 0
+    decays: .025
+    conflicts: solar_purists, ashen_orthodoxy
+    modify
+        @spirituality + .01
+        @openness + .018
+        @cooperation + .012
+        @cohesion - .006
+    xx
+xx
 
-overlay Persecution |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .0008
-    decays .035
-    conflicts SolarReform
-    conflicts RootWanderers
-    modifies:
-        fear + .035
-        openness - .028
-        cooperation - .012
-        discipline + .018
-        cohesion - .012
-    end
-end
+overlay solar_reform
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00045 where :link_score(self, target, "culture") > 0
+    decays: .06
+    conflicts: solar_creed_faith, solar_purists
+    modify
+        @openness + .018
+        @cooperation + .012
+        @spirituality - .006
+        @cohesion - .008
+    xx
+xx
 
-overlay Syncretism |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .0009
-    spreads where :link_score(self, target, "trade") > 0 at .0007
-    decays .025
-    conflicts SolarPurists
-    conflicts AshenOrthodoxy
-    modifies:
-        spirituality + .01
-        openness + .018
-        cooperation + .012
-        cohesion - .006
-    end
-end
+overlay solar_purists
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0004 where :link_score(self, target, "culture") > 0
+    decays: .055
+    conflicts: solar_reform
+    modify
+        @spirituality + .02
+        @order + .01
+        @openness - .02
+        @discipline + .012
+        @fear + .01
+    xx
+xx
 
-overlay SolarReform |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .00045
-    decays .06
-    conflicts SolarCreedFaith    
-    conflicts SolarPurists
+overlay root_wanderers
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00045 where :link_score(self, target, "trade") > 0
+    spread: .00045 where :link_score(self, target, "culture") > 0
+    decays: .055
+    conflicts: root_pact_faith
+    modify
+        @openness + .02
+        @cooperation + .014
+        @cohesion - .01
+        @spirituality + .006
+    xx
+xx
 
-    modifies:
-        openness + .018
-        cooperation + .012
-        spirituality - .006
-        cohesion - .008
-    end
-end
+overlay ashen_orthodoxy
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00045 where :link_score(self, target, "border") > 0
+    spread: .0004 where :link_score(self, target, "culture") > 0
+    decays: .052
+    conflicts: ashen_rite_faith, solar_reform
+    modify
+        @aggression + .018
+        @discipline + .014
+        @fear + .012
+        @openness - .018
+        @cooperation - .008
+    xx
+xx
 
-overlay SolarPurists |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .0004
-    decays .055
-    conflicts SolarReform
-    modifies:
-        spirituality + .02
-        order + .01
-        openness - .02
-        discipline + .012
-        fear + .01
-    end
-end
+overlay merchant_guilds
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0015 where :link_score(self, target, "trade") > 0
+    decays: .028
+    conflicts: noble_coup, military_junta
+    modify
+        @cooperation + .018
+        @openness + .014
+        @cooperation + .006
+        @cohesion - .01
+        @discipline - .008
+    xx
+xx
 
-overlay RootWanderers |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .00045
-    spreads where :link_score(self, target, "culture") > 0 at .00045
-    decays .055
-    conflicts RootPactFaith
-    modifies:
-        openness + .02
-        cooperation + .014
-        cohesion - .01
-        spirituality + .006
-    end
-end
+overlay military_junta
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .001 where :link_score(self, target, "border") > 0
+    decays: .03
+    conflicts: reform_movement, merchant_guilds
+    modify
+        @discipline + .022
+        @aggression + .018
+        @fear + .012
+        @openness - .018
+        @succession - .012
+    xx
+xx
 
-overlay AshenOrthodoxy |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .00045
-    spreads where :link_score(self, target, "culture") > 0 at .0004
-    decays .052
-    conflicts AshenRiteFaith    
-    conflicts SolarReform
-
-    modifies:
-        aggression + .018
-        discipline + .014
-        fear + .012
-        openness - .018
-        cooperation - .008
-    end
-end
-
-overlay MerchantGuilds |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0015
-    decays .028
-    conflicts NobleCoup    
-    conflicts MilitaryJunta
-
-    modifies:
-        cooperation + .018
-        openness + .014
-        cooperation + .006
-        cohesion - .01
-        discipline - .008
-    end
-end
-
-overlay MilitaryJunta |
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .001
-    decays .03
-    conflicts ReformMovement    
-    conflicts MerchantGuilds
-
-    modifies:
-        discipline + .022
-        aggression + .018
-        fear + .012
-        openness - .018
-        succession - .012
-    end
-end
-
-overlay AurelianTongue |
+overlay aurelian_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0006
-    spreads where :link_score(self, target, "culture") > 0 at .0005
-    decays .0002
-    modifies:
-        openness + .001
-        cooperation + .0005
-    end    
-    spawns AurelianDialect when strength > .18:
-        strength .035
-    end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0006 where :link_score(self, target, "trade") > 0
+    spread: .0005 where :link_score(self, target, "culture") > 0
+    decays: .0002
+    modify
+        @openness + .001
+        @cooperation + .0005
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .18 and :len(:overlays(self, aurelian_dialect)) == 0
+            :overlay!(self, aurelian_dialect, .035)
+        xx
+    xx
+xx
 
-end
-
-overlay DrakmoorTongue |
+overlay drakmoor_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .0008
-    spreads where :link_score(self, target, "culture") > 0 at .0004
-    decays .0002
-    modifies:
-        aggression + .001
-        discipline + .0005
-    end    
-    spawns DrakmoorImperial when strength > .18:
-        strength .035
-    end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0008 where :link_score(self, target, "border") > 0
+    spread: .0004 where :link_score(self, target, "culture") > 0
+    decays: .0002
+    modify
+        @aggression + .001
+        @discipline + .0005
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .18 and :len(:overlays(self, drakmoor_imperial)) == 0
+            :overlay!(self, drakmoor_imperial, .035)
+        xx
+    xx
+xx
 
-end
-
-overlay ValedawnTongue |
+overlay valedawn_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0007
-    spreads where :link_score(self, target, "culture") > 0 at .00045
-    decays .0002
-    modifies:
-        cooperation + .001
-        openness + .001
-    end    
-    spawns ValedawnCant when strength > .18:
-        strength .04
-    end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0007 where :link_score(self, target, "trade") > 0
+    spread: .00045 where :link_score(self, target, "culture") > 0
+    decays: .0002
+    modify
+        @cooperation + .001
+        @openness + .001
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .18 and :len(:overlays(self, valedawn_cant)) == 0
+            :overlay!(self, valedawn_cant, .04)
+        xx
+    xx
+xx
 
-end
-
-overlay KharumTongue |
+overlay kharum_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .0006
-    spreads where :link_score(self, target, "trade") > 0 at .0003
-    decays .0002
-    modifies:
-        aggression + .0005
-        fear + .0005
-    end
-end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0006 where :link_score(self, target, "border") > 0
+    spread: .0003 where :link_score(self, target, "trade") > 0
+    decays: .0002
+    modify
+        @aggression + .0005
+        @fear + .0005
+    xx
+xx
 
-overlay SylvarisTongue |
+overlay sylvaris_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .00045
-    spreads where :link_score(self, target, "arcane") > 0 at .0005
-    decays .0002
-    modifies:
-        spirituality + .001
-        openness + .0005
-    end    
-    spawns SylvanLiturgical when strength > .18:
-        strength .035
-    end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .00045 where :link_score(self, target, "culture") > 0
+    spread: .0005 where :link_score(self, target, "arcane") > 0
+    decays: .0002
+    modify
+        @spirituality + .001
+        @openness + .0005
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .18 and :len(:overlays(self, sylvan_liturgical)) == 0
+            :overlay!(self, sylvan_liturgical, .035)
+        xx
+    xx
+xx
 
-end
-
-overlay NerezzaTongue |
+overlay nerezza_tongue
     kind: "language"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "trade") > 0 at .0006
-    spreads where :link_score(self, target, "culture") > 0 at .0005
-    decays .0002
-    modifies:
-        ambition + .001
-        discipline + .0005
-    end
-end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .0006 where :link_score(self, target, "trade") > 0
+    spread: .0005 where :link_score(self, target, "culture") > 0
+    decays: .0002
+    modify
+        @ambition + .001
+        @discipline + .0005
+    xx
+xx
 
-overlay SolarCreedFaith |
+overlay solar_creed_faith
     kind: "religion"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .001
-    spreads where :link_score(self, target, "trade") > 0 at .00035
-    decays .0025
-    conflicts Secularization
-    modifies:
-        stability + .006
-        honor + .004
-        spirituality + .006
-        openness - .003
-    end
-    spawns SolarReform when strength > .82:
-        strength .018
-    end
-    spawns SolarPurists when strength > .9:
-        strength .018
-    end
-end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .001 where :link_score(self, target, "culture") > 0
+    spread: .00035 where :link_score(self, target, "trade") > 0
+    decays: .0025
+    conflicts: secularization
+    modify
+        @stability + .006
+        @honor + .004
+        @spirituality + .006
+        @openness - .003
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .82 and :len(:overlays(self, solar_reform)) == 0
+            :overlay!(self, solar_reform, .018)
+        xx
+        if intensity > .9 and :len(:overlays(self, solar_purists)) == 0
+            :overlay!(self, solar_purists, .018)
+        xx
+    xx
+xx
 
-overlay RootPactFaith |
+overlay root_pact_faith
     kind: "religion"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "culture") > 0 at .001
-    spreads where :link_score(self, target, "trade") > 0 at .00045
-    decays .0025
-    conflicts Secularization
-    modifies:
-        spirituality + .007
-        openness + .003
-        cohesion + .002
-        discipline - .002
-    end
-    spawns RootWanderers when strength > .82:
-        strength .018
-    end
-end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .001 where :link_score(self, target, "culture") > 0
+    spread: .00045 where :link_score(self, target, "trade") > 0
+    decays: .0025
+    conflicts: secularization
+    modify
+        @spirituality + .007
+        @openness + .003
+        @cohesion + .002
+        @discipline - .002
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .82 and :len(:overlays(self, root_wanderers)) == 0
+            :overlay!(self, root_wanderers, .018)
+        xx
+    xx
+xx
 
-overlay AshenRiteFaith |
+overlay ashen_rite_faith
     kind: "religion"
-    hosts Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
-    spreads where :link_score(self, target, "border") > 0 at .001
-    spreads where :link_score(self, target, "culture") > 0 at .00065
-    decays .0025
-    conflicts Secularization
-    modifies:
-        aggression + .006
-        spirituality + .006
-        discipline + .004
-        cooperation - .004
-    end
-    spawns AshenOrthodoxy when strength > .82:
-        strength .018
-    end
-end
+    hosts: Kingdom, Empire, Theocracy, TradeLeague, WarlordState, RebelFederation
+    spread: .001 where :link_score(self, target, "border") > 0
+    spread: .00065 where :link_score(self, target, "culture") > 0
+    decays: .0025
+    conflicts: secularization
+    modify
+        @aggression + .006
+        @spirituality + .006
+        @discipline + .004
+        @cooperation - .004
+    xx
+    /// Past a strength, it starts another overlay on its host (once).
+    every 1 tick
+        if intensity > .82 and :len(:overlays(self, ashen_orthodoxy)) == 0
+            :overlay!(self, ashen_orthodoxy, .018)
+        xx
+    xx
+xx
 
-overlay AurelianTongue on Aurelion at .95
-overlay AurelianTongue on Drakmoor at .05
-overlay AurelianTongue on Kharum at .04
-overlay AurelianTongue on Valedawn at .06
+:overlay!(Aurelion, aurelian_tongue, .95)
+:overlay!(Drakmoor, aurelian_tongue, .05)
+:overlay!(Kharum, aurelian_tongue, .04)
+:overlay!(Valedawn, aurelian_tongue, .06)
 
-overlay DrakmoorTongue on Drakmoor at .95
-overlay DrakmoorTongue on Aurelion at .04
-overlay DrakmoorTongue on Kharum at .05
+:overlay!(Drakmoor, drakmoor_tongue, .95)
+:overlay!(Aurelion, drakmoor_tongue, .04)
+:overlay!(Kharum, drakmoor_tongue, .05)
 
-overlay ValedawnTongue on Valedawn at .95
-overlay ValedawnTongue on Aurelion at .06
-overlay ValedawnTongue on Nerezza at .05
-overlay ValedawnTongue on Sylvaris at .04
+:overlay!(Valedawn, valedawn_tongue, .95)
+:overlay!(Aurelion, valedawn_tongue, .06)
+:overlay!(Nerezza, valedawn_tongue, .05)
+:overlay!(Sylvaris, valedawn_tongue, .04)
 
-overlay KharumTongue on Kharum at .95
-overlay KharumTongue on Drakmoor at .03
-overlay KharumTongue on Aurelion at .02
+:overlay!(Kharum, kharum_tongue, .95)
+:overlay!(Drakmoor, kharum_tongue, .03)
+:overlay!(Aurelion, kharum_tongue, .02)
 
-overlay SylvarisTongue on Sylvaris at .95
-overlay SylvarisTongue on Nerezza at .06
-overlay SylvarisTongue on Valedawn at .03
+:overlay!(Sylvaris, sylvaris_tongue, .95)
+:overlay!(Nerezza, sylvaris_tongue, .06)
+:overlay!(Valedawn, sylvaris_tongue, .03)
 
-overlay NerezzaTongue on Nerezza at .95
-overlay NerezzaTongue on Sylvaris at .05
-overlay NerezzaTongue on Valedawn at .04
+:overlay!(Nerezza, nerezza_tongue, .95)
+:overlay!(Sylvaris, nerezza_tongue, .05)
+:overlay!(Valedawn, nerezza_tongue, .04)
 
-overlay SolarCreedFaith on Aurelion at .8
-overlay SolarCreedFaith on Valedawn at .5
-overlay RootPactFaith on Sylvaris at .9
-overlay RootPactFaith on Nerezza at .5
-overlay AshenRiteFaith on Drakmoor at .8
-overlay AshenRiteFaith on Kharum at .7
+:overlay!(Aurelion, solar_creed_faith, .8)
+:overlay!(Valedawn, solar_creed_faith, .5)
+:overlay!(Sylvaris, root_pact_faith, .9)
+:overlay!(Nerezza, root_pact_faith, .5)
+:overlay!(Drakmoor, ashen_rite_faith, .8)
+:overlay!(Kharum, ashen_rite_faith, .7)
 
 say "=== Memory Starting ==="
 say mem_human()

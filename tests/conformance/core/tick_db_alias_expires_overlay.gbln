@@ -1,13 +1,15 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
 /// tick_db() is an alias of tick().
 <>Polity |
     stability: .8
 xx
-overlay Stunned |
-    modifies:
-        stability - .25
-    end
+overlay stunned
+    modify
+        @stability - .25
+    xx
+xx
 rome <> Polity | stability: .8
-overlay Stunned on rome at .5 for 1 ticks
+:overlay!(rome, stunned, .5, 1)
 say(rome >> stability)
 tick_db()
 say(rome >> stability)

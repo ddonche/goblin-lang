@@ -3,6 +3,11 @@
 // Treat empty OK oracles as PASS and (for now) treat ERR oracles as PASS without comparing.
 // This gets the suite green so we can iterate on the lexer in small bites.
 
+/// mimalloc: glibc malloc spent ~200 instructions per allocation on the
+/// sims (fragmented heap, consolidation); mimalloc is far cheaper.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::env;
 use std::ffi::OsStr;
 use std::fs;

@@ -64,6 +64,9 @@ struct FunctionScope {
     /// An `:objects(…)` / `:overlays(…)` predicate body: the fields of `it`
     /// are in scope by name, as in the interpreter.
     pred_fields: bool,
+    /// Calls something other than an action named in the program (a value
+    /// it was given or worked out): see `FunctionObject::calls_values`.
+    calls_values: bool,
 }
 
 impl FunctionScope {
@@ -89,6 +92,7 @@ impl FunctionScope {
             line_numbers: Vec::new(),
             current_line: 0,
             pred_fields: false,
+            calls_values: false,
         }
     }
 
@@ -231,6 +235,7 @@ impl FunctionScope {
             global_prefix: None,
             source_file,
             global_names,
+            calls_values: self.calls_values, field_hints: Default::default(),
         }
     }
 }
@@ -345,8 +350,13 @@ pub struct Compiler {
     pub collected_enums: Vec<EnumDecl>,
     /// Current source line (updated before compiling each AST node).
     current_line: u32,
-    /// When true, unknown identifiers are compiled as self-field loads (for class methods).
+    /// When true, unknown identifiers are read as program variables at run time (for class methods).
     pub is_class_method: bool,
+    /// In a class judge: the decision names, each read as its pick.
+    pub lazy_picks: Vec<String>,
+    /// An error the compiled action raises as soon as it is called (a method
+    /// that did not compile reports why instead of going missing).
+    pub start_error: Option<String>,
     /// When true, top-level binds use StoreGlobal/LoadGlobal so state persists across REPL entries.
     pub repl_mode: bool,
     /// Number of globals that existed before this REPL snippet (for duplicate-bind detection).
@@ -399,7 +409,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -532,6 +542,7 @@ impl Compiler {
             scope.declare_params(&param_names);
         }
         self.compile_param_defaults(&action.params)?;
+        if let Some(msg) = self.start_error.take() { self.emit_runtime_error(&msg)?; }
         match &action.body {
             ActionBody::Block(stmts) => {
                 // Two-pass: pre-register nested action names as globals.
@@ -648,6 +659,14 @@ impl Compiler {
     // ── Variable resolution ───────────────────────────────────────────────────
 
     /// Resolve a name to a load opcode sequence, searching locals → upvalues → globals.
+    /// A call's callee is loaded with `op`: anything but an action named in
+    /// the program marks the function as calling values.
+    fn note_callee(&mut self, op: &Opcode) {
+        if !matches!(op, Opcode::LoadGlobal(_) | Opcode::LoadNamed(_)) {
+            self.scope_mut().calls_values = true;
+        }
+    }
+
     fn resolve_load(&mut self, name: &str) -> Result<Opcode, GoblinError> {
         // 1. Check innermost scope's locals first.
         if let Some(slot) = self.scope().find_local(name) {
@@ -666,10 +685,11 @@ impl Compiler {
             return Ok(Opcode::LoadGlobal(pos as u16));
         }
 
-        // 4. In a class method, unknown names are self-field accesses (shadow builtins).
+        // 4. In a class method, unknown names are the program's variables, read
+        //    when the method runs (methods are compiled apart from the program).
         if self.is_class_method {
             let field_idx = self.add_constant(Value::Str(name.to_string().into()));
-            return Ok(Opcode::SelfField(field_idx));
+            return Ok(Opcode::ProgramVar(field_idx));
         }
 
         // 5. Check if it's a known builtin name.
@@ -1090,6 +1110,12 @@ impl Compiler {
     }
 
     fn compile_arm_body(&mut self, body: &goblin_ast::JudgeArmBody) -> Result<(), GoblinError> {
+        // In a class's judge over its decisions: a deed starts here, so
+        // what the decisions kept (memo) goes.
+        if !self.lazy_picks.is_empty() {
+            self.emit(Opcode::CallBuiltin(BuiltinId::DecisionPick, 0));
+            self.emit(Opcode::Pop);
+        }
         match body {
             goblin_ast::JudgeArmBody::Expr(e) => {
                 self.compile_expr(e)?;
@@ -1344,6 +1370,18 @@ impl Compiler {
                                 || self.scope().find_local_entry(bare).is_some_and(|(i, _)| self.scope().local_meta[i].bound)
                                 || self.global_index(bare).is_some()
                         });
+                        if text.contains('@') && idents.iter().any(|n| n == "self") {
+                            let has_self = match self.scope().find_local_entry("self") {
+                                Some((i, _)) => self.scope().local_meta[i].bound,
+                                None => self.scopes.len() > 1 && self.scopes[..self.scopes.len() - 1].iter().any(|sc| sc.find_local("self").is_some()),
+                            };
+                            if !has_self {
+                                return Err(GoblinError::CompileError {
+                                    message: format!("P0919: '{{{text}}}': '@name' means 'self >> name', and there is no 'self' here"),
+                                    span_debug: "(unknown)".into(),
+                                });
+                            }
+                        }
                         if !all_known { continue; }
                         self.compile_expr(&e)?;
                         names.push(text);
@@ -1367,6 +1405,18 @@ impl Compiler {
             }
 
             // ── Variables ─────────────────────────────────────────────────────
+            // In a class judge, a decision's name is its pick, made the
+            // first time it is read (so an earlier arm that wins leaves the
+            // later decisions unscored, and their random draws unmade).
+            Expr::Ident(name, _) if self.lazy_picks.iter().any(|n| n == name)
+                && !self.scopes.iter().any(|sc| sc.find_local(name).is_some()) => {
+                // The decision by its place in the class (`lazy_picks` is in
+                // the class's order), so reading it looks nothing up by name.
+                let at = self.lazy_picks.iter().position(|n| n == name).unwrap_or(0);
+                let idx = self.add_constant(Value::Int(at as i64));
+                self.emit(Opcode::LoadConst(idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::DecisionPick, 1));
+            }
             Expr::Ident(name, _) => {
                 // In a query predicate, a field of `it` shadows the name.
                 let field_jump = if self.scope().pred_fields && name != "it"
@@ -1472,6 +1522,7 @@ impl Compiler {
                 let bare_name = name.trim_start_matches(':');
                 if self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     let take = match self.take_arg.take() {
                         Some((at, n, slot)) if args.first().map(|a| a as *const Expr) == Some(at) => Some((n, slot)),
@@ -1485,6 +1536,27 @@ impl Compiler {
                     }
                     self.emit(Opcode::Call(args.len() as u8));
                     return Ok(());
+                }
+                // `pick ...`: the parser hands its settings over as a map; when
+                // they are the known ones in the parser's order, pass them in
+                // place instead of building a map on every pick.
+                if bare_name == "pick" && args.len() == 1 {
+                    if let Expr::Object(props, _) = &args[0] {
+                        let keys = &crate::builtins::PICK_KEYS;
+                        let mut mask = 0i64;
+                        let mut last = None;
+                        let in_order = props.iter().all(|(k, _)| match keys.iter().position(|n| n == k) {
+                            Some(i) if last.is_none_or(|l| i > l) => { last = Some(i); mask |= 1 << i; true }
+                            _ => false,
+                        });
+                        if in_order {
+                            let idx = self.add_constant(Value::Int(mask));
+                            self.emit(Opcode::LoadConst(idx));
+                            for (_, v) in props { self.compile_expr(v)?; }
+                            self.emit(Opcode::CallBuiltin(BuiltinId::PickSet, (props.len() + 1) as u8));
+                            return Ok(());
+                        }
+                    }
                 }
                 // `raw "…"`: the literal is kept exactly as written, so it is
                 // loaded as a constant and never interpolated.
@@ -1614,6 +1686,7 @@ impl Compiler {
                     }
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::Call(args.len() as u8));
@@ -1663,6 +1736,7 @@ impl Compiler {
                     || self.global_index(method).is_some();
                 if is_var {
                     let load_op = self.resolve_load(method).map_err(|e| self.locate_err(e))?;
+                    self.note_callee(&load_op);
                     self.emit(load_op);
                     self.compile_expr(recv)?;
                     for arg in args { self.compile_expr(arg)?; }
@@ -1744,6 +1818,7 @@ impl Compiler {
                 // Re-compile the receiver since we popped the dup.
                 self.compile_expr(recv)?;
                 let load_op = self.resolve_load(method).unwrap_or(Opcode::LoadNil);
+                self.note_callee(&load_op);
                 self.emit(load_op);
                 for arg in args { self.compile_expr(arg)?; }
                 self.emit(Opcode::Call((args.len() + 1) as u8));
@@ -2005,6 +2080,7 @@ impl Compiler {
                     } else {
                         // User function: stack layout must be [func, lhs, args...]
                         self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        self.scope_mut().calls_values = true;
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
                         self.emit(Opcode::Call(argc));
@@ -2018,12 +2094,14 @@ impl Compiler {
                     // Emit as member call: recv.method(lhs, args...)
                     let argc = (args.len() + 1) as u8;
                     self.emit(Opcode::GetMember(method_idx));
+                    self.scope_mut().calls_values = true;
                     self.emit(Opcode::Call(argc));
                 }
                 _ => {
                     // Generic pipeline: evaluate rhs as callable, call with lhs
                     self.compile_expr(rhs)?;
                     self.compile_expr(lhs)?;
+                    self.scope_mut().calls_values = true;
                     self.emit(Opcode::Call(1));
                 }
             }
@@ -3386,9 +3464,50 @@ impl Compiler {
             Some(b) => b,
             None    => return Ok(None),
         };
+        // `:get_where(xs, it > 1)`: the condition is code with `it`, run for
+        // each item. Anything else is a value, as before (text to match, an
+        // action's name), even when a variable holds it.
+        if matches!(bid, BuiltinId::GetWhere | BuiltinId::DeleteWhere | BuiltinId::UpdateWhere | BuiltinId::ReapWhere | BuiltinId::ReapWhere2)
+            && args.len() >= 2 && mentions_it(&args[1]) {
+            self.compile_expr(&args[0])?;
+            self.compile_predicate_lambda(&args[1])?;
+            for arg in &args[2..] { self.compile_expr(arg)?; }
+            self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+            return Ok(Some(()));
+        }
         // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
         // a predicate is compiled as `fn(it)`; a class name is a plain value.
         if bare == "objects" || bare == "overlays" {
+            // `:objects(Rabbit)`: a bare Capitalized name no variable has is
+            // the class's name, as if quoted.
+            let fixed: Vec<Expr>;
+            let args: &[Expr] = match args.first() {
+                Some(Expr::Ident(n, sp)) if self.is_bare_class_name(n)
+                    || (bare == "overlays" && n != "it" && n != "self" && self.resolve_load(n).is_err()) => {
+                    fixed = std::iter::once(Expr::Str(n.clone(), sp.clone())).chain(args[1..].iter().cloned()).collect();
+                    &fixed
+                }
+                _ => args,
+            };
+            // `:overlays(@)`, `:overlays(target, flu)`: the overlays on one
+            // object (its first argument a variable, or a field path from
+            // one, not `it`).
+            if bare == "overlays" {
+                let mut root = args.first();
+                while let Some(Expr::Member(o, _, _)) = root { root = Some(&**o); }
+                let host = match root {
+                    Some(Expr::Ident(n, _)) => n != "it" && (n == "self" || self.resolve_load(n).is_ok()),
+                    _ => false,
+                };
+                // `:overlays(kind, it >> intensity > .5)` with `kind` a
+                // variable holding an overlay's name is the filter form.
+                let host = host && !args.get(1).is_some_and(mentions_it);
+                if host {
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+                    return Ok(Some(()));
+                }
+            }
             // `:objects("Item", it >> owner == pack)`: read pack's contents
             // list. The predicate still runs on each of them, so the result
             // is the same; the VM falls back to the class list when it can't
@@ -3397,6 +3516,36 @@ impl Compiler {
                 if let [cls @ Expr::Str(..), pred] = args {
                     if let Some((var, var_expr)) = owner_test(pred) {
                         if self.resolve_load(&var).is_ok() && only_reads(pred) {
+                            // When the test is the whole predicate, the
+                            // contents list is the answer: nothing to check.
+                            let whole = matches!(pred, Expr::Binary(_, op, _, _) if op == "==");
+                            // A variable, or a field path from one, giving an
+                            // object: read its contents at once, without
+                            // building the closures.
+                            // `x >> a >> b`: the fields read from x, in order.
+                            fn fields(e: &Expr, out: &mut Vec<String>) -> bool {
+                                match e {
+                                    Expr::Ident(..) => true,
+                                    Expr::Member(o, f, _) => { let ok = fields(o, out); out.push(f.clone()); ok }
+                                    _ => false,
+                                }
+                            }
+                            let mut path = Vec::new();
+                            let quick = match (fields(&var_expr, &mut path), whole) {
+                                (true, true) => {
+                                    let load = self.resolve_load(&var).map_err(|e| self.locate_err(e))?;
+                                    match load {
+                                        Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
+                                            let Expr::Str(class, _) = cls else { unreachable!() };
+                                            let qi = self.op_data(crate::opcode::OpData::ObjectsOwned(Box::new(crate::opcode::ObjectsOwned {
+                                                class: class.clone(), var: var.clone(), load, path, skip: 0, count: false })));
+                                            Some((self.emit(Opcode::ObjectsOwned(qi)), qi))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            };
                             self.compile_expr(cls)?;
                             // The holder is read by a call, so a variable that
                             // can't be read (its object was erased) makes the
@@ -3406,7 +3555,13 @@ impl Compiler {
                             let vidx = self.add_constant(Value::Str(var.into()));
                             self.emit(Opcode::LoadConst(vidx));
                             self.compile_predicate_lambda(pred)?;
-                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 4));
+                            self.emit(if whole { Opcode::LoadTrue } else { Opcode::LoadFalse });
+                            self.emit(Opcode::CallBuiltin(BuiltinId::ObjectsIn, 5));
+                            if let Some((at, qi)) = quick {
+                                let skip = (self.scope().bytecode.len() - at - 1) as u32;
+                                if let crate::opcode::OpData::ObjectsOwned(q) = &mut self.scope_mut().op_data[qi as usize] { q.skip = skip; }
+                                self.scope_mut().unused_nil = None;
+                            }
                             return Ok(Some(()));
                         }
                     }
@@ -3424,9 +3579,30 @@ impl Compiler {
             self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
             return Ok(Some(()));
         }
+        let start = self.scope().bytecode.len();
         for arg in args { self.compile_expr(arg)?; }
         self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+        // `:len(:objects("X", it >> owner == x))`: the quick owner query
+        // counts x's contents instead of listing them, and skips the call too.
+        if bid == BuiltinId::Len && args.len() == 1 {
+            let end = self.scope().bytecode.len();
+            if let Some(Opcode::ObjectsOwned(qi)) = self.scope().bytecode.get(start).copied() {
+                if let crate::opcode::OpData::ObjectsOwned(q) = &mut self.scope_mut().op_data[qi as usize] {
+                    if !q.count && start + 1 + q.skip as usize + 1 == end {
+                        q.skip += 1;
+                        q.count = true;
+                    }
+                }
+            }
+        }
         Ok(Some(()))
+    }
+
+    /// A Capitalized name that is no variable here: a class name.
+    fn is_bare_class_name(&self, n: &str) -> bool {
+        n.chars().next().is_some_and(|c| c.is_uppercase())
+            && !self.scopes.iter().any(|sc| sc.find_local(n).is_some())
+            && self.global_index(n).is_none()
     }
 
     /// Compile `expr` as an implicit `fn(it) { expr }` closure on the stack.
@@ -3462,10 +3638,17 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
         Expr::Member(o, f, _) => f == crate::store::OWNER_FIELD && matches!(&**o, Expr::Ident(n, _) if n == "it"),
         _ => false,
     };
-    let var = |e: &Expr| match e {
-        Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some((n.clone(), e.clone())),
-        _ => None,
-    };
+    // `x`, or a field path from x (`f >> owner`): read once, before the query.
+    // A step that names a builtin (`xs >> get_random`) may give a new
+    // answer for each object, so it is not read once.
+    fn root(e: &Expr) -> Option<&String> {
+        match e {
+            Expr::Ident(n, _) if n != "it" && n != crate::store::OWNER_FIELD => Some(n),
+            Expr::Member(o, f, _) if crate::vm::member_builtin(f).is_none() => root(o),
+            _ => None,
+        }
+    }
+    let var = |e: &Expr| root(e).map(|n| (n.clone(), e.clone()));
     if reads_owner(l) { var(r) } else if reads_owner(r) { var(l) } else { None }
 }
 
@@ -3473,24 +3656,76 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
 pub(crate) fn only_reads(e: &Expr) -> bool {
+    only_reads_with(e, &mut |_| false)
+}
+
+/// `only_reads`, where `calls(name)` says whether a call to the program's
+/// action `name` only reads.
+pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> bool {
+    let only_reads = |e: &Expr, calls: &mut dyn FnMut(&str) -> bool| only_reads_with(e, calls);
     match e {
         Expr::Ident(..) | Expr::Number(..) | Expr::Bool(..) | Expr::Nil(..) | Expr::Char(..) => true,
         // A string with `{...}` runs what it names.
         Expr::Str(t, _) => !t.contains('{'),
-        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l) && only_reads(r),
-        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x),
-        Expr::Array(xs, _) => xs.iter().all(only_reads),
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => only_reads(l, calls) && only_reads(r, calls),
+        Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => only_reads(x, calls),
+        Expr::Array(xs, _) => xs.iter().all(|x| only_reads(x, calls)),
         Expr::FreeCall(name, args, _) => {
-            name.starts_with(':') && READ_ONLY_BUILTINS.contains(&name.trim_start_matches(':'))
-                && args.iter().all(only_reads)
+            let ok = match name.strip_prefix(':') {
+                Some(b) => READ_ONLY_BUILTINS.contains(&b),
+                None => calls(name),
+            };
+            ok && args.iter().all(|x| only_reads(x, calls))
         }
         _ => false,
     }
 }
 
+/// `only_reads_with`, split in two: whether `e` only reads apart from the
+/// program's actions it calls (None: it doesn't), and the names of those
+/// actions, so the answer can be kept while the actions are looked at again.
+pub(crate) fn read_calls(e: &Expr) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    only_reads_with(e, &mut |name| { names.push(name.to_string()); true }).then_some(names)
+}
+
+/// Whether `e` reads `it` (the item a `*_where` condition is run for).
+fn mentions_it(e: &Expr) -> bool {
+    match e {
+        Expr::Ident(n, _) => n == "it",
+        Expr::FreeCall(_, args, _) | Expr::NsCall(_, _, args, _) => args.iter().any(mentions_it),
+        Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) => mentions_it(r) || args.iter().any(mentions_it),
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => mentions_it(l) || mentions_it(r),
+        Expr::Prefix(_, x, _) | Expr::Postfix(x, _, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => mentions_it(x),
+        Expr::Array(xs, _) => xs.iter().any(mentions_it),
+        Expr::Object(kv, _) => kv.iter().any(|(_, v)| mentions_it(v)),
+        _ => false,
+    }
+}
+
+/// `read_calls` for a judge condition, which may also roll (`pick 1 from
+/// 1...10`, `roll 1d6`): a roll changes nothing a read-only action reads,
+/// so the answers worked out for the decisions stay good across it.
+pub(crate) fn read_calls_rolling(e: &Expr) -> Option<Vec<String>> {
+    fn walk(e: &Expr, names: &mut Vec<String>) -> bool {
+        match e {
+            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.as_str()) => args.iter().all(|a| walk(a, names)),
+            Expr::Object(fields, _) => fields.iter().all(|(_, v)| walk(v, names)),
+            Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => walk(l, names) && walk(r, names),
+            Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => walk(x, names),
+            Expr::Array(xs, _) => xs.iter().all(|x| walk(x, names)),
+            Expr::FreeCall(name, args, _) if !name.starts_with(':') => { names.push(name.to_string()); args.iter().all(|a| walk(a, names)) }
+            _ => only_reads_with(e, &mut |n| { names.push(n.to_string()); true }),
+        }
+    }
+    const ROLLS: &[&str] = &["pick", "roll", "roll_detail"];
+    let mut names = Vec::new();
+    walk(e, &mut names).then_some(names)
+}
+
 /// Builtins that only read: no effects, no randomness, no calls back into
 /// the program.
-const READ_ONLY_BUILTINS: &[&str] = &[
+pub(crate) const READ_ONLY_BUILTINS: &[&str] = &[
     "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow", "clamp", "sum", "avg",
     "len", "count", "has", "contains", "starts_with", "ends_with", "is_empty", "keys", "values",
     "lower", "upper", "trim", "str", "to_str", "int", "i", "float", "f", "bool",
@@ -3864,6 +4099,10 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "overlays_of"                    => BuiltinId::OverlaysOf,
         "overlay_strength"               => BuiltinId::OverlayStrength,
         "link_score"                     => BuiltinId::LinkScore,
+        "overlay!"                       => BuiltinId::OverlayBang,
+        "detach!"                        => BuiltinId::DetachBang,
+        "link!"                          => BuiltinId::LinkBang,
+        "unlink!"                        => BuiltinId::UnlinkBang,
         "owned_by"                       => BuiltinId::OwnedBy,
         "owns_tree"                      => BuiltinId::OwnsTree,
         "clone_object"                   => BuiltinId::CloneObject,
@@ -4078,6 +4317,7 @@ fn bang_mutates_target(bare: &str) -> bool {
         "write_text!", "write_json!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
         "delete_object!", "delete_overlays_on!", "swarm!", "move!",
+        "overlay!", "detach!", "link!", "unlink!",
     ];
     bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }
@@ -4148,15 +4388,15 @@ fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
                 i = j + 3;
                 continue;
             }
-            let mut j = i + 1;
-            while j < chars.len() && chars[j] != '}' { j += 1; }
-            if j >= chars.len() { break; }
+            let byte_at = |k: usize| chars[..k].iter().map(|c| c.len_utf8()).sum::<usize>();
+            let Some(end) = placeholder_end(s, byte_at(i + 1)) else { break };
+            let j = i + 1 + s[byte_at(i + 1)..end].chars().count();
             let inner: String = chars[i + 1..j].iter().collect();
             let text = inner.trim();
             if !text.is_empty() && !out.iter().any(|(t, _)| t == text) {
                 if text.chars().all(|c| c.is_alphanumeric() || c == '_') {
                     out.push((text.to_string(), None));
-                } else if !text.starts_with('#') && !text.contains(['{', '\n']) {
+                } else if !text.starts_with('#') && !text.contains('\n') {
                     if let Some(e) = parse_interp_expr(text) { out.push((text.to_string(), Some(e))); }
                 }
             }
@@ -4168,10 +4408,46 @@ fn interp_placeholders(s: &str) -> Vec<(String, Option<Expr>)> {
     out
 }
 
+/// Where the `{...}` placeholder whose text starts at byte `start` (just
+/// after the `{`) ends: the byte index of its closing `}`. Text in quotes is
+/// skipped and inner braces nest (`{m{"a"}}`, `{:len(:objects("Estate"))}`);
+/// when they don't balance, the first `}` closes it, as it always has.
+pub(crate) fn placeholder_end(s: &str, start: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let first = s[start..].find('}').map(|r| start + r)?;
+    let mut depth = 1usize;
+    let mut i = start;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'') => {
+                let mut j = i + 1;
+                loop {
+                    match b.get(j) {
+                        None => return Some(first),
+                        Some(b'\\') => j += 2,
+                        Some(c) if *c == q => break,
+                        Some(_) => j += 1,
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 { return Some(i); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    Some(first)
+}
+
 /// `text` as one expression, or None.
 fn parse_interp_expr(text: &str) -> Option<Expr> {
     let toks = goblin_lexer::lex(text, "<interpolation>").ok()?;
-    let module = goblin_parser::Parser::new(&toks).parse_module().ok()?;
+    let module = goblin_parser::Parser::new(&toks).allow_self().parse_module().ok()?;
     match module.items.as_slice() {
         [Stmt::Expr(e)] => Some(e.clone()),
         _ => None,
@@ -4204,6 +4480,14 @@ fn interp_expr_idents(e: &Expr, out: &mut Vec<String>, calls: &mut Vec<String>) 
         Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => interp_expr_idents(x, out, calls),
         Expr::Index(a, b, _) | Expr::IndexMap(a, b, _) => interp_expr_idents(a, out, calls) && interp_expr_idents(b, out, calls),
         // The name called must exist too (checked by the caller).
+        // A query's predicate reads `it`, the object it is asked about.
+        Expr::FreeCall(name, args, _) if matches!(name.as_str(), ":objects" | ":overlays") => {
+            calls.push(name.clone());
+            let mut names = Vec::new();
+            let ok = all(args, &mut names, calls);
+            out.extend(names.into_iter().filter(|n| n != "it"));
+            ok
+        }
         Expr::FreeCall(name, args, _) => { calls.push(name.clone()); all(args, out, calls) }
         Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) =>
             interp_expr_idents(r, out, calls) && all(args, out, calls),

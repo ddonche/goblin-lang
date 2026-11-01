@@ -1,0 +1,35 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An overlay spreading to another region's object that already has it
+/// passes it over, as it would inside one region: neither copy is made
+/// stronger, so both only decay.
+<>Person |
+    health: 1
+    town: 0
+xx
+link contact
+    hosts: Person
+    range: 0...1
+    score => 1 - :abs((@town) - (target >> town)) * .5
+xx
+overlay flu
+    hosts: Person
+    spread: .6 where :link_score(@, target, contact) > .3
+    decays: .05
+xx
+act make_one()
+    p <> Person | health: 1
+    :overlay!(p, flu, .9)
+    return {"people": [p]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make_one(), day)
+b | :actor(make_one(), day)
+repeat :range(1, 5) as d
+    tick([a, b])
+    repeat :overlays(flu)
+        s | :round((it >> intensity) * 1000) / 1000
+        say("tick {d}: flu {s}")
+    xx
+xx

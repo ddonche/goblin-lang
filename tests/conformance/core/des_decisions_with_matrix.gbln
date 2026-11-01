@@ -1,24 +1,24 @@
-/// known-gap: interp runs only a class's first decision (VM only, owner 2026-10-25)
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// Objects made by a matrix keep their class's named decisions.
 <>Shop |
     cheap: .8
     hiring: .9
 xx
 <>Person |
-    ~bought: 0
-    ~jobs: 0
-    shop | decision against Shop by [
-        target >> cheap
-    ]
-    judge using shop
-        >= .5: buy(target)
-    end
-    work | decision against Shop by [
-        target >> hiring
-    ]
-    judge using work
-        >= .5: apply(target)
-    end
+    bought: 0
+    jobs: 0
+    decision bargain
+        targets: Shop
+        score => target >> cheap
+    xx
+    decision job
+        targets: Shop
+        score => target >> hiring
+    xx
+    judge_all
+        bargain and (bargain >> score) >= .5: buy(self, bargain >> target)
+        job and (job >> score) >= .5: apply(self, job >> target)
+    xx
 xx
 act buy(p, s)
     p >> bought |= p >> bought + 1

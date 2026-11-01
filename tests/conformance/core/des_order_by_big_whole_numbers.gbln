@@ -1,17 +1,20 @@
-/// known-gap: interp has no `order by` on classes
-/// `order by` compares whole numbers exactly, even past 2^53, where two
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `order:` compares whole numbers exactly (and `-` turns them round exactly), even past 2^53, where two
 /// numbers can look the same as decimals.
 <>F |
-    ~name: ""
-    ~key: 0
-    move | decision against T by [ 1 ]
-    judge using move
-        >= 0: go(target)
-    end
-    order by [ self >> key ] desc
+    name: ""
+    key: 0
+    decision spot
+        targets: T
+        score => 1
+    xx
+    judge
+        spot: go(self, spot >> target)
+    xx
+    order: -@key
 xx
 <>T |
-    ~n: 0
+    n: 0
 xx
 act go(f, t)
     a | f >> name

@@ -1,0 +1,26 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `target >> is_int` calls the builtin even when the class declares a
+/// field named `is_int`, so the field index is not used for it: with 40
+/// targets the decision still finds them all (an object is not an int).
+<>Hunter |
+    name: ""
+    decision quarry
+        targets: Prey where (target >> is_int) == false
+        score => target >> n
+    xx
+    judge
+        quarry and (quarry >> score) >= 0: take(self, quarry >> target)
+    xx
+xx
+<>Prey |
+    n: 0
+    is_int: true
+xx
+act take(h, p)
+    say("{h >> name} takes {p >> n}")
+xx
+h <> Hunter | name: "Ash"
+repeat :range(0, 40) as i
+    p <> Prey | n: i
+xx
+tick()

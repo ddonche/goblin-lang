@@ -2,7 +2,7 @@
 /// An object one region posts to another during a world tick arrives as an
 /// independent copy, like any message: both regions keep their own object.
 <>Item |
-    ~n: 0
+    n: 0
 xx
 act make_sender()
     i <> Item | n: 1

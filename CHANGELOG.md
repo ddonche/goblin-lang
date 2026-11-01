@@ -5,6 +5,183 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES overlay classes: `<^>Mood |` ... `xx` declares one, `overlay calm <^> Mood` makes a member, which gets the class's lines it doesn't write; the class's `dup:` decides between two members (no `dup:`: they stay together). `dup:` gains `stronger` (the higher intensity stays; on a tie the one already there). `conflicts:` stays for rules across classes.
+- DES: the forms the syntax pass replaced are errors that name the new form (`name | decision against`, `one of`, `order by`, `on erase: action`, `transition ... when`, `link Class name ...`, `a link to b ... offset`, `overlay X on`, `detach X from`); per-object decisions are gone (an object varies a class decision through its fields). A class judge may come before its decisions; a matrix keeps its class's judge. Conformance cases, tests/test.gbln and bench/des are in the new syntax.
+- DES syntax pass: overlays, decisions, judge, transitions, links and `order:` are written as Goblin blocks (`overlay sick` ... `xx`, `decision prey` with `targets:`/`score =>`/`margin:`, one class `judge`/`judge_all` reading picks by name, `transition erase where`, `on erase =>`, `link culture` with `hosts:`/`range:`/`score =>`); calls `:overlay!`, `:detach!`, `:link!`, `:unlink!`, `:overlays(host[, overlay])`; `modify` is a film over stored fields; collection `*_where` take code with `it`. All sims rewritten with unchanged output; wall time vs the old syntax: epidemic 4,000 people -52%, civilization -8%, feudal -2%, predator-prey -2%, RPG +6%.
+- VM object store: each object keeps a fixed place and each id remembers where it was found, so reading an object by id checks one place instead of hashing; owner queries keep their class check; each DES decision keeps its compiled formula and condition; call frames are smaller (instructions: predator-prey -10%, feudal -8%, epidemic -3%; plain call loop +2%).
+- VM: object `==` compares ids without copying them, `repeat` over a list skips a builtin call, remembered-call keys read objects in place, and returned calls hand their local slots to the next call (feudal -2.6%, call loop -1.5% instructions).
+- DES decisions look objects up by id instead of by text, and check once per decision whether the condition and formula only read (feudal -3.5%, predator-prey -3.9%, epidemic -3.8% instructions).
+- DES: the erase check after an action uses object ids and keeps each class's compiled `erase when` conditions (feudal -3.3% instructions).
+- Object fields keep their names in a layout shared by the objects of a class, and a field read remembers where it found its field: feudal -2.8%, predator-prey -1.5%, a call loop -10%.
+- Regions send an object unchanged since last tick as it was, and the others keep their copy: small epidemic -13% instructions.
+- Regions swap other regions' objects by id, not by text: small epidemic -7% instructions, predator-prey -3%.
+- VM: in a decision pass, what actions that only read gave is kept from one
+  decision to the next (and the next object's) until a judge runs an
+  action or something that may change the world runs. Feudal -6%
+  instructions.
+- VM: `:len(:objects("X", it >> owner == x))` counts what x holds without
+  listing (and copying) it. Feudal -5%, predator-prey -2% instructions.
+- VM: an object id hashes by where its one copy of the text is, not by
+  reading the text, and the store is looked up by id (`IdKey`; text is
+  found among the ids held). Feudal -7%, predator-prey -7%, epidemic -2%
+  instructions.
+- VM: `:len`, `:count(x)`, `:is_empty` and `:has` read their list in place
+  instead of copying it first. 50k `:len(:objects(...))` calls -18%,
+  feudal -1.4%, predator-prey -1% instructions.
+- VM: `:objects("X", it >> owner == x)` reads x (a variable, or a field
+  path from one) and its contents at once, without building the query's two
+  closures; an action doing it still counts as only reading. Feudal -12%
+  instructions.
+- VM: an object id is held once per thread and shared by every copy of
+  it (`ObjId`); the object store, ownership lists and field indexes key
+  by it. Copying a reference copies no text. Epidemic -8%, predator-prey
+  -7%, feudal -5% instructions.
+- VM: object ids and class names are copied without going through text
+  formatting (a slowdown from #136), and an object passed to an action is
+  passed as a reference without copying the object first. Action call +
+  field read loop -10%; feudal -2.8%, epidemic and predator-prey -1.5%.
+- VM: owner queries look each held object up once instead of twice;
+  feudal -2%, predator-prey -1% instructions.
+- VM: the class, action and object-name tables use Fx hashing; epidemic
+  -1%, predator-prey -2%, feudal -2.4% instructions.
+- goblin uses the mimalloc allocator. The sims ran about a quarter of
+  their instructions inside glibc malloc/free; epidemic -26%, predator-prey
+  -23%, feudal -18% instructions.
+- VM: `:objects("Item", it >> owner == x)` returns x's contents without
+  testing each one again, and the holder may be a field path
+  (`it >> owner == f >> owner`) as well as a variable. Feudal 6%,
+  predator-prey 6% fewer instructions.
+- VM: an object's class name and id are shared strings, so copying an
+  object (reading `:objects(...)`, passing it to an action) copies no
+  text. Predator-prey 7%, feudal 6% fewer instructions.
+- VM: making an object (`x <> Class | ...`) no longer copies the whole
+  class declaration first. Epidemic 3%, predator-prey 6%, feudal 4%
+  fewer instructions.
+- VM: `pick ...` passes its settings straight to the pick instead of
+  building a map on every call, and picking one item no longer makes a
+  hash table. Epidemic 12%, predator-prey 6%, feudal 1% fewer
+  instructions; same draws, output unchanged.
+- VM: object fields and the DES id sets and indexes use a faster hash
+  (Fx instead of SipHash). Epidemic 12%, predator-prey 7% and feudal 6%
+  fewer instructions; output unchanged.
+- DES (VM): `~` now means a trait. `~fear: .2` stays in 0..1 (its starting
+  value is clamped too); every other number field is a plain value,
+  whatever it starts at. Before, a field that started in 0..1 (0 and 1
+  included) silently became a trait and `~` opted out, so a counter like
+  `defected: 0` stopped at 1. A matrix row keeps a field's `~`, and an object a `spawn` transition
+  makes gets its class's traits. Tests,
+  sims and `tests/test.gbln` are switched over (`~` dropped from plain
+  numbers, added to the 0..1 fields); every sim gives the same output.
+- DES (VM): in a region, setting an object's `owner` to another region's
+  object sends it at once, with what it holds, as `:move!` does; it does
+  nothing more in its old region that tick (it used to graze or hunt there
+  against the new region's objects until the tick ended).
+- Sims: epidemic, predator-prey and feudal rewritten around ownership. A
+  person's or animal's `owner` is its town or meadow, and moving one is
+  setting `owner`. Regions are `:actor(x)` with no handler, and there is no
+  list of regions to pass around and no `:move!`. All three give the same
+  output as before. 62/102/301 lines instead of
+  71/115/312; bench/vs_mesa README updated.
+- DES (VM): faster when objects are compared by `owner`. `target >> owner
+  == @owner` compares the two ids without looking either object up;
+  spreads, decisions and `:objects(..., it >> owner == x >> owner)` find
+  the matches through the store's field index (objects key by id); a
+  decision against a class its holder holds little of checks every target
+  instead of going through all the holder holds; a region no longer
+  re-files every visiting object under its owner each tick. Epidemic on
+  `owner` 1.85G -> 1.30G instructions (30 days), predator-prey on `owner`
+  3.64G -> 2.75G (20 days); the other sims unchanged.
+- Concurrency (VM): `:actor(meadow)` with no handler. The actor runs the
+  meadow and what it holds in `tick(regions)` and takes no messages
+  (`:post`/`:request` to it is C0107). Sims no longer need a handler that
+  only returns its state.
+- Syntax: `@name` is `self >> name`, anywhere `self` exists (class
+  actions, `every`/`when` blocks, decisions, transitions, overlays, links,
+  sweeps): reads, `@hp |= ...`, `@home >> food`, `@name.upper()`,
+  `@tags[0]`, `&@hp` and `"{@hp}"`. Outside those it is error P0919.
+  A bare name in a class action is no longer the object's field: it is a
+  variable, and reading one that is only a field is error R0122 ("did you
+  mean `@hp`?"). A method or `every` block that does not compile now says
+  why when it runs, instead of going missing. The sims use `@`.
+- DES: `~` before a field that starts as something other than a number
+  (`~name: "Ash"`, `~owner: nil`, `~tags: []`) is a parse error, P0917.
+  `~` only keeps a number as its real value instead of a 0..1 trait, so on
+  any other field it did nothing. The sims, tests and benches drop it
+  there.
+- Concurrency + DES (VM): ownership works across actors. An actor given a
+  meadow (`:actor(meadow, handler)`) runs the meadow and everything it
+  holds; setting an object's `owner` to a meadow another actor runs (or to
+  something that meadow holds) sends the object there, with what it holds,
+  its overlays and links, as `:move!` does. The main program can set
+  `owner` too, and an object it makes for a meadow goes to that meadow's
+  actor. Before, the object stayed in its old actor (and one the main
+  program made was never ticked).
+- DES (VM): `:objects(...)` with a predicate works out once per predicate
+  what running it directly needs, instead of on every call, and
+  `:objects("Class", it >> owner == x)` reads `x` without calling the VM.
+  Same results. Feudal sim, 40 years, 1 thread: 2.85 -> 2.51 billion
+  instructions (-12%).
+- DES (VM): a decision's `where [ target >> owner >> owner == x ... ]` (an
+  estate of another vassal of my liege) looks only at what the things `x`
+  holds hold, as `target >> owner == x` already looked only at what `x`
+  holds. Same results; a chain broken by nil still stops the tick with its
+  error. Feudal sim, 60 years, 1 thread: 6.6 -> 4.5 billion instructions.
+- DES (VM): a decision's `where [ target >> pen == self >> pen ... ]` and
+  `:objects("Sheep", it >> pen == p)` find the objects through an index of
+  that field, kept up to date as objects change, instead of checking every
+  object of the class (classes of 32 objects or more). Results are the same.
+  Predator-prey sim, 360 days, 1 thread: 28 s -> 19 s.
+- DES (VM): overlays spread much faster with `spreads where`. The condition
+  is compiled once and reads objects where they live, only the classes the
+  overlay `hosts` are tried (it used to try every object, so a class it may
+  not go on could catch it), and a part like `target >> town == self >> town`
+  tries only the objects whose field matches. Simple formulas, `where`
+  conditions and `:objects` predicates also run faster. Epidemic sim, 4,000
+  people, 60 days, 1 thread: 141 s -> 19 s.
+- Strings: a `{...}` placeholder can hold text in quotes and nested braces:
+  `say("estates {:len(:objects("Estate"))}")` and `say("{r{"winner"}} wins")`
+  work (the inner quote used to end the string, and the first `}` ended the
+  placeholder). Only a placeholder that starts like an expression (a name
+  or `:builtin`) and closes on the same line is read this way; other braces
+  are unchanged.
+- Regions (VM): a field naming an object another region holds keeps its id
+  when the objects cross between regions (snapshots, changes, moves). The
+  program running the world reads through it (`lord >> owner >> name`
+  used to read nil there), and so does a region during a tick. Once the
+  object is erased the field reads nil, as before.
+- VM: a variable given an object from a field (`x |= x >> owner`) or from
+  another variable (`y | x`) holds that object by id instead of a copy
+  written back into the store; a field read followed by another field
+  read, a comparison or an action call does the same, and `==` / `!=` on
+  two objects compares ids without copying either. Walking 30 owners
+  20,000 times: 650 ms to 460 ms. Feudal sim: 3% fewer instructions.
+- DES (VM): while a decision scores its targets, an action that only reads
+  (no writes outside its own variables, nothing random, no output, and only
+  calls to other such actions) runs once per set of arguments: in
+  `where [ strength(self) >= 2 * strength(target >> owner) ]`,
+  `strength(self)` runs once and `strength(target >> owner)` once per
+  holder, not once per target. A condition that calls such actions can now
+  narrow the targets too (`estates(self) >= 2` is checked once). Results
+  are the same; actions that write or print still run every time. Feudal
+  sim, 200 years on 4 threads: 5.2 s to 3.7 s.
+- DES (VM): a decision's `where`, score and other formulas can call the
+  program's actions and read its variables (`where [ kingdom(target) == 2 ]`
+  was an R1220 "undefined variable" error).
+- DES (VM): a decision whose `where` has `target >> owner == x` (alone or
+  joined by `and`) looks only at what `x` holds, through its contents list;
+  a leading condition that doesn't name `target` (`self >> gold < 0`) is
+  checked once instead of per target. Only read-only conditions are used
+  this way, so the result is the same. 300 lords rewarding their 3,000
+  knights for 10 ticks: 11.5 s to 0.09 s.
+- Regions (VM): objects cross between regions by id. An object that moved to
+  another region used to carry copies of the objects its fields named (its
+  owner, its owner's owner, ...); writing through such a copy wiped the real
+  object's changes there. Changes and snapshots send ids the same way.
+- Ownership (VM): what an object contains goes with it. Handing it to an
+  actor (`:actor`) and moving it to another region (`:move!`) take along
+  everything whose `owner` names it, at any depth, and what that refers to.
+  A person with belongings used to fail with C0113 when handed to a region,
+  and a moved container left its contents behind.
 - Ownership (VM): an object's `owner` field holds the object that contains
   it, and the store keeps each owner's contents list. Writing `owner` moves the
   object (a transfer; a drop is giving it to a place). `:objects("Class", it >>

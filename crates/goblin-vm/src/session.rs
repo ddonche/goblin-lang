@@ -30,10 +30,28 @@ pub struct OverlayDef {
     pub on_end: Option<String>,
     /// `each tick:` changes, made every tick and never taken back.
     pub each_tick: Vec<(String, goblin_ast::Expr)>,
+    /// `~intensity: n`: what a new copy starts at.
+    pub intensity: f64,
+    /// `spread: chance where condition`.
+    pub spreads: Vec<goblin_ast::OverlaySpread>,
+    /// `conflicts: a, b`: can't share a host with this overlay.
+    pub conflicts: Vec<String>,
+    /// `overlay calm <^> Mood`: its overlay class, and the class's `dup:`
+    /// (what it does on a host that has another member).
+    pub class: Option<String>,
+    pub class_dup: OverlayApplyBehavior,
+    /// The overlay's blocks (`on start`, `every N ticks #k`, `on end`),
+    /// compiled as methods taking the host, `intensity` and the overlay's
+    /// own data fields.
+    pub methods: HashMap<String, Rc<crate::value::FunctionObject>>,
+    /// The blocks as written, so another session can compile them again.
+    pub actions: Vec<goblin_ast::ActionDecl>,
+    pub on_start: Option<String>,
+    pub every: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> } }
+pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> }, Stronger }
 
 impl Default for OverlayApplyBehavior { fn default() -> Self { OverlayApplyBehavior::Caps } }
 
@@ -156,7 +174,7 @@ pub struct Session {
     pub(crate) moved_away: HashMap<String, String>,
     /// While a DES action runs: the objects it changed, so their erase
     /// transitions are checked as soon as it finishes.
-    pub(crate) des_touched: Option<Vec<String>>,
+    pub(crate) des_touched: Option<Vec<crate::value::ObjId>>,
     /// Objects whose `on erase:` action is running: not erased again.
     pub(crate) des_erasing: Vec<String>,
     /// The main program's world of regions (`tick(regions)`).
@@ -165,7 +183,9 @@ pub struct Session {
     pub(crate) region: Option<crate::world::RegionCtx>,
     /// In a region: its copies of the other regions' objects, kept between
     /// ticks so the next tick rebuilds only the fields that changed.
-    pub(crate) remote_copies: HashMap<String, crate::value::Value>,
+    pub(crate) remote_copies: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Copy>,
+    /// In a region: its objects as they went into its last snapshot.
+    pub(crate) sent_objects: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Sent>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -204,7 +224,7 @@ pub struct Session {
     /// whether that variable is top-level). DES
     /// overlays report their host by this name (`host_var`), as the
     /// interpreter does, also for overlays that spread or spawn onto it.
-    pub object_names: HashMap<String, (String, bool)>,
+    pub object_names: HashMap<String, (String, bool), rustc_hash::FxBuildHasher>,
 
     /// Active overlay instances.
     pub overlay_instances: crate::store::OverlayList,
@@ -216,7 +236,7 @@ pub struct Session {
     pub grid_store: GridStore,
 
     /// Class definitions registered at runtime.
-    pub classes: Rc<HashMap<String, ClassDecl>>,
+    pub classes: Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>,
 
     /// Pre-compiled class methods: (class_name, method_name) -> FunctionObject
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
@@ -241,7 +261,7 @@ pub struct Session {
     // ── DES / Overlay / Link state ───────────────────────────────────────────
     // Definitions are shared (Rc), so a tick that copies a table copies
     // pointers, and each formula keeps one address for the tick-expr cache.
-    pub overlay_defs: HashMap<String, Rc<OverlayDef>>,
+    pub overlay_defs: rustc_hash::FxHashMap<String, Rc<OverlayDef>>,
     pub link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>,
@@ -262,7 +282,7 @@ pub struct Session {
     /// Named function registry for `invoke`/`summon`/`provoke` and GLAM namespace dispatch.
     /// Actions are stored under both bare names ("create_shard") and qualified names
     /// ("graveyard::create_shard") when registered during a `use glam` import.
-    pub named_values: Rc<HashMap<String, Value>>,
+    pub named_values: Rc<HashMap<String, Value, rustc_hash::FxBuildHasher>>,
 
     /// The namespace of the GLAM currently being imported, if any.
     /// Set by UseGlam before importing the GLAM entry file; cleared after.
@@ -300,8 +320,22 @@ pub struct Session {
 impl Session {
     /// Notes that the object `uuid` changed, when a DES action is running.
     #[inline]
-    pub(crate) fn touch(&mut self, uuid: &str) {
-        if let Some(t) = &mut self.des_touched { t.push(uuid.to_string()); }
+    pub(crate) fn touch(&mut self, uuid: &(impl crate::value::IdKey + ?Sized)) {
+        // Text no id has names no object here: nothing to check.
+        if let Some(t) = &mut self.des_touched { if let Some(id) = uuid.id() { t.push(id.into_owned()); } }
+    }
+
+    /// Binds an object value to a name: the store takes it, and a DES
+    /// action notes the change. Binding the very object the store holds
+    /// (same fields, not a changed copy) changes nothing.
+    #[inline]
+    pub(crate) fn put_object(&mut self, uuid: &crate::value::ObjId, val: Value) {
+        if let (Value::Object(new), Some(Value::Object(old))) = (&val, self.object_store.get(uuid)) {
+            if Rc::ptr_eq(&new.fields, &old.fields) && Rc::ptr_eq(&new.class_name, &old.class_name)
+                && Rc::ptr_eq(&new.readonly_fields, &old.readonly_fields) && Rc::ptr_eq(&new.trait_fields, &old.trait_fields) { return; }
+        }
+        self.touch(uuid);
+        self.object_store.insert(uuid.clone(), val);
     }
 
     /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.
@@ -369,7 +403,8 @@ impl Session {
             kept_home: HashMap::new(),
             world: None,
             region: None,
-            remote_copies: HashMap::new(),
+            remote_copies: Default::default(),
+            sent_objects: Default::default(),
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
@@ -379,7 +414,7 @@ impl Session {
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
             object_store: Default::default(),
-            object_names: HashMap::new(),
+            object_names: Default::default(),
             overlay_instances: Default::default(),
             response: ResponseState::default(),
             grid_store: GridStore::new(),
@@ -390,7 +425,7 @@ impl Session {
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),
             imported: Default::default(),
-            overlay_defs: HashMap::new(),
+            overlay_defs: Default::default(),
             link_defs: Default::default(),
             object_link_defs: Default::default(),
             link_offsets: Default::default(),
@@ -543,7 +578,7 @@ impl Session {
     /// to an actor.
     pub fn check_readable(&self, t: &Tether) -> Result<(), GoblinError> {
         match &self.get_stash(t)?.value {
-            Value::Ref(uuid) if !self.object_store.contains_key(uuid.as_str()) =>
+            Value::Ref(uuid) if !self.object_store.contains_key(uuid) =>
                 Err(crate::actor::missing_object(self, uuid)),
             _ => Ok(()),
         }
@@ -552,7 +587,7 @@ impl Session {
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
         match &self.get_stash(t)?.value {
-            Value::Ref(uuid) => self.object_store.get(uuid.as_str())
+            Value::Ref(uuid) => self.object_store.get(uuid)
                 .cloned()
                 .ok_or_else(|| crate::actor::missing_object(self, uuid)),
             Value::Frozen(f) => Ok(f.value.clone()),
@@ -701,7 +736,7 @@ impl Session {
 
             // Object: deep clone fields
             Value::Object(o) => {
-                let new_fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+                let new_fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
                 self.alloc_value(Value::Object(Box::new(crate::value::ObjectVal {

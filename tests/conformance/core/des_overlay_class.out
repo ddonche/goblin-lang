@@ -1,0 +1,6 @@
+mood on
+[calm] focus 2 attack 0
+mood on
+[angry] focus 0 attack 3
+[angry, sick, delirious, blessed] hp 8 focus -1
+[sick, delirious, blessed]

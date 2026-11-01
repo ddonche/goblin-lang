@@ -1,0 +1,34 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `where (target >> owner >> owner) == @owner` (an estate of
+/// another vassal of my liege) looks only at what my liege's vassals hold,
+/// and finds the same targets checking every estate would.
+<>Lord |
+    name: ""
+    owner: nil
+    realm: 0
+    decision prize
+        targets: Land where (target >> owner >> owner) == @owner and (target >> owner) != self
+        score => target >> worth
+    xx
+    judge
+        prize and (prize >> score) >= 0: take(self, prize >> target)
+    xx
+xx
+<>Land |
+    name: ""
+    worth: 0
+    owner: nil
+xx
+act take(l, e)
+    say("{l >> name} takes {e >> name} from {e >> owner >> name}")
+    e >> owner |= l
+xx
+king <> Lord | name: "King"
+a <> Lord | name: "Ash", owner: king
+b <> Lord | name: "Bo", owner: king
+c <> Lord | name: "Cy"
+x1 <> Land | name: "Oak", worth: 3, owner: a
+x2 <> Land | name: "Elm", worth: 7, owner: b
+x3 <> Land | name: "Yew", worth: 9, owner: c
+x4 <> Land | name: "Ash Wood", worth: 1, owner: king
+tick()

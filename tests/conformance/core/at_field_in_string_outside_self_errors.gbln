@@ -1,0 +1,3 @@
+/// known-gap: interp leaves "{@hp}" as written
+/// `"{@hp}"` outside anything with a `self` is an error too.
+say("hp {@hp}")

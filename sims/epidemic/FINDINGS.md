@@ -53,7 +53,7 @@ predator-prey sim (limited to its own region) would cut it to one town.
 
 ## 3. Again: no way to ask an object its class
 
-Counting people needs a `~kind: "person"` field, as with rabbits and
+Counting people needs a `kind: "person"` field, as with rabbits and
 foxes (predator-prey, finding 1). Same proposal: make
 `:is_type(p, "Person")` true for an object of class `Person`.
 
@@ -89,3 +89,13 @@ just finds no one.
 
 **Change (a choice for you):** either refresh the main view once when the
 regions are started, or leave it and document it.
+
+## Rewritten on ownership (2026-10-27)
+
+Findings above describe the first version. Now each person's `owner` is
+their `Town`, and travel is one line: `@owner |= :objects("Town", it >> n
+== next)[0]`. The runtime hands the person, sickness and all, to the town's
+region. The towns are made with `:actor(make_town(n))`, which takes no
+handler, so `town_day` and the posted list of towns are gone. Spreading
+reads `target >> owner == @owner`. Same output as before. Two slow spots in
+the runtime came up and were fixed (#130).

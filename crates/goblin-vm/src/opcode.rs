@@ -151,6 +151,12 @@ pub enum Opcode {
     /// Jump by the offset when local slot `slot` already holds a value; used by
     /// parameter defaults, whose slots stay unset when the caller omits them.
     JumpIfLocalSet(u16, i16),
+    /// `:objects("Class", it >> owner == x)` with x a variable or a field
+    /// path from one (`f >> owner`): when x is an object in the store and the class can be read by owner, push
+    /// x's contents of that class and skip the query's own steps (which
+    /// build the holder and predicate closures); otherwise fall through to
+    /// them. Data: `OpData::ObjectsOwned`.
+    ObjectsOwned(u16),
     /// Inside an `:objects(…)` / `:overlays(…)` predicate: when local 0 (`it`)
     /// is an object with the field constants[idx], push that field's value and
     /// jump by the offset (past the name's ordinary load); otherwise fall through.
@@ -273,9 +279,10 @@ pub enum Opcode {
     /// stack holds the N values (last on top).
     StringInterpVals(u16, u8),
 
-    /// Load a field from self (locals[0], which is the receiver object in a class method).
-    /// constants[idx] is the field name string. Pushes nil if self is not an Object or field absent.
-    SelfField(u16),
+    /// In a class method, a name that is not a local: the program's variable
+    /// of that name (constants[idx]), else nil. Errors when it is only one of
+    /// self's fields (that is `@name`).
+    ProgramVar(u16),
 
     // ── Type-lock opcodes ─────────────────────────────────────────────────────
     /// Tether with type lock for a local slot: pop value, cast to lock_type, store in slot,
@@ -422,6 +429,7 @@ impl Opcode {
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",
             Opcode::JumpIfLocalSet(..) => "JumpIfLocalSet",
+            Opcode::ObjectsOwned(_) => "ObjectsOwned",
             Opcode::LoadItFieldOrJump(..) => "LoadItFieldOrJump",
             Opcode::StringInterpVals(..) => "StringInterpVals",
             Opcode::ClassInstantiate(_) => "ClassInstantiate",
@@ -452,7 +460,7 @@ impl Opcode {
             Opcode::RegisterAction(_) => "RegisterAction",
             Opcode::LoadNamed(_)      => "LoadNamed",
             Opcode::StringInterp(_)   => "StringInterp",
-            Opcode::SelfField(_)      => "SelfField",
+            Opcode::ProgramVar(_)      => "ProgramVar",
             Opcode::StoreLockLocal(..)   => "StoreLockLocal",
             Opcode::StoreLockGlobal(..)  => "StoreLockGlobal",
             Opcode::CastBangLocal(..)    => "CastBangLocal",
@@ -491,6 +499,7 @@ pub enum OpData {
     UnitDecl(Box<goblin_ast::UnitDecl>),
     Fused(Box<Fused>),
     QuickSet(Box<QuickSet>),
+    ObjectsOwned(Box<ObjectsOwned>),
     Repeat(RepeatSlots),
 }
 
@@ -511,6 +520,22 @@ pub struct RepeatSlots {
     /// Written with `as name`: only a loop over items or a map has
     /// something to name.
     pub named: bool,
+}
+
+/// `Opcode::ObjectsOwned`'s query.
+#[derive(Debug, Clone)]
+pub struct ObjectsOwned {
+    pub class: String,
+    /// The holder's variable, and how to read it (LoadLocal, LoadUpvalue
+    /// or LoadGlobal).
+    pub var: String,
+    pub load: Opcode,
+    /// The fields read from it in turn (`f >> owner`: `["owner"]`).
+    pub path: Vec<String>,
+    /// Steps to skip when done: the query's own steps.
+    pub skip: u32,
+    /// Inside `:len(...)`: give how many, and skip the `:len` call too.
+    pub count: bool,
 }
 
 /// A whole `:update!(path, e)` statement (see `Opcode::QuickSet`).

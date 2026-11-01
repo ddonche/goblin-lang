@@ -1,0 +1,25 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `spread: 1 where (target >> owner) == @owner`: only the objects that
+/// belong to the same object catch it (objects are equal when they are the
+/// same object); one in another town does not until it moves there.
+<>Town |
+    n: 0
+xx
+<>P |
+    owner: nil
+xx
+overlay flu
+    hosts: P
+    spread: 1 where (target >> owner) == @owner
+xx
+a <> Town | n: 1
+b <> Town | n: 2
+first <> P | owner: a
+same <> P | owner: a
+other <> P | owner: b
+:overlay!(first, flu)
+tick()
+say([:len(:overlays(same)), :len(:overlays(other))])
+other >> owner |= a
+tick()
+say(:len(:overlays(other)))

@@ -2,29 +2,31 @@
 /// tick(regions) ticks every region together. An overlay spreads inside a
 /// region during the tick; one that reaches another region's object
 /// through a link lands there at the start of the next tick. The main
-/// program's :objects() and :overlays() see every region. At rate 1 from a
-/// full-strength host, everyone in town catches it (chance 1).
+/// program's :objects() and :overlays() see every region. At chance 1,
+/// everyone in town catches it.
 :rand_seed(42)
 <>Person |
     health: 1
     town: 0
 xx
-link Person contact 0...1 by [
-    1 - abs((self >> town) - (target >> town)) * .5
-]
-overlay Flu |
-    hosts Person
-    spreads where :link_score(self, target, "contact") > .3 at 1
-    modifies:
-        health - .02
-    end
-end
+link contact
+    hosts: Person
+    range: 0...1
+    score => 1 - :abs((@town) - (target >> town)) * .5
+xx
+overlay flu
+    hosts: Person
+    spread: 1 where :link_score(@, target, contact) > .3
+    modify
+        @health - .02
+    xx
+xx
 act make_town(t, n, sick)
     people | []
     repeat :range(0, n) as i
         p <> Person | town: t
         if i < sick
-            overlay Flu on p at 1
+            :overlay!(p, flu)
         xx
         :put_last!(people, p)
     xx
@@ -37,7 +39,7 @@ north | :actor(make_town(0, 3, 1), town_day)
 south | :actor(make_town(.5, 2, 0), town_day)
 repeat :range(1, 4) as d
     n | tick([north, south])
-    flu | :len(:overlays(it >> overlay_name == "Flu"))
+    ill | :len(:overlays(flu))
     hit_n | 0
     hit_s | 0
     repeat :objects((it >> health) < 1)
@@ -48,5 +50,5 @@ repeat :range(1, 4) as d
         xx
     xx
     all | :len(:objects((it >> health) > 0))
-    say("tick {n}: flu {flu}, north {hit_n}, south {hit_s}, people {all}")
+    say("tick {n}: flu {ill}, north {hit_n}, south {hit_s}, people {all}")
 xx

@@ -1,0 +1,27 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay's blocks: `on start` runs when a copy goes on, `every N
+/// ticks` on the ticks of the copy's age that N divides, `on end` when it
+/// runs out. They see the host as `@`, `intensity` and the overlay's
+/// own fields; `|=` there changes the stored value, and it stays.
+<>H |
+    log: ""
+    hp: 10
+xx
+overlay rot
+    rate: 2
+    lasts: 5
+    decays: .1
+    on start
+        @log |= @log + "start "
+    xx
+    every 2 ticks => @hp |= @hp - rate
+    every 1 tick => @log |= @log + "{:round(intensity * 10)} "
+    on end => @log |= @log + "end"
+xx
+h <> H | hp: 10
+:overlay!(h, rot)
+repeat 6
+    tick()
+xx
+say(h >> log)
+say(h >> hp)

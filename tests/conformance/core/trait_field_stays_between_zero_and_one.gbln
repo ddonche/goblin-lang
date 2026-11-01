@@ -1,9 +1,10 @@
-/// A field that holds a 0..1 number when the object is made is a trait and
-/// stays in 0..1 when written; other numbers and `~` fields are not clamped.
+/// known-gap: interp reads `~` the old way (a real value) and guesses traits from starting values
+/// A `~` field is a trait and stays in 0..1, whatever it is made with or
+/// written; every other number field is not clamped.
 <>Polity |
-    stability: .5
+    ~stability: .5
     army: 2
-    ~treasury: .5
+    treasury: .5
 xx
 rome <> Polity | stability: .5
 big <> Polity | stability: 1.4
@@ -15,5 +16,6 @@ say(rome >> army)
 say(rome >> treasury)
 rome >> stability |= -2
 say(rome >> stability)
+say(big >> stability)
 big >> stability |= 3
 say(big >> stability)

@@ -1,68 +1,65 @@
 /// RPG combat on DES: a party of three against a band of monsters.
 /// Every tick is one round. Each fighter picks a target with a decision
-/// and acts on it; a fighter at 0 hp falls (transition erase, `on erase:`).
+/// and acts on it; a fighter at 0 hp falls (transition erase, `on erase`).
 ///
-///   attack   every fighter strikes an enemy, the most hurt one first
-///   heal     the cleric mends the most hurt ally instead, when one is
+///   enemy    every fighter strikes an enemy, the most hurt one first
+///   ally     the cleric mends the most hurt ally instead, when one is
 ///            below half health
-///   Poisoned the shaman's bite poisons: 2 damage a round for 3 rounds
-///   Guarded  the knight raises a shield when hurt: +3 defence, 2 rounds
+///   poisoned the shaman's bite poisons: 2 damage a round for 3 rounds
+///   guarded  the knight raises a shield when hurt: +3 defence, 2 rounds
 
 /// Messages are printed only for the battle that is shown.
 loud | false
 
 <>Fighter |
-    ~name: ""
+    name: ""
     /// 0: the party, 1: the monsters.
-    ~side: 0
-    ~role: ""
-    ~hp: 10
-    ~max_hp: 10
-    ~atk: 4
-    ~def: 1
-    ~speed: 3
-    on erase: fall
+    side: 0
+    role: ""
+    hp: 10
+    max_hp: 10
+    atk: 4
+    def: 1
+    speed: 3
+    on erase => fall(self)
     /// The cleric mends the most hurt ally below half health; everyone
     /// else (and the cleric, when nobody needs healing) strikes the most
-    /// hurt enemy. `one of`: a fighter that heals doesn't also strike.
-    heal | decision against Fighter where [
-        self >> role == "cleric" and target >> side == self >> side and target >> hp * 2 < target >> max_hp
-    ] by [
-        (target >> max_hp - target >> hp) / target >> max_hp
-    ]
-    judge using heal
-        >= 0: mend(target)
-    end
-    attack | decision against Fighter where [ target >> side != self >> side ] by [
-        (target >> max_hp - target >> hp) / target >> max_hp
-    ]
-    judge using attack
-        >= 0: strike(target)
-    end
-    one of heal, attack
+    /// hurt enemy. The judge takes the first that holds: a fighter that
+    /// heals doesn't also strike.
+    decision ally
+        targets: Fighter where @role == "cleric" and (target >> side) == @side and (target >> hp) * 2 < (target >> max_hp)
+        score => ((target >> max_hp) - (target >> hp)) / (target >> max_hp)
+    xx
+    decision enemy
+        targets: Fighter where (target >> side) != @side
+        score => ((target >> max_hp) - (target >> hp)) / (target >> max_hp)
+    xx
+    judge
+        ally: mend(self, ally >> target)
+        enemy: strike(self, enemy >> target)
+    xx
     /// The fastest act first.
-    order by [ self >> speed ] desc
-    transition erase when (self >> hp) <= 0
-    end
+    order: -@speed
+    transition erase where @hp <= 0
 xx
 
 /// 2 damage a round for 3 rounds; a new bite starts it again.
-overlay Poisoned |
-    lasts 3 ticks
-    replaces
-    each tick:
-        hp - 2
-    end
-end
+overlay poisoned
+    hosts: Fighter
+    lasts: 3
+    dup: replace
+    every 1 tick => @hp |= @hp - 2
+xx
 
-/// +3 defence for 2 rounds, taken back when it ends.
-overlay Guarded |
-    lasts 2 ticks
-    on end: lower_shield
-    modifies:
-        def + 3
-    end
-end
+/// +3 defence for 2 rounds; it reads as before once it ends.
+overlay guarded
+    hosts: Fighter
+    lasts: 2
+    modify
+        @def + 3
+    xx
+    on end => lower_shield(self)
+xx
 
 act lower_shield(f)
     if loud
@@ -85,13 +82,13 @@ act strike(f, t)
         say("  {f >> name} hits {t >> name} for {dmg} ({:max(0, t >> hp)} left)")
     xx
     if t >> hp > 0 and f >> role == "shaman" and (pick 1 from 1...2) == 1
-        overlay Poisoned on t at 1
+        :overlay!(t, poisoned)
         if loud
             say("  {t >> name} is poisoned")
         xx
     xx
-    if t >> hp > 0 and t >> role == "knight" and t >> hp * 2 < t >> max_hp and :overlay_strength("Guarded", t) == nil
-        overlay Guarded on t at 1
+    if t >> hp > 0 and t >> role == "knight" and t >> hp * 2 < t >> max_hp and :len(:overlays(t, guarded)) == 0
+        :overlay!(t, guarded)
         if loud
             say("  {t >> name} raises a shield")
         xx
@@ -177,10 +174,7 @@ say("")
 say("battle 7, round by round:")
 loud |= true
 r | battle(7)
-/// A map read can't go inside `{}` in a string (FINDINGS.md, 9).
-w | r{"winner"}
-rr | r{"rounds"}
-say("{w} in {rr} rounds")
-repeat :objects("Fighter") as f
+say("{r{"winner"}} in {r{"rounds"}} rounds")
+repeat :objects(Fighter) as f
     say("  {f >> name}: {f >> hp} hp")
 xx

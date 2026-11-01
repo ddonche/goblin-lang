@@ -1,19 +1,20 @@
-/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// `margin` is in the formula's own units: stock 10, 9 and 8 score 10, 9
 /// and 8, so a margin of 2 keeps all three shops in the running.
 :rand_seed(4)
 <>Shop |
-    ~stock: 0
-    ~sold: 0
+    stock: 0
+    sold: 0
 xx
 <>Buyer |
     margin: 2
-    buy | decision against Shop by [
-        target >> stock
-    ]
-    judge using buy
-        >= 8: purchase(target)
-    end
+    decision shop
+        targets: Shop
+        score => target >> stock
+    xx
+    judge
+        shop and (shop >> score) >= 8: purchase(self, shop >> target)
+    xx
 xx
 act purchase(b, s)
     s >> sold |= s >> sold + 1

@@ -1,19 +1,21 @@
-/// known-gap: interp checks erase transitions only at the end of the tick
+/// known-gap: interp has no decision blocks or `transition ... where` (new DES syntax); the interpreter is being retired
 /// An object's erase transitions are checked as soon as an action that
 /// changed it finishes, never in the middle of one. One killed early in a
 /// tick is gone: it doesn't act later that tick and isn't chosen again.
-/// Its `on erase:` action still runs first.
+/// Its `on erase` code still runs first.
 <>F |
-    ~name: ""
-    ~side: 0
-    ~hp: 3
-    hit | decision against F where [ target >> side != self >> side ] by [ 1 - target >> hp / 10 ]
-    judge using hit
-        >= 0: strike(target)
-    end
-    on erase: fall
-    transition erase when (self >> hp) <= 0
-    end
+    name: ""
+    side: 0
+    hp: 3
+    decision foe
+        targets: F where (target >> side) != @side
+        score => 1 - (target >> hp) / 10
+    xx
+    judge
+        foe and (foe >> score) >= 0: strike(self, foe >> target)
+    xx
+    on erase => fall(self)
+    transition erase where @hp <= 0
 xx
 act strike(f, t)
     a | f >> name

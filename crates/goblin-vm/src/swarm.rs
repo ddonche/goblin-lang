@@ -39,6 +39,9 @@ pub(crate) struct Image {
     gc_mode: GcMode,
     token_store: BTreeMap<String, BTreeMap<String, PValue>>,
     object_store: Vec<(String, PValue)>,
+    /// For an actor: `object_store` holds what its objects contain, rebuilt
+    /// as objects of the actor's store (fields that name them are references).
+    contents: bool,
     box_store: Vec<(String, PValue)>,
     /// Overlay, link and decision definitions, and for an actor the
     /// overlays on the objects handed to it.
@@ -58,7 +61,7 @@ pub(crate) struct Program {
     named_values: Vec<(String, PValue)>,
     action_file_map: Vec<(String, Vec<(String, PValue)>)>,
     compiled_methods: Vec<((String, String), Arc<PFunction>)>,
-    classes: HashMap<String, goblin_ast::ClassDecl>,
+    classes: HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>,
     enums: HashMap<String, goblin_ast::EnumDecl>,
     unit_registry: HashMap<String, goblin_ast::UnitDecl>,
     module_aliases: HashMap<(String, String), String>,
@@ -76,10 +79,10 @@ struct Tables {
     global_names: Rc<Vec<String>>,
     global_type_locks: Rc<HashMap<u32, String>>,
     global_hard_type_locks: Rc<HashMap<u32, String>>,
-    named_values: Rc<HashMap<String, Value>>,
+    named_values: Rc<HashMap<String, Value, rustc_hash::FxBuildHasher>>,
     action_file_map: Rc<HashMap<String, Vec<(String, Value)>>>,
     compiled_methods: Rc<HashMap<(String, String), Rc<crate::value::FunctionObject>>>,
-    classes: Rc<HashMap<String, goblin_ast::ClassDecl>>,
+    classes: Rc<HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>,
     enums: Rc<HashMap<String, goblin_ast::EnumDecl>>,
     unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     module_aliases: Rc<HashMap<(String, String), String>>,
@@ -211,6 +214,16 @@ pub(crate) fn image_of(session: &Session, tp: &mut ToPortable, roots: Option<&[&
     image_for(session, tp, roots, None)
 }
 
+impl Image {
+    /// An actor's image: what the objects handed to it contain (owned
+    /// through their `owner` field, at any depth) goes along with them.
+    pub(crate) fn with_contents(mut self, objects: Vec<(String, PValue)>) -> Self {
+        self.object_store = objects;
+        self.contents = true;
+        self
+    }
+}
+
 pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[&Value]>, handed: Option<&std::collections::HashSet<String>>) -> Result<Image, GoblinError> {
     let program = program_of(session, tp)?;
     let keep = roots.and_then(|r| crate::reach::reachable(&base_of(session), r, session));
@@ -234,8 +247,8 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
         for (k, v) in m { out.insert(k.clone(), tp.value(v)?); }
         token_store.insert(ns.clone(), out);
     }
-    fn pairs<'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a String, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
-        m.map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect()
+    fn pairs<'a, K: AsRef<str> + 'a>(tp: &mut ToPortable, m: impl Iterator<Item = (&'a K, &'a Value)>) -> Result<Vec<(String, PValue)>, GoblinError> {
+        m.map(|(k, v)| Ok((k.as_ref().to_owned(), tp.value(v)?))).collect()
     }
     let object_store = match handed {
         Some(_) => Vec::new(),
@@ -250,6 +263,7 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
         gc_mode: session.gc_mode,
         token_store,
         object_store,
+        contents: false,
         box_store,
         program,
         base_dir: session.base_dir.clone(),
@@ -262,7 +276,7 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
 pub(crate) fn bind(session: &mut Session, v: Value) -> crate::value::Tether {
     if let Value::Object(ref o) = v {
         let uuid = o.uuid.clone();
-        session.object_store.insert(uuid.clone(), v);
+        session.object_store.insert(uuid.to_string(), v);
         session.alloc_value(Value::Ref(uuid))
     } else {
         session.alloc_value(v)
@@ -274,7 +288,7 @@ fn build_tables(p: &Program, fp: &mut FromPortable, s: &mut Session) -> Tables {
     for ((c, m), f) in &p.compiled_methods {
         compiled_methods.insert((c.clone(), m.clone()), fp.function(f, s));
     }
-    let mut named_values = HashMap::with_capacity(p.named_values.len());
+    let mut named_values = HashMap::with_capacity_and_hasher(p.named_values.len(), Default::default());
     for (k, v) in &p.named_values { named_values.insert(k.clone(), fp.value(v, s)); }
     let mut action_file_map = HashMap::with_capacity(p.action_file_map.len());
     for (file, list) in &p.action_file_map {
@@ -329,9 +343,15 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
         build_tables(p, fp, &mut s)
     };
     tables.install(&mut s);
-    for (k, v) in &img.object_store {
-        let v = fp.value(v, &mut s);
-        s.object_store.insert(k.clone(), v);
+    if img.contents {
+        fp.adopting(true);
+        for (_, v) in &img.object_store { fp.value(v, &mut s); }
+        fp.adopting(false);
+    } else {
+        for (k, v) in &img.object_store {
+            let v = fp.value(v, &mut s);
+            s.object_store.insert(k.clone(), v);
+        }
     }
     for (k, v) in &img.box_store {
         let v = fp.value(v, &mut s);

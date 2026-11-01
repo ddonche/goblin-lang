@@ -1,0 +1,49 @@
+/// known-gap: interp has no contents list (owner is a plain field there)
+/// `:len(:objects("Item", it >> owner == x))` counts what x holds of that
+/// class, the same as counting the list: other classes x holds don't count,
+/// a holder that isn't an object or was erased holds nothing, and a class
+/// with a field named like x reads that field instead.
+<>Bag |
+    name: ""
+    owner: nil
+xx
+<>Item |
+    name: ""
+    owner: nil
+xx
+<>Tag |
+    bag: nil
+    owner: nil
+xx
+a <> Bag | name: "a"
+b <> Bag | name: "b", owner: a
+x <> Item | name: "x", owner: a
+y <> Item | name: "y", owner: a
+z <> Item | name: "z", owner: b
+t <> Tag | owner: a, bag: b
+u <> Tag | owner: b, bag: b
+act count_in(h)
+    return :len(:objects("Item", it >> owner == h))
+xx
+say(count_in(a))
+say(count_in(b))
+say(:len(:objects("Item", it >> owner == z >> owner)))
+say(:len(:objects("Bag", it >> owner == a)))
+say(:count(:objects("Item", it >> owner == a)))
+n | 5
+say(:len(:objects("Item", it >> owner == n)))
+bag | a
+say(:len(:objects("Tag", it >> owner == bag)))
+x >> owner |= b
+say(count_in(a))
+say(count_in(b))
+c <> Bag | name: "c"
+w <> Item | name: "w", owner: c
+delete_object!(c)
+say(:len(:objects("Item", it >> owner == c)))
+/// A count is a number: counting it again is an error, as without the shortcut.
+attempt
+    say(:len(:len(:objects("Item", it >> owner == a))))
+rescue err
+    say("len of a count fails")
+xx

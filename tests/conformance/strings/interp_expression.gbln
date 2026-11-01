@@ -6,8 +6,8 @@
 x | 1
 lost | [3, 5]
 <>P |
-    ~name: "pip"
-    ~hp: 7
+    name: "pip"
+    hp: 7
 xx
 p <> P | name: "pip"
 say("{x + 1}")

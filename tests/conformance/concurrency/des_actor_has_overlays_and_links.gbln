@@ -1,27 +1,29 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// An actor knows the program's overlays and links: an overlay applied and
+/// An actor knows the program's overlays and links: an overlay put on and
 /// ticked inside it changes its object, and a link scores there as it does here.
 <>Person |
     health: .9
     hunger: .5
 xx
-overlay Sick |
-    decays .1
-    modifies:
-        health - .05
-    end
-end
-link Person contact 0...1 by [
-    self >> hunger * .5 + target >> hunger * .5
-]
+overlay sick
+    decays: .1
+    modify
+        @health - .05
+    xx
+xx
+link contact
+    hosts: Person
+    range: 0...1
+    score => (@hunger) * .5 + (target >> hunger) * .5
+xx
 act region(st, msg)
     p <> Person | health: .8, hunger: .4
-    overlay Sick on p at .9
+    :overlay!(p, sick, .9)
     tick()
     h | p >> health
     say("health {h}")
     say(:len(:overlays_of("p")))
-    say(:link_score(p, p, "contact"))
+    say(:link_score(p, p, contact))
     return st
 xx
 r | :actor({"n": 1}, region)

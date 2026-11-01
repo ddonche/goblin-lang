@@ -15,7 +15,7 @@
 //! variable by a name computed at run time (`:clone_object("x")`, DES ticks
 //! and links, `:resolve_token`) make every global reachable.
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::rc::Rc;
 
 use crate::opcode::{OpData, Opcode};
@@ -43,22 +43,22 @@ pub(crate) struct Base {
 
 impl Base {
     pub(crate) fn of(session: &Session) -> Base {
-        let mut tokens: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut tokens: HashMap<String, Vec<usize>> = HashMap::default();
         for (i, name) in session.global_names.iter().enumerate() {
             tokens.entry(name.clone()).or_default().push(i);
             if let Some((_, short)) = name.rsplit_once("::") {
                 tokens.entry(short.to_string()).or_default().push(i);
             }
         }
-        let empty = HashSet::new();
+        let empty = HashSet::default();
         let mut w = Walk {
             base_seen: &empty,
             tokens: &tokens,
-            seen: HashSet::new(),
+            seen: HashSet::default(),
             slots: vec![false; session.globals.len()],
             all: false,
             pending: Vec::new(),
-            objects: HashSet::new(),
+            objects: HashSet::default(),
             maybe: Vec::new(),
         };
         for v in session.named_values.values() { w.value(v, session); }
@@ -66,6 +66,19 @@ impl Base {
             for (_, v) in list { w.value(v, session); }
         }
         for f in session.compiled_methods.values() { w.func(f); }
+        // DES formulas (decision conditions and scores, order, transitions,
+        // overlays, links) are compiled when a tick runs; they can read
+        // globals and call actions. Every name in them counts.
+        let mut des = String::new();
+        for c in session.classes.values() {
+            if c.decisions.is_empty() && c.decision.is_none() && c.transitions.is_empty() && c.order_by.is_none() { continue; }
+            des.push_str(&format!("{:?}{:?}{:?}{:?}{:?}", c.decision, c.judge, c.decisions, c.transitions, c.order_by));
+        }
+        for d in session.overlay_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.link_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.object_link_defs.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.object_decisions.values() { des.push_str(&format!("{d:?}")); }
+        if !des.is_empty() { w.words(&des, true); }
         // Field defaults that are not plain literals run when an object is
         // made, so the globals they read count too.
         let mut defaults = Vec::new();
@@ -95,11 +108,11 @@ pub(crate) fn reachable(base: &Base, roots: &[&Value], session: &Session) -> Opt
     let mut w = Walk {
         base_seen: &base.seen,
         tokens: &base.tokens,
-        seen: HashSet::new(),
+        seen: HashSet::default(),
         slots,
         all: false,
         pending,
-        objects: HashSet::new(),
+        objects: HashSet::default(),
         maybe: base.maybe.clone(),
     };
     for r in roots { w.value(r, session); }
@@ -162,7 +175,10 @@ impl Walk<'_> {
                 _ => {}
             }
         }
-        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_))) { self.all = true; return; }
+        if f.op_data.iter().any(|d| !matches!(d, OpData::Name(_) | OpData::Fused(_) | OpData::QuickSet(_) | OpData::Repeat(_) | OpData::ObjectsOwned(_))) { self.all = true; return; }
+        for d in &f.op_data {
+            if let OpData::ObjectsOwned(q) = d { if let Opcode::LoadGlobal(i) = q.load { self.mark(i as usize); } }
+        }
         // Labels hold the source text of an index path, for error messages
         // only (`st{"biz"}[b]`): they read nothing by name, so their words
         // count as plain words (a constant can be shared with a real use).
@@ -242,13 +258,13 @@ impl Walk<'_> {
             Value::Pair(a, b) => self.value(a, session) & self.value(b, session),
             Value::Formatted(v, _) | Value::CtrlReturn(v) => self.value(v, session),
             Value::Object(o) => {
-                if self.objects.insert(o.uuid.clone()) {
+                if self.objects.insert(o.uuid.to_string()) {
                     for f in o.fields.values() { self.value(f, session); }
                 }
                 false
             }
             Value::Ref(uuid) => {
-                if self.objects.insert(uuid.clone()) {
+                if self.objects.insert(uuid.to_string()) {
                     if let Some(obj) = session.object_store.get(uuid) {
                         let obj = obj.clone();
                         self.value(&obj, session);

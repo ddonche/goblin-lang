@@ -4,10 +4,10 @@
 /// through the field, the field can be pointed at another object, an
 /// object equals itself, and a field whose object was erased reads nil.
 <>Village |
-    ~food: 10
+    food: 10
 xx
 <>Person |
-    ~home: nil
+    home: nil
 xx
 v <> Village | food: 10
 p <> Person | home: v

@@ -1,24 +1,25 @@
-/// known-gap: interp runs the class action but its field writes do not stick, and calls no program action
-/// The action a judge arm picks gets `self`, then the arguments the arm
-/// writes: `purchase(target, 3)` gives the class action the shop and 3,
-/// `rest()` gives it nothing, and `tip(target, score > .5)` gives the
-/// program action the buyer, the shop and a value worked out from `score`.
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// A judge arm calls actions as any code does: the class's own action
+/// `self.purchase(shop >> target, 3)` runs with the shop and 3,
+/// `self.rest()` with nothing more, and the program action `tip(self, ...)` gets what
+/// the arm passes, here a value worked out from the pick's score.
 <>Shop |
-    ~stock: 0
-    ~sold: 0
-    ~tips: 0
+    stock: 0
+    sold: 0
+    tips: 0
 xx
 <>Buyer |
-    ~spent: 0
-    ~rests: 0
+    spent: 0
+    rests: 0
     want: 1
-    score | decision against Shop by [
-        target >> stock
-    ]
-    judge using score
-        >= .5: purchase(target, 3)
-        else: rest()
-    end
+    decision shop
+        targets: Shop
+        score => target >> stock
+    xx
+    judge
+        shop and (shop >> score) >= .5: self.purchase(shop >> target, 3)
+        shop: self.rest()
+    xx
     act purchase(target, n)
         target >> sold |= target >> sold + n
         self >> spent |= self >> spent + 5 * n
@@ -29,12 +30,13 @@ xx
 xx
 <>Tipper |
     kind: 1
-    score | decision against Shop by [
-        target >> stock
-    ]
-    judge using score
-        else: tip(target, score > .5)
-    end
+    decision shop
+        targets: Shop
+        score => target >> stock
+    xx
+    judge
+        shop: tip(self, shop >> target, (shop >> score) > .5)
+    xx
 xx
 act tip(t, s, generous)
     if generous

@@ -1,28 +1,34 @@
-/// known-gap: interp has no `order by` on classes
-/// `order by [ expr ]` sets the order a class's objects make their
-/// decisions in: ascending, or descending with `desc`. Equal keys keep the
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `order: expr` sets the order a class's objects make their decisions
+/// in: lowest first; `-` in front of a number turns it round. Equal keys keep the
 /// order the objects were made in. It orders only that class's decisions:
 /// the other classes keep their places in the pass.
 <>F |
-    ~name: ""
-    ~speed: 0
-    move | decision against T by [ 1 ]
-    judge using move
-        >= 0: go(target)
-    end
-    order by [ self >> speed ] desc
+    name: ""
+    speed: 0
+    decision spot
+        targets: T
+        score => 1
+    xx
+    judge
+        spot: go(self, spot >> target)
+    xx
+    order: -@speed
 xx
 <>S |
-    ~name: ""
-    ~rank: ""
-    move | decision against T by [ 1 ]
-    judge using move
-        >= 0: go(target)
-    end
-    order by [ self >> rank ]
+    name: ""
+    rank: ""
+    decision spot
+        targets: T
+        score => 1
+    xx
+    judge
+        spot: go(self, spot >> target)
+    xx
+    order: @rank
 xx
 <>T |
-    ~n: 0
+    n: 0
 xx
 act go(f, t)
     a | f >> name

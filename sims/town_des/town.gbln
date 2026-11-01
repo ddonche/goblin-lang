@@ -4,8 +4,8 @@
 ///
 /// What runs where:
 ///   Resident  ages every day, pays rent every 30 days to its district's
-///             fund, shops every day (decision `shop`), looks for work
-///             (decision `work`), and dies (transitions).
+///             fund, shops every day (decision `store`), looks for work
+///             (decision `employer`), and dies (transitions).
 ///   Business  updates whether it is hiring every day, and pays its staff
 ///             every 14 days (laying off the newest when short of cash,
 ///             sharing spare cash as a bonus). Staff can live in any
@@ -14,11 +14,11 @@
 ///             work, and spends what it holds above 20,000 at the
 ///             district's open businesses, a thirtieth a day.
 ///   Life      an adult under 40 can become pregnant (overlay
-///             `Pregnant`, 270 days); when it ends a baby is born in the
+///             `pregnant`, 270 days); when it ends a baby is born in the
 ///             mother's district. Now and then an adult moves to
 ///             another district (`:move!`), and pays rent there from then
 ///             on; their job stays where it is. When a resident dies, their money goes to their
-///             district's fund (`on erase:`), so no money leaves the town.
+///             district's fund (`on erase`), so no money leaves the town.
 
 :rand_seed(42)
 n_districts | 4
@@ -37,70 +37,71 @@ xx
 /// they all exist.
 all_districts | []
 
-overlay Pregnant |
-    lasts 270 ticks
-    on end: give_birth
-end
+overlay pregnant
+    hosts: Resident
+    lasts: 270
+    on end => give_birth(self)
+xx
 
 <>Fund |
-    ~fund_of: 0
-    ~cash: 0
+    fund_of: 0
+    cash: 0
     /// The weekly benefit: 120 for each adult here without work, while
     /// the fund has it.
     every 7 ticks
         repeat :objects(it >> job == -1)
-            if it >> district == self >> fund_of and it >> age >= adult and self >> cash >= 120
+            if it >> district == @fund_of and it >> age >= adult and @cash >= 120
                 it >> money |= it >> money + 120
-                self >> cash |= self >> cash - 120
+                @cash |= @cash - 120
             xx
         xx
-    end
+    xx
     every 1 tick
-        if self >> cash > 20000
+        if @cash > 20000
             open_here | []
             repeat :objects(it >> open == 1)
-                if it >> district == self >> fund_of
+                if it >> district == @fund_of
                     :put_last!(open_here, it)
                 xx
             xx
             n | :len(open_here)
             if n > 0
-                each | :floor((self >> cash - 20000) / 30 / n)
+                each | :floor((@cash - 20000) / 30 / n)
                 repeat open_here as b
                     b >> cash |= b >> cash + each
                     b >> sales |= b >> sales + each
                 xx
-                self >> cash |= self >> cash - each * n
+                @cash |= @cash - each * n
             xx
         xx
-    end
+    xx
 xx
 
 <>Business |
-    ~code: 0
-    ~district: 0
-    ~cash: 6000
-    ~price: 15
-    ~wage: 400
-    ~staff: 0
-    ~sales: 0
+    code: 0
+    district: 0
+    cash: 6000
+    price: 15
+    wage: 400
+    staff: 0
+    sales: 0
     /// 1 or 0: open, and hiring. Traits, so decisions can score them.
     open: 1
     hiring: 0
     every 1 tick
-        wage | self >> wage
-        need | wage * (self >> staff + 1) / 2
-        if self >> open == 1 and self >> staff < 15 and self >> cash >= need
-            self >> hiring |= 1
+        wage | @wage
+        need | wage * (@staff + 1) / 2
+        if @open == 1 and @staff < 15 and @cash >= need
+            @hiring |= 1
         else
-            self >> hiring |= 0
+            @hiring |= 0
         xx
-    end
+    xx
     every 14 ticks
-        if self >> open == 1
-            staff | :objects(it >> job == self >> code)
-            wage | self >> wage
-            cash | self >> cash
+        if @open == 1
+            staff | :objects(it >> job == @code)
+            wage | @wage
+            cash | @cash
             keep | :len(staff)
             repeat keep > 0 and wage * keep > cash
                 keep |= keep - 1
@@ -120,67 +121,67 @@ xx
                 xx
                 i |= i + 1
             xx
-            self >> staff |= keep
-            self >> cash |= cash - (wage + bonus) * keep
-            if keep == 0 and self >> cash < wage
-                self >> open |= 0
+            @staff |= keep
+            @cash |= cash - (wage + bonus) * keep
+            if keep == 0 and @cash < wage
+                @open |= 0
             xx
         xx
-    end
+    xx
 xx
 
 <>Resident |
-    ~age: 0
-    ~money: 500
-    ~district: 0
-    ~job: -1
-    ~expecting: 0
-    ~moves: 0
-    on erase: settle_estate
+    age: 0
+    money: 500
+    district: 0
+    job: -1
+    expecting: 0
+    moves: 0
+    on erase => settle_estate(self)
     every 1 tick
-        self >> age |= self >> age + 1
-        a | self >> age
-        if self >> expecting == 0 and a >= adult and a < 40 * 365 and (pick 1 from 1...9000) == 1
-            self >> expecting |= 1
-            overlay Pregnant on self at 1
+        @age |= @age + 1
+        a | @age
+        if @expecting == 0 and a >= adult and a < 40 * 365 and (pick 1 from 1...9000) == 1
+            @expecting |= 1
+            :overlay!(self, pregnant)
         xx
-    end
+    xx
     every 30 ticks
-        if self >> age >= adult
-            pay | :min(self >> money, 150)
-            repeat :objects(it >> fund_of == self >> district)
+        if @age >= adult
+            pay | :min(@money, 150)
+            repeat :objects(it >> fund_of == @district)
                 it >> cash |= it >> cash + pay
             xx
-            self >> money |= self >> money - pay
+            @money |= @money - pay
         xx
         /// Now and then an adult moves to another district.
-        if n_districts > 1 and self >> age >= adult and (pick 1 from 1...100) == 1
-            to | (self >> district + 1 + (pick 1 from 0...(n_districts - 2))) % n_districts
-            self >> district |= to
-            self >> moves |= self >> moves + 1
+        if n_districts > 1 and @age >= adult and (pick 1 from 1...100) == 1
+            to | (@district + 1 + (pick 1 from 0...(n_districts - 2))) % n_districts
+            @district |= to
+            @moves |= @moves + 1
             :move!(self, all_districts[to])
         xx
-    end
+    xx
     /// Open shops only; cheaper ones score higher (prices run 15 to 24, so
-    /// scores 6 to 15). `margin 10` spreads people over the shops within 10
-    /// of the best.
-    shop | decision against Business margin 10 where [ target >> open == 1 ] by [
-        30 - target >> price
-    ]
-    judge using shop
-        > 0: buy(target)
-    end
-    work | decision against Business by [
-        target >> hiring
-    ]
-    judge using work
-        >= .5: apply(target)
-    end
+    /// scores 6 to 15). `margin: 10` spreads people over the shops within
+    /// 10 of the best.
+    decision store
+        targets: Business where (target >> open) == 1
+        score => 30 - (target >> price)
+        margin: 10
+    xx
+    decision employer
+        targets: Business
+        score => target >> hiring
+    xx
+    /// Every resident shops, and looks for work: both, when both hold.
+    judge_all
+        store and (store >> score) > 0: buy(self, store >> target)
+        employer and (employer >> score) >= .5: apply(self, employer >> target)
+    xx
     /// Death: rare until old age (one in 200,000 a day; 1 in 2,500 past 70).
-    transition erase when (self >> age) > 70 * 365 and (pick 1 from 1...2500) == 1
-    end
-    transition erase when (pick 1 from 1...200000) == 1
-    end
+    transition erase where @age > 70 * 365 and (pick 1 from 1...2500) == 1
+    transition erase where (pick 1 from 1...200000) == 1
 xx
 
 /// A baby, in the mother's district, with no money of its own.
@@ -248,7 +249,7 @@ act make_district(d)
         /// Some are already expecting on day 1, halfway along.
         if age >= adult and age < 40 * 365 and (pick 1 from 1...40) == 1
             r >> expecting |= 1
-            overlay Pregnant on r at 1 for 135 ticks
+            :overlay!(r, pregnant, 1, 135)
         xx
         :put_last!(things, r)
         total |= total + money

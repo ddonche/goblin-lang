@@ -406,6 +406,8 @@ pub struct ActorShared {
     end: Mutex<EndSlot>,
     /// The object handed over, if the state is an object (its uuid).
     origin: Option<String>,
+    /// False for `:actor(object)`: it takes no messages.
+    has_handler: bool,
     /// The worker this actor lives on.
     worker: usize,
     /// A run of this actor is queued on its worker.
@@ -859,14 +861,14 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
     while let Some(v) = stack.pop() {
         match &v {
             Value::Ref(u) => {
-                if out.insert(u.clone()) {
-                    if let Some(o) = session.object_store.get(u.as_str()) { stack.push(o.clone()); }
+                if out.insert(u.to_string()) {
+                    if let Some(o) = session.object_store.get(u) { stack.push(o.clone()); }
                 }
             }
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
-                let first = out.insert(o.uuid.clone());
-                if let Some(Value::Object(stored)) = session.object_store.get(o.uuid.as_str()) {
+                let first = out.insert(o.uuid.to_string());
+                if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
                     if first { stack.extend(stored.fields.values().cloned()); }
                 }
                 stack.extend(o.fields.values().cloned());
@@ -874,6 +876,27 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
             _ => children(&v, &mut |c| stack.push(c.clone())),
         }
     }
+}
+
+/// Adds to `graph` everything its objects contain and what that refers to,
+/// until nothing new turns up. Returns the added objects in store order.
+fn contents_of_graph(graph: &mut HashSet<String>, session: &Session) -> Vec<String> {
+    let start = graph.clone();
+    let mut todo: Vec<String> = graph.iter().cloned().collect();
+    while let Some(u) = todo.pop() {
+        for c in session.object_store.all_contents_of(&u) {
+            if graph.contains(c.as_str()) { continue; }
+            let mut more = HashSet::new();
+            graph_of(&Value::Ref(c.clone().into()), session, &mut more);
+            for m in more { if graph.insert(m.clone()) { todo.push(m); } }
+        }
+    }
+    let mut added: Vec<(usize, String)> = graph.iter()
+        .filter(|u| !start.contains(u.as_str()))
+        .filter_map(|u| session.object_store.get_index_of(u).map(|i| (i, u.clone())))
+        .collect();
+    added.sort();
+    added.into_iter().map(|(_, u)| u).collect()
 }
 
 /// The values directly inside a container (not through objects).
@@ -904,7 +927,7 @@ fn count_refs(v: &Value, graph: &HashSet<String>, n: &mut usize) {
     match v {
         Value::Ref(u) => if graph.contains(u.as_str()) { *n += 1 },
         Value::Object(o) => {
-            if graph.contains(o.uuid.as_str()) { *n += 1; return; }
+            if graph.contains(&*o.uuid) { *n += 1; return; }
             for x in o.fields.values() { count_refs(x, graph, n) }
         }
         Value::Frozen(_) => {}
@@ -916,15 +939,18 @@ impl Vm {
     /// `:actor(object, handler, policy)`. `from_var` says the first argument
     /// came straight from a variable, which is the one reference allowed.
     pub(crate) fn actor_create(&mut self, args: Vec<Value>, from_var: bool) -> Result<Value, GoblinError> {
-        if !(2..=3).contains(&args.len()) {
+        if !(1..=3).contains(&args.len()) {
             return Err(err(format!(
-                "C0107: actor-args: :actor expects (object, handler) or (object, handler, policy), got {} arguments", args.len())));
+                "C0107: actor-args: :actor expects (object), (object, handler) or (object, handler, policy), got {} arguments", args.len())));
         }
         let mut it = args.into_iter();
         let state = it.next().unwrap();
-        let handler = it.next().unwrap();
+        // Without a handler the actor only runs what it owns (a region in
+        // `tick(regions)`); it takes no messages.
+        let handler = it.next().unwrap_or(Value::Nil);
+        let has_handler = !matches!(handler, Value::Nil);
         let policy = policy_of(it.next())?;
-        if !matches!(handler, Value::Function(_) | Value::Closure(_) | Value::Str(_)) {
+        if has_handler && !matches!(handler, Value::Function(_) | Value::Closure(_) | Value::Str(_)) {
             return Err(err(format!("C0107: actor-args: the handler must be an action, got {}", handler.type_name())));
         }
         if matches!(state, Value::Nil) {
@@ -938,6 +964,9 @@ impl Vm {
         // the ones being handed over (spec IV.4). Check before changing anything.
         let mut graph = HashSet::new();
         graph_of(&state, &self.session, &mut graph);
+        // What those objects contain (their `owner` names one of them, at
+        // any depth) goes with them, and so does what that refers to.
+        let contents = contents_of_graph(&mut graph, &self.session);
         if !graph.is_empty() {
             let live = self.collect_live_slots();
             let mut n = 0usize;
@@ -977,7 +1006,14 @@ impl Vm {
             let mut tp = ToPortable::new(&self.session).sharing_values().only_objects(graph.clone());
             let mut roots = vec![&state, &handler];
             if let Some(f) = &policy.stop_when { roots.push(f); }
-            let image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
+            let mut image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
+            if !contents.is_empty() {
+                let mut objs = Vec::with_capacity(contents.len());
+                for u in &contents {
+                    if let Some(v) = self.session.object_store.get(u) { objs.push((u.clone(), tp.value(v)?)); }
+                }
+                image = image.with_contents(objs);
+            }
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
@@ -988,7 +1024,7 @@ impl Vm {
             Err(e) => { LIVE_ACTORS.fetch_sub(1, Ordering::SeqCst); return Err(e); }
         };
 
-        let origin = match &state { Value::Object(o) => Some(o.uuid.clone()), Value::Ref(u) => Some(u.clone()), _ => None };
+        let origin = match &state { Value::Object(o) => Some(o.uuid.to_string()), Value::Ref(u) => Some(u.to_string()), _ => None };
         let sched = sched();
         let worker = sched.next.fetch_add(1, Ordering::Relaxed) % sched.workers.len();
         let shared = Arc::new(ActorShared {
@@ -998,6 +1034,7 @@ impl Vm {
             failure: Mutex::new(None),
             end: Mutex::new(EndSlot { end: None, waiters: Vec::new() }),
             origin,
+            has_handler,
             worker,
             scheduled: AtomicBool::new(false),
             pulled: Mutex::new(Vec::new()),
@@ -1035,7 +1072,7 @@ impl Vm {
             }
         }
         for u in &graph {
-            self.session.object_store.shift_remove(u.as_str());
+            self.session.object_store.shift_remove(u);
             self.session.handed_off.entry(u.clone()).or_insert_with(|| "this object".to_string());
         }
         // Actors that already ended need no shutdown; forget them, so a
@@ -1057,7 +1094,7 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
         _ => format!("handed-off:{var}"),
     };
     session.handed_off.insert(uuid.clone(), var.to_string());
-    Value::Ref(uuid)
+    Value::Ref(uuid.into())
 }
 
 /// The error for reading an object that is gone.
@@ -1088,11 +1125,11 @@ pub(crate) fn adopt_value(v: Value, s: &mut Session) -> Value { adopt(v, s) }
 fn adopt(v: Value, s: &mut Session) -> Value {
     match v {
         Value::Object(mut o) => {
-            let fields: indexmap::IndexMap<String, Value> = o.fields.iter()
+            let fields: crate::value::FieldMap = o.fields.iter()
                 .map(|(k, x)| (k.clone(), adopt(x.clone(), s))).collect();
             o.fields = std::rc::Rc::new(fields);
             let uuid = o.uuid.clone();
-            s.object_store.insert(uuid.clone(), Value::Object(o));
+            s.object_store.insert(uuid.to_string(), Value::Object(o));
             Value::Ref(uuid)
         }
         other => other,
@@ -1101,7 +1138,7 @@ fn adopt(v: Value, s: &mut Session) -> Value {
 
 fn deref(v: Value, s: &Session) -> Value {
     match v {
-        Value::Ref(u) => s.object_store.get(u.as_str()).cloned().unwrap_or(Value::Ref(u)),
+        Value::Ref(u) => s.object_store.get(&u).cloned().unwrap_or(Value::Ref(u)),
         other => other,
     }
 }
@@ -1261,9 +1298,17 @@ fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&P
     let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
     // Every object in the state, however deep, lives in the actor's object
     // store, so its ticks and field writes reach it.
+    // Overlays on them came with the image, before the objects did.
+    let waiting: Vec<String> = {
+        let s = &vm.session;
+        let mut h: Vec<String> = s.overlay_instances.iter().map(|i| i.host_uuid.clone())
+            .filter(|u| !s.object_store.contains_key(u)).collect();
+        h.sort_unstable(); h.dedup(); h
+    };
     fp.adopting(true);
     let first = fp.value(state, &mut vm.session);
     fp.adopting(false);
+    if !waiting.is_empty() { crate::tick::adopt_films(&mut vm.session, &waiting, &mut fp); }
     let state = adopt(first, &mut vm.session);
     (vm, handler, stop_when, state)
 }
@@ -1491,6 +1536,7 @@ impl Slot {
         match &self.handler {
             Value::Function(f) => f.name.clone(),
             Value::Closure(c) => c.func.name.clone(),
+            Value::Nil => "actor".to_string(),
             other => crate::builtins::fmt_value_raw(other),
         }
     }
@@ -1776,6 +1822,7 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
     let msg = &args[1];
     match h {
         Handle::Actor(a) => {
+            a.takes_messages()?;
             let p = ToPortable::new(session).value(msg)?;
             // From one region to another during a world tick: delivered at
             // the start of the next tick, in a fixed order.
@@ -1816,7 +1863,17 @@ pub(crate) fn actor_of(v: &Value) -> Option<Arc<ActorShared>> {
     match v { Value::Handle(Handle::Actor(a)) => Some(a.clone()), _ => None }
 }
 
+impl ActorShared {
+    /// An actor made without a handler has nothing to give a message to.
+    fn takes_messages(&self) -> Result<(), GoblinError> {
+        if self.has_handler { return Ok(()); }
+        Err(err("C0107: actor-args: this actor was made without a handler, so it takes no messages; give :actor a handler to send it some"))
+    }
+}
+
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
+/// The object an actor was given as its state, if it was one.
+pub(crate) fn actor_origin(a: &ActorShared) -> Option<&str> { a.origin.as_deref() }
 
 /// Sends a region its part of one world tick (`tick(regions)`).
 pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
@@ -1847,6 +1904,7 @@ pub fn request(args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinE
     let Handle::Actor(a) = handle_arg(&args[0], ":request")?.clone() else {
         return Err(err("C0118: not-a-handle: :request expects an actor"));
     };
+    a.takes_messages()?;
     let p = ToPortable::new(session).value(&args[1])?;
     let reply = Arc::new(Reply {
         id: next_id(),

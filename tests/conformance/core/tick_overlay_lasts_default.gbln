@@ -1,14 +1,16 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
 /// An overlay declared with "lasts N ticks" expires after N ticks when applied without "for".
 <>Polity |
     stability: .8
 xx
-overlay Stunned |
-    lasts 2 ticks
-    modifies:
-        stability - .25
-    end
+overlay stunned
+    lasts: 2
+    modify
+        @stability - .25
+    xx
+xx
 rome <> Polity | stability: .8
-overlay Stunned on rome at .5
+:overlay!(rome, stunned, .5)
 say(rome >> stability)
 tick()
 say(:overlays_of("rome"))

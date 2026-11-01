@@ -1,7 +1,7 @@
 @Polity |
     stability: .8
     fear: .1
-    ~gold: 500
+    gold: 500
 end
 
 overlay Blight |

@@ -1,0 +1,18 @@
+/// known-gap: interp reads `~` the old way (a real value) and guesses traits from starting values
+/// `~` makes a number field a trait that stays in 0..1 (its starting value
+/// too). Every other number field is a plain value, whatever it starts at.
+<>Farm |
+    name: ""
+    age: 0
+    gold: 12.5
+    ~luck: .4
+    ~mood: 3
+xx
+f <> Farm | name: "Hilltop"
+f >> age |= f >> age + 3
+f >> luck |= f >> luck + 2
+a | f >> age
+g | f >> gold
+l | f >> luck
+m | f >> mood
+say("Hilltop: age {a}, gold {g}, luck {l}, mood {m}")

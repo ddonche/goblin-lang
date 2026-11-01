@@ -6,19 +6,21 @@
 <>Person |
     health: .9
     hunger: .5
-    transition erase when (self >> health) < .3
-    end
+    transition erase where @health < .3
 xx
-overlay Sick |
-    spreads where :link_score(self, target, "contact") > .3 at .9
-    decays .02
-    modifies:
-        health - .08
-    end
-end
-link Person contact 0...1 by [
-    self >> hunger * .5 + target >> hunger * .5
-]
+overlay sick
+    hosts: Person
+    spread: .9 where :link_score(@, target, contact) > .3
+    decays: .02
+    modify
+        @health - .08
+    xx
+xx
+link contact
+    hosts: Person
+    range: 0...1
+    score => (@hunger) * .5 + (target >> hunger) * .5
+xx
 act world(n)
     people | []
     repeat :range(0, n) as i
@@ -33,12 +35,12 @@ act report(label)
         h | it >> health
         :put_last!(hs, :round(h * 1000))
     xx
-    sick | :len(:overlays(it >> overlay_name == "Sick"))
-    say("{label}: {hs} sick {sick}")
+    ill | :len(:overlays(sick))
+    say("{label}: {hs} sick {ill}")
 xx
 act run(st, msg)
     first | st{"people"}[0]
-    overlay Sick on first at .9
+    :overlay!(first, sick, .9)
     repeat 8
         tick()
     xx
@@ -47,7 +49,7 @@ act run(st, msg)
 xx
 here | world(4)
 first | here{"people"}[0]
-overlay Sick on first at .9
+:overlay!(first, sick, .9)
 repeat 8
     tick()
 xx

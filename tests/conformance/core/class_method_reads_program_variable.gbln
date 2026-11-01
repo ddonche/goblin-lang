@@ -1,15 +1,17 @@
-/// Inside a class method, a name that is not a local or a field of the
-/// object reads the program's variable of that name; a field wins.
+/// known-gap: interp reads a bare name in a method as the object's field when it has one
+/// Inside a class method, a name that is not a local reads the program's
+/// variable of that name. The object's field is `@name` (`self >> name`),
+/// never the bare name.
 lim | 3
 a | 99
 <>P |
     a: 1
     act check()
-        if a < lim
+        if @a < lim
             say("less")
         xx
         y | lim + 1
-        say("y {y}, a {a}")
+        say("y {y}, a {a}, @a {@a}")
     xx
 xx
 p <> P | a: 1

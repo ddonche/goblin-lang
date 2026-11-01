@@ -1,6 +1,6 @@
 strength 0.6
-tick 1: [Stunned]
-tick 2: [Stunned]
+tick 1: [stunned]
+tick 2: [stunned]
 tick 3: []
 tick 4: []
 []

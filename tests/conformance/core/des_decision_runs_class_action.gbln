@@ -1,18 +1,19 @@
-/// known-gap: interp runs the class action but its field writes do not stick (prints 0, 0)
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// A decision's judge can call an action written inside the class: it runs
-/// with `self` as the deciding object and the arm's `target`.
+/// with `self` as the deciding object (`self.purchase(shop >> target)`).
 <>Shop |
-    ~stock: 0
-    ~sold: 0
+    stock: 0
+    sold: 0
 xx
 <>Buyer |
-    ~spent: 0
-    score | decision against Shop by [
-        target >> stock
-    ]
-    judge using score
-        > 0: purchase(target)
-    end
+    spent: 0
+    decision shop
+        targets: Shop
+        score => target >> stock
+    xx
+    judge
+        shop and (shop >> score) > 0: self.purchase(shop >> target)
+    xx
     act purchase(target)
         target >> sold |= target >> sold + 1
         self >> spent |= self >> spent + 5

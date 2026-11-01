@@ -26,6 +26,14 @@ pub(crate) struct POverlayDef {
     extra_fields: Vec<(String, PValue)>,
     on_end: Option<String>,
     each_tick: Vec<(String, goblin_ast::Expr)>,
+    intensity: f64,
+    spreads: Vec<goblin_ast::OverlaySpread>,
+    conflicts: Vec<String>,
+    class: Option<String>,
+    class_dup: OverlayApplyBehavior,
+    actions: Vec<goblin_ast::ActionDecl>,
+    on_start: Option<String>,
+    every: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +93,14 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
             extra_fields: pfields(tp, &d.extra_fields)?,
             on_end: d.on_end.clone(),
             each_tick: d.each_tick.clone(),
+            intensity: d.intensity,
+            spreads: d.spreads.clone(),
+            conflicts: d.conflicts.clone(),
+            class: d.class.clone(),
+            class_dup: d.class_dup.clone(),
+            actions: d.actions.clone(),
+            on_start: d.on_start.clone(),
+            every: d.every.clone(),
         });
     }
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
@@ -113,9 +129,10 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
 
 /// Installs the definitions and overlays in a freshly built session.
 pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
-    let mut defs = HashMap::with_capacity(img.overlay_defs.len());
+    let mut defs: rustc_hash::FxHashMap<String, Rc<crate::session::OverlayDef>> = rustc_hash::FxHashMap::with_capacity_and_hasher(img.overlay_defs.len(), Default::default());
     for d in &img.overlay_defs {
-        let extra_fields = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+        let extra_fields: indexmap::IndexMap<String, crate::value::Value> = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+        let extra_names: Vec<String> = extra_fields.keys().cloned().collect();
         defs.insert(d.name.clone(), Rc::new(OverlayDef {
             name: d.name.clone(),
             host_types: d.host_types.clone(),
@@ -130,6 +147,15 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
             extra_fields,
             on_end: d.on_end.clone(),
             each_tick: d.each_tick.clone(),
+            intensity: d.intensity,
+            spreads: d.spreads.clone(),
+            conflicts: d.conflicts.clone(),
+            class: d.class.clone(),
+            class_dup: d.class_dup.clone(),
+            methods: crate::tick::compile_overlay_methods(&d.name, &d.actions, &extra_names).unwrap_or_default(),
+            actions: d.actions.clone(),
+            on_start: d.on_start.clone(),
+            every: d.every.clone(),
         }));
     }
     s.overlay_defs = defs;
@@ -146,6 +172,12 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     for o in &img.overlays {
         let inst = overlay_from_p(o, fp, s);
         s.overlay_instances.push(inst);
+    }
+    // The objects' fields read through their overlays' film already.
+    let hosts: Vec<String> = s.overlay_instances.iter().map(|i| i.host_uuid.clone()).collect();
+    if !hosts.is_empty() {
+        let mut hosts = hosts; hosts.sort_unstable(); hosts.dedup();
+        crate::tick::adopt_films(s, &hosts, fp);
     }
 }
 

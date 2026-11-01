@@ -1,13 +1,12 @@
-/// known-gap: interp has no `on erase:` in classes
-/// Objects made by a matrix keep their class's `on erase:` action.
+/// known-gap: interp has no `on erase =>` or `transition ... where` (new DES syntax); the interpreter is being retired
+/// Objects made by a matrix keep their class's `on erase` code.
 <>Person |
-    ~age: 0
-    on erase: bury
+    age: 0
+    on erase => bury(self)
     every 1 tick
         self >> age |= self >> age + 1
     end
-    transition erase when (self >> age) > 11
-    end
+    transition erase where @age > 11
 xx
 act bury(p)
     a | p >> age

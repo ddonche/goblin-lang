@@ -1,0 +1,42 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `judge_all` runs every arm that holds, in order: an arm can leave
+/// another out by its condition (`not hurt and foe`), so an object that
+/// heals doesn't also attack, while every object with a foe shouts.
+<>F |
+    name: ""
+    side: 0
+    hp: 10
+    max_hp: 10
+    decision hurt
+        targets: F where (target >> side) == @side and (target >> hp) * 2 < (target >> max_hp)
+        score => 1 - (target >> hp) / (target >> max_hp)
+        margin: 0
+    xx
+    decision foe
+        targets: F where (target >> side) != @side
+        score => 1 - (target >> hp) / (target >> max_hp)
+    xx
+    judge_all
+        hurt: mend(self, hurt >> target)
+        not hurt and foe: hit(self, foe >> target)
+        foe: taunt(self, foe >> target)
+    xx
+xx
+act hit(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} hits {b}")
+xx
+act mend(f, t)
+    a | f >> name
+    b | t >> name
+    say("{a} heals {b}")
+xx
+act taunt(f, t)
+    a | f >> name
+    say("{a} shouts")
+xx
+x <> F | name: "x", side: 0, hp: 4
+y <> F | name: "y", side: 0, hp: 10
+z <> F | name: "z", side: 1, hp: 10
+tick()
