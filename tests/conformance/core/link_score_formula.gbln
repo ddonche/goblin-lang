@@ -1,22 +1,28 @@
-/// known-gap: interp scales a link into 0..1 over a range it guesses from the formula, and takes variable names
+/// known-gap: interp has no link blocks or :link! (new DES syntax); the interpreter is being retired
 /// A link is declared with its range. `:link_score(a, b, "border")` is a's
-/// link to b: its formula, plus the changes made to the pair, kept inside
-/// the range. Links go one way: b's link to a is its own.
+/// link to b: its score, plus the changes `:link!` made to the pair, kept inside
+/// the range; with no score a link starts at the low end of its range.
+/// Links go one way: b's link to a is its own.
 <>Nation |
     military: .5
     economy: .5
 xx
-link Nation border 0...1 by [
-    self >> military * .5 + target >> economy * .25
-]
-link Nation respect -10...10
+link border
+    hosts: Nation
+    range: 0...1
+    score => @military * .5 + (target >> economy) * .25
+xx
+link respect
+    hosts: Nation
+    range: -10...10
+xx
 a <> Nation | military: .8, economy: .2
 b <> Nation | military: .4, economy: .4
 say(:link_score(a, b, "border"))
 say(:link_score(b, a, "border"))
 say(:link_score(a, b, "respect"))
-a link to b on respect offset +4
+:link!(a, b, respect, 4)
 say(:link_score(a, b, "respect"))
 say(:link_score(b, a, "respect"))
-a link to b on border offset +.9
+:link!(a, b, border, .9)
 say(:link_score(a, b, "border"))
