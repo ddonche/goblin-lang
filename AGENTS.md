@@ -1,238 +1,338 @@
-# Goblin VM — Development Tracking
+# Writing Goblin
 
-## Rules (never violate)
-- Read ALL interpreter source before implementing anything — never invent behavior
-- Match interpreter behavior exactly
-- ALL goblin blocks end with both `xx` AND `end` terminators
-- Working branch: `Codex/quirky-mendel-4df8rm`
-- Commit and push after every batch of changes
+How to write Goblin the way Goblin is written. Every example here is
+idiomatic and runs as shown. When two forms work, the one shown is the one
+to write.
 
-## What to skip (user instructions)
-- `money` builtins — skip
-- `db_query`, `db_exec`, `db_query_one` — no longer skipped: implemented and tested on both engines (2026-10-06)
+## Blocks and comments
 
-## Architecture
-- `crates/goblin-vm/src/value.rs` — Value enum, BuiltinId enum
-- `crates/goblin-vm/src/opcode.rs` — Opcode enum
-- `crates/goblin-vm/src/compiler.rs` — AST → bytecode, `builtin_by_name`
-- `crates/goblin-vm/src/vm.rs` — VM execution loop, `member_dispatch`
-- `crates/goblin-vm/src/builtins.rs` — all builtin implementations
-- `crates/goblin-vm/src/session.rs` — Session state
-- `crates/goblin-vm/src/grid.rs` — Grid data structures
-- `crates/goblin-interpreter/src/lib.rs` — source of truth for behavior
+A block closes with crossbones, `xx`.
 
-## DONE
+A comment is `///`. Write one only when the code can't say it: why a rule
+exists, a unit, a source. A line that reads clearly gets no comment.
 
-### Session state
-- [x] `token_store: BTreeMap<String, BTreeMap<String, Value>>`
-- [x] `object_store: HashMap<String, Value>`
-- [x] `overlay_instances: Vec<OverlayInstance>`
-- [x] `response: ResponseState { status, headers, cookies }`
-- [x] `grid_store: GridStore`
+```goblin
+act heal(hp, amount)
+    return hp + amount
+xx
+```
 
-### Opcodes (all handled in vm.rs)
-- [x] LoadConst, LoadNil, LoadTrue, LoadFalse
-- [x] LoadLocal, StoreLocal, LoadGlobal, StoreGlobal, LoadUpvalue, StoreUpvalue
-- [x] Pop, Dup, Overwrite
-- [x] Add, Sub, Mul, Div, Rem, Neg (+ typed Int/Float variants)
-- [x] Concat, Eq, Ne, Lt, Le, Gt, Ge, Not
-- [x] Jump, JumpIfFalse, JumpIfTrue
-- [x] MakeArray, MakeMap, GetIndex, SetIndex, GetMember
-- [x] Call, Return, CallBuiltin, MakeClosure
-- [x] ToPct, MakePair, MakeRange, MakeRangeInclusive
-- [x] Quick, TryBegin, TryEnd
+## Names and binding
 
-### Compiler — AST nodes handled
-- [x] All Expr variants: Nil, Bool, Number, Str, Char, Ident, Array, Object, Member, OptMember, Index, IndexMap, Call, OptCall, FreeCall, NsCall, Prefix, Postfix, Binary, Judge, Block, BoxVar
-- [x] All Stmt variants: Expr, Bind, TupleBind, Block, Return, Judge, JudgeAll, Sweep, Action, BoxBind (errors with NotImplemented), Class/Enum/Import/Use/Overlay*/Link*/ObjectDecision/UnitDecl (errors with NotImplemented — DES system)
+`|` binds a name, `|=` gives it a new value. There is no `=`.
 
-### Compiler — special forms
-- [x] `collect(count, body)` — loop with ArrayPush accumulator
-- [x] `attempt(try, rescues, ensure?)` — TryBegin/TryEnd + catch_stack
+```goblin
+gold | 10
+gold |= gold + 5
+first, last | ..
+```
 
-### Builtins — all implemented and wired in builtin_by_name
+Line up the `|` of a run of bindings:
 
-#### Math
-- [x] abs, min, max, avg, sum, floor, ceil, round, sqrt, clamp, pow
+```goblin
+name  | "Ann"
+level | 3
+hp    | 40
+```
 
-#### String
-- [x] lower, upper, title, slug, mixed, raw, trim, trim_lead, trim_trail
-- [x] find, find_all, ord, len, str/to_str, split, join, contains, starts_with, ends_with
-- [x] replace, before, after, before_last, after_last, keep_before, keep_after, keep_between
-- [x] sanitize_bom, normalize_newlines
-- [x] ignore_where, ignore_lines_where, ignore_matching, ignore_lines_matching
-- [x] is_matching, count_matching, keep_matching
-- [x] json_parse, json_stringify, json_stringify_pretty
-- [x] ignore_between, ignore_blocks, ignore_blocks_first
-- [x] lines, words, chars, format, pad, pad_left, pad_right, repeat
-- [x] escape_html
+Names are `snake_case`; classes are `Capitalized`.
 
-#### Collections
-- [x] has, count, shuffle, sort, freq, mode, sample_weighted, map, unique, dups
-- [x] grab, grab_first, grab_last, grab_at, grab_random, grab_where, grab_all, grab_between, grab_matching
-- [x] put, put_first, put_last, put_at, put_where, put_matching, put_between, put_random, put_all
-- [x] update, update_first, update_last, update_at, update_all, update_where, update_matching, update_between, update_random
-- [x] delete, delete_first, delete_last, delete_at, delete_where, delete_all, delete_matching, delete_between, delete_random
-- [x] reap, reap_first, reap_last, reap_at, reap_random, reap_where, reap_all, reap_matching, reap_between, reap_sample
-- [x] get_first, get_last, get_at, get_where, get_all, get_matching, get_between, get_random
-- [x] pairs, is_empty, reverse, reverse_chars, minimize, parse_bool, sort_by, filter, reduce, any, all, find_index, zip, flatten, slice
-- [x] keys, values, items, between
-- [x] map_fn, filter_fn, reduce_fn, for_each_fn
+## Nix: nil or empty
 
-#### Type checks
-- [x] is_nil, is_bool, is_int, is_float, is_str, is_array, is_map, is_collection, is_function
-- [x] is_big, is_pct, is_num, is_char, is_pair, is_seq, is_unit
-- [x] is_alnum, is_alpha, is_digit, is_whitespace, is_control
-- [x] is_even, is_odd, is_multiple_of, is_positive, is_negative, is_nix
-- [x] is_type, is_bound_name
+`x.nix?` is true when `x` is nil or empty (`..`, `[]`, `{}`). It is the one
+presence check: never also test `x == ..`.
 
-#### Conversions / casts
-- [x] int/i, float/f, bool, str, big, pct, to_map
-- [x] i8, i16, i32, i64, u8, u16, u32, u64, f32, f64 (range-checked, error on overflow)
-- [x] date, time, datetime, duration — returns "not yet implemented" error (same as interpreter)
+`..` is the empty string. Write it instead of `""`.
 
-#### I/O
-- [x] print, println, eprint, eprintln
-- [x] read_text, write_text, append_file, read_json, write_json
-- [x] ask/input (stdin with optional prompt)
-- [x] env
+```goblin
+title | ..
+if title.nix? => title |= "Untitled"
+```
 
-#### Filesystem / path
-- [x] file_exists, is_file, is_dir, basename, dirname, stem, ext
-- [x] path_join, path_split, path_normalize, path_relative_to
-- [x] walk, list_dirs, create_dir, copy_file, delete_path
-- [x] pathfind
+`??` gives a fallback when the left side is nix. Fallbacks chain:
 
-#### Process
-- [x] run_cmd (sh -lc on Unix, cmd /C on Windows → JSON {ok, code, stdout, stderr})
-- [x] zip_dir
+```goblin
+label | nil
+slug  | "home"
+shown | label ?? slug ?? ..
+```
 
-#### Random / dice
-- [x] roll, roll_detail, roll_str, roll_detail_str
-- [x] rand_seed, secure_pick, secure_random, secure_shuffle
+## Actions
 
-#### UUID
-- [x] uuid_v4, uuid_v7
+`act name(args)` ... `xx`. A default is bound with `|`.
 
-#### Range / lorem
-- [x] range, ipsum, ipsum_sentences, ipsum_paragraphs, ipsum_full
+`send` returns early; `return` is the last line of the action. Use `send`
+for every exit in the middle, `return` once at the end.
 
-#### Memory / GC
-- [x] mem_id, mem_addr, mem_total, mem_human, gc
+```goblin
+act greet(name, greeting | "hi")
+    if name.nix? => send ..
+    return "{greeting.title} {name}"
+xx
+```
 
-#### Type meta
-- [x] typeof/type_of, valtype/vt, is_type, is_bound_name
-- [x] clear_format, format_info, backend, metrics
-- [x] assert, panic
+`?? => send` returns when a value is missing, in one line:
 
-#### Pack/unpack
-- [x] pack, unpack
+```goblin
+act first_word(text)
+    t | text ?? => send ..
+    return :keep_before(t, " ") ?? t
+xx
+```
 
-#### Collections — higher order
-- [x] invoke, summon, provoke — NOT IMPLEMENTED (require dynamic action dispatch), return error
+Builtins are called with a colon, `:len(x)`, `:say(x)`; your own actions
+without one, `greet("Bo")`. A module's actions are `name::action()`.
 
-#### Markdown / syntax
-- [x] md_to_html — NOT IMPLEMENTED (needs comrak), returns error
-- [x] highlight_code — NOT IMPLEMENTED (needs syntect), returns error
+Some values have properties, read without parentheses: `s.len`, `s.title`,
+`s.upper`, `s.trim`, `x.nix?`.
 
-#### YALL
-- [x] yall_parse, yall_parse_file, yall_write, yall_write_file, yall_pretty, yall_minify
+## Branching
 
-#### Request (HTTP context — reads env vars)
-- [x] req_method, req_path, req_query, req_body, req_header, cookie
+A one-line `if` uses `=>`. Use a block only for more than one line.
 
-#### Response (HTTP context — mutates session.response)
-- [x] set_status, set_header, set_cookie
+```goblin
+hp | 0
+if hp <= 0 => :say("down")
 
-#### Token store
-- [x] register_token, resolve_token, clear_token, clear_tokens, clear_all_tokens, list_tokens
+if hp > 20
+    :say("healthy")
+elif hp > 0
+    :say("hurt")
+else
+    :say("down")
+xx
+```
 
-#### DES / overlay
-- [x] decision_debug, overlays_of, overlay_strength, link_score
-- [x] owned_by, owns_tree, clone_object, delete_object, delete_overlays_on
-- [x] tick / tick_db — NOT IMPLEMENTED (DES tick runner not ported to VM), returns error
+`judge` takes the first arm that holds; `judge_all` runs every arm that
+holds. Prefer it to a long `elif` chain.
 
-#### Grid (21 builtins)
-- [x] grid, grid_get, grid_set, grid_void
-- [x] grid_tile_get, grid_tile_set, grid_region_get, grid_region_set
-- [x] grid_default_get, grid_default_set
-- [x] grid_neighbors, grid_occupied, grid_unoccupied
-- [x] grid_occupied_count, grid_unoccupied_count, grid_count
-- [x] grid_occupied_by, grid_has, grid_info, grid_tile_info, grid_region_info
+```goblin
+is_link  | true
+is_image | false
+judge
+    is_link: :say("link")
+    is_image: :say("image")
+    else: :say("text")
+xx
+```
 
-### Compiler — synthesized builtins for expr nodes
-- [x] `Expr::Slice` — compiles to `CallBuiltin(SliceExpr, 3)` with nil defaults
-- [x] `Expr::Slice3` — compiles to `CallBuiltin(Slice3Expr, 4)` with nil defaults
-- [x] `Expr::Index2` — compiles to `CallBuiltin(Index2Expr, 3)` → `Value::GridRef`
-- [x] `Expr::EnumVariant` — compiles to `CallBuiltin(EnumVariantExpr, 3)` → `Value::Enum`
-- [x] `Expr::LiteralToken` — compiles to `CallBuiltin(LiteralTokenExpr, 2)` → resolves from token_store
-- [x] `Expr::BoxVar` — compiles to `CallBuiltin(BoxVarExpr, 2)` → error (no box_store in VM)
+`judge using x` compares each arm with `x`:
 
-### Compiler — class/enum support
-- [x] `Stmt::Class` — collected at compile time into `CompiledModule.classes`, pre-registered in session before run
-- [x] `Stmt::Enum` — collected at compile time into `CompiledModule.enums`, pre-registered in session before run
-- [x] `CompiledModule` wrapper — carries `entry: FunctionObject` + `classes` + `enums`
-- [x] `session.classes: HashMap<String, ClassDecl>` and `session.enums: HashMap<String, EnumDecl>` added
-- [x] `EnumVariantExpr` validates against `session.enums` at runtime
+```goblin
+kind | "rare"
+judge using kind
+    "common": :say("plain")
+    "rare": :say("shiny")
+    else: :say("unknown")
+xx
+```
 
-## TODO / NOT YET DONE
+## Loops: repeat
 
-### Compiler — import/use
-- [x] `Stmt::Import` (path/named) — emits `ImportFile` opcode; VM reads/compiles/runs the file
-- [x] `Stmt::Use` — resolves `glams/<ns>/<ns>.gbln` and emits `ImportFile`
-- [x] `ImportFile` opcode — lex+parse+compile+execute sub-file, pre-register its classes/enums, guard against re-import
+`repeat` is the only loop. Don't write `for` or `while`.
 
-### Compiler — DES statement support
-- [x] `Stmt::OverlayDef` — emits `OverlayDef` opcode; VM registers in `session.overlay_defs`
-- [x] `Stmt::OverlayApply` — emits `OverlayApply` opcode; VM pushes `OverlayInstance`
-- [x] `Stmt::OverlayDetach` — emits `OverlayDetach` opcode; VM removes matching instances
-- [x] `Stmt::LinkDef` — emits `LinkDef` opcode; VM registers in `session.link_defs`
-- [x] `Stmt::ObjectLinkDef` — emits `ObjectLinkDef` opcode; VM registers in `session.object_link_defs`
-- [x] `Stmt::LinkOffset` — emits `LinkOffset` opcode; VM updates `session.link_offsets`
-- [x] `Stmt::ClearLink` — emits `ClearLink` opcode; VM removes from `session.link_offsets`
-- [x] `Stmt::ObjectDecision` — emits `ObjectDecision` opcode; VM registers in `session.object_decisions`
-- [x] `Stmt::UnitDecl` — emits `UnitDecl` opcode; VM registers in `session.unit_registry`
+```goblin
+repeat 3
+    :say("again")
+xx
 
-### Session additions
-- [x] `overlay_defs`, `link_defs`, `object_link_defs`, `link_offsets`, `object_decisions`, `unit_registry`
-- [x] `des_store`, `des_index`, `des_tick_runner`, `des_overlay_id_counter`, `des_link_id_counter`, `des_link_ids`
-- [x] `goblin-des` added as dependency
+names | ["Ann", "Bo", ..]
+repeat names as n
+    if n.nix? => skip
+    :say("{idx}: {n}")
+xx
 
-### Builtins — newly implemented
-- [x] `invoke` / `summon` / `provoke` — implemented via `RegisterAction` opcode + `session.named_values` + `call_named` / `run_until_depth` in vm.rs
-- [x] `md_to_html` — comrak 0.21 added, matches interpreter implementation exactly
-- [x] `highlight_code` — syntect 5 added, matches interpreter implementation; syntaxes/Goblin.sublime-syntax copied
+stock | {"iron": 3, "wood": 5}
+repeat stock as item, count
+    :say("{item} {count}")
+xx
 
-- [x] `tick` / `tick_db` — full DES tick in `tick.rs`: 9 passes (link offset decay, spread × 4 modes, decay, conflict, spawn, overlay transitions × 8 kinds, dead/orphan removal, decision tick, object transition tick); object_store maintained on StoreLocal/StoreGlobal; expression eval via compile_tick_expr / eval_tick_expr / run_until_depth
+day | 0
+repeat day < 7
+    day |= day + 1
+xx
+```
 
-## Engine selection (owner, 2026-10-06)
-The VM is the default engine for `goblin run`, `goblin repl` and `goblin start`.
-`--interp` (or `--int`, or `GOBLIN_ENGINE=interp`) selects the interpreter, which is
-kept as a reference until it is deleted; `--vm` is still accepted.
+`repeat names as n` also binds `idx`. `skip` goes to the next turn and
+`stop` leaves the loop. `repeat` with nothing after it runs until `stop`.
 
-## Tested status (conformance suite, 2026-10-06)
+`?? => skip` skips a missing value in one line:
 
-The checklist above records what was implemented. What is *tested* is generated
-from the interpreter/VM conformance suite (`tests/conformance`, run by
-`cargo test --release -p goblin-cli --test conformance`):
+```goblin
+rows | [{"name": "Ann"}, {}]
+repeat rows as r
+    name | r{"name"} ?? => skip
+    :say(name)
+xx
+```
 
-- `crates/outputs/VM_PARITY_TODO.md` — per builtin: which engines define it and
-  how the cases that mention it fare on each engine. Regenerate with
-  `GOBLIN_CONF_TRACKER=crates/outputs/VM_PARITY_TODO.md`.
-- 811 cases: interp 676 pass / 134 known gap / 1 undecided; VM 774 pass /
-  36 known gap / 1 undecided; 0 failures on either engine. Parity is NOT yet
-  demonstrated: `GOBLIN_CONF_STRICT=1` fails until the known gaps and the
-  undecided case are resolved.
-- Builtins: 200 at parity, 64 defined only by the VM, 3 only by the
-  interpreter, 26 where only interpreter cases fall short, 35 where cases fall
-  short on both engines (mostly docs-vs-both questions), 54 untested (grid/DES/token/introspection;
-  listed in `tests/conformance/COVERAGE_EXEMPT.txt`). No builtin is short on
-  the VM alone.
-- Performance regressions are guarded by `crates/goblin-cli/tests/perf_regression.rs`.
+## Text
 
-The earlier claim that the VM was feature-complete was not backed by tests;
-the conformance suite is the source of truth.
+`{name}` puts a value in a string. Triple quotes hold several lines.
 
-### Skipped by user instruction
-- [ ] `money` — skip
-- [x] `db_query`, `db_exec`, `db_query_one` — implemented and tested on both engines (pooled connections, 2026-10-06)
+```goblin
+who  | "Ann"
+html | """
+<p>Hello, {who}</p>
+"""
+```
+
+`sweep` walks the pieces of a text between two markers; `self` is the piece:
+
+```goblin
+text | "see [[home]] and [[about]]"
+out  | text
+sweep text
+    "[[" ... "]]":
+        :update_where!(out, self, :upper(self))
+xx
+:say(out)
+```
+
+## Collections
+
+`[]` is an array, `{}` is a map. Read a map with `m{"key"}`, an array with
+`a[0]`.
+
+Builtins ending in `!` change the collection itself; without `!` they give
+a changed copy.
+
+```goblin
+party | ["Ann"]
+:put_last!(party, "Bo")
+
+stats | {"hp": 3}
+:update!(stats{"hp"}, stats{"hp"} + 1)
+```
+
+## Pipelines
+
+A pipeline is a list of action names. `:summon(ctx, pipeline)` runs them in
+order; each one takes the context and returns it.
+
+```goblin
+act add_one(ctx)
+    :update!(ctx{"n"}, ctx{"n"} + 1)
+    return ctx
+xx
+
+act double(ctx)
+    :update!(ctx{"n"}, ctx{"n"} * 2)
+    return ctx
+xx
+
+pipeline | ["add_one", "double"]
+ctx      | :summon({"n": 1}, pipeline)
+:say(ctx{"n"})
+```
+
+## Classes and objects
+
+`<>Name |` declares a class; its fields have defaults. `p <> Name | ...`
+makes an object. `>>` reads a field, `.` calls a method. Inside a method,
+`@field` is the object's field and `self.method()` calls another method.
+
+```goblin
+<>Hero |
+    name: ..
+    hp: 10
+    act hurt(n)
+        @hp |= @hp - n
+        if @hp <= 0 => send "down"
+        return "standing"
+    xx
+xx
+
+h <> Hero | name: "Ann", hp: 5
+:say(h.hurt(2))
+h >> hp |= h >> hp + 1
+:say(h >> hp)
+```
+
+## Errors
+
+```goblin
+attempt
+    cfg | :read_json("settings.json")
+rescue e
+    :say("no settings: {e}")
+xx
+```
+
+## Simulations (DES)
+
+A simulation is classes, overlays and decisions, run with `:tick()`. A
+class holds what its objects decide and when they leave. An overlay is a
+temporary object on another one.
+
+```goblin
+<>Fighter |
+    name: ..
+    side: 0
+    hp: 10
+    atk: 4
+    decision enemy
+        targets: Fighter where (target >> side) != @side
+        score => -(target >> hp)
+    xx
+    judge
+        enemy: self.strike(enemy >> target)
+    xx
+    order: -@atk
+    transition erase where @hp <= 0
+    act strike(t)
+        t >> hp |= t >> hp - @atk
+    xx
+xx
+
+overlay poisoned
+    hosts: Fighter
+    lasts: 3
+    dup: replace
+    every 1 tick => @hp |= @hp - 2
+xx
+
+ann <> Fighter | name: "Ann", side: 0, hp: 12, atk: 5
+orc <> Fighter | name: "Orc", side: 1, hp: 9, atk: 3
+:overlay!(orc, poisoned)
+repeat :len(:objects(Fighter)) > 1
+    :tick()
+xx
+repeat :objects(Fighter) as f
+    :say("{f >> name} stands with {f >> hp} hp")
+xx
+```
+
+Overlays of one kind belong to an overlay class, `<^>`. Its `dup:` decides
+what happens when a second member lands on the same host:
+
+```goblin
+<>Creature |
+    focus: 0
+    attack: 0
+xx
+
+<^>Mood |
+    hosts: Creature
+    dup: replace
+xx
+
+overlay calm <^> Mood
+    modify
+        @focus + 2
+    xx
+xx
+
+overlay angry <^> Mood
+    modify
+        @attack + 3
+    xx
+xx
+
+c <> Creature | focus: 0
+:overlay!(c, calm)
+:overlay!(c, angry)
+:say(:overlays_of(c))
+```
+
+`tests/test.gbln` and `sims/` show larger programs.
