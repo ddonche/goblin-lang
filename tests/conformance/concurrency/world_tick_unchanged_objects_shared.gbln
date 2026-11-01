@@ -1,0 +1,61 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An object that did not change during a tick goes to the other regions
+/// as it was, and they keep their copy of it. A copy still follows every
+/// change, including one that comes back to the old value, and the main
+/// program's copy shows the region's value after a tick, not what the
+/// program wrote to it before.
+<>Post |
+    level: 1
+    n: 0
+    every 1 tick
+        self >> level |= 1
+    end
+    every 2 ticks
+        self >> n |= self >> n + 1
+    end
+xx
+<>Watcher |
+    saw_level: 0
+    saw_n: 0
+    score | decision against Post by [
+        1
+    ]
+    judge using score
+        >= .5: look(target)
+    end
+xx
+act look(w, p)
+    w >> saw_level |= p >> level
+    w >> saw_n |= p >> n
+xx
+act make_posts()
+    p <> Post | level: 1
+    return {"p": p}
+xx
+act make_watchers()
+    w <> Watcher | saw_level: 0
+    return {"w": w}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make_posts(), day)
+b | :actor(make_watchers(), day)
+repeat :range(1, 7) as d
+    tick([a, b])
+    repeat :objects("Post")
+        l | it >> level
+        n | it >> n
+        say("tick {d}: post level {l}, n {n}")
+        if d == 4
+            it >> level |= 5
+            l2 | it >> level
+            say("tick {d}: the program set level {l2}")
+        xx
+    xx
+    repeat :objects("Watcher")
+        l | it >> saw_level
+        n | it >> saw_n
+        say("tick {d}: watcher saw level {l}, n {n}")
+    xx
+xx

@@ -1,0 +1,13 @@
+tick 1: post level 1, n 0
+tick 1: watcher saw level 1, n 0
+tick 2: post level 1, n 1
+tick 2: watcher saw level 1, n 0
+tick 3: post level 1, n 1
+tick 3: watcher saw level 1, n 1
+tick 4: post level 1, n 2
+tick 4: the program set level 5
+tick 4: watcher saw level 1, n 1
+tick 5: post level 1, n 2
+tick 5: watcher saw level 1, n 2
+tick 6: post level 1, n 3
+tick 6: watcher saw level 1, n 2

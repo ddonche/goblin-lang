@@ -5,6 +5,7 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- Regions send an object unchanged since last tick as it was, and the others keep their copy: small epidemic -13% instructions.
 - Regions swap other regions' objects by id, not by text: small epidemic -7% instructions, predator-prey -3%.
 - VM: in a decision pass, what actions that only read gave is kept from one
   decision to the next (and the next object's) until a judge runs an

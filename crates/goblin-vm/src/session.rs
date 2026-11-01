@@ -165,7 +165,9 @@ pub struct Session {
     pub(crate) region: Option<crate::world::RegionCtx>,
     /// In a region: its copies of the other regions' objects, kept between
     /// ticks so the next tick rebuilds only the fields that changed.
-    pub(crate) remote_copies: rustc_hash::FxHashMap<crate::value::ObjId, crate::value::Value>,
+    pub(crate) remote_copies: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Copy>,
+    /// In a region: its objects as they went into its last snapshot.
+    pub(crate) sent_objects: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Sent>,
     /// Compiled field defaults that are not plain literals, per (class, field).
     /// Cleared whenever a class is (re)declared.
     pub field_defaults: HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>,
@@ -370,6 +372,7 @@ impl Session {
             world: None,
             region: None,
             remote_copies: Default::default(),
+            sent_objects: Default::default(),
             field_defaults: HashMap::new(),
             next_generation: 1,
             gc_threshold: GC_MIN_THRESHOLD,
