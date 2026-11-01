@@ -1,4 +1,4 @@
-/// known-gap: interp has no contents list, and its formulas can't call actions
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// While a decision scores its targets, an action that only reads gives the
 /// same answer for the same arguments, so the runtime may use the first
 /// answer again. The result is what running it every time gives: answers
@@ -7,12 +7,13 @@
 <>Lord |
     name: ""
     owner: nil
-    seize | decision against Land where [
-        target >> owner != self and might(self) >= 2 * might(target >> owner)
-    ] by [ target >> yield + might(target >> owner) ]
-    judge using seize
-        >= 0: take(target)
-    end
+    decision prize
+        targets: Land where (target >> owner) != self and might(self) >= 2 * might(target >> owner)
+        score => (target >> yield) + might(target >> owner)
+    xx
+    judge
+        prize and (prize >> score) >= 0: take(self, prize >> target)
+    xx
 xx
 <>Land |
     yield: 0
@@ -20,17 +21,23 @@ xx
 xx
 <>Peer |
     name: ""
-    look | decision against Land where [ note(target) and seen() > 0 ] by [ seen() ]
-    judge using look
-        >= 0: show(target)
-    end
+    decision spot
+        targets: Land where note(target) and seen() > 0
+        score => seen()
+    xx
+    judge
+        spot and (spot >> score) >= 0: show(self, spot >> target)
+    xx
 xx
 <>Scout |
     name: ""
-    look | decision against Land where [ apply(note, target) and seen() > 0 ] by [ seen() ]
-    judge using look
-        >= 0: show(target)
-    end
+    decision spot
+        targets: Land where apply(note, target) and seen() > 0
+        score => seen()
+    xx
+    judge
+        spot and (spot >> score) >= 0: show(self, spot >> target)
+    xx
 xx
 looks | 0
 act apply(job, x)

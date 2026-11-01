@@ -1,4 +1,4 @@
-/// known-gap: interp rescales a formula's scores over a guessed 0..1 range
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// A decision's score is the number its formula gives, nothing rescaled:
 /// here the cheapest shop scores -10 and the dearest -30, and the judge
 /// compares against that same number.
@@ -8,13 +8,14 @@
 xx
 <>Buyer |
     hunger: .5
-    buy | decision against Shop by [
-        0 - target >> price
-    ]
-    judge using buy
-        >= -10: purchase(target)
-        else: browse(target)
-    end
+    decision shop
+        targets: Shop
+        score => 0 - (target >> price)
+    xx
+    judge
+        shop and (shop >> score) >= -10: purchase(self, shop >> target)
+        shop: browse(self, shop >> target)
+    xx
 xx
 act purchase(b, s)
     s >> sold |= s >> sold + 1

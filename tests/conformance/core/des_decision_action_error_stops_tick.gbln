@@ -1,4 +1,4 @@
-/// known-gap: interp ignores an error inside a decision's action
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// An error inside a decision's action stops the tick, as one in an `every`
 /// block does, so a mistake there is not mistaken for "nothing happened".
 <>Shop |
@@ -6,12 +6,13 @@
 xx
 <>Buyer |
     margin: 0
-    score | decision against Shop by [
-        target >> stock
-    ]
-    judge using score
-        > 0: purchase(target)
-    end
+    decision shop
+        targets: Shop
+        score => target >> stock
+    xx
+    judge
+        shop and (shop >> score) > 0: purchase(self, shop >> target)
+    xx
 xx
 act purchase(b, s)
     s >> stok |= s >> stock + 1
