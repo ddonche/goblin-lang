@@ -5,6 +5,7 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES syntax pass: overlays, decisions, judge, transitions, links and `order:` are written as Goblin blocks (`overlay sick` ... `xx`, `decision prey` with `targets:`/`score =>`/`margin:`, one class `judge`/`judge_all` reading picks by name, `transition erase where`, `on erase =>`, `link culture` with `hosts:`/`range:`/`score =>`); calls `:overlay!`, `:detach!`, `:link!`, `:unlink!`, `:overlays(host[, overlay])`; `modify` is a film over stored fields; collection `*_where` take code with `it`. All sims rewritten with unchanged output; wall time vs the old syntax: epidemic 4,000 people -52%, civilization -8%, feudal -2%, predator-prey -2%, RPG +6%.
 - VM object store: each object keeps a fixed place and each id remembers where it was found, so reading an object by id checks one place instead of hashing; owner queries keep their class check; each DES decision keeps its compiled formula and condition; call frames are smaller (instructions: predator-prey -10%, feudal -8%, epidemic -3%; plain call loop +2%).
 - VM: object `==` compares ids without copying them, `repeat` over a list skips a builtin call, remembered-call keys read objects in place, and returned calls hand their local slots to the next call (feudal -2.6%, call loop -1.5% instructions).
 - DES decisions look objects up by id instead of by text, and check once per decision whether the condition and formula only read (feudal -3.5%, predator-prey -3.9%, epidemic -3.8% instructions).
