@@ -3527,7 +3527,7 @@ impl Compiler {
             let end = self.scope().bytecode.len();
             if let Some(Opcode::ObjectsOwned(qi)) = self.scope().bytecode.get(start).copied() {
                 if let crate::opcode::OpData::ObjectsOwned(q) = &mut self.scope_mut().op_data[qi as usize] {
-                    if start + 1 + q.skip as usize + 1 == end {
+                    if !q.count && start + 1 + q.skip as usize + 1 == end {
                         q.skip += 1;
                         q.count = true;
                     }

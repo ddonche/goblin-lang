@@ -41,3 +41,9 @@ c <> Bag | name: "c"
 w <> Item | name: "w", owner: c
 delete_object!(c)
 say(:len(:objects("Item", it >> owner == c)))
+/// A count is a number: counting it again is an error, as without the shortcut.
+attempt
+    say(:len(:len(:objects("Item", it >> owner == a))))
+rescue err
+    say("len of a count fails")
+xx
