@@ -1,6 +1,6 @@
-/// known-gap: interp runs only a class's first decision (VM only, owner 2026-10-25)
-/// A class can have several decisions, each named, each acted on by the
-/// judge that uses its name. They run in the order written, every tick.
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// A class can have several decisions, each named; its judge reads each
+/// pick by the decision's name, every tick.
 :rand_seed(5)
 <>Shop |
     open: 1
@@ -10,19 +10,19 @@ xx
 <>Person |
     bought: 0
     jobs: 0
-    shop | decision against Shop by [
-        target >> cheap
-    ]
-    judge using shop
-        >= .5: buy(target)
-    end
-    work | decision against Shop by [
-        target >> hiring
-    ]
-    judge using work
-        >= .95: apply(target)
-        else: wait(target)
-    end
+    decision bargain
+        targets: Shop
+        score => target >> cheap
+    xx
+    decision job
+        targets: Shop
+        score => target >> hiring
+    xx
+    judge_all
+        bargain and (bargain >> score) >= .5: buy(self, bargain >> target)
+        job and (job >> score) >= .95: apply(self, job >> target)
+        job: wait(self, job >> target)
+    xx
 xx
 act buy(p, s)
     p >> bought |= p >> bought + 1

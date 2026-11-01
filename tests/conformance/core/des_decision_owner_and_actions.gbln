@@ -1,20 +1,24 @@
-/// known-gap: interp has no contents list, and its formulas can't call actions
-/// A decision's `where` and score can call the program's actions. A
-/// condition `target >> owner == x` only looks at what x holds (its
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// A decision's `targets: ... where` and score can call the program's actions. A
+/// condition `(target >> owner) == x` only looks at what x holds (its
 /// contents list); a condition that doesn't name `target` is checked once.
 /// Either way the result is what checking every target gives.
 <>Lord |
     name: ""
     gold: 0
     owner: nil
-    reward | decision against Knight where [ target >> owner == self and target >> deeds > 0 ] by [ worth(target) ]
-    judge using reward
-        >= 0: pay(target)
-    end
-    tax | decision against Knight where [ self >> gold < 5 and target >> owner == self ] by [ target >> purse ]
-    judge using tax
-        >= 0: levy(target)
-    end
+    decision hero
+        targets: Knight where (target >> owner) == self and (target >> deeds) > 0
+        score => worth(target)
+    xx
+    decision payer
+        targets: Knight where @gold < 5 and (target >> owner) == self
+        score => target >> purse
+    xx
+    judge_all
+        hero and (hero >> score) >= 0: pay(self, hero >> target)
+        payer and (payer >> score) >= 0: levy(self, payer >> target)
+    xx
 xx
 <>Knight |
     name: ""

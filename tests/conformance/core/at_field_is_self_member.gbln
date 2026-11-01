@@ -1,6 +1,6 @@
-/// known-gap: interp leaves "{@name}" placeholders as written
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// `@name` is `self >> name`: in an action, an `every` block, a decision's
-/// `where` and `by`. Another object's field is still `target >> name`.
+/// `targets: ... where` and `score`. Another object's field is still `target >> name`.
 <>F |
     name: ""
     hp: 10
@@ -11,10 +11,14 @@
     every 1 tick
         @hp |= @hp - 1
     end
-    hit | decision against F margin 0 where [ target >> side != @side ] by [ @hp / 10 ]
-    judge using hit
-        >= 0: strike(target)
-    end
+    decision foe
+        targets: F where (target >> side) != @side
+        score => @hp / 10
+        margin: 0
+    xx
+    judge
+        foe and (foe >> score) >= 0: strike(self, foe >> target)
+    xx
 xx
 act strike(f, t)
     a | f >> name

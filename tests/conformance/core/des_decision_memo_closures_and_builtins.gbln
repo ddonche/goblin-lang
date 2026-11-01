@@ -1,4 +1,4 @@
-/// known-gap: interp can't hold a builtin in a variable, and its formulas can't call actions
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// The decision memo keeps an action's answer only when nothing else can
 /// change it: a closure's answer depends on what it captured (`one` and
 /// `ten` share code), and a global holding a builtin that draws random
@@ -18,10 +18,13 @@ act pick_ok(x)
 xx
 <>Seer |
     name: ""
-    look | decision against Spot where [ pick_ok(self) ] by [ one(target >> v) + ten(target >> v) ]
-    judge using look
-        >= 0: show(target, score)
-    end
+    decision spot
+        targets: Spot where pick_ok(self)
+        score => one(target >> v) + ten(target >> v)
+    xx
+    judge
+        spot and (spot >> score) >= 0: show(self, spot >> target, spot >> score)
+    xx
 xx
 <>Spot |
     v: 0

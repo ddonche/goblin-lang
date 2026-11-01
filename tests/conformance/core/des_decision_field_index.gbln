@@ -1,5 +1,5 @@
-/// known-gap: interp scores targets differently (scaled scores)
-/// A condition `target >> pen == self >> pen` finds the targets through an
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// A condition `(target >> pen) == @pen` finds the targets through an
 /// index of that field, and the result is what checking every target gives:
 /// a change made by an earlier action is seen by the next decision, 1 and
 /// 1.0 are the same pen, and text compares as text. `:objects` with such a
@@ -8,10 +8,13 @@
 <>Wolf |
     name: ""
     pen: 0
-    hunt | decision against Sheep where [ target >> pen == self >> pen ] by [ target >> fat ]
-    judge using hunt
-        >= 0: eat(target)
-    end
+    decision prey
+        targets: Sheep where (target >> pen) == @pen
+        score => target >> fat
+    xx
+    judge
+        prey and (prey >> score) >= 0: eat(self, prey >> target)
+    xx
 xx
 <>Sheep |
     name: ""
