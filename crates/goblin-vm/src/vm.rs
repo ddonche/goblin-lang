@@ -2056,6 +2056,16 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::OverlayBang | BuiltinId::DetachBang | BuiltinId::LinkBang | BuiltinId::UnlinkBang => {
+                        match id {
+                            BuiltinId::OverlayBang => self.vm_overlay_bang(arg_vals)?,
+                            BuiltinId::DetachBang => self.vm_detach_bang(arg_vals)?,
+                            BuiltinId::LinkBang => self.vm_link_bang(arg_vals)?,
+                            _ => self.vm_unlink_bang(arg_vals)?,
+                        }
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
                     BuiltinId::LinkScore => {
                         let result = self.vm_link_score(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -2124,6 +2134,22 @@ impl Vm {
                     BuiltinId::Objects => {
                         let (class, pred) = query_args(arg_vals, "objects")?;
                         let result = self.vm_objects_query(class.as_deref(), pred)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    // `:overlays(host)` / `:overlays(host, overlay)`: the
+                    // copies on one object.
+                    BuiltinId::Overlays if matches!(arg_vals.first(), Some(Value::Object(_) | Value::Ref(_))) => {
+                        let host = match &arg_vals[0] { Value::Object(o) => o.uuid.to_string(), Value::Ref(u) => u.to_string(), _ => unreachable!() };
+                        let name = match arg_vals.get(1) {
+                            None => None,
+                            Some(Value::Str(s)) => Some(s.to_string()),
+                            Some(other) => return Err(GoblinError::type_error("overlay", other.type_name(), "overlays")),
+                        };
+                        if arg_vals.len() > 2 {
+                            return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "overlays".into() });
+                        }
+                        let result = self.vm_overlays_on(&host, name.as_deref())?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -2811,7 +2837,7 @@ impl Vm {
                     des_id,
                 };
                 // Caps / replaces / stacks decide what a second copy does.
-                crate::tick::overlay_push(self, inst);
+                crate::tick::overlay_push(self, inst)?;
             }
 
             Opcode::OverlayDetach(i) => {
@@ -2828,6 +2854,7 @@ impl Vm {
                     let same_host = match &host_uuid { Some(u) => inst.host_uuid == *u, None => inst.host_var == *host_var_name };
                     !(inst.overlay_name == *overlay_name && same_host)
                 });
+                crate::tick::settle_films(&mut self.session);
             }
 
             Opcode::LinkDef(i) => {
@@ -6030,19 +6057,12 @@ impl Vm {
         fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
         fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
         fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
-        fields.insert("strength".to_string(), Value::Float(inst.strength));
+        fields.insert("intensity".to_string(), Value::Float(inst.strength));
         fields.insert("age".to_string(), Value::Int(inst.age as i64));
         fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
             Some(t) => Value::Int(t as i64),
             None => Value::Nil,
         });
-        let count_key = self.session.overlay_defs.get(&inst.overlay_name)
-            .and_then(|d| {
-                use crate::session::OverlayApplyBehavior;
-                if let OverlayApplyBehavior::Stacks { label: Some(ref l) } = d.apply_behavior { Some(l.clone()) } else { None }
-            })
-            .unwrap_or_else(|| "count".to_string());
-        fields.insert(count_key, Value::Int(inst.count as i64));
         for (k, v) in &inst.extra_fields {
             fields.insert(k.clone(), v.clone());
         }
@@ -6059,6 +6079,25 @@ impl Vm {
     /// `:overlays(...)`: every overlay, or one overlay's instances (read
     /// from the overlay list's own index), those `pred` holds for when there
     /// is one. In a region, other regions' overlays are included.
+    /// The overlay copies on one host, in the order they were put on.
+    fn vm_overlays_on(&mut self, host: &str, name: Option<&str>) -> Result<Value, GoblinError> {
+        if let Some(n) = name {
+            if !self.session.overlay_defs.contains_key(n) {
+                return Err(GoblinError::Runtime(format!("R1231: unknown-overlay: no overlay named '{n}'")));
+            }
+        }
+        let list = &self.session.overlay_instances;
+        let mut records: Vec<Value> = list.on_host(host).iter()
+            .filter(|&&p| name.is_none_or(|n| list[p].overlay_name == n))
+            .map(|&p| self.overlay_record(&list[p])).collect();
+        if self.session.world.is_some() {
+            for inst in crate::world::view_overlays(self) {
+                if inst.host_uuid == host && name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+            }
+        }
+        Ok(Value::Array(records))
+    }
+
     fn vm_overlays_query(&mut self, name: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
         if let Some(n) = name {
             if !self.session.overlay_defs.contains_key(n) {
@@ -6101,6 +6140,150 @@ impl Vm {
     /// `:link_score(a, b, "trade")`: a's link to b (one way), as
     /// `crate::tick::link_value` works it out. The older form names the
     /// class and the two variables: `:link_score("Nation", "trade", "a", "b")`.
+    /// `:overlay!(obj, overlay, intensity, ticks)`: puts the overlay on the
+    /// object. Intensity (0..1) and ticks are optional: the overlay's own
+    /// `~intensity:` and `lasts:` apply without them.
+    fn vm_overlay_bang(&mut self, args: Vec<Value>) -> Result<(), GoblinError> {
+        use crate::session::{OverlayInstance, OverlayInstanceId};
+        if !(2..=4).contains(&args.len()) {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "overlay!".into() });
+        }
+        let name = match &args[1] {
+            Value::Str(s) => s.to_string(),
+            other => return Err(GoblinError::Runtime(format!("R1223: overlay-apply: `:overlay!` takes an overlay second, got {}", other.type_name()))),
+        };
+        let def = self.session.overlay_defs.get(name.as_str()).cloned()
+            .ok_or_else(|| GoblinError::Runtime(format!("R1223: overlay-apply: there is no overlay named {name}")))?;
+        let bad = |what: &str, v: &Value| GoblinError::Runtime(format!(
+            "R1223: overlay-apply: overlay {name} {what}, got {}", v.type_name()));
+        let (host_uuid, class) = match &args[0] {
+            Value::Object(o) => (o.uuid.to_string(), Some(o.class_name.to_string())),
+            Value::Ref(u) => (u.to_string(), match self.session.object_store.get(u) { Some(Value::Object(o)) => Some(o.class_name.to_string()), _ => None }),
+            v => return Err(bad("goes on an object", v)),
+        };
+        let Some(class) = class else {
+            return Err(GoblinError::Runtime(format!("R1223: overlay-apply: overlay {name} goes on an object that was erased")));
+        };
+        if !def.host_types.is_empty() && !def.host_types.iter().any(|t| *t == class) {
+            return Err(GoblinError::Runtime(format!(
+                "R1202: overlay-host-type-mismatch: overlay '{}' cannot occupy '{}' (valid hosts: {})",
+                name, class, def.host_types.join(", "))));
+        }
+        let intensity = match args.get(2) {
+            None | Some(Value::Nil) => def.intensity,
+            Some(Value::Int(n)) => *n as f64,
+            Some(Value::Float(f)) => *f,
+            Some(v) => return Err(bad("needs a number for its intensity", v)),
+        };
+        if !(0.0..=1.0).contains(&intensity) {
+            return Err(GoblinError::Runtime(format!("R1223: overlay-apply: overlay {name}: intensity {intensity} is outside 0..1")));
+        }
+        let ticks = match args.get(3) {
+            None | Some(Value::Nil) => def.default_duration,
+            Some(Value::Int(n)) if *n >= 0 && *n <= u32::MAX as i64 => Some(*n as u32),
+            Some(v) => return Err(bad("needs a whole number of ticks, 0 or more", v)),
+        };
+        let host_var = crate::tick::host_name(self, &host_uuid);
+        let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
+        self.session.des_overlay_id_counter += 1;
+        crate::tick::overlay_push(self, OverlayInstance {
+            overlay_name: name,
+            host_var,
+            host_uuid,
+            strength: intensity,
+            age: 0,
+            ticks_remaining: ticks,
+            count: 1,
+            applied: Vec::new(),
+            extra_fields: def.extra_fields.clone(),
+            des_id,
+        })
+    }
+
+    /// `:detach!(obj, overlay)`: takes every copy of the overlay off the
+    /// object. Its `on end` doesn't run (it didn't run out).
+    fn vm_detach_bang(&mut self, args: Vec<Value>) -> Result<(), GoblinError> {
+        if args.len() != 2 {
+            return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "detach!".into() });
+        }
+        let name = match &args[1] {
+            Value::Str(s) => s.to_string(),
+            other => return Err(GoblinError::Runtime(format!("R1223: overlay-apply: `:detach!` takes an overlay second, got {}", other.type_name()))),
+        };
+        if !self.session.overlay_defs.contains_key(name.as_str()) {
+            return Err(GoblinError::Runtime(format!("R1223: overlay-apply: there is no overlay named {name}")));
+        }
+        let host = match &args[0] {
+            Value::Object(o) => o.uuid.clone(),
+            Value::Ref(u) => u.clone(),
+            other => return Err(GoblinError::Runtime(format!("R1223: overlay-apply: `:detach!` takes an object first, got {}", other.type_name()))),
+        };
+        // A region's object: its region takes the overlay off next tick.
+        if crate::world::detach_in_region(&mut self.session, &host, &name) { return Ok(()); }
+        let places: Vec<usize> = self.session.overlay_instances.on_host(&host).iter().copied()
+            .filter(|&p| self.session.overlay_instances[p].overlay_name == name).collect();
+        for gone in self.session.overlay_instances.take_at(&places) {
+            if let Some(hh) = self.session.des_store.handle_for_name(&gone.host_var) {
+                self.session.des_index.remove_overlay(hh, &gone.overlay_name, gone.des_id);
+            }
+        }
+        crate::tick::settle_films(&mut self.session);
+        Ok(())
+    }
+
+    /// `:link!(a, b, link, change, ticks)`: changes a's link to b (b's link
+    /// to a is its own). Without ticks the change lasts, kept inside the
+    /// link's range; with them it is taken back when they run out.
+    fn vm_link_bang(&mut self, args: Vec<Value>) -> Result<(), GoblinError> {
+        use crate::session::LinkOffset;
+        if !(4..=5).contains(&args.len()) {
+            return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "link!".into() });
+        }
+        let channel = match &args[2] {
+            Value::Str(s) => s.to_string(),
+            other => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:link!` takes a link third, got {}", other.type_name()))),
+        };
+        let value = match &args[3] {
+            Value::Int(n) => *n as f64,
+            Value::Float(f) => *f,
+            other => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:link!` changes link {channel} by a number, got {}", other.type_name()))),
+        };
+        let ticks = match args.get(4) {
+            None | Some(Value::Nil) => None,
+            Some(Value::Int(n)) if *n > 0 && *n <= u32::MAX as i64 => Some(*n as u32),
+            Some(v) => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:link!` needs a whole number of ticks above 0, got {}", v.type_name()))),
+        };
+        let (from_id, to_id) = (self.link_end(&args[0], "a")?, self.link_end(&args[1], "b")?);
+        let (lo, hi) = crate::tick::link_bounds(self, &from_id, &channel)?;
+        let key = (from_id.clone(), to_id.clone(), channel.clone());
+        if ticks.is_none() {
+            let base = crate::tick::link_base(self, &from_id, &to_id, &channel)?;
+            let offsets = self.session.link_offsets.entry(key).or_default();
+            let lasting: f64 = offsets.iter().filter(|o| o.ticks_remaining.is_none()).map(|o| o.value).sum();
+            let kept = (base + lasting + value).clamp(lo, hi) - base;
+            offsets.retain(|o| o.ticks_remaining.is_some());
+            offsets.push(LinkOffset { value: kept, ticks_remaining: None });
+        } else {
+            self.session.link_offsets.entry(key).or_default().push(LinkOffset { value, ticks_remaining: ticks });
+        }
+        Ok(())
+    }
+
+    /// `:unlink!(a, b, link)`: takes back every change to a's link to b.
+    fn vm_unlink_bang(&mut self, args: Vec<Value>) -> Result<(), GoblinError> {
+        if args.len() != 3 {
+            return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "unlink!".into() });
+        }
+        let channel = match &args[2] {
+            Value::Str(s) => s.to_string(),
+            other => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:unlink!` takes a link third, got {}", other.type_name()))),
+        };
+        let key = (self.link_end(&args[0], "a")?, self.link_end(&args[1], "b")?, channel);
+        self.session.link_offsets.remove(&key);
+        self.session.des_link_ids.remove(&key);
+        Ok(())
+    }
+
     fn vm_link_score(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
         self.link_score_in(&args, None)
     }

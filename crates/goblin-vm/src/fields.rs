@@ -204,6 +204,19 @@ impl FieldMap {
         }
     }
 
+    /// Takes these values as already showing this film (an object that
+    /// came from another session with its overlays): the stored values are
+    /// worked out from them.
+    pub fn adopt_film(&mut self, adds: &[(usize, f64)], clamp: &dyn Fn(&str) -> bool) {
+        self.film = None;
+        let n = self.vals.len();
+        let mut add = vec![0.0; n];
+        for &(i, a) in adds { if i < n { add[i] += a; } }
+        if add.iter().all(|a| *a == 0.0) { return; }
+        let base = (0..n).map(|i| unfilmed(&self.vals[i], add[i], clamp(&self.layout.names[i]))).collect();
+        self.film = Some(Box::new(Film { base, add, written: vec![false; n] }));
+    }
+
     /// The stored value of a field (what it holds without the film).
     pub fn stored(&self, name: &str, clamp: bool) -> Option<Value> {
         let i = self.get_index_of(name)?;
@@ -290,16 +303,25 @@ impl FieldMap {
 
     /// Keeps the fields `keep` says yes to, in order.
     pub fn retain(&mut self, mut keep: impl FnMut(&String, &mut Value) -> bool) {
-        // A film doesn't outlast fields being dropped: what reading gives
-        // is what stays.
-        self.film = None;
         let mut names = Vec::with_capacity(self.vals.len());
         let mut vals = Vec::with_capacity(self.vals.len());
-        let mut changed = false;
+        let mut kept = Vec::with_capacity(self.vals.len());
         for (n, mut v) in self.layout.names.iter().zip(std::mem::take(&mut self.vals)) {
-            if keep(n, &mut v) { names.push(n.as_str()); vals.push(v); } else { changed = true; }
+            // `keep` may change the value: it counts as written.
+            let k = keep(n, &mut v);
+            kept.push(k);
+            if k { names.push(n.as_str()); vals.push(v); }
         }
-        if changed { self.layout = Layout::of(names.into_iter()); }
+        if let Some(f) = &mut self.film {
+            let mut i = 0;
+            f.base.retain(|_| { i += 1; kept[i - 1] });
+            let mut i = 0;
+            f.add.retain(|_| { i += 1; kept[i - 1] });
+            let mut i = 0;
+            f.written.retain(|_| { i += 1; kept[i - 1] });
+            f.written.iter_mut().for_each(|w| *w = true);
+        }
+        if kept.iter().any(|k| !k) { self.layout = Layout::of(names.into_iter()); }
         self.vals = vals;
     }
 }

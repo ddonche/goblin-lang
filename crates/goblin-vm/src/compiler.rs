@@ -3462,12 +3462,29 @@ impl Compiler {
             // the class's name, as if quoted.
             let fixed: Vec<Expr>;
             let args: &[Expr] = match args.first() {
-                Some(Expr::Ident(n, sp)) if self.is_bare_class_name(n) => {
+                Some(Expr::Ident(n, sp)) if self.is_bare_class_name(n)
+                    || (bare == "overlays" && n != "it" && n != "self" && self.resolve_load(n).is_err()) => {
                     fixed = std::iter::once(Expr::Str(n.clone(), sp.clone())).chain(args[1..].iter().cloned()).collect();
                     &fixed
                 }
                 _ => args,
             };
+            // `:overlays(@)`, `:overlays(target, flu)`: the overlays on one
+            // object (its first argument a variable, or a field path from
+            // one, not `it`).
+            if bare == "overlays" {
+                let mut root = args.first();
+                while let Some(Expr::Member(o, _, _)) = root { root = Some(&**o); }
+                let host = match root {
+                    Some(Expr::Ident(n, _)) => n != "it" && (n == "self" || self.resolve_load(n).is_ok()),
+                    _ => false,
+                };
+                if host {
+                    for arg in args { self.compile_expr(arg)?; }
+                    self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+                    return Ok(Some(()));
+                }
+            }
             // `:objects("Item", it >> owner == pack)`: read pack's contents
             // list. The predicate still runs on each of them, so the result
             // is the same; the VM falls back to the class list when it can't
@@ -4025,6 +4042,10 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "overlays_of"                    => BuiltinId::OverlaysOf,
         "overlay_strength"               => BuiltinId::OverlayStrength,
         "link_score"                     => BuiltinId::LinkScore,
+        "overlay!"                       => BuiltinId::OverlayBang,
+        "detach!"                        => BuiltinId::DetachBang,
+        "link!"                          => BuiltinId::LinkBang,
+        "unlink!"                        => BuiltinId::UnlinkBang,
         "owned_by"                       => BuiltinId::OwnedBy,
         "owns_tree"                      => BuiltinId::OwnsTree,
         "clone_object"                   => BuiltinId::CloneObject,
@@ -4239,6 +4260,7 @@ fn bang_mutates_target(bare: &str) -> bool {
         "write_text!", "write_json!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
         "delete_object!", "delete_overlays_on!", "swarm!", "move!",
+        "overlay!", "detach!", "link!", "unlink!",
     ];
     bare.ends_with('!') && !DESTRUCTIVE.contains(&bare)
 }

@@ -615,6 +615,9 @@ pub struct OverlayList {
     items: Vec<OverlayInstance>,
     by_host: FxHashMap<String, Vec<usize>>,
     by_name: FxHashMap<String, Vec<usize>>,
+    /// Hosts whose overlays changed since their film was last worked out
+    /// (`tick::settle_films`).
+    dirty: Vec<String>,
 }
 
 impl std::ops::Deref for OverlayList {
@@ -657,6 +660,7 @@ fn list_remap(map: &mut FxHashMap<String, Vec<usize>>, to: &[usize]) {
 
 impl OverlayList {
     pub fn push(&mut self, inst: OverlayInstance) {
+        self.dirty.push(inst.host_uuid.clone());
         let at = self.items.len();
         list_push(&mut self.by_host, &inst.host_uuid, at);
         list_push(&mut self.by_name, &inst.overlay_name, at);
@@ -665,6 +669,7 @@ impl OverlayList {
 
     pub fn remove(&mut self, at: usize) -> OverlayInstance {
         let inst = self.items.remove(at);
+        self.dirty.push(inst.host_uuid.clone());
         let to: Vec<usize> = (0..=self.items.len())
             .map(|p| if p == at { usize::MAX } else if p > at { p - 1 } else { p })
             .collect();
@@ -687,7 +692,7 @@ impl OverlayList {
         let mut taken = Vec::with_capacity(places.len());
         let mut kept = Vec::with_capacity(next);
         for (inst, g) in std::mem::take(&mut self.items).into_iter().zip(gone) {
-            if g { taken.push(inst); } else { kept.push(inst); }
+            if g { self.dirty.push(inst.host_uuid.clone()); taken.push(inst); } else { kept.push(inst); }
         }
         self.items = kept;
         list_remap(&mut self.by_host, &to);
@@ -700,7 +705,7 @@ impl OverlayList {
         let mut to = Vec::with_capacity(self.items.len());
         let mut next = 0;
         for inst in &self.items {
-            if keep(inst) { to.push(next); next += 1; } else { to.push(usize::MAX); }
+            if keep(inst) { to.push(next); next += 1; } else { to.push(usize::MAX); self.dirty.push(inst.host_uuid.clone()); }
         }
         if next == self.items.len() { return; }
         let mut i = 0;
@@ -711,6 +716,7 @@ impl OverlayList {
 
     /// Give the overlay at `at` another name (a transition).
     pub fn rename(&mut self, at: usize, name: String) {
+        self.dirty.push(self.items[at].host_uuid.clone());
         let old = std::mem::replace(&mut self.items[at].overlay_name, name);
         list_drop(&mut self.by_name, &old, at);
         let name = self.items[at].overlay_name.clone();
@@ -718,6 +724,22 @@ impl OverlayList {
         let i = v.partition_point(|&p| p < at);
         v.insert(i, at);
     }
+
+    /// Marks a host's film as needing to be worked out again (an overlay's
+    /// `applied` changed).
+    pub fn mark(&mut self, host: &str) { self.dirty.push(host.to_string()); }
+
+    /// The hosts whose film needs working out again, each once.
+    pub fn take_dirty(&mut self) -> Vec<String> {
+        let mut d = std::mem::take(&mut self.dirty);
+        if d.len() > 1 { d.sort_unstable(); d.dedup(); }
+        d
+    }
+
+    /// Forgets that a host's film needs working out (it was taken over as it is).
+    pub fn unmark(&mut self, host: &str) { self.dirty.retain(|h| h != host); }
+
+    pub fn has_dirty(&self) -> bool { !self.dirty.is_empty() }
 
     /// Where a host's overlays sit, in the order they were put on.
     pub fn on_host(&self, host: &str) -> &[usize] {

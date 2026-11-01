@@ -2741,7 +2741,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick => {
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick
+        | BuiltinId::OverlayBang | BuiltinId::DetachBang | BuiltinId::LinkBang | BuiltinId::UnlinkBang => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
 
@@ -3874,6 +3875,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let host_var = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_overlays_on")) };
             session.overlay_instances.retain(|oi| oi.host_var != host_var);
+            crate::tick::settle_films(session);
             Ok(Value::Nil)
         }
         // decision_debug reads every variable, so the VM handles it.
@@ -5386,6 +5388,7 @@ pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid
         }
     }
     session.overlay_instances.take_at(&places);
+    crate::tick::settle_films(session);
 }
 
 /// Erase an object and the runtime state attached to it (the interpreter's

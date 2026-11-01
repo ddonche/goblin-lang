@@ -508,14 +508,16 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             Item::ClearOverlays { host } => {
                 let var = vm.session.object_names.get(host).map(|(n, _)| n.clone()).unwrap_or_default();
                 crate::builtins::drop_overlays_for(&mut vm.session, &var, host);
+                crate::tick::settle_films(&mut vm.session);
             }
             Item::Detach { host, overlay } => {
                 vm.session.overlay_instances.retain(|i| !(i.host_uuid == *host && i.overlay_name == *overlay));
+                crate::tick::settle_films(&mut vm.session);
             }
             Item::Overlay(o) => {
                 if vm.session.object_store.contains_key(o.host()) {
                     let inst = overlay_from_p(o, &mut fp, &mut vm.session);
-                    crate::tick::overlay_push(vm, inst);
+                    crate::tick::overlay_push(vm, inst)?;
                 }
             }
             Item::Reinforce { host, overlay, amount } => {
@@ -736,14 +738,9 @@ pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance) 
     true
 }
 
-/// Spread onto another region's object that already has this overlay:
-/// the owner adds `amount` to it next tick. Returns true when sent.
-pub(crate) fn reinforce_remote(vm: &mut Vm, overlay: &str, host: &str, amount: f64) -> bool {
-    let Some(c) = vm.session.region.as_mut() else { return false };
-    if !c.remote_overlays.contains(&(overlay.to_string(), host.to_string())) { return false; }
-    c.sent.push((Dest::Object(host.to_string()),
-        Item::Reinforce { host: host.to_string(), overlay: overlay.to_string(), amount }));
-    true
+/// Whether another region's object, in view this tick, has this overlay.
+pub(crate) fn remote_has_overlay(vm: &Vm, overlay: &str, host: &str) -> bool {
+    vm.session.region.as_ref().is_some_and(|c| c.remote_overlays.contains(&(overlay.to_string(), host.to_string())))
 }
 
 // ── The program that runs the world, writing to the regions' objects ───────
@@ -954,6 +951,8 @@ fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
         let inst = overlay_from_p(o, fp, &mut vm.session);
         vm.session.overlay_instances.push(inst);
     }
+    // Its fields read through its overlays' film already.
+    if !a.overlays.is_empty() { crate::tick::adopt_films(&mut vm.session, &[a.uuid.to_string()]); }
 }
 
 // ── Ownership across regions ─────────────────────────────────────────────────

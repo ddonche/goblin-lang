@@ -6723,18 +6723,20 @@ impl<'t> Parser<'t> {
         }
 
         // -------- overlay declarations and applications --------
-        if self.peek_ident() == Some("overlay") {
+        // `:overlay!(...)`, `:detach!(...)`, `:link!(...)` are calls.
+        let bang_call = self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, goblin_lexer::TokenKind::Op(op) if op == "!"));
+        if self.peek_ident() == Some("overlay") && !bang_call {
             return self.parse_overlay_stmt();
         }
 
         // -------- detach overlay from host --------
-        if self.peek_ident() == Some("detach") {
+        if self.peek_ident() == Some("detach") && !bang_call {
             return self.parse_overlay_detach();
         }
 
         // -------- link definitions --------
         // class-level: link ClassName by [ formula ]
-        if self.peek_ident() == Some("link") {
+        if self.peek_ident() == Some("link") && !bang_call {
             return self.parse_link_def();
         }
 

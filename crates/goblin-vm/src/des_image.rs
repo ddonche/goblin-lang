@@ -167,6 +167,12 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
         let inst = overlay_from_p(o, fp, s);
         s.overlay_instances.push(inst);
     }
+    // The objects' fields read through their overlays' film already.
+    let hosts: Vec<String> = s.overlay_instances.iter().map(|i| i.host_uuid.clone()).collect();
+    if !hosts.is_empty() {
+        let mut hosts = hosts; hosts.sort_unstable(); hosts.dedup();
+        crate::tick::adopt_films(s, &hosts);
+    }
 }
 
 impl POverlay {
