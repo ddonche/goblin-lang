@@ -1172,6 +1172,8 @@ pub enum BuiltinId {
     Invoke,
     Summon,
     Provoke,
+    /// A decision's pick, worked out the first time the class judge reads it.
+    DecisionPick,
     Need,
     YallParse,
     YallParseFile,

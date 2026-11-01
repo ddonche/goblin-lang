@@ -99,6 +99,8 @@ enum PExpr {
         on_erase: Option<String>,
         one_of: Vec<Vec<String>>,
         order_by: Option<(ast::Expr, bool)>,
+        /// The class judge's action (`judge` over the block decisions).
+        decide: Option<String>,
     },
     EnumVariant {
         enum_name: String,
@@ -118,6 +120,9 @@ enum PExpr {
         pairs: Vec<(PExpr, Option<PExpr>)>, // NEW
     },
     Block(Vec<ast::Expr>),
+    /// A block of statements used as a value (a `score` block): its
+    /// `return` gives the value.
+    Stmts(Vec<ast::Stmt>),
     TemplateApply {
         type_name: String,
         pairs: Vec<(String, PExpr)>,
@@ -271,7 +276,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -1049,7 +1054,7 @@ impl<'t> Parser<'t> {
             StrInterp(ps) => ps.iter().all(|p| matches!(p, StrPart::Text(_) | StrPart::LValue{..})),
 
             // Conservative defaults for complex constructs
-            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | ObjectMatrix { .. } | BoxVar { .. } | Collect { .. } => false,
+            ClassDecl { .. } | TemplateApply { .. } | Judge { .. } | JudgeAll { .. } | Block(_) | Stmts(_) | ObjectMatrix { .. } | BoxVar { .. } | Collect { .. } => false,
         }
     }
 
@@ -1102,6 +1107,124 @@ impl<'t> Parser<'t> {
             }
         }
         closed
+    }
+
+    /// The body of a block whose head started at `col` (`every 1 tick`,
+    /// `score`, `targets Noble where`): its statements, then its closer.
+    fn parse_head_block(&mut self, col: u32, what: &str) -> Result<Vec<ast::Stmt>, String> {
+        let body = self.parse_indented_block(col, &["end"])?;
+        self.skip_stmt_separators();
+        if self.block_closed_hard {
+            self.block_closed_hard = false;
+        } else if self.peek_block_close() {
+            let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            if c != col {
+                return Err(s_help_site!(
+                    "P0222",
+                    &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                    &format!("Put 'xx' (crossbones) directly under '{what}'."),
+                ));
+            }
+            self.expect_block_close(what)?;
+        } else if !self.eat_layout_until_close(col) {
+            return Err(s_help_site!(
+                "P0212",
+                &format!("This {what} block is missing its closing 'xx' (crossbones)."),
+                "Close the block with 'xx' (crossbones).",
+            ));
+        }
+        Ok(body)
+    }
+
+    /// `decision sale` ... `xx` in a class body (the name is eaten):
+    /// `targets: Noble [where cond]` (or `targets Noble where` + a block),
+    /// `score => formula` (or `score` + a block), `margin: n`.
+    fn parse_decision_block(&mut self, col: u32, name: &str) -> Result<PDecisionDef, String> {
+        use goblin_lexer::TokenKind;
+        let mut target_class: Option<String> = None;
+        let mut filter: Option<Box<PExpr>> = None;
+        let mut formula: Option<Box<PExpr>> = None;
+        let mut margin: Option<f64> = None;
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P1410", &format!("The decision '{name}' is missing its closing 'xx'"), "Close the decision with 'xx' under 'decision'."));
+            }
+            if self.peek_block_close() {
+                let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if c != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                        "Put 'xx' (crossbones) directly under 'decision'."));
+                }
+                self.expect_block_close("decision")?;
+                break;
+            }
+            let line_col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            let Some(kw) = self.eat_ident() else {
+                return Err(s_help_site!("P1411", &format!("Expected `targets:`, `score` or `margin:` in the decision '{name}'"),
+                    "Write: decision sale\n    targets: Noble where (target >> gold) > 60\n    score => target >> gold\nxx"));
+            };
+            match kw.as_str() {
+                "targets" => {
+                    let data = self.eat_op(":");
+                    self.skip_layout_inline();
+                    let Some(cls) = self.eat_ident() else {
+                        return Err(s_help_site!("P1403", "Expected a class name after 'targets:'", "Write: targets: Noble where (target >> gold) > 60"));
+                    };
+                    target_class = Some(cls);
+                    self.skip_layout_inline();
+                    if self.peek_ident() == Some("where") {
+                        let _ = self.eat_ident();
+                        self.skip_layout_inline();
+                        if data {
+                            let pe = self.parse_coalesce()?;
+                            filter = Some(Box::new(pe));
+                        } else {
+                            let body = self.parse_head_block(line_col, "targets")?;
+                            filter = Some(Box::new(PExpr::Stmts(body)));
+                        }
+                    } else if !data {
+                        return Err(s_help_site!("P1412", "A `targets` block needs `where`", "Write: targets Noble where\n        ...\n        return true\n    xx"));
+                    }
+                }
+                "score" => {
+                    self.skip_layout_inline();
+                    if self.eat_op("=>") {
+                        self.skip_layout_inline();
+                        let pe = self.parse_coalesce()?;
+                        formula = Some(Box::new(pe));
+                    } else {
+                        let body = self.parse_head_block(line_col, "score")?;
+                        formula = Some(Box::new(PExpr::Stmts(body)));
+                    }
+                }
+                "margin" => {
+                    if !self.eat_op(":") {
+                        return Err(s_help_site!("P1409", "Expected ':' after 'margin'", "Write: margin: 10"));
+                    }
+                    self.skip_layout_inline();
+                    let Some(m) = self.eat_number_f64() else {
+                        return Err(s_help_site!("P1409", "Expected a number after 'margin:'", "Write: margin: 10"));
+                    };
+                    margin = Some(m);
+                }
+                other => {
+                    return Err(s_help_site!("P1411", &format!("`{other}` is not part of a decision: write `targets:`, `score` or `margin:`"),
+                        "Write: decision sale\n    targets: Noble where (target >> gold) > 60\n    score => target >> gold\nxx"));
+                }
+            }
+        }
+        let Some(target_class) = target_class else {
+            return Err(s_help_site!("P1413", &format!("The decision '{name}' has no `targets:`"), "Write: targets: Noble"));
+        };
+        Ok(PDecisionDef {
+            target_class,
+            formula: formula.unwrap_or_else(|| Box::new(PExpr::Int("1".into()))),
+            margin,
+            filter,
+        })
     }
 
     fn parse_indented_block(&mut self, start_col: u32, stop_keywords: &[&str]) -> Result<Vec<ast::Stmt>, String> {
@@ -1906,6 +2029,8 @@ impl<'t> Parser<'t> {
                     span: sp,
                 }
             }
+
+            PExpr::Stmts(stmts) => ast::Expr::Block { stmts, span: sp },
 
             PExpr::Block(exprs) => {
                 // exprs: Vec<ast::Expr>  →  stmts: Vec<ast::Stmt>
@@ -4080,10 +4205,20 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
-                // `order by [ ... ]` (a field named `order` is followed by ':').
+                // `order by [ ... ]` / `order: formula`: how the objects line up.
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("order")
-                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+                    && self.toks.get(self.i + 1).is_some_and(|t| (matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
+                        || matches!(&t.kind, TokenKind::Op(o) if o == ":"))
                 {
+                    break;
+                }
+                // `decision sale` starts a decision block.
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("decision")
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+                {
+                    break;
+                }
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("judge_all") {
                     break;
                 }
                 // `one of a, b` (a field named `one` is followed by ':').
@@ -4206,7 +4341,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4223,6 +4358,9 @@ impl<'t> Parser<'t> {
         let mut one_of: Vec<Vec<String>> = Vec::new();
         // `order by [ expr ] desc`: the order the class's objects decide in.
         let mut order_by: Option<(ast::Expr, bool)> = None;
+        // `judge` over the block decisions: the method it becomes.
+        let mut decide: Option<String> = None;
+        let mut block_decisions = false;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
 
@@ -4242,7 +4380,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
                 }
             }
 
@@ -4266,7 +4404,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
             }
 
             if self.is_eof() {
@@ -4297,6 +4435,63 @@ impl<'t> Parser<'t> {
             // Handle judge block inside class
             let is_judge = matches!(act_tok.kind, TokenKind::Ident)
                 && act_tok.value.as_deref() == Some("judge");
+
+            // `decision sale` ... `xx`: one of the things the object can do.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("decision")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            {
+                let col = act_tok.span.col_start;
+                self.i += 1;
+                let dname = self.eat_ident().unwrap_or_default();
+                if decide.is_some() {
+                    return Err(s_help_site!("P1414", &format!("The decision '{dname}' comes after the class's judge"),
+                        "Write every decision first, then the judge that chooses between them."));
+                }
+                if named.iter().any(|(n, _, _)| *n == dname) {
+                    return Err(s_help_site!("P1407", &format!("This class already has a decision named '{}'", dname),
+                        "Give each decision its own name."));
+                }
+                let d = self.parse_decision_block(col, &dname)?;
+                if decision.is_none() { decision = Some(d.clone()); }
+                block_decisions = true;
+                named.push((dname, d, None));
+                self.skip_stmt_separators();
+                continue;
+            }
+
+            // The class's `judge` / `judge_all` over its block decisions:
+            // an ordinary judge, run as a method that gets each decision's
+            // pick (`{target, score}`, or nil) under the decision's name.
+            if block_decisions && matches!(act_tok.kind, TokenKind::Ident)
+                && matches!(act_tok.value.as_deref(), Some("judge") | Some("judge_all"))
+            {
+                if decide.is_some() {
+                    return Err(s_help_site!("P1408", "This class already has a judge",
+                        "Write one judge that chooses between all of the class's decisions."));
+                }
+                let stmt = if act_tok.value.as_deref() == Some("judge") { self.parse_judge_stmt()? } else { self.parse_judge_all_stmt()? };
+                let action = "judge #decisions".to_string();
+                actions.push(PAction { name: action.clone(), params: Vec::new(), body: vec![stmt], is_single: false });
+                decide = Some(action);
+                self.skip_stmt_separators();
+                continue;
+            }
+
+            // `order: formula`: the objects act in the order of this value,
+            // lowest first (`order: -@speed` puts the fastest first).
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("order")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":"))
+            {
+                self.i += 2;
+                self.skip_layout_inline();
+                if order_by.is_some() {
+                    return Err(s_help_site!("P1568", "A class can have only one 'order:'", "Write: order: -@speed"));
+                }
+                let key_pe = self.parse_coalesce()?;
+                order_by = Some((self.lower_expr(key_pe), false));
+                self.skip_stmt_separators();
+                continue;
+            }
 
             if is_decision {
                 self.i += 1; // consume the decision's name
@@ -4651,7 +4846,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -4727,7 +4922,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -4876,8 +5071,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
                     }
                 }
 
@@ -6989,6 +7184,7 @@ impl<'t> Parser<'t> {
             on_erase: None,
             one_of: Vec::new(),
             order_by: None,
+            decide: None,
             span: sp.clone(),
         }));
 
@@ -7129,7 +7325,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } => {
                 // Each name in `one of` must be a named decision of the class.
                 for n in one_of.iter().flatten() {
                     if !named.iter().any(|(d, _, _)| d == n) {
@@ -7215,6 +7411,7 @@ impl<'t> Parser<'t> {
                     on_erase,
                     one_of,
                     order_by,
+                    decide,
                     span: sp,
                 }))
             }

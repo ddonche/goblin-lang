@@ -170,6 +170,8 @@ pub struct Vm {
     /// During a decision pass: the memo of the decisions worked out since
     /// anything last changed, kept for the next one (see `tick::decide`).
     pub(crate) memo_kept: Option<Box<crate::memo::Memo>>,
+    /// The object whose class judge is running, with the picks made so far.
+    pub(crate) deciding: Option<Box<crate::tick::Deciding>>,
     /// Whether each function seen only reads (memo.rs), kept with it.
     reads_only: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
     /// The operand stack `run_formula_in` uses, kept between runs.
@@ -218,7 +220,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2010,6 +2012,11 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::DecisionPick => {
+                        let result = crate::tick::decision_pick(self, arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
                     BuiltinId::Provoke => {
                         let result = self.vm_provoke(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -2972,9 +2979,11 @@ impl Vm {
                         _ => return Err(GoblinError::Runtime("LoadNamed: name constant must be a string".into())),
                     }
                 };
-                let value = self.session.named_values.get(name.as_str())
-                    .ok_or_else(|| GoblinError::UndefinedVariable { name: name.to_string() })?
-                    .clone();
+                let value = match self.session.named_values.get(name.as_str()) {
+                    Some(v) => v.clone(),
+                    None => self.des_name(&name)
+                        .ok_or_else(|| GoblinError::UndefinedVariable { name: name.to_string() })?,
+                };
                 self.stack.push(Operand::Val(value));
             }
 
@@ -3035,7 +3044,7 @@ impl Vm {
                 let result = match found {
                     Some(v) => v,
                     None if self.self_has_field(&field_name) => return Err(Self::not_a_variable(&field_name)),
-                    None => Value::Nil,
+                    None => self.des_name(&field_name).unwrap_or(Value::Nil),
                 };
                 self.stack.push(Operand::Val(result));
             }
@@ -3191,6 +3200,16 @@ impl Vm {
             Ok(Value::Ref(u)) => matches!(self.session.object_store.get(&u), Some(Value::Object(o)) if o.fields.contains_key(name)),
             _ => false,
         }
+    }
+
+    /// A bare class, overlay or link name (`:objects(Rabbit)`,
+    /// `:link_score(a, b, culture)`) stands for that name.
+    fn des_name(&self, name: &str) -> Option<Value> {
+        let s = &self.session;
+        let known = s.classes.contains_key(name)
+            || s.overlay_defs.contains_key(name)
+            || s.link_defs.keys().any(|(_, ch)| ch == name);
+        known.then(|| Value::Str(name.to_string().into()))
     }
 
     fn not_a_variable(name: &str) -> GoblinError {

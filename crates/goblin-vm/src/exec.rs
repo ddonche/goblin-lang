@@ -116,6 +116,9 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         };
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
+        if class.decide.as_deref() == Some(action.name.as_str()) {
+            compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect();
+        }
         let compiled = compiler.compile_action(&pseudo).or_else(|e| {
             // A method that does not compile reports why when it is called,
             // instead of going missing.

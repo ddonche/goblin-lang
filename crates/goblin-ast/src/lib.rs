@@ -298,6 +298,9 @@ pub struct ClassDecl {
     /// `order by [ expr ] desc`: the order the class's objects make their
     /// decisions in; true = descending.
     pub order_by: Option<(Expr, bool)>,
+    /// The class's `judge` over its block decisions: a method (named
+    /// this) taking each decision's pick, in order, as an argument.
+    pub decide: Option<String>,
     pub span: Span,
 }
 

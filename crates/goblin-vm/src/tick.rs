@@ -954,6 +954,22 @@ fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value:
         // object, so a class an earlier action installed is seen here.
         let classes = vm.session.classes.clone();
         let Some(class) = classes.get(&class_name) else { continue };
+        // `judge` over block decisions: the class's judge (a method) runs,
+        // and each decision picks the first time the judge reads it.
+        if let Some(action) = &class.decide {
+            let prev = vm.deciding.replace(Box::new(Deciding {
+                self_uuid: self_uuid.clone(),
+                class: classes.clone(),
+                class_name: class_name.clone(),
+                picks: vec![None; class.decisions.len()],
+                targets: std::mem::take(targets),
+            }));
+            let out = action_result(vm, &self_uuid, action, Vec::new());
+            if let Some(d) = std::mem::replace(&mut vm.deciding, prev) { *targets = d.targets; }
+            vm.memo_kept = None;
+            out?;
+            continue;
+        }
         let obj_decision = object_decision(&vm.session, &self_uuid);
         // The object's decisions in order, each with its judge and the name
         // its score goes by. An object-level decision replaces the first.
@@ -1060,7 +1076,7 @@ pub(crate) struct DecidePlan {
     judge_calls: Option<Vec<String>>,
 }
 
-fn decide_plan(vm: &mut Vm, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<std::rc::Rc<DecidePlan>, String> {
+fn decide_plan(vm: &mut Vm, decision: &goblin_ast::DecisionDef, judge: Option<&goblin_ast::JudgeStmt>) -> Result<std::rc::Rc<DecidePlan>, String> {
     // Kept while the class table is the one they were made from; the
     // table is shared with this cache, so its decisions keep their
     // addresses. A decision given to one object is told apart by where
@@ -1071,7 +1087,7 @@ fn decide_plan(vm: &mut Vm, decision: &goblin_ast::DecisionDef, judge: &goblin_a
         vm.decide_classes = Some(classes);
     }
     let sp = decision.formula.span();
-    let key = (decision as *const _ as usize, judge as *const _ as usize, sp.start, sp.end, sp.file.as_ptr() as usize);
+    let key = (decision as *const _ as usize, judge.map_or(0, |j| j as *const _ as usize), sp.start, sp.end, sp.file.as_ptr() as usize);
     if let Some(p) = vm.decide_plans.get(&key) { return Ok(p.clone()); }
     let formula = vm.tick_formula(&decision.formula, &["self", "target"])
         .map_err(|e| format!("the formula can't be compiled: {e}"))?;
@@ -1082,7 +1098,7 @@ fn decide_plan(vm: &mut Vm, decision: &goblin_ast::DecisionDef, judge: &goblin_a
     };
     let filter_calls = match &decision.filter { Some(f) => crate::compiler::read_calls(f), None => Some(Vec::new()) };
     let mut judge_calls = Some(Vec::new());
-    for c in judge.arms.iter().filter_map(|a| a.condition.as_ref()) {
+    for c in judge.iter().flat_map(|j| j.arms.iter()).filter_map(|a| a.condition.as_ref()) {
         judge_calls = match (judge_calls, crate::compiler::read_calls(c)) {
             (Some(mut a), Some(b)) => { a.extend(b); Some(a) }
             _ => None,
@@ -1358,7 +1374,49 @@ fn score_targets(
     Ok((target_candidates, scored))
 }
 
-fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
+/// The object whose class judge runs, and its decisions' picks so far.
+pub(crate) struct Deciding {
+    self_uuid: crate::value::ObjId,
+    class: std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>,
+    class_name: String,
+    picks: Vec<Option<Value>>,
+    targets: Targets,
+}
+
+/// A decision's name read in its class's judge: its pick (`{target,
+/// score}`), or nil when no target qualifies. Made once, when first read.
+pub(crate) fn decision_pick(vm: &mut Vm, args: Vec<Value>) -> Result<Value, GoblinError> {
+    let name = match args.first() { Some(Value::Str(s)) => s.to_string(), _ => String::new() };
+    let Some(mut d) = vm.deciding.take() else {
+        return Err(GoblinError::Runtime(format!("R1223: decision-outside-judge: `{name}` is a decision; its pick is read in the class's judge")));
+    };
+    let out = (|| {
+        let class = d.class.get(&d.class_name).ok_or_else(|| GoblinError::Runtime("decision class is gone".into()))?;
+        let Some(i) = class.decisions.iter().position(|nd| nd.name == name) else { return Ok(Value::Nil) };
+        if let Some(v) = &d.picks[i] { return Ok(v.clone()); }
+        let nd = &class.decisions[i];
+        let v = match pick(vm, &mut d.targets, &d.self_uuid, &nd.name, &nd.decision, None)? {
+            Some(Pick { target, score }) => {
+                let mut m = std::collections::BTreeMap::new();
+                m.insert("target".to_string(), Value::Ref(target));
+                m.insert("score".to_string(), Value::Float(score));
+                Value::Map(m)
+            }
+            None => Value::Nil,
+        };
+        d.picks[i] = Some(v.clone());
+        Ok(v)
+    })();
+    vm.deciding = Some(d);
+    out
+}
+
+/// A decision's pick: the target it chose and that target's score.
+struct Pick { target: crate::value::ObjId, score: f64 }
+
+/// One decision of one object: score the targets and pick the best (within
+/// the object's `margin`). None: no target qualifies.
+fn pick(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, name: &str, decision: &goblin_ast::DecisionDef, judge: Option<&goblin_ast::JudgeStmt>) -> Result<Option<Pick>, GoblinError> {
     let self_uuid = self_uuid.clone();
     let margin = match vm.session.object_store.get(&self_uuid) {
         Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
@@ -1368,7 +1426,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
             _ => None,
         }).unwrap_or(0.0),
         Some(_) => 0.0,
-        None => return Ok(false),
+        None => return Ok(None),
     };
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
@@ -1412,7 +1470,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
         if m.changing == 0 && Some(m.epoch) == epoch && scored.is_ok() { vm.memo_kept = Some(m); }
     }
     let (target_candidates, scored) = scored?;
-    if scored.is_empty() { return Ok(false); }
+    if scored.is_empty() { return Ok(None); }
     // A judge condition that may change things, or an action, ends what
     // was kept.
     if !calls_read(vm, &plan.judge_calls) { vm.memo_kept = None; }
@@ -1425,14 +1483,22 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
         .filter(|(_, s)| *s >= best - margin)
         .collect();
 
-    if pool.is_empty() { return Ok(false); }
+    if pool.is_empty() { return Ok(None); }
     let chosen_idx = if pool.len() == 1 { 0 } else {
         let r = vm.session.next_u128() as f64 / u128::MAX as f64;
         (r * pool.len() as f64).floor() as usize % pool.len()
     };
-    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(false) };
-    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(false) };
-    let best_target_uuid = best_target_uuid.clone();
+    let Some((best_k, final_score)) = pool.into_iter().nth(chosen_idx) else { return Ok(None) };
+    let Value::Ref(best_target_uuid) = &target_candidates[best_k].0 else { return Ok(None) };
+    Ok(Some(Pick { target: best_target_uuid.clone(), score: final_score }))
+}
+
+/// One decision of one object with its own judge (`judge using name`):
+/// pick a target, then run the action the judge picks.
+fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
+    let Some(Pick { target: best_target_uuid, score: final_score }) = pick(vm, targets, self_uuid, name, decision, Some(judge))? else { return Ok(false) };
+    let self_uuid = self_uuid.clone();
+    let self_ref = Value::Ref(self_uuid.clone());
     let target_ref = Value::Ref(best_target_uuid.clone());
 
     // Run judge to find selected action

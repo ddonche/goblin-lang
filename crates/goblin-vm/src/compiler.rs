@@ -352,6 +352,8 @@ pub struct Compiler {
     current_line: u32,
     /// When true, unknown identifiers are read as program variables at run time (for class methods).
     pub is_class_method: bool,
+    /// In a class judge: the decision names, each read as its pick.
+    pub lazy_picks: Vec<String>,
     /// An error the compiled action raises as soon as it is called (a method
     /// that did not compile reports why instead of going missing).
     pub start_error: Option<String>,
@@ -407,7 +409,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new() }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -1397,6 +1399,15 @@ impl Compiler {
             }
 
             // ── Variables ─────────────────────────────────────────────────────
+            // In a class judge, a decision's name is its pick, made the
+            // first time it is read (so an earlier arm that wins leaves the
+            // later decisions unscored, and their random draws unmade).
+            Expr::Ident(name, _) if self.lazy_picks.iter().any(|n| n == name)
+                && !self.scopes.iter().any(|sc| sc.find_local(name).is_some()) => {
+                let idx = self.add_constant(Value::Str(name.clone().into()));
+                self.emit(Opcode::LoadConst(idx));
+                self.emit(Opcode::CallBuiltin(BuiltinId::DecisionPick, 1));
+            }
             Expr::Ident(name, _) => {
                 // In a query predicate, a field of `it` shadows the name.
                 let field_jump = if self.scope().pred_fields && name != "it"
@@ -3447,6 +3458,16 @@ impl Compiler {
         // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
         // a predicate is compiled as `fn(it)`; a class name is a plain value.
         if bare == "objects" || bare == "overlays" {
+            // `:objects(Rabbit)`: a bare Capitalized name no variable has is
+            // the class's name, as if quoted.
+            let fixed: Vec<Expr>;
+            let args: &[Expr] = match args.first() {
+                Some(Expr::Ident(n, sp)) if self.is_bare_class_name(n) => {
+                    fixed = std::iter::once(Expr::Str(n.clone(), sp.clone())).chain(args[1..].iter().cloned()).collect();
+                    &fixed
+                }
+                _ => args,
+            };
             // `:objects("Item", it >> owner == pack)`: read pack's contents
             // list. The predicate still runs on each of them, so the result
             // is the same; the VM falls back to the class list when it can't
@@ -3535,6 +3556,13 @@ impl Compiler {
             }
         }
         Ok(Some(()))
+    }
+
+    /// A Capitalized name that is no variable here: a class name.
+    fn is_bare_class_name(&self, n: &str) -> bool {
+        n.chars().next().is_some_and(|c| c.is_uppercase())
+            && !self.scopes.iter().any(|sc| sc.find_local(n).is_some())
+            && self.global_index(n).is_none()
     }
 
     /// Compile `expr` as an implicit `fn(it) { expr }` closure on the stack.

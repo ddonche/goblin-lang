@@ -2741,7 +2741,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke => {
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
 
