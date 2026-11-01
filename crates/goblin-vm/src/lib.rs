@@ -1,6 +1,7 @@
 pub mod error;
 pub mod opcode;
 pub mod value;
+pub mod fields;
 pub mod session;
 pub mod store;
 pub mod grid;

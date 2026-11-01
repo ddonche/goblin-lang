@@ -235,7 +235,7 @@ impl FunctionScope {
             global_prefix: None,
             source_file,
             global_names,
-            calls_values: self.calls_values,
+            calls_values: self.calls_values, field_hints: Default::default(),
         }
     }
 }

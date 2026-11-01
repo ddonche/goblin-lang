@@ -259,7 +259,7 @@ impl std::fmt::Debug for ObjId {
 
 /// An object's fields, by name. Fx hashing: field names are short and come
 /// from the program, so they need no protection against chosen keys.
-pub type FieldMap = indexmap::IndexMap<String, Value, rustc_hash::FxBuildHasher>;
+pub use crate::fields::FieldMap;
 
 /// An object instance: the payload of `Value::Object`.
 #[derive(Debug, Clone)]
@@ -779,6 +779,9 @@ pub struct FunctionObject {
     /// value it was given or worked out, a method. Such a call can do
     /// anything, so the function can't be known to only read (memo.rs).
     pub calls_values: bool,
+    /// Per instruction: for a field read, the layout it last read and the
+    /// field's place in it (see `Vm::get_plain_field`). Made on first use.
+    pub field_hints: std::cell::OnceCell<Box<[std::cell::Cell<(usize, u32)>]>>,
 }
 
 impl FunctionObject {

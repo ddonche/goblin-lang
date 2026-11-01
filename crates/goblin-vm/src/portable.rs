@@ -402,6 +402,8 @@ pub struct FromPortable {
     /// Objects rebuilt go into the session's object store, and the value
     /// holds a reference (an actor's starting state, at any depth).
     adopt: bool,
+    /// The field layout of the last object rebuilt (see `FieldMap::from_names`).
+    layout: Option<Rc<crate::fields::Layout>>,
 }
 
 /// Strings up to this long are shared by content when rebuilt.
@@ -415,7 +417,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, layout: None }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -434,7 +436,7 @@ impl FromPortable {
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
         match p {
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } if self.adopt => {
-                let fields = Rc::new(self.fields(fields, session));
+                let fields = Rc::new(self.object_fields(fields, session));
                 session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
                     class_name: class_name.as_str().into(),
                     fields,
@@ -466,7 +468,7 @@ impl FromPortable {
             PValue::CtrlReturn(v) => Value::CtrlReturn(Box::new(self.value(v, session))),
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
                 class_name: class_name.as_str().into(),
-                fields: Rc::new(self.fields(fields, session)),
+                fields: Rc::new(self.object_fields(fields, session)),
                 readonly_fields: Rc::new(readonly_fields.clone()),
                 trait_fields: Rc::new(trait_fields.clone()),
                 uuid: uuid.as_str().into(),
@@ -573,6 +575,14 @@ impl FromPortable {
         m.iter().map(|(k, v)| (k.clone(), self.value(v, session))).collect()
     }
 
+    fn object_fields(&mut self, m: &[(String, PValue)], session: &mut Session) -> crate::value::FieldMap {
+        let vals = m.iter().map(|(_, v)| self.value(v, session)).collect();
+        let mut guess = self.layout.take();
+        let f = crate::value::FieldMap::from_names(m.iter().map(|(k, _)| k.as_str()), vals, &mut guess);
+        self.layout = guess;
+        f
+    }
+
     fn pairs(&mut self, p: &[(PValue, PValue)], session: &mut Session) -> Vec<(Value, Value)> {
         p.iter().map(|(k, v)| (self.value(k, session), self.value(v, session))).collect()
     }
@@ -622,7 +632,7 @@ impl FromPortable {
             global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: names,
-            calls_values: f.calls_values,
+            calls_values: f.calls_values, field_hints: Default::default(),
         });
         self.funcs.insert(key, r.clone());
         r

@@ -241,6 +241,67 @@ impl Vm {
 
     // ── Internal execution loop ──────────────────────────────────────────────
 
+    /// `x >> field` where the field holds a number, bool, nil or (when the
+    /// next step only needs its id) an object: read in place. Anything else
+    /// (a member builtin such as `>> len`, a missing field) goes the slow way.
+    #[inline(never)]
+    fn get_plain_field(&mut self, idx: u16) -> Step {
+        let frame = self.call_stack.last().unwrap();
+        let func = &frame.func;
+        let Some(Value::Str(name)) = func.constants.get(idx as usize) else { return Step::Slow };
+        let held = match self.stack.last() {
+            Some(Operand::Ref(t)) => match self.session.get_stash(t) { Ok(s) => &s.value, Err(_) => return Step::Slow },
+            Some(Operand::Val(v @ Value::Ref(_))) => v,
+            _ => return Step::Slow,
+        };
+        let obj = match held {
+            Value::Object(o) => o,
+            Value::Ref(u) => match self.session.object_store.get(u) { Some(Value::Object(o)) => o, _ => return Step::Slow },
+            _ => return Step::Slow,
+        };
+        // Where this read found its field last time, for that layout: the
+        // objects of a class share one, so it is usually the same.
+        let hints = func.field_hints.get_or_init(|| (0..func.bytecode.len()).map(|_| std::cell::Cell::new((0, 0))).collect());
+        let hint = &hints[frame.ip - 1];
+        let layout = obj.fields.layout_id();
+        let at = match hint.get() {
+            (l, at) if l == layout => at as usize,
+            _ => {
+                // A member builtin (`>> len`) is never remembered, so a
+                // remembered place is always a plain field.
+                let Some(at) = obj.fields.get_index_of(name.as_str()) else { return Step::Slow };
+                if member_builtin(name).is_some() { return Step::Slow; }
+                hint.set((layout, at as u32));
+                at
+            }
+        };
+        let v = match obj.fields.value_at(at) {
+            v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) => v.clone(),
+            // An object named by id stays an id when what comes next only
+            // needs that (see `Opcode::GetMember`).
+            v @ Value::Ref(u) if !u.starts_with(OVERLAY_RECORD)
+                && self.session.object_store.contains_key(u) && self.keeps_ref() => v.clone(),
+            _ => return Step::Slow,
+        };
+        self.stack.pop();
+        self.stack.push(Operand::Val(v));
+        Step::Done
+    }
+
+    /// After a field read: whether the next step only needs an object's id
+    /// (a store into a variable, another field read, a comparison, a call).
+    fn keeps_ref(&self) -> bool {
+        let f = self.call_stack.last().unwrap();
+        match f.func.bytecode.get(f.ip) {
+            Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_) | Opcode::Eq | Opcode::Ne | Opcode::Call(_)) => true,
+            Some(Opcode::GuardRebindLocal(..)) =>
+                matches!(f.func.bytecode.get(f.ip + 1), Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_))),
+            Some(Opcode::GetMember(k)) => matches!(f.func.constants.get(*k as usize),
+                Some(Value::Str(n)) if member_builtin(n).is_none()),
+            _ => false,
+        }
+    }
+
     fn run_loop(&mut self) -> Result<(), GoblinError> {
         let mut steps = 0u32;
         loop {
@@ -391,6 +452,7 @@ impl Vm {
                 let Some(Operand::Val(Value::Bool(c))) = self.stack.last_mut() else { return Step::Slow };
                 *c = !*c;
             }
+            Opcode::GetMember(idx) => return self.get_plain_field(idx),
             Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
                 let Some((a, b)) = self.top2_ints() else { return Step::Slow };
                 let r = match op {
@@ -1611,17 +1673,7 @@ impl Vm {
                     // store into a variable (`x |= x >> owner`), another
                     // field read (`x >> owner >> gold`), a comparison or an
                     // action call. Otherwise it reads as a copy.
-                    let keep_ref = {
-                        let f = self.call_stack.last().unwrap();
-                        match f.func.bytecode.get(f.ip) {
-                            Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_) | Opcode::Eq | Opcode::Ne | Opcode::Call(_)) => true,
-                            Some(Opcode::GuardRebindLocal(..)) =>
-                                matches!(f.func.bytecode.get(f.ip + 1), Some(Opcode::StoreLocal(_) | Opcode::BindLocal(_))),
-                            Some(Opcode::GetMember(k)) => matches!(f.func.constants.get(*k as usize),
-                                Some(Value::Str(n)) if member_builtin(n).is_none()),
-                            _ => false,
-                        }
-                    };
+                    let keep_ref = self.keeps_ref();
                     if let Some(r) = self.member_field_in_place(name, keep_ref) {
                         let v = r?;
                         self.stack.pop();
@@ -6708,7 +6760,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false,
+            calls_values: false, field_hints: Default::default(),
         }
     }
 
@@ -6846,7 +6898,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false,
+            calls_values: false, field_hints: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -6879,7 +6931,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false,
+            calls_values: false, field_hints: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -6910,7 +6962,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false,
+            calls_values: false, field_hints: Default::default(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -6934,7 +6986,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false,
+            calls_values: false, field_hints: Default::default(),
         };
 
         let result = vm.execute(outer).unwrap();
