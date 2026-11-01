@@ -26,6 +26,12 @@ pub(crate) struct POverlayDef {
     extra_fields: Vec<(String, PValue)>,
     on_end: Option<String>,
     each_tick: Vec<(String, goblin_ast::Expr)>,
+    intensity: f64,
+    spreads: Vec<goblin_ast::OverlaySpread>,
+    conflicts: Vec<String>,
+    actions: Vec<goblin_ast::ActionDecl>,
+    on_start: Option<String>,
+    every: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +91,12 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
             extra_fields: pfields(tp, &d.extra_fields)?,
             on_end: d.on_end.clone(),
             each_tick: d.each_tick.clone(),
+            intensity: d.intensity,
+            spreads: d.spreads.clone(),
+            conflicts: d.conflicts.clone(),
+            actions: d.actions.clone(),
+            on_start: d.on_start.clone(),
+            every: d.every.clone(),
         });
     }
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
@@ -115,7 +127,8 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
 pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     let mut defs = HashMap::with_capacity(img.overlay_defs.len());
     for d in &img.overlay_defs {
-        let extra_fields = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+        let extra_fields: indexmap::IndexMap<String, crate::value::Value> = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+        let extra_names: Vec<String> = extra_fields.keys().cloned().collect();
         defs.insert(d.name.clone(), Rc::new(OverlayDef {
             name: d.name.clone(),
             host_types: d.host_types.clone(),
@@ -130,6 +143,13 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
             extra_fields,
             on_end: d.on_end.clone(),
             each_tick: d.each_tick.clone(),
+            intensity: d.intensity,
+            spreads: d.spreads.clone(),
+            conflicts: d.conflicts.clone(),
+            methods: crate::tick::compile_overlay_methods(&d.name, &d.actions, &extra_names).unwrap_or_default(),
+            actions: d.actions.clone(),
+            on_start: d.on_start.clone(),
+            every: d.every.clone(),
         }));
     }
     s.overlay_defs = defs;

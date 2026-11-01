@@ -2720,6 +2720,14 @@ impl Vm {
                     transitions: def.transitions.clone(),
                     on_end: def.on_end.clone(),
                     each_tick: def.each_tick.clone(),
+                    intensity: def.intensity,
+                    spreads: def.spreads.clone(),
+                    conflicts: def.conflicts.clone(),
+                    methods: crate::tick::compile_overlay_methods(&def.name, &def.actions,
+                        &def.extra_fields.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>())?,
+                    actions: def.actions.clone(),
+                    on_start: def.on_start.clone(),
+                    every: def.every.clone(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {

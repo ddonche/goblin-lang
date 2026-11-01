@@ -227,7 +227,29 @@ pub struct OverlayDefStmt {
     /// `each tick:` — changes made to the host on every tick the overlay
     /// is on. Unlike `modifies:` they are lasting: nothing is taken back.
     pub each_tick: Vec<(String, Expr)>,
+    /// `~intensity: n`: the intensity a new copy starts at (default 1).
+    pub intensity: f64,
+    /// `spread: chance where condition` lines.
+    pub spreads: Vec<OverlaySpread>,
+    /// `conflicts: a, b`: overlays that can't share a host with this one.
+    pub conflicts: Vec<String>,
+    /// The overlay's code blocks (`on start`, `every N ticks`, `on end`),
+    /// each run as a method on the host with `intensity` in view.
+    pub actions: Vec<ActionDecl>,
+    /// `on start`: the action in `actions` run when a copy goes on.
+    pub on_start: Option<String>,
+    /// `every N ticks`: (N, action in `actions`).
+    pub every: Vec<(u64, String)>,
     pub span: Span,
+}
+
+/// `spread: chance where condition`: each tick, each object the
+/// condition allows (`self` the carrier, `target` the object) catches the
+/// overlay with that chance.
+#[derive(Debug, Clone)]
+pub struct OverlaySpread {
+    pub chance: Expr,
+    pub condition: Expr,
 }
 
 #[derive(Debug, Clone)]

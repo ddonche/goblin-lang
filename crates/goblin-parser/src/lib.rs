@@ -7454,11 +7454,20 @@ impl<'t> Parser<'t> {
             ));
         };
 
+        // Definition: `overlay plague` and its lines under it, closed by `xx`.
+        if matches!(self.peek().map(|t| &t.kind), Some(goblin_lexer::TokenKind::Newline)) {
+            let col = self.toks[start_i].span.col_start;
+            return self.with_self(|p| p.parse_overlay_block(name, start_i, col));
+        }
+
         self.skip_layout();
 
-        // Definition: overlay Name |
-        if self.eat_op("|") {
-            return self.parse_overlay_def(name, start_i);
+        if self.peek_op("|") {
+            return Err(s_help_site!(
+                "P1202",
+                &format!("`overlay {name} |` is the old form"),
+                "Write the overlay's lines under its name and close it with xx:\n  overlay sick\n      hosts: Person\n      lasts: 8\n  xx",
+            ));
         }
 
         // Application: overlay Name on target
@@ -7472,6 +7481,223 @@ impl<'t> Parser<'t> {
             "Expected '|' (definition) or 'on' (application) after overlay name",
             "Write: overlay plague | ... end  OR  overlay plague on city at .6",
         ))
+    }
+
+    /// `overlay plague` ... `xx` (the name is eaten): data lines
+    /// (`hosts:`, `lasts:`, `decays:`, `dup:`, `~intensity:`, `conflicts:`,
+    /// `spread: chance where condition`, any other `name: value`), a
+    /// `modify` block of film lines (`@def - 2`), and code blocks
+    /// (`on start`, `every N ticks`, `on end`, each `=> one line` or a block).
+    fn parse_overlay_block(&mut self, name: String, start_i: usize, col: u32) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let mut host_types: Vec<String> = Vec::new();
+        let mut decay_rate = 0.0f64;
+        let mut default_duration: Option<u32> = None;
+        let mut apply_behavior = ast::OverlayApplyBehavior::Caps;
+        let mut intensity = 1.0f64;
+        let mut spreads: Vec<ast::OverlaySpread> = Vec::new();
+        let mut conflicts: Vec<String> = Vec::new();
+        let mut modifiers: Vec<(String, ast::Expr)> = Vec::new();
+        let mut transitions: Vec<ast::TransitionDef> = Vec::new();
+        let mut extra_fields: Vec<(String, ast::Expr)> = Vec::new();
+        let mut actions: Vec<ast::ActionDecl> = Vec::new();
+        let mut on_start: Option<String> = None;
+        let mut on_end: Option<String> = None;
+        let mut every: Vec<(u64, String)> = Vec::new();
+        let sp0 = self.toks[start_i].span.clone();
+        let intensity_param = || vec![ast::Param { name: "intensity".to_string(), type_name: None, default: None, span: sp0.clone() }];
+        let mk = |n: &str, body: Vec<ast::Stmt>| ast::ActionDecl {
+            name: n.to_string(), params: intensity_param(), body: ast::ActionBody::Block(body), span: sp0.clone(), ret: None,
+        };
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P1203", &format!("The overlay '{name}' is missing its closing 'xx'"), "Close the overlay with 'xx' under 'overlay'."));
+            }
+            if self.peek_block_close() {
+                let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if c != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                        "Put 'xx' (crossbones) directly under 'overlay'."));
+                }
+                self.expect_block_close("overlay")?;
+                break;
+            }
+            let line_col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            // `~intensity: 1`
+            if self.eat_op("~") {
+                if self.peek_ident() != Some("intensity") {
+                    return Err(s_help_site!("P1204", "In an overlay, `~` goes only on `intensity`", "Write: ~intensity: .5"));
+                }
+                let _ = self.eat_ident();
+                if !self.eat_op(":") { return Err(s_help_site!("P1204", "Expected ':' after '~intensity'", "Write: ~intensity: .5")); }
+                self.skip_layout_inline();
+                let Some(n) = self.eat_number_f64() else {
+                    return Err(s_help_site!("P1204", "Expected a number from 0 to 1 after '~intensity:'", "Write: ~intensity: .5"));
+                };
+                if !(0.0..=1.0).contains(&n) {
+                    return Err(s_help_site!("P1204", &format!("An overlay's intensity goes from 0 to 1, not {n}"), "Write: ~intensity: .5"));
+                }
+                intensity = n;
+                continue;
+            }
+            if self.peek_ident() == Some("intensity") && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":")) {
+                return Err(s_help_site!("P1204", "An overlay's intensity goes from 0 to 1, so it is written with `~`", "Write: ~intensity: .5"));
+            }
+            let kw_i = self.i;
+            let Some(kw) = self.eat_ident() else {
+                return Err(s_help_site!("P1205", &format!("Expected a line of the overlay '{name}'"),
+                    "An overlay takes hosts:, lasts:, decays:, dup:, ~intensity:, spread:, conflicts:, a modify block, and on start / every N ticks / on end"));
+            };
+            let colon = self.eat_op(":");
+            self.skip_layout_inline();
+            match (kw.as_str(), colon) {
+                ("hosts", true) | ("conflicts", true) => {
+                    let mut names = Vec::new();
+                    loop {
+                        let Some(n) = self.eat_ident() else {
+                            return Err(s_help_site!("P1206", &format!("Expected a name after '{kw}:'"), &format!("Write: {kw}: Person, Villager")));
+                        };
+                        names.push(n);
+                        self.skip_layout_inline();
+                        if !self.eat_op(",") { break; }
+                        self.skip_layout_inline();
+                    }
+                    if kw == "hosts" { host_types.extend(names) } else { conflicts.extend(names) }
+                }
+                ("lasts", true) => {
+                    let Some(n) = self.eat_number_f64().filter(|n| *n >= 1.0 && n.fract() == 0.0) else {
+                        return Err(s_help_site!("P1207", "Expected a whole number of ticks after 'lasts:'", "Write: lasts: 8"));
+                    };
+                    default_duration = Some(n as u32);
+                }
+                ("decays", true) => {
+                    let Some(n) = self.eat_number_f64() else {
+                        return Err(s_help_site!("P1208", "Expected a number after 'decays:' (how much intensity it loses a tick)", "Write: decays: .03"));
+                    };
+                    decay_rate = n;
+                }
+                ("dup", true) => {
+                    let rule = self.eat_ident().unwrap_or_default();
+                    apply_behavior = match rule.as_str() {
+                        "ignore" => ast::OverlayApplyBehavior::Caps,
+                        "replace" => ast::OverlayApplyBehavior::Replaces,
+                        "stack" => ast::OverlayApplyBehavior::Stacks { label: None },
+                        other => return Err(s_help_site!("P1209", &format!("`dup: {other}` is not a rule: write ignore, replace or stack"), "Write: dup: stack")),
+                    };
+                }
+                ("spread", _) => {
+                    let chance_pe = self.parse_coalesce()?;
+                    let chance = self.lower_expr(chance_pe);
+                    self.skip_layout_inline();
+                    if self.peek_ident() != Some("where") {
+                        return Err(s_help_site!("P1210", "Expected 'where' and the condition after the spread chance",
+                            "Write: spread: .004 where (target >> home) == @home"));
+                    }
+                    let _ = self.eat_ident();
+                    self.skip_layout_inline();
+                    let condition = if colon {
+                        let pe = self.parse_coalesce()?;
+                        self.lower_expr(pe)
+                    } else {
+                        let body = self.parse_head_block(line_col, "spread")?;
+                        ast::Expr::Block { stmts: body, span: sp0.clone() }
+                    };
+                    spreads.push(ast::OverlaySpread { chance, condition });
+                }
+                ("modify", false) => {
+                    loop {
+                        self.skip_layout();
+                        if self.is_eof() { break; }
+                        if self.peek_block_close() {
+                            let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                            if c != line_col {
+                                return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", line_col, c),
+                                    "Put 'xx' (crossbones) directly under 'modify'."));
+                            }
+                            self.expect_block_close("modify")?;
+                            break;
+                        }
+                        if !self.eat_op("@") {
+                            return Err(s_help_site!("P1211", "A modify line names the field it adjusts with @",
+                                "Write: @def - 2  (reads 2 lower while the overlay is on)"));
+                        }
+                        let Some(field) = self.eat_ident() else {
+                            return Err(s_help_site!("P1211", "Expected a field name after '@'", "Write: @def - 2"));
+                        };
+                        self.skip_layout_inline();
+                        let negative = if self.eat_op("+") { false } else if self.eat_op("-") { true } else {
+                            return Err(s_help_site!("P1212", &format!("A modify line adds to or takes from @{field}: write + or -"), &format!("Write: @{field} - 2")));
+                        };
+                        self.skip_layout_inline();
+                        let pe = self.parse_coalesce()?;
+                        let e = self.lower_expr(pe);
+                        let e = if negative {
+                            ast::Expr::Prefix("-".to_string(), Box::new(e), goblin_diagnostics::Span::new("<synthetic>", 0, 0, 0, 0, 0, 0))
+                        } else { e };
+                        modifiers.push((field, e));
+                    }
+                }
+                ("on", false) | ("every", false) => {
+                    let action = if kw == "on" {
+                        match self.eat_ident().as_deref() {
+                            Some("start") => "on start".to_string(),
+                            Some("end") => "on end".to_string(),
+                            _ => return Err(s_help_site!("P1213", "Expected 'start' or 'end' after 'on'", "Write: on start => @fear |= @fear + .05")),
+                        }
+                    } else {
+                        let n = match self.peek().cloned() {
+                            Some(t) if matches!(t.kind, TokenKind::Int) => {
+                                self.i += 1;
+                                t.value.as_deref().unwrap_or("0").replace('_', "").parse::<u64>().unwrap_or(0)
+                            }
+                            _ => 0,
+                        };
+                        let unit = self.eat_ident();
+                        if n == 0 || !matches!(unit.as_deref(), Some("tick") | Some("ticks")) {
+                            return Err(s_help_site!("P1560", "Expected a whole number of ticks after 'every'", "Write: every 1 tick ... xx"));
+                        }
+                        let a = format!("every {} ticks #{}", n, every.len() + 1);
+                        every.push((n, a.clone()));
+                        a
+                    };
+                    self.skip_layout_inline();
+                    let body = if self.eat_op("=>") {
+                        self.skip_layout_inline();
+                        vec![self.parse_stmt()?]
+                    } else {
+                        self.parse_head_block(line_col, kw.as_str())?
+                    };
+                    if action == "on start" { on_start = Some(action.clone()); }
+                    if action == "on end" { on_end = Some(action.clone()); }
+                    actions.push(mk(&action, body));
+                }
+                ("transition", false) => {
+                    self.i = kw_i;
+                    let td = self.parse_transition_def()?;
+                    transitions.push(td);
+                }
+                (other, true) => {
+                    // The overlay's own data (`kind: "language"`), readable
+                    // by name in its formulas and blocks.
+                    let pe = self.parse_coalesce()?;
+                    let e = self.lower_expr(pe);
+                    extra_fields.push((other.to_string(), e));
+                }
+                (other, false) => {
+                    return Err(s_help_site!("P1205", &format!("`{other}` is not part of an overlay"),
+                        "An overlay takes hosts:, lasts:, decays:, dup:, ~intensity:, spread:, conflicts:, a modify block, and on start / every N ticks / on end"));
+                }
+            }
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
+            name, host_types, spread_rules: Vec::new(), decay_rate, modifiers, conflict_rules: Vec::new(), spawn_rules: Vec::new(),
+            transitions, default_duration, apply_behavior, extra_fields, on_end, each_tick: Vec::new(),
+            intensity, spreads, conflicts, actions, on_start, every, span,
+        }))
     }
 
     /// Parse overlay definition body after `overlay Name |`
@@ -7919,6 +8145,12 @@ impl<'t> Parser<'t> {
             extra_fields,
             on_end,
             each_tick,
+            intensity: 1.0,
+            spreads: Vec::new(),
+            conflicts: Vec::new(),
+            actions: Vec::new(),
+            on_start: None,
+            every: Vec::new(),
             span,
         }))
     }

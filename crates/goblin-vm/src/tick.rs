@@ -1374,6 +1374,26 @@ fn score_targets(
     Ok((target_candidates, scored))
 }
 
+/// An overlay's blocks compiled as methods: `self` (the host) first, then
+/// `intensity`, then the overlay's own data fields by name.
+pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionDecl], extra: &[String])
+    -> Result<std::collections::HashMap<String, std::rc::Rc<crate::value::FunctionObject>>, GoblinError> {
+    let mut m = std::collections::HashMap::new();
+    for action in actions {
+        let span = action.span.clone();
+        let p = |n: &str| goblin_ast::Param { name: n.to_string(), type_name: None, default: None, span: span.clone() };
+        let mut params = vec![p("self")];
+        params.extend(action.params.clone());
+        params.extend(extra.iter().map(|k| p(k)));
+        let pseudo = goblin_ast::ActionDecl { params, ..action.clone() };
+        let mut c = crate::compiler::Compiler::new();
+        c.is_class_method = true;
+        let f = c.compile_action(&pseudo).map_err(|e| GoblinError::Runtime(format!("overlay {name}, `{}`: {e}", action.name)))?;
+        m.insert(action.name.clone(), std::rc::Rc::new(f));
+    }
+    Ok(m)
+}
+
 /// The object whose class judge runs, and its decisions' picks so far.
 pub(crate) struct Deciding {
     self_uuid: crate::value::ObjId,

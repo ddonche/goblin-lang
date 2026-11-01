@@ -65,11 +65,59 @@ impl Layout {
 #[derive(Clone)]
 pub struct FieldMap {
     layout: Rc<Layout>,
+    /// What reading a field gives: the stored value, adjusted by the film
+    /// of the overlays on the object, when there is one.
     vals: Vec<Value>,
+    /// The overlays' film: the stored values apart, and what is added.
+    film: Option<Box<Film>>,
+}
+
+/// While overlays adjust an object (`modify`), its stored values are kept
+/// here, apart from what reading gives; the film never changes them. A
+/// field written meanwhile is marked, and its stored value is worked out
+/// from what was written when the film next changes.
+#[derive(Clone)]
+struct Film {
+    base: Vec<Value>,
+    add: Vec<f64>,
+    written: Vec<bool>,
+}
+
+/// `v` with `add` on top (kept in 0..1 for a `~` field).
+fn filmed(v: &Value, add: f64, clamp: bool) -> Value {
+    if add == 0.0 { return v.clone(); }
+    let x = match v {
+        Value::Int(i) => *i as f64 + add,
+        Value::Float(f) => *f + add,
+        other => return other.clone(),
+    };
+    if clamp {
+        let c = x.clamp(0.0, 1.0);
+        return Value::Float(if c < 1e-10 { 0.0 } else if c > 1.0 - 1e-10 { 1.0 } else { c });
+    }
+    match v {
+        Value::Int(_) if x.fract() == 0.0 && x.abs() < 9.0e15 => Value::Int(x as i64),
+        _ => Value::Float(x),
+    }
+}
+
+/// The stored value under a value read through a film of `add`.
+fn unfilmed(v: &Value, add: f64, clamp: bool) -> Value {
+    if add == 0.0 { return v.clone(); }
+    let x = match v {
+        Value::Int(i) => *i as f64 - add,
+        Value::Float(f) => *f - add,
+        other => return other.clone(),
+    };
+    let x = if clamp { x.clamp(0.0, 1.0) } else { x };
+    match v {
+        Value::Int(_) if x.fract() == 0.0 && x.abs() < 9.0e15 => Value::Int(x as i64),
+        _ => Value::Float(x),
+    }
 }
 
 impl Default for FieldMap {
-    fn default() -> Self { FieldMap { layout: EMPTY.with(|e| e.clone()), vals: Vec::new() } }
+    fn default() -> Self { FieldMap { layout: EMPTY.with(|e| e.clone()), vals: Vec::new(), film: None } }
 }
 
 impl FieldMap {
@@ -88,7 +136,7 @@ impl FieldMap {
                 l
             }
         };
-        FieldMap { layout, vals }
+        FieldMap { layout, vals, film: None }
     }
 
     /// Which layout this is, for a cache that remembers where a field was.
@@ -109,8 +157,65 @@ impl FieldMap {
     #[inline]
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         let i = self.get_index_of(name)?;
+        self.mark(i);
         Some(&mut self.vals[i])
     }
+
+    #[inline]
+    fn mark(&mut self, i: usize) {
+        if let Some(f) = &mut self.film { f.written[i] = true; }
+    }
+
+    fn mark_all(&mut self) {
+        if let Some(f) = &mut self.film { f.written.iter_mut().for_each(|w| *w = true); }
+    }
+
+    /// Works out the stored value of each field written since the film last
+    /// changed, from what was written.
+    fn settle(&mut self, clamp: &dyn Fn(&str) -> bool) {
+        let Some(f) = &mut self.film else { return };
+        for i in 0..self.vals.len() {
+            if f.written[i] {
+                f.base[i] = unfilmed(&self.vals[i], f.add[i], clamp(&self.layout.names[i]));
+                f.written[i] = false;
+            }
+        }
+    }
+
+    /// Puts this film on the fields (`(field place, amount)`, summed over
+    /// the overlays), replacing the one before; an empty one takes it off.
+    /// The stored values never change: reading gives them plus the film.
+    /// `clamp`: whether a field is a `~` trait, kept in 0..1.
+    pub fn set_film(&mut self, adds: &[(usize, f64)], clamp: &dyn Fn(&str) -> bool) {
+        if self.film.is_none() && adds.iter().all(|(_, a)| *a == 0.0) { return; }
+        self.settle(clamp);
+        let n = self.vals.len();
+        let f = self.film.get_or_insert_with(|| Box::new(Film { base: self.vals.clone(), add: vec![0.0; n], written: vec![false; n] }));
+        let old = std::mem::replace(&mut f.add, vec![0.0; n]);
+        for &(i, a) in adds { if i < n { f.add[i] += a; } }
+        for i in 0..n {
+            if f.add[i] != old[i] {
+                self.vals[i] = filmed(&f.base[i], f.add[i], clamp(&self.layout.names[i]));
+            }
+        }
+        if f.add.iter().all(|a| *a == 0.0) {
+            self.vals = std::mem::take(&mut self.film.as_mut().unwrap().base);
+            self.film = None;
+        }
+    }
+
+    /// The stored value of a field (what it holds without the film).
+    pub fn stored(&self, name: &str, clamp: bool) -> Option<Value> {
+        let i = self.get_index_of(name)?;
+        Some(match &self.film {
+            Some(f) if f.written[i] => unfilmed(&self.vals[i], f.add[i], clamp),
+            Some(f) => f.base[i].clone(),
+            None => self.vals[i].clone(),
+        })
+    }
+
+    /// Whether a film is on.
+    pub fn has_film(&self) -> bool { self.film.is_some() }
 
     pub fn get_full(&self, name: &str) -> Option<(usize, &String, &Value)> {
         let i = self.get_index_of(name)?;
@@ -132,6 +237,8 @@ impl FieldMap {
 
     #[inline]
     pub fn get_index_mut(&mut self, i: usize) -> Option<(&String, &mut Value)> {
+        if i >= self.vals.len() { return None; }
+        self.mark(i);
         let n = self.layout.names.get(i)?;
         Some((n, &mut self.vals[i]))
     }
@@ -143,9 +250,10 @@ impl FieldMap {
     /// Sets `name`, keeping its place; a new name goes at the end.
     pub fn insert(&mut self, name: String, v: Value) -> Option<Value> {
         match self.get_index_of(&name) {
-            Some(i) => Some(std::mem::replace(&mut self.vals[i], v)),
+            Some(i) => { self.mark(i); Some(std::mem::replace(&mut self.vals[i], v)) }
             None => {
                 self.layout = self.layout.with(&name);
+                if let Some(f) = &mut self.film { f.base.push(v.clone()); f.add.push(0.0); f.written.push(false); }
                 self.vals.push(v);
                 None
             }
@@ -156,6 +264,7 @@ impl FieldMap {
     pub fn shift_remove(&mut self, name: &str) -> Option<Value> {
         let i = self.get_index_of(name)?;
         let v = self.vals.remove(i);
+        if let Some(f) = &mut self.film { f.base.remove(i); f.add.remove(i); f.written.remove(i); }
         let names = self.layout.names.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, n)| n.as_str());
         self.layout = Layout::of(names);
         Some(v)
@@ -166,12 +275,13 @@ impl FieldMap {
     pub fn iter(&self) -> Iter<'_> { Iter { names: self.layout.names.iter(), vals: self.vals.iter() } }
 
     pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = (&String, &mut Value)> + ExactSizeIterator {
+        self.mark_all();
         self.layout.names.iter().zip(self.vals.iter_mut())
     }
 
     pub fn keys(&self) -> std::slice::Iter<'_, String> { self.layout.names.iter() }
     pub fn values(&self) -> std::slice::Iter<'_, Value> { self.vals.iter() }
-    pub fn values_mut(&mut self) -> std::slice::IterMut<'_, Value> { self.vals.iter_mut() }
+    pub fn values_mut(&mut self) -> std::slice::IterMut<'_, Value> { self.mark_all(); self.vals.iter_mut() }
 
     pub fn first(&self) -> Option<(&String, &Value)> { self.get_index(0) }
     pub fn last(&self) -> Option<(&String, &Value)> { self.len().checked_sub(1).and_then(|i| self.get_index(i)) }
@@ -180,6 +290,9 @@ impl FieldMap {
 
     /// Keeps the fields `keep` says yes to, in order.
     pub fn retain(&mut self, mut keep: impl FnMut(&String, &mut Value) -> bool) {
+        // A film doesn't outlast fields being dropped: what reading gives
+        // is what stays.
+        self.film = None;
         let mut names = Vec::with_capacity(self.vals.len());
         let mut vals = Vec::with_capacity(self.vals.len());
         let mut changed = false;

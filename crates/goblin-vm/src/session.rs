@@ -30,6 +30,20 @@ pub struct OverlayDef {
     pub on_end: Option<String>,
     /// `each tick:` changes, made every tick and never taken back.
     pub each_tick: Vec<(String, goblin_ast::Expr)>,
+    /// `~intensity: n`: what a new copy starts at.
+    pub intensity: f64,
+    /// `spread: chance where condition`.
+    pub spreads: Vec<goblin_ast::OverlaySpread>,
+    /// `conflicts: a, b`: can't share a host with this overlay.
+    pub conflicts: Vec<String>,
+    /// The overlay's blocks (`on start`, `every N ticks #k`, `on end`),
+    /// compiled as methods taking the host, `intensity` and the overlay's
+    /// own data fields.
+    pub methods: HashMap<String, Rc<crate::value::FunctionObject>>,
+    /// The blocks as written, so another session can compile them again.
+    pub actions: Vec<goblin_ast::ActionDecl>,
+    pub on_start: Option<String>,
+    pub every: Vec<(u64, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

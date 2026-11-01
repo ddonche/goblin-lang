@@ -2384,16 +2384,13 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     span,
                 )]);
             }
+            // `@` on its own is the object itself (`self`), as in
+            // `:link_score(@, target, trade)`; `@name` is `self >> name`.
             b'@' => {
                 let start_i = state.i;
                 let start_col = state.col;
                 state.advance();
-                let span = state.span(start_i, start_col);
-                return Err(vec![Diagnostic::error(
-                    "L0405",
-                    "`@` needs a field name right after it\n\nhelp: `@name` means `self >> name`: write `@energy`",
-                    span,
-                )]);
+                state.push_token(TokenKind::Ident, start_i, start_col, Some("self".to_string()));
             }
             b'#' => lex_hash_identifier(&mut state)?,
 
