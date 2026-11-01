@@ -5,6 +5,7 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- VM: object `==` compares ids without copying them, `repeat` over a list skips a builtin call, remembered-call keys read objects in place, and returned calls hand their local slots to the next call (feudal -2.6%, call loop -1.5% instructions).
 - DES decisions look objects up by id instead of by text, and check once per decision whether the condition and formula only read (feudal -3.5%, predator-prey -3.9%, epidemic -3.8% instructions).
 - DES: the erase check after an action uses object ids and keeps each class's compiled `erase when` conditions (feudal -3.3% instructions).
 - Object fields keep their names in a layout shared by the objects of a class, and a field read remembers where it found its field: feudal -2.8%, predator-prey -1.5%, a call loop -10%.

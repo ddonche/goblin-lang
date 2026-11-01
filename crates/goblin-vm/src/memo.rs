@@ -44,7 +44,7 @@ impl Arg {
     }
 }
 
-pub(crate) type Key = (usize, Vec<Arg>);
+pub(crate) type Key = (usize, smallvec::SmallVec<[Arg; 2]>);
 
 /// What a running call does with the memo.
 pub(crate) enum Mark {

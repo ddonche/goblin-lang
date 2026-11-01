@@ -62,8 +62,13 @@ pub struct LoopState {
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
         let n = func.locals;
+        Self::new_with(func, upvalues, stack_base, vec![None; n])
+    }
+
+    /// `new`, with an empty list of `func.locals` slots to use.
+    fn new_with(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize, locals: Vec<Option<Tether>>) -> Self {
         CallFrame {
-            locals: vec![None; n],
+            locals,
             // Grown on first use: most calls lock nothing.
             type_locks: Vec::new(),
             hard_type_locks: Vec::new(),
@@ -174,6 +179,8 @@ pub struct Vm {
     pub(crate) erase_conds: rustc_hash::FxHashMap<Rc<str>, Rc<crate::tick::EraseConds>>,
     /// The class table `erase_conds` was made from.
     pub(crate) erase_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
+    /// Emptied local lists of returned calls, for the next calls to reuse.
+    spare_locals: Vec<Vec<Option<Tether>>>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -198,7 +205,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, spare_locals: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1770,7 +1777,11 @@ impl Vm {
                 } else { None };
 
                 let stack_base = func_idx; // caller cleans up from here
-                let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+                let locals = match self.spare_locals.pop() {
+                    Some(mut l) => { l.resize(func_rc.locals, None); l }
+                    None => vec![None; func_rc.locals],
+                };
+                let mut new_frame = CallFrame::new_with(func_rc, upvalues, stack_base, locals);
                 new_frame.memo = mark;
 
                 // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
@@ -1817,6 +1828,11 @@ impl Vm {
                 let mut frame = self.call_stack.pop().unwrap();
                 let _ = frame.self_tether;
                 if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
+                if self.spare_locals.len() < 64 {
+                    let mut l = std::mem::take(&mut frame.locals);
+                    l.clear();
+                    self.spare_locals.push(l);
+                }
 
                 self.stack.truncate(frame.stack_base);
                 self.stack.push(Operand::Val(ret_val));
@@ -3355,19 +3371,19 @@ impl Vm {
     fn same_object_top2(&self) -> Option<bool> {
         let n = self.stack.len();
         if n < 2 { return None; }
-        let id = |op: &Operand| -> Option<String> {
+        fn id<'a>(vm: &'a Vm, op: &'a Operand) -> Option<&'a crate::value::ObjId> {
             let v = match op {
                 Operand::Val(v) => v,
-                Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
+                Operand::Ref(t) => &vm.session.get_stash(t).ok()?.value,
             };
             match v {
-                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u) => Some(u.to_string()),
-                Value::Object(o) => Some(o.uuid.to_string()),
+                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && vm.session.object_store.contains_key(u) => Some(u),
+                Value::Object(o) => Some(&o.uuid),
                 _ => None,
             }
-        };
-        let a = id(&self.stack[n - 2])?;
-        let b = id(&self.stack[n - 1])?;
+        }
+        let a = id(self, &self.stack[n - 2])?;
+        let b = id(self, &self.stack[n - 1])?;
         Some(a == b)
     }
 
@@ -5508,10 +5524,22 @@ impl Vm {
             return Ok(Ok(Some(Mark::Changes)));
         }
         if captures || self.memo.as_ref().unwrap().changing > 0 { return Ok(Ok(None)); }
-        let mut args = Vec::with_capacity(self.stack.len() - func_idx - 1);
+        let mut args = smallvec::SmallVec::new();
         for i in func_idx + 1..self.stack.len() {
-            let v = self.resolve_op(self.stack[i].clone())?;
-            match Arg::of(&v) {
+            // What the argument resolves to, read in place (an object
+            // counts by its id, so it isn't copied out of the store).
+            let a = match &self.stack[i] {
+                Operand::Val(Value::Frozen(f)) => Arg::of(&f.value),
+                Operand::Val(v) => Arg::of(v),
+                Operand::Ref(t) => match &self.session.get_stash(t)?.value {
+                    Value::Ref(u) if self.session.object_store.contains_key(u) => Some(Arg::Obj(u.clone())),
+                    // Gone from the store: the error reading it gives.
+                    Value::Ref(_) => { self.resolve_op(self.stack[i].clone())?; None }
+                    Value::Frozen(f) => Arg::of(&f.value),
+                    other => Arg::of(other),
+                },
+            };
+            match a {
                 Some(a) => args.push(a),
                 None => return Ok(Ok(None)),
             }

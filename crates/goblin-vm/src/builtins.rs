@@ -6257,6 +6257,11 @@ pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64),
         Value::Bool(_) => Ok((4, Value::Nil, i64::MAX)),
         Value::Map(_) | Value::MapOrd(_) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
         Value::Collection(ref c) if collections::is_map_collection(c) => { let (it, n) = iter_of(v, session)?; Ok((2, it, n)) }
+        // What `ToForIter` makes of a list, without the call.
+        Value::Array(xs) => {
+            let n = xs.len() as i64;
+            Ok((1, Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(xs))), n))
+        }
         Value::Array(_) | Value::Collection(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
         other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
     }
