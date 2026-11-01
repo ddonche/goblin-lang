@@ -5,10 +5,10 @@
 /// `owner` moves it there.
 ///
 ///   Grass   one patch per meadow; grows back 80 a day, up to 400.
-///   Rabbit  burns 1 energy a day; grazes (decision `graze`); has a kit
+///   Rabbit  burns 1 energy a day; grazes (decision `patch`); has a kit
 ///           when well fed; starves at 0.
 ///   Fox     burns 1 energy a day; when hungry, hunts a rabbit in its
-///           meadow (decision `hunt`; the more rabbits there, the likelier
+///           meadow (decision `prey`; the more rabbits there, the likelier
 ///           it succeeds); has a cub when well fed; starves at 0.
 ///
 /// The two populations rise and fall in turn, about every 90 days.
@@ -35,7 +35,7 @@ xx
     amount: 400
     every 1 tick
         @amount |= :min(400, @amount + 80)
-    end
+    xx
 xx
 
 <>Rabbit |
@@ -48,15 +48,15 @@ xx
             kit <> Rabbit | owner: @owner, energy: 4
         xx
         wander(self)
-    end
-    graze | decision against Grass where [
-        target >> owner == @owner and target >> amount >= 1
-    ] by [ target >> amount ]
-    judge using graze
-        >= 0: eat_grass(target)
-    end
-    transition erase when @energy <= 0
-    end
+    xx
+    decision patch
+        targets: Grass where (target >> owner) == @owner and (target >> amount) >= 1
+        score => target >> amount
+    xx
+    judge
+        patch: eat_grass(self, patch >> target)
+    xx
+    transition erase where @energy <= 0
 xx
 
 <>Fox |
@@ -69,14 +69,15 @@ xx
             cub <> Fox | owner: @owner, energy: 10
         xx
         wander(self)
-    end
+    xx
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ @energy < 30 and target >> owner == @owner ]
-    judge using hunt
-        >= 0: catch(target)
-    end
-    transition erase when @energy <= 0
-    end
+    decision prey
+        targets: Rabbit where @energy < 30 and (target >> owner) == @owner
+    xx
+    judge
+        prey: catch(self, prey >> target)
+    xx
+    transition erase where @energy <= 0
 xx
 
 act eat_grass(r, g)
@@ -87,7 +88,7 @@ xx
 /// The more rabbits in the meadow, the likelier a hunt succeeds: a few
 /// rabbits hide well.
 act catch(f, r)
-    here | :len(:objects("Rabbit", it >> owner == f >> owner))
+    here | :len(:objects(Rabbit, it >> owner == f >> owner))
     if (pick 1 from 1...(here + 400)) <= here
         r >> energy |= 0
         f >> energy |= :min(40, f >> energy + 8)
@@ -98,7 +99,7 @@ xx
 act wander(a)
     if n_meadows > 1 and (pick 1 from 1...20) == 1
         next | (a >> owner >> n + 1) % n_meadows
-        a >> owner |= :objects("Meadow", it >> n == next)[0]
+        a >> owner |= :objects(Meadow, it >> n == next)[0]
     xx
 xx
 
@@ -124,11 +125,11 @@ repeat :range(1, days + 1) as t
     tick(meadows)
     if t % 10 == 0 or t == days
         grass | 0
-        repeat :objects("Grass") as g
+        repeat :objects(Grass) as g
             grass |= grass + g >> amount
         xx
-        rabbits | :len(:objects("Rabbit"))
-        foxes | :len(:objects("Fox"))
+        rabbits | :len(:objects(Rabbit))
+        foxes | :len(:objects(Fox))
         say("day {t}: rabbits {rabbits}, foxes {foxes}, grass {grass}")
     xx
 xx

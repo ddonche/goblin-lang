@@ -4,10 +4,10 @@
 /// runs one day in all of them at once. Now and then a person travels to
 /// the next town: setting `owner` moves them there, sickness and all.
 ///
-///   Sick    overlay: costs 1 health a day for 8 days; when it ends the
+///   sick    overlay: costs 1 health a day for 8 days; when it ends the
 ///           host is immune.
 ///           Each day each healthy person in a sick person's town catches
-///           it with a chance of 4 in 1,000 (`spreads ... at .004`).
+///           it with a chance of 4 in 1,000 (`spread: .004 where ...`).
 ///   Person  dies at 0 health (transition erase).
 
 :rand_seed(11)
@@ -32,25 +32,18 @@ xx
     every 1 tick
         if n_towns > 1 and (pick 1 from 1...30) == 1
             next | (@owner >> n + 1) % n_towns
-            @owner |= :objects("Town", it >> n == next)[0]
+            @owner |= :objects(Town, it >> n == next)[0]
         xx
-    end
-    transition erase when @health <= 0
-    end
+    xx
+    transition erase where @health <= 0
 xx
 
-overlay Sick |
-    hosts Person
-    lasts 8 ticks
-    spreads where target >> owner == @owner and target >> immune == false at .004 per tick
-    each tick:
-        health - 1
-    end
-    on end: recover
-end
-
-act recover(p)
-    p >> immune |= true
+overlay sick
+    hosts: Person
+    lasts: 8
+    spread: .004 where (target >> owner) == @owner and (target >> immune) == false
+    every 1 tick => @health |= @health - 1
+    on end => @immune |= true
 xx
 
 act make_town(n)
@@ -59,7 +52,7 @@ act make_town(n)
         p <> Person | owner: town, health: 6 + (pick 1 from 0...8)
         /// Patient zero, in town 0.
         if n == 0 and i == 0
-            overlay Sick on p at 1
+            :overlay!(p, sick)
         xx
     xx
     return town
@@ -74,9 +67,9 @@ say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
 repeat :range(1, days + 1) as d
     tick(towns)
     if d % 5 == 0 or d == days
-        alive | :len(:objects("Person"))
-        sick | :len(:overlays(it >> overlay_name == "Sick"))
-        immune | :len(:objects("Person", it >> immune))
-        say("day {d}: alive {alive}, sick {sick}, immune {immune}, dead {n_towns * people_per_town - alive}")
+        alive | :len(:objects(Person))
+        ill | :len(:overlays(sick))
+        immune | :len(:objects(Person, it >> immune))
+        say("day {d}: alive {alive}, sick {ill}, immune {immune}, dead {n_towns * people_per_town - alive}")
     xx
 xx

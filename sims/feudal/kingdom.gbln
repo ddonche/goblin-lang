@@ -8,19 +8,19 @@
 ///   Noble   holds estates, vassals and children. Each year an estate's
 ///           harvest goes to its holder, and a vassal pays a tenth of his
 ///           gold to his liege. A noble with land has children. At most
-///           one deed a year (`one of`):
-///             defect  a disloyal vassal half as strong as his liege swears to
+///           one deed a year (the judge takes the first that holds):
+///             refuge  a disloyal vassal half as strong as his liege swears to
 ///                     another kingdom's king, and goes there with all he
 ///                     holds (his `owner` is now in another region)
-///             sell    a noble in debt sells his poorest estate to the
+///             buyer   a noble in debt sells his poorest estate to the
 ///                     richest of his liege's other vassals
-///             seize   a noble twice as strong as another vassal of his
+///             prize   a noble twice as strong as another vassal of his
 ///                     liege takes one of his estates (one year in ten)
-///             grant   a lord with three estates gives one to a grown
+///             grantee a lord with three estates gives one to a grown
 ///                     child or vassal without land
 ///           A grown noble without land may take holy orders and leave.
 ///           At death his eldest child (`parent`) inherits everything he held
-///           (`on erase: inherit`). With no child, what he held goes up to
+///           (`on erase`). With no child, what he held goes up to
 ///           his liege (the runtime moves contents up one level).
 ///   Estate  land with a yearly yield.
 ///
@@ -51,7 +51,7 @@ realm_names | ["Aldmark", "Brennor", "Caddis"]
     arrived: 0
     every 1 tick
         crown(self)
-    end
+    xx
 xx
 
 <>Noble |
@@ -65,41 +65,37 @@ xx
     /// The noble whose child this is (nil for the first generation).
     parent: nil
     owner: nil
-    on erase: inherit
+    on erase => inherit(self)
     every 1 tick
         @age |= @age + 1
         live(self)
-    end
-    defect | decision against Realm where [
-        @age >= 16 and @loyalty < 20 and :is_type(@owner, "Noble")
-        and target >> n != kingdom(self) and strength(self) * 2 > strength(@owner)
-    ] by [ 0 - target >> seized ]
-    /// The best-scored realm (fewest seizures) is the choice, whatever its score.
-    judge using defect
-        else: defect(target)
-    end
-    sell | decision against Noble where [
-        @gold < 0 and target >> owner == @owner and target >> gold >= 60 and estates(self) >= 2
-    ] by [ target >> gold ]
-    judge using sell
-        >= 0: sell(target)
-    end
-    seize | decision against Estate where [
-        @age >= 16 and target >> owner >> owner == @owner and target >> owner != self
-        and strength(self) >= 2 * strength(target >> owner) + 2
-    ] by [ target >> yield ]
-    judge using seize
-        >= 0: seize(target)
-    end
-    grant | decision against Noble where [
-        target >> owner == self and target >> age >= 16 and estates(target) == 0 and estates(self) >= 3
-    ] by [ target >> loyalty ]
-    judge using grant
-        >= 0: grant(target)
-    end
-    one of defect, sell, seize, grant
-    transition erase when @age >= @lifespan or @vows
-    end
+    xx
+    /// The realm with the fewest seizures.
+    decision refuge
+        targets: Realm where @age >= 16 and @loyalty < 20 and :is_type(@owner, "Noble") and (target >> n) != kingdom(self) and strength(self) * 2 > strength(@owner)
+        score => 0 - (target >> seized)
+    xx
+    decision buyer
+        targets: Noble where @gold < 0 and (target >> owner) == @owner and (target >> gold) >= 60 and estates(self) >= 2
+        score => target >> gold
+    xx
+    decision prize
+        targets: Estate where @age >= 16 and (target >> owner >> owner) == @owner and (target >> owner) != self and strength(self) >= 2 * strength(target >> owner) + 2
+        score => target >> yield
+    xx
+    decision grantee
+        targets: Noble where (target >> owner) == self and (target >> age) >= 16 and estates(target) == 0 and estates(self) >= 3
+        score => target >> loyalty
+    xx
+    /// A realm without a king takes no one in; a buyer must afford the
+    /// poorest estate; a seizure works one year in ten.
+    judge
+        refuge and has_king(refuge >> target): defect(self, refuge >> target)
+        buyer and ((buyer >> target) >> gold) >= price(self): sell(self, buyer >> target)
+        prize and (pick 1 from 1...10) == 1: seize(self, prize >> target)
+        grantee and (grantee >> score) >= 0: grant(self, grantee >> target)
+    xx
+    transition erase where @age >= @lifespan or @vows
 xx
 
 <>Estate |
@@ -110,7 +106,7 @@ xx
         if :is_type(@owner, "Noble")
             @owner >> gold |= @owner >> gold + @yield
         xx
-    end
+    xx
 xx
 
 /// The realm an object belongs to: go up through the holders.
@@ -130,12 +126,12 @@ act kingdom(x)
 xx
 
 act estates(n)
-    return :len(:objects("Estate", it >> owner == n))
+    return :len(:objects(Estate, it >> owner == n))
 xx
 
 act strength(n)
     s | estates(n) * 2
-    repeat :objects("Noble", it >> owner == n) as v
+    repeat :objects(Noble, it >> owner == n) as v
         s |= s + estates(v)
     xx
     return s
@@ -144,7 +140,7 @@ xx
 /// A year of a noble's life: upkeep (3 gold, and 3 for everyone in his
 /// household), the tithe to his liege, loyalty, and children.
 act live(n)
-    household | :len(:objects("Noble", it >> owner == n))
+    household | :len(:objects(Noble, it >> owner == n))
     n >> gold |= n >> gold - 3 - 3 * household
     liege | n >> owner
     if :is_type(liege, "Noble") and n >> gold > 0
@@ -168,11 +164,12 @@ act live(n)
     xx
 xx
 
+act has_king(r)
+    return :len(:objects(Noble, it >> owner == r)) > 0
+xx
+
 act defect(n, r)
-    kings | :objects("Noble", it >> owner == r)
-    if :len(kings) == 0
-        return false
-    xx
+    kings | :objects(Noble, it >> owner == r)
     home | realm_of(n)
     home >> defected |= home >> defected + 1
     r >> arrived |= r >> arrived + 1
@@ -180,28 +177,33 @@ act defect(n, r)
     n >> owner |= kings[0]
 xx
 
-act sell(n, buyer)
-    cheapest | nil
-    repeat :objects("Estate", it >> owner == n) as e
-        if cheapest == nil or e >> yield < cheapest >> yield
-            cheapest |= e
+/// A noble's poorest estate.
+act cheapest(n)
+    c | nil
+    repeat :objects(Estate, it >> owner == n) as e
+        if c == nil or e >> yield < c >> yield
+            c |= e
         xx
     xx
-    price | cheapest >> yield * 12
-    if buyer >> gold < price
-        return false
-    xx
-    buyer >> gold |= buyer >> gold - price
-    n >> gold |= n >> gold + price
-    cheapest >> owner |= buyer
+    return c
+xx
+
+/// What his poorest estate sells for.
+act price(n)
+    return cheapest(n) >> yield * 12
+xx
+
+act sell(n, buyer)
+    e | cheapest(n)
+    cost | e >> yield * 12
+    buyer >> gold |= buyer >> gold - cost
+    n >> gold |= n >> gold + cost
+    e >> owner |= buyer
     r | realm_of(n)
     r >> sold |= r >> sold + 1
 xx
 
 act seize(n, e)
-    if (pick 1 from 1...10) > 1
-        return false
-    xx
     victim | e >> owner
     victim >> loyalty |= victim >> loyalty - 20
     e >> owner |= n
@@ -211,7 +213,7 @@ xx
 
 act grant(n, to)
     poorest | nil
-    repeat :objects("Estate", it >> owner == n) as e
+    repeat :objects(Estate, it >> owner == n) as e
         if poorest == nil or e >> yield < poorest >> yield
             poorest |= e
         xx
@@ -229,7 +231,7 @@ xx
 act inherit(d)
     r | realm_of(d)
     heir | nil
-    repeat :objects("Noble", it >> owner == d and it >> parent == d) as c
+    repeat :objects(Noble, it >> owner == d and it >> parent == d) as c
         if heir == nil or c >> age > heir >> age
             heir |= c
         xx
@@ -242,10 +244,10 @@ act inherit(d)
     xx
     heir >> owner |= d >> owner
     heir >> gold |= heir >> gold + d >> gold
-    repeat :objects("Estate", it >> owner == d) as e
+    repeat :objects(Estate, it >> owner == d) as e
         e >> owner |= heir
     xx
-    repeat :objects("Noble", it >> owner == d) as v
+    repeat :objects(Noble, it >> owner == d) as v
         v >> owner |= heir
     xx
     if r != nil
@@ -257,12 +259,12 @@ xx
 /// strongest of them (or the only one) is crowned; the others swear to him,
 /// and he takes the lands.
 act crown(r)
-    claimants | :objects("Noble", it >> owner == r)
+    claimants | :objects(Noble, it >> owner == r)
     if :len(claimants) == 0
         return nil
     xx
     /// One claimant and no lands left with the realm: he already reigns.
-    if :len(claimants) == 1 and :len(:objects("Estate", it >> owner == r)) == 0
+    if :len(claimants) == 1 and :len(:objects(Estate, it >> owner == r)) == 0
         return nil
     xx
     king | nil
@@ -276,7 +278,7 @@ act crown(r)
             c >> owner |= king
         xx
     xx
-    repeat :objects("Estate", it >> owner == r) as e
+    repeat :objects(Estate, it >> owner == r) as e
         e >> owner |= king
     xx
     r >> crowned |= r >> crowned + 1
@@ -324,19 +326,19 @@ repeat :range(1, years + 1) as y
     tick(realms)
     if y % 25 == 0 or y == years
         say("year {y}:")
-        repeat :objects("Realm") as r
+        repeat :objects(Realm) as r
             king | "none"
-            repeat :objects("Noble", it >> owner == r) as k
+            repeat :objects(Noble, it >> owner == r) as k
                 king |= "{k >> house} ({k >> age})"
             xx
             nobles | 0
             lands | 0
-            repeat :objects("Noble") as nb
+            repeat :objects(Noble) as nb
                 if kingdom(nb) == r >> n
                     nobles |= nobles + 1
                 xx
             xx
-            repeat :objects("Estate") as e
+            repeat :objects(Estate) as e
                 if kingdom(e) == r >> n
                     lands |= lands + 1
                 xx
@@ -344,24 +346,26 @@ repeat :range(1, years + 1) as y
             say("  {r >> name}: king {king}, {nobles} nobles, {lands} estates; crowned {r >> crowned}, inherited {r >> inherited}, escheated {r >> escheated}, granted {r >> granted}, sold {r >> sold}, seized {r >> seized}, defected {r >> defected}, arrived {r >> arrived}")
         xx
         lost | 0
-        repeat :objects("Estate") as e
+        repeat :objects(Estate) as e
             if realm_of(e) == nil
                 lost |= lost + 1
             xx
         xx
-        say("  estates {:len(:objects("Estate"))}, held by no realm {lost}")
+        total | :len(:objects(Estate))
+        say("  estates {total}, held by no realm {lost}")
     xx
 xx
 
 /// Who holds what at the end: each king, and the vassals sworn to him.
 say("")
 say("the realms at the end:")
-repeat :objects("Realm") as r
-    repeat :objects("Noble", it >> owner == r) as k
+repeat :objects(Realm) as r
+    repeat :objects(Noble, it >> owner == r) as k
         say("  {r >> name}: king {k >> house}, {estates(k)} estates of his own, gold {k >> gold}")
-        repeat :objects("Noble", it >> owner == k) as v
-            if estates(v) > 0 or :len(:objects("Noble", it >> owner == v)) > 0
-                say("    {v >> house} ({v >> age}): {estates(v)} estates, {:len(:objects("Noble", it >> owner == v))} in his household")
+        repeat :objects(Noble, it >> owner == k) as v
+            household | :len(:objects(Noble, it >> owner == v))
+            if estates(v) > 0 or household > 0
+                say("    {v >> house} ({v >> age}): {estates(v)} estates, {household} in his household")
             xx
         xx
     xx
