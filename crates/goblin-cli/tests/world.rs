@@ -37,13 +37,14 @@ xx
     hunger: .5
     town: 0
     margin: .2
-    score | decision against Sheep by [
-        self >> hunger * .5 + target >> town * .5
-    ]
-    judge using score
-        >= .3: bite(target)
-        else: rest(target)
-    end
+    decision prey
+        targets: Sheep
+        score => @hunger * .5 + (target >> town) * .5
+    xx
+    judge
+        prey and (prey >> score) >= .3: bite(self, prey >> target)
+        prey: rest(self, prey >> target)
+    xx
 xx
 act bite(w, s)
     s >> fat |= s >> fat - 1
@@ -51,23 +52,25 @@ xx
 act rest(w, s)
     return nil
 xx
-link Person contact 0...1 by [
-    1 - abs((self >> town) - (target >> town)) * .5
-]
-overlay Flu |
-    hosts Person
-    spreads where :link_score(self, target, "contact") > .3 at .5
-    decays .04
-    modifies:
-        health - .01
-    end
-end
+link contact
+    hosts: Person
+    range: 0...1
+    score => 1 - :abs((self >> town) - (target >> town)) * .5
+xx
+overlay flu
+    hosts: Person
+    decays: .04
+    spread: .5 where :link_score(self, target, "contact") > .3
+    modify
+        @health - .01
+    xx
+xx
 act make_town(t, n, sick)
     things | []
     repeat :range(0, n) as i
         p <> Person | town: t
         if i < sick
-            overlay Flu on p at .9
+            :overlay!(p, flu, .9)
         xx
         :put_last!(things, p)
     xx
@@ -90,13 +93,13 @@ repeat :range(0, 4) as i
 xx
 repeat :range(1, 13) as d
     tick(towns)
-    flu | :len(:overlays(it >> overlay_name == "Flu"))
+    sick | :len(:overlays(flu))
     fat | 0
     repeat :objects(it >> fat > -1000)
         f | it >> fat
         fat |= fat + f
     xx
-    say("tick {d}: flu {flu}, sheep fat {fat}")
+    say("tick {d}: flu {sick}, sheep fat {fat}")
 xx
 "#;
 

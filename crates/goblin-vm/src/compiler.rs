@@ -3465,9 +3465,10 @@ impl Compiler {
             None    => return Ok(None),
         };
         // `:get_where(xs, it > 1)`: the condition is code with `it`, run for
-        // each item (text keeps its meaning: a value to match, an action's name).
+        // each item. Anything else is a value, as before (text to match, an
+        // action's name), even when a variable holds it.
         if matches!(bid, BuiltinId::GetWhere | BuiltinId::DeleteWhere | BuiltinId::UpdateWhere | BuiltinId::ReapWhere | BuiltinId::ReapWhere2)
-            && args.len() >= 2 && !matches!(args[1], Expr::Str(..)) {
+            && args.len() >= 2 && mentions_it(&args[1]) {
             self.compile_expr(&args[0])?;
             self.compile_predicate_lambda(&args[1])?;
             for arg in &args[2..] { self.compile_expr(arg)?; }
@@ -3683,6 +3684,20 @@ pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> 
 pub(crate) fn read_calls(e: &Expr) -> Option<Vec<String>> {
     let mut names = Vec::new();
     only_reads_with(e, &mut |name| { names.push(name.to_string()); true }).then_some(names)
+}
+
+/// Whether `e` reads `it` (the item a `*_where` condition is run for).
+fn mentions_it(e: &Expr) -> bool {
+    match e {
+        Expr::Ident(n, _) => n == "it",
+        Expr::FreeCall(_, args, _) | Expr::NsCall(_, _, args, _) => args.iter().any(mentions_it),
+        Expr::Call(r, _, args, _) | Expr::OptCall(r, _, args, _) => mentions_it(r) || args.iter().any(mentions_it),
+        Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => mentions_it(l) || mentions_it(r),
+        Expr::Prefix(_, x, _) | Expr::Postfix(x, _, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => mentions_it(x),
+        Expr::Array(xs, _) => xs.iter().any(mentions_it),
+        Expr::Object(kv, _) => kv.iter().any(|(_, v)| mentions_it(v)),
+        _ => false,
+    }
 }
 
 /// `read_calls` for a judge condition, which may also roll (`pick 1 from
