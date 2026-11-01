@@ -1,15 +1,18 @@
-/// known-gap: interp has no contents list
-/// `where [ target >> owner >> owner == self >> owner ]` (an estate of
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `where (target >> owner >> owner) == @owner` (an estate of
 /// another vassal of my liege) looks only at what my liege's vassals hold,
 /// and finds the same targets checking every estate would.
 <>Lord |
     name: ""
     owner: nil
     realm: 0
-    seize | decision against Land where [ target >> owner >> owner == self >> owner and target >> owner != self ] by [ target >> worth ]
-    judge using seize
-        >= 0: take(target)
-    end
+    decision prize
+        targets: Land where (target >> owner >> owner) == @owner and (target >> owner) != self
+        score => target >> worth
+    xx
+    judge
+        prize and (prize >> score) >= 0: take(self, prize >> target)
+    xx
 xx
 <>Land |
     name: ""

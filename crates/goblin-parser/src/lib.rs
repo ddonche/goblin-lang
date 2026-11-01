@@ -4443,10 +4443,6 @@ impl<'t> Parser<'t> {
                 let col = act_tok.span.col_start;
                 self.i += 1;
                 let dname = self.eat_ident().unwrap_or_default();
-                if decide.is_some() {
-                    return Err(s_help_site!("P1414", &format!("The decision '{dname}' comes after the class's judge"),
-                        "Write every decision first, then the judge that chooses between them."));
-                }
                 if named.iter().any(|(n, _, _)| *n == dname) {
                     return Err(s_help_site!("P1407", &format!("This class already has a decision named '{}'", dname),
                         "Give each decision its own name."));
@@ -4462,8 +4458,10 @@ impl<'t> Parser<'t> {
             // The class's `judge` / `judge_all` over its block decisions:
             // an ordinary judge, run as a method that gets each decision's
             // pick (`{target, score}`, or nil) under the decision's name.
-            if block_decisions && matches!(act_tok.kind, TokenKind::Ident)
+            // It may come before the decisions it reads: it finds them by name.
+            if matches!(act_tok.kind, TokenKind::Ident)
                 && matches!(act_tok.value.as_deref(), Some("judge") | Some("judge_all"))
+                && (block_decisions || self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Newline)))
             {
                 if decide.is_some() {
                     return Err(s_help_site!("P1408", "This class already has a judge",

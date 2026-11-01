@@ -187,6 +187,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
@@ -246,6 +247,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
@@ -333,6 +335,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
+                if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
