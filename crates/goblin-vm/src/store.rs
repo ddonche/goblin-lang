@@ -197,47 +197,46 @@ impl<'a> IntoIterator for &'a ObjectStore {
 }
 
 impl ObjectStore {
-    /// Where the object with this id sits: the place the id remembers when
-    /// that place holds it, else by the map (and the id remembers it).
+    /// Where the object with this id sits, and its entry: the place the id
+    /// remembers when that place holds it, else by the map (and the id
+    /// remembers it).
     #[inline]
-    fn place(&self, id: &Id) -> Option<usize> {
+    fn find(&self, id: &Id) -> Option<(usize, &Entry)> {
         let h = id.place_hint();
         if let Some(Some(e)) = self.slots.get(h) {
-            if e.id.same(id) { return Some(h); }
+            if e.id.same(id) { return Some((h, e)); }
         }
-        self.place_slow(id)
+        self.find_slow(id)
     }
 
     #[cold]
-    fn place_slow(&self, id: &Id) -> Option<usize> {
+    #[inline(never)]
+    fn find_slow(&self, id: &Id) -> Option<(usize, &Entry)> {
         let i = *self.at.get(id)? as usize;
         id.set_place_hint(i);
-        Some(i)
+        Some((i, self.slots[i].as_ref()?))
     }
 
     #[inline]
-    fn place_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.place(&*uuid.id()?) }
+    fn place(&self, id: &Id) -> Option<usize> { self.find(id).map(|(i, _)| i) }
 
     // Lookups by id or by an id's text.
     #[inline]
     pub fn get(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Value> {
-        let i = self.place_of(uuid)?;
-        self.slots[i].as_ref().map(|e| &e.val)
+        self.find(&*uuid.id()?).map(|(_, e)| &e.val)
     }
     /// An object's place: fixed until an object is removed.
     #[inline]
-    pub fn get_index_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.place_of(uuid) }
+    pub fn get_index_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.place(&*uuid.id()?) }
     #[inline]
-    pub fn contains_key(&self, uuid: &(impl IdKey + ?Sized)) -> bool { self.place_of(uuid).is_some() }
+    pub fn contains_key(&self, uuid: &(impl IdKey + ?Sized)) -> bool { uuid.id().is_some_and(|u| self.find(&u).is_some()) }
     #[inline]
     pub fn get_full(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(usize, &Id, &Value)> {
-        let i = self.place_of(uuid)?;
-        self.slots[i].as_ref().map(|e| (i, &e.id, &e.val))
+        self.find(&*uuid.id()?).map(|(i, e)| (i, &e.id, &e.val))
     }
     #[inline]
     pub fn get_key_value(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(&Id, &Value)> {
-        let i = self.place_of(uuid)?;
-        pair(&self.slots[i])
+        self.find(&*uuid.id()?).map(|(_, e)| (&e.id, &e.val))
     }
     /// The object at a place (none when that place is empty).
     #[inline]
@@ -369,10 +368,13 @@ impl ObjectStore {
     pub fn contents_at(&self, owner: &(impl IdKey + ?Sized), class: Option<&str>) -> Vec<usize> {
         let Some(set) = owner.id().and_then(|o| self.contents.get(&*o)) else { return Vec::new() };
         let mut same = SameClass::default();
-        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.get_full(u) {
-            Some((i, _, Value::Object(o))) if class.is_none_or(|c| same.is(&o.class_name, c)) => Some(i),
-            Some((i, _, _)) if class.is_none() => Some(i),
-            _ => None,
+        let mut at: Vec<usize> = set.iter().filter_map(|u| {
+            let i = self.place(u)?;
+            match &self.slots[i].as_ref()?.val {
+                Value::Object(o) if class.is_none_or(|c| same.is(&o.class_name, c)) => Some(i),
+                _ if class.is_none() => Some(i),
+                _ => None,
+            }
         }).collect();
         at.sort_unstable();
         at
@@ -383,7 +385,7 @@ impl ObjectStore {
     pub fn contents_count(&self, owner: &Id, class: &str) -> usize {
         let Some(set) = self.contents.get(owner) else { return 0 };
         let mut same = SameClass::default();
-        set.iter().filter(|u| matches!(self.get(*u), Some(Value::Object(o)) if same.is(&o.class_name, class))).count()
+        set.iter().filter(|u| matches!(value_in(&self.slots, &self.at, u), Some(Value::Object(o)) if same.is(&o.class_name, class))).count()
     }
 
     /// Everything `uuid` contains, at any depth (what it holds, what those

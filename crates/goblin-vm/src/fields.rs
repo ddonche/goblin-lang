@@ -36,7 +36,9 @@ impl Layout {
     fn position(&self, name: &str) -> Option<usize> {
         match &self.index {
             Some(ix) => ix.get(name).map(|i| *i as usize),
-            None => self.names.iter().position(|n| n == name),
+            // The first byte first: most names differ there, and it saves
+            // a call to compare the rest.
+            None => self.names.iter().position(|n| n.as_bytes().first() == name.as_bytes().first() && n == name),
         }
     }
 

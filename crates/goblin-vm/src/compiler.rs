@@ -3613,6 +3613,14 @@ pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> 
     }
 }
 
+/// `only_reads_with`, split in two: whether `e` only reads apart from the
+/// program's actions it calls (None: it doesn't), and the names of those
+/// actions, so the answer can be kept while the actions are looked at again.
+pub(crate) fn read_calls(e: &Expr) -> Option<Vec<String>> {
+    let mut names = Vec::new();
+    only_reads_with(e, &mut |name| { names.push(name.to_string()); true }).then_some(names)
+}
+
 /// Builtins that only read: no effects, no randomness, no calls back into
 /// the program.
 pub(crate) const READ_ONLY_BUILTINS: &[&str] = &[

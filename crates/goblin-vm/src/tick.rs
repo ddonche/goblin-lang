@@ -1046,6 +1046,62 @@ fn order_candidates(vm: &mut Vm, mut candidates: Vec<(crate::value::ObjId, Strin
     Ok(candidates)
 }
 
+/// What a decision needs that its definition alone settles: its formula and
+/// `where` condition compiled, and, for the formula, the condition and the
+/// judge's conditions, the actions they call when they otherwise only read
+/// (None: they don't only read). Made once per decision while the class
+/// table stays; whether those actions only read is looked at each time
+/// (`calls_read`), since a variable can be given another action.
+pub(crate) struct DecidePlan {
+    formula: std::rc::Rc<crate::vm::TickFormula>,
+    filter: Option<std::rc::Rc<crate::vm::TickFormula>>,
+    formula_calls: Option<Vec<String>>,
+    filter_calls: Option<Vec<String>>,
+    judge_calls: Option<Vec<String>>,
+}
+
+fn decide_plan(vm: &mut Vm, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<std::rc::Rc<DecidePlan>, String> {
+    // Kept while the class table is the one they were made from; the
+    // table is shared with this cache, so its decisions keep their
+    // addresses. A decision given to one object is told apart by where
+    // its formula is written.
+    let classes = vm.session.classes.clone();
+    if !vm.decide_classes.as_ref().is_some_and(|c| std::rc::Rc::ptr_eq(c, &classes)) {
+        vm.decide_plans.clear();
+        vm.decide_classes = Some(classes);
+    }
+    let sp = decision.formula.span();
+    let key = (decision as *const _ as usize, judge as *const _ as usize, sp.start, sp.end, sp.file.as_ptr() as usize);
+    if let Some(p) = vm.decide_plans.get(&key) { return Ok(p.clone()); }
+    let formula = vm.tick_formula(&decision.formula, &["self", "target"])
+        .map_err(|e| format!("the formula can't be compiled: {e}"))?;
+    let filter = match &decision.filter {
+        Some(f) => Some(vm.tick_formula(f, &["self", "target"])
+            .map_err(|e| format!("the `where` condition can't be compiled: {e}"))?),
+        None => None,
+    };
+    let filter_calls = match &decision.filter { Some(f) => crate::compiler::read_calls(f), None => Some(Vec::new()) };
+    let mut judge_calls = Some(Vec::new());
+    for c in judge.arms.iter().filter_map(|a| a.condition.as_ref()) {
+        judge_calls = match (judge_calls, crate::compiler::read_calls(c)) {
+            (Some(mut a), Some(b)) => { a.extend(b); Some(a) }
+            _ => None,
+        };
+    }
+    let plan = std::rc::Rc::new(DecidePlan {
+        formula, filter, formula_calls: crate::compiler::read_calls(&decision.formula), filter_calls, judge_calls,
+    });
+    if vm.decide_plans.len() >= 4096 { vm.decide_plans.clear(); }
+    vm.decide_plans.insert(key, plan.clone());
+    Ok(plan)
+}
+
+/// Whether an expression only reads, from its `DecidePlan` entry: it does
+/// apart from these actions, and each of them only reads.
+fn calls_read(vm: &mut Vm, calls: &Option<Vec<String>>) -> bool {
+    calls.as_ref().is_some_and(|c| c.iter().all(|n| vm.action_reads_only(n)))
+}
+
 /// One decision of one object: score the targets, pick the best (within
 /// the object's `margin`), and run the action its judge picks.
 /// The objects of each target class, in the order they were made, kept
@@ -1332,18 +1388,10 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
         };
         GoblinError::Runtime(format!("R1220: decision-formula: decision `{name}` of {class} (against {}): {what}", decision.target_class))
     };
-    let formula = match vm.tick_formula(&decision.formula, &["self", "target"]) {
-        Ok(f) => f,
-        Err(e) => return Err(formula_error(vm, format!("the formula can't be compiled: {e}"))),
-    };
+    let plan = decide_plan(vm, decision, judge).map_err(|e| formula_error(vm, e))?;
+    let formula = plan.formula.clone();
     // `where [ ... ]`: the targets that qualify; the others are not scored.
-    let filter = match &decision.filter {
-        Some(f) => match vm.tick_formula(f, &["self", "target"]) {
-            Ok(c) => Some(c),
-            Err(e) => return Err(formula_error(vm, format!("the `where` condition can't be compiled: {e}"))),
-        },
-        None => None,
-    };
+    let filter = plan.filter.clone();
     // While the targets are scored nothing changes, so an action the
     // condition or the formula calls that only reads gives the same answer
     // for the same arguments: it runs once (memo.rs).
@@ -1353,8 +1401,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
     // things.
     // Nothing runs between here and the scoring that could change what an
     // action does, so these hold for both.
-    let filter_reads = decision.filter.as_ref().is_none_or(|f| reads(vm, f));
-    let formula_reads = reads(vm, &decision.formula);
+    let filter_reads = calls_read(vm, &plan.filter_calls);
+    let formula_reads = calls_read(vm, &plan.formula_calls);
     let memo = filter_reads && formula_reads;
     if memo { vm.memo = Some(vm.memo_kept.take().unwrap_or_default()); } else { vm.memo_kept = None; }
     let epoch = vm.memo.as_ref().map(|m| m.epoch);
@@ -1367,7 +1415,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
     if scored.is_empty() { return Ok(false); }
     // A judge condition that may change things, or an action, ends what
     // was kept.
-    if !judge.arms.iter().all(|a| a.condition.as_ref().is_none_or(|c| reads(vm, c))) { vm.memo_kept = None; }
+    if !calls_read(vm, &plan.judge_calls) { vm.memo_kept = None; }
     // A score is exactly the number the formula gives: nothing rescales or
     // clamps it. `margin` is in the formula's own units, and the judge sees
     // the same number.

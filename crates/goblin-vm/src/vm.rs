@@ -27,10 +27,8 @@ pub(crate) enum Operand {
 pub struct CallFrame {
     /// Local variable slots (0..params are args, rest are locals).
     pub locals: Vec<Option<Tether>>,
-    /// Current type lock per slot (updated by cast-bang and declaration).
-    pub type_locks: Vec<Option<String>>,
-    /// Hard type lock per slot (set only at declaration, never changes).
-    pub hard_type_locks: Vec<Option<String>>,
+    /// Type locks per slot, made on the first lock: most calls lock nothing.
+    locks: Option<Box<Locks>>,
     /// Captured upvalues for the current closure (empty if plain function).
     pub upvalues: Vec<UpvalueCell>,
     /// Instruction pointer into func.bytecode.
@@ -69,9 +67,7 @@ impl CallFrame {
     fn new_with(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize, locals: Vec<Option<Tether>>) -> Self {
         CallFrame {
             locals,
-            // Grown on first use: most calls lock nothing.
-            type_locks: Vec::new(),
-            hard_type_locks: Vec::new(),
+            locks: None,
             upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None,
         }
     }
@@ -92,31 +88,39 @@ impl CallFrame {
         let idx = slot as usize;
         if idx >= self.locals.len() {
             self.locals.resize(idx + 1, None);
-            self.type_locks.resize(idx + 1, None);
-            self.hard_type_locks.resize(idx + 1, None);
         }
         self.locals[idx] = Some(t);
     }
 
     fn get_type_lock(&self, slot: u16) -> Option<&str> {
-        self.type_locks.get(slot as usize).and_then(|o| o.as_deref())
+        self.locks.as_ref()?.soft.get(slot as usize).and_then(|o| o.as_deref())
     }
 
     fn get_hard_type_lock(&self, slot: u16) -> Option<&str> {
-        self.hard_type_locks.get(slot as usize).and_then(|o| o.as_deref())
+        self.locks.as_ref()?.hard.get(slot as usize).and_then(|o| o.as_deref())
     }
 
     fn set_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
-        if idx >= self.type_locks.len() { self.type_locks.resize(idx + 1, None); }
-        self.type_locks[idx] = Some(lock);
+        let l = &mut self.locks.get_or_insert_with(Default::default).soft;
+        if idx >= l.len() { l.resize(idx + 1, None); }
+        l[idx] = Some(lock);
     }
 
     fn set_hard_type_lock(&mut self, slot: u16, lock: String) {
         let idx = slot as usize;
-        if idx >= self.hard_type_locks.len() { self.hard_type_locks.resize(idx + 1, None); }
-        self.hard_type_locks[idx] = Some(lock);
+        let l = &mut self.locks.get_or_insert_with(Default::default).hard;
+        if idx >= l.len() { l.resize(idx + 1, None); }
+        l[idx] = Some(lock);
     }
+}
+
+/// A call's type locks: `soft` is the current lock per slot (changed by
+/// cast-bang and declaration), `hard` the one set at declaration.
+#[derive(Default)]
+struct Locks {
+    soft: Vec<Option<String>>,
+    hard: Vec<Option<String>>,
 }
 
 struct CatchFrame {
@@ -177,13 +181,18 @@ pub struct Vm {
     /// compiled, and its `on erase:` action (tick.rs `erase_changed`).
     /// Emptied with `tick_exprs`, when definitions change.
     pub(crate) erase_conds: rustc_hash::FxHashMap<Rc<str>, Rc<crate::tick::EraseConds>>,
+    /// Each decision's compiled formulas (tick.rs `decide_plan`), for the
+    /// class table `decide_classes`.
+    pub(crate) decide_plans: rustc_hash::FxHashMap<(usize, usize, usize, usize, usize), Rc<crate::tick::DecidePlan>>,
+    pub(crate) decide_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// The class table `erase_conds` was made from.
     pub(crate) erase_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// Emptied local lists of returned calls, for the next calls to reuse.
     spare_locals: Vec<Vec<Option<Tether>>>,
     /// `objects_owned`: per query, whether its class can be read from
     /// contents lists, for the class table `owned_classes`.
-    owned_usable: rustc_hash::FxHashMap<usize, (String, String, bool)>,
+    /// Each entry keeps its function alive, so the query's address names it.
+    owned_usable: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
     owned_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
 }
 
@@ -209,7 +218,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2718,6 +2727,7 @@ impl Vm {
                 };
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
+                self.decide_plans.clear();
                 self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
@@ -2823,6 +2833,7 @@ impl Vm {
                 };
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
+                self.decide_plans.clear();
                 self.session.link_defs.insert((def.class_name[..].to_string(), channel), std::rc::Rc::new(link_def));
             }
 
@@ -2844,6 +2855,7 @@ impl Vm {
                 };
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
+                self.decide_plans.clear();
                 self.session.object_link_defs.insert((uuid, channel), std::rc::Rc::new(link_def));
             }
 
@@ -2907,6 +2919,7 @@ impl Vm {
                 d.formula_max = max;
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
+                self.decide_plans.clear();
                 self.session.object_decisions.insert(key.to_string(), std::rc::Rc::new(d));
             }
 
@@ -4273,6 +4286,7 @@ impl Vm {
         // (with their methods compiled, as for the entry script)
         self.tick_exprs.clear();
         self.erase_conds.clear();
+                self.decide_plans.clear();
         crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums, Some(&module_prefix));
 
         // Track the importing file's directory in base_dir so that GLAM files (which
@@ -5768,19 +5782,20 @@ impl Vm {
         self.session.object_store.get_index_of(&owner)?;
         // Whether the class can be read from contents lists: it has an
         // `owner` field and none named like the variable. That depends on
-        // the class table only, so it is kept per query (by its place,
-        // checked against its class and variable) while the table stays.
+        // the class table only, so it is kept per query (by its address;
+        // the entry holds the query's function, so no other query gets
+        // that address) while the table stays.
         if !self.owned_classes.as_ref().is_some_and(|c| Rc::ptr_eq(c, &self.session.classes)) {
             self.owned_usable.clear();
             self.owned_classes = Some(self.session.classes.clone());
         }
         let key = &**q as *const crate::opcode::ObjectsOwned as usize;
         let usable = match self.owned_usable.get(&key) {
-            Some((c, v, u)) if *c == q.class && *v == q.var => *u,
-            _ => {
+            Some((_, u)) => *u,
+            None => {
                 let u = self.session.classes.get(q.class.as_str()).is_some_and(|c|
                     c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
-                self.owned_usable.insert(key, (q.class.clone(), q.var.clone(), u));
+                self.owned_usable.insert(key, (func.clone(), u));
                 u
             }
         };
