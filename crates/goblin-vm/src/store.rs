@@ -133,6 +133,14 @@ fn class_of<'a>(uuid: &str, v: &'a Value) -> Option<&'a str> {
     }
 }
 
+/// `class_of`, as the shared name (no copy of the text).
+fn class_rc(uuid: &str, v: &Value) -> Option<std::rc::Rc<str>> {
+    match v {
+        Value::Object(o) if !uuid.starts_with(crate::vm::OVERLAY_RECORD) => Some(o.class_name.clone()),
+        _ => None,
+    }
+}
+
 impl std::ops::Deref for ObjectStore {
     type Target = Map;
     fn deref(&self) -> &Map { &self.map }
@@ -308,15 +316,15 @@ impl ObjectStore {
     pub fn insert(&mut self, uuid: impl Into<Id>, v: Value) -> Option<Value> {
         let uuid: Id = uuid.into();
         self.touched(&uuid);
-        let new_class = class_of(&uuid, &v).map(str::to_string);
+        let new_class = class_rc(&uuid, &v);
         match owner_in(&v) {
             Some(o) => { let o = o.clone(); self.set_owner(&uuid, Some(&o)) }
             None => if self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, None); },
         }
         let old = self.map.insert(uuid.clone(), v);
-        let old_class = old.as_ref().and_then(|o| class_of(&uuid, o));
-        if old_class != new_class.as_deref() {
-            if let Some(c) = old_class.map(str::to_string) { self.unfile(&uuid, &c); }
+        let old_class = old.as_ref().and_then(|o| class_rc(&uuid, o));
+        if old_class != new_class {
+            if let Some(c) = &old_class { self.unfile(&uuid, c); }
             if let Some(c) = &new_class { self.file(&uuid, c); }
         }
         old
