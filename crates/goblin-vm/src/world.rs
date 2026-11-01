@@ -613,7 +613,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
 /// only the fields whose value changed. False when it differs in shape
 /// (class, field names or order, readonly or trait fields): build it anew.
 fn refresh_copy(v: &mut Value, p: &PValue, fp: &mut FromPortable, session: &mut crate::session::Session) -> bool {
-    let (Value::Object(o), PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid }) = (v, p) else { return false };
+    let (Value::Object(o), PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid, .. }) = (v, p) else { return false };
     if *o.uuid != **uuid || *o.class_name != **class_name || o.fields.len() != fields.len()
         || *o.readonly_fields != *readonly_fields || *o.trait_fields != *trait_fields
         || o.fields.keys().zip(fields).any(|(k, (pk, _))| k != pk) {
@@ -952,7 +952,7 @@ fn arrive(vm: &mut Vm, a: &Arrival, fp: &mut FromPortable) {
         vm.session.overlay_instances.push(inst);
     }
     // Its fields read through its overlays' film already.
-    if !a.overlays.is_empty() { crate::tick::adopt_films(&mut vm.session, &[a.uuid.to_string()]); }
+    if !a.overlays.is_empty() { crate::tick::adopt_films(&mut vm.session, &[a.uuid.to_string()], fp); }
 }
 
 // ── Ownership across regions ─────────────────────────────────────────────────

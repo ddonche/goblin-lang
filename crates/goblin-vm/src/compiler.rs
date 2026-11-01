@@ -3499,6 +3499,9 @@ impl Compiler {
                     Some(Expr::Ident(n, _)) => n != "it" && (n == "self" || self.resolve_load(n).is_ok()),
                     _ => false,
                 };
+                // `:overlays(kind, it >> intensity > .5)` with `kind` a
+                // variable holding an overlay's name is the filter form.
+                let host = host && !args.get(1).is_some_and(mentions_it);
                 if host {
                     for arg in args { self.compile_expr(arg)?; }
                     self.emit(Opcode::CallBuiltin(bid, args.len() as u8));

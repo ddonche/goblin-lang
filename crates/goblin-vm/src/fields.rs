@@ -205,15 +205,17 @@ impl FieldMap {
     }
 
     /// Takes these values as already showing this film (an object that
-    /// came from another session with its overlays): the stored values are
-    /// worked out from them.
-    pub fn adopt_film(&mut self, adds: &[(usize, f64)], clamp: &dyn Fn(&str) -> bool) {
+    /// came from another session with its overlays). `stored` gives the
+    /// stored values of the fields the film was on there; any other is
+    /// worked out from what it reads.
+    pub fn adopt_film(&mut self, adds: &[(usize, f64)], stored: &[(usize, Value)], clamp: &dyn Fn(&str) -> bool) {
         self.film = None;
         let n = self.vals.len();
         let mut add = vec![0.0; n];
         for &(i, a) in adds { if i < n { add[i] += a; } }
         if add.iter().all(|a| *a == 0.0) { return; }
-        let base = (0..n).map(|i| unfilmed(&self.vals[i], add[i], clamp(&self.layout.names[i]))).collect();
+        let mut base: Vec<Value> = (0..n).map(|i| unfilmed(&self.vals[i], add[i], clamp(&self.layout.names[i]))).collect();
+        for (i, v) in stored { if *i < n { base[*i] = v.clone(); } }
         self.film = Some(Box::new(Film { base, add, written: vec![false; n] }));
     }
 
@@ -229,6 +231,17 @@ impl FieldMap {
 
     /// Whether a film is on.
     pub fn has_film(&self) -> bool { self.film.is_some() }
+
+    /// The stored values of the fields a film is on (empty with no film):
+    /// what reading them gives can't always be undone (a `~` field reads
+    /// clamped), so a copy carries them along.
+    pub fn film_stored(&self, clamp: &dyn Fn(&str) -> bool) -> Vec<(usize, Value)> {
+        let Some(f) = &self.film else { return Vec::new() };
+        (0..self.vals.len()).filter(|&i| f.add[i] != 0.0).map(|i| {
+            let v = if f.written[i] { unfilmed(&self.vals[i], f.add[i], clamp(&self.layout.names[i])) } else { f.base[i].clone() };
+            (i, v)
+        }).collect()
+    }
 
     pub fn get_full(&self, name: &str) -> Option<(usize, &String, &Value)> {
         let i = self.get_index_of(name)?;

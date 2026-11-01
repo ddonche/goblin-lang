@@ -171,7 +171,7 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     let hosts: Vec<String> = s.overlay_instances.iter().map(|i| i.host_uuid.clone()).collect();
     if !hosts.is_empty() {
         let mut hosts = hosts; hosts.sort_unstable(); hosts.dedup();
-        crate::tick::adopt_films(s, &hosts);
+        crate::tick::adopt_films(s, &hosts, fp);
     }
 }
 

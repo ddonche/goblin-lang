@@ -50,6 +50,9 @@ pub enum PValue {
         readonly_fields: std::collections::BTreeSet<String>,
         trait_fields: std::collections::BTreeSet<String>,
         uuid: String,
+        /// The stored values of the fields its overlays' film is on (see
+        /// `FieldMap::film_stored`).
+        stored: Vec<(usize, PValue)>,
     },
     Enum { enum_name: String, variant_name: String, fields: Option<Vec<(String, PValue)>> },
     Class { name: String },
@@ -209,7 +212,11 @@ impl<'s> ToPortable<'s> {
                 self.visiting.insert(o.uuid.to_string());
                 let fields = self.object_fields(&o.fields);
                 self.visiting.remove(&*o.uuid);
+                let traits = o.trait_fields.clone();
+                let stored = o.fields.film_stored(&|n| traits.contains(n)).into_iter()
+                    .map(|(i, v)| Ok((i, self.value(&v)?))).collect::<Result<Vec<_>, GoblinError>>()?;
                 PValue::Object {
+                    stored,
                     class_name: o.class_name[..].to_string(),
                     fields: fields?,
                     readonly_fields: (*o.readonly_fields).clone(),
@@ -402,6 +409,7 @@ pub struct FromPortable {
     /// Objects rebuilt go into the session's object store, and the value
     /// holds a reference (an actor's starting state, at any depth).
     adopt: bool,
+    stored: HashMap<String, Vec<(usize, Value)>>,
     /// The field layout of the last object rebuilt (see `FieldMap::from_names`).
     layout: Option<Rc<crate::fields::Layout>>,
 }
@@ -417,7 +425,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, layout: None }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, stored: HashMap::new(), layout: None }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -433,9 +441,21 @@ impl FromPortable {
     /// store and stands as a reference, however deep it sits.
     pub(crate) fn adopting(&mut self, on: bool) { self.adopt = on; }
 
+    fn keep_stored(&mut self, uuid: &str, stored: &[(usize, PValue)], session: &mut Session) {
+        if stored.is_empty() { return; }
+        let vals = stored.iter().map(|(i, v)| (*i, self.value(v, session))).collect();
+        self.stored.insert(uuid.to_string(), vals);
+    }
+
+    /// The stored values an object rebuilt here carried for its film.
+    pub(crate) fn take_stored(&mut self, uuid: &str) -> Vec<(usize, Value)> {
+        self.stored.remove(uuid).unwrap_or_default()
+    }
+
     pub fn value(&mut self, p: &PValue, session: &mut Session) -> Value {
         match p {
-            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } if self.adopt => {
+            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid, stored } if self.adopt => {
+                self.keep_stored(uuid, stored, session);
                 let fields = Rc::new(self.object_fields(fields, session));
                 session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
                     class_name: crate::value::class_rc(class_name),
@@ -466,13 +486,16 @@ impl FromPortable {
             PValue::CtrlSkip => Value::CtrlSkip,
             PValue::CtrlStop => Value::CtrlStop,
             PValue::CtrlReturn(v) => Value::CtrlReturn(Box::new(self.value(v, session))),
-            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
-                class_name: crate::value::class_rc(class_name),
-                fields: Rc::new(self.object_fields(fields, session)),
-                readonly_fields: Rc::new(readonly_fields.clone()),
-                trait_fields: Rc::new(trait_fields.clone()),
-                uuid: uuid.as_str().into(),
-            })),
+            PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid, stored } => {
+                self.keep_stored(uuid, stored, session);
+                Value::Object(Box::new(ObjectVal {
+                    class_name: crate::value::class_rc(class_name),
+                    fields: Rc::new(self.object_fields(fields, session)),
+                    readonly_fields: Rc::new(readonly_fields.clone()),
+                    trait_fields: Rc::new(trait_fields.clone()),
+                    uuid: uuid.as_str().into(),
+                }))
+            }
             PValue::Enum { enum_name, variant_name, fields } => Value::Enum(Box::new(EnumVal {
                 enum_name: enum_name.clone(),
                 variant_name: variant_name.clone(),

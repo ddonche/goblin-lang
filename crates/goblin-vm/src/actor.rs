@@ -1298,9 +1298,17 @@ fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&P
     let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
     // Every object in the state, however deep, lives in the actor's object
     // store, so its ticks and field writes reach it.
+    // Overlays on them came with the image, before the objects did.
+    let waiting: Vec<String> = {
+        let s = &vm.session;
+        let mut h: Vec<String> = s.overlay_instances.iter().map(|i| i.host_uuid.clone())
+            .filter(|u| !s.object_store.contains_key(u)).collect();
+        h.sort_unstable(); h.dedup(); h
+    };
     fp.adopting(true);
     let first = fp.value(state, &mut vm.session);
     fp.adopting(false);
+    if !waiting.is_empty() { crate::tick::adopt_films(&mut vm.session, &waiting, &mut fp); }
     let state = adopt(first, &mut vm.session);
     (vm, handler, stop_when, state)
 }
