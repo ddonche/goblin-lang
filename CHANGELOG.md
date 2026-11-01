@@ -5,6 +5,7 @@ in parentheses are the pull requests that made each change.
 
 ## Unreleased
 
+- DES: the erase check after an action uses object ids and keeps each class's compiled `erase when` conditions (feudal -3.3% instructions).
 - Object fields keep their names in a layout shared by the objects of a class, and a field read remembers where it found its field: feudal -2.8%, predator-prey -1.5%, a call loop -10%.
 - Regions send an object unchanged since last tick as it was, and the others keep their copy: small epidemic -13% instructions.
 - Regions swap other regions' objects by id, not by text: small epidemic -7% instructions, predator-prey -3%.

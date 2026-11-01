@@ -1849,25 +1849,56 @@ fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinErr
     }
 }
 
-fn erase_changed(vm: &mut Vm, mut touched: Vec<String>) -> Result<(), GoblinError> {
-    use goblin_ast::TransitionKind;
-    let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(touched.len(), Default::default());
-    touched.retain(|u| seen.insert(u.clone()));
+/// A class's `erase when` conditions that don't roll dice, compiled, and
+/// its `on erase:` action.
+pub(crate) struct EraseConds {
+    conds: Vec<std::rc::Rc<crate::vm::TickFormula>>,
+    on_erase: Option<String>,
+}
+
+fn erase_conds(vm: &mut Vm, class_name: &std::rc::Rc<str>) -> std::rc::Rc<EraseConds> {
+    // Kept while the class table is the one they were made from (a change
+    // to it copies it first: it is shared with this cache).
     let classes = vm.session.classes.clone();
-    for uuid in touched {
-        let class_name = match vm.session.object_store.get(&uuid) {
-            Some(Value::Object(o)) => &o.class_name,
-            _ => continue,
-        };
-        let Some(class) = classes.get(&**class_name) else { continue };
-        if !class.transitions.iter().any(|t| matches!(t.kind, TransitionKind::Erase)) { continue; }
-        if vm.session.des_erasing.contains(&uuid) || crate::world::is_remote(vm, &uuid) { continue; }
+    if !vm.erase_classes.as_ref().is_some_and(|c| std::rc::Rc::ptr_eq(c, &classes)) {
+        vm.erase_conds.clear();
+        vm.erase_classes = Some(classes.clone());
+    }
+    if let Some(c) = vm.erase_conds.get(&**class_name) { return c.clone(); }
+    use goblin_ast::TransitionKind;
+    let mut conds = Vec::new();
+    let mut on_erase = None;
+    if let Some(class) = classes.get(&**class_name) {
         // A condition that rolls dice (`pick 1 from 1...200000`) is a chance
         // per tick: it is checked once, at the end of the tick, as before.
-        let fires = class.transitions.iter()
-            .filter(|t| matches!(t.kind, TransitionKind::Erase) && !uses_chance(&t.trigger))
-            .any(|t| vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(uuid.clone().into()))]));
-        if fires { erase_object(vm, &uuid, class.on_erase.as_deref())?; }
+        // One that can't be compiled counts as false, as it did.
+        for t in class.transitions.iter().filter(|t| matches!(t.kind, TransitionKind::Erase) && !uses_chance(&t.trigger)) {
+            if let Ok(f) = vm.tick_formula(&t.trigger, &["self"]) { conds.push(f); }
+        }
+        on_erase = class.on_erase.clone();
+    }
+    let c = std::rc::Rc::new(EraseConds { conds, on_erase });
+    vm.erase_conds.insert(class_name.clone(), c.clone());
+    c
+}
+
+fn erase_changed(vm: &mut Vm, touched: Vec<crate::value::ObjId>) -> Result<(), GoblinError> {
+    let mut seen = rustc_hash::FxHashSet::with_capacity_and_hasher(touched.len(), Default::default());
+    for uuid in touched {
+        if !seen.insert(uuid.clone()) { continue; }
+        let Some((at, _, Value::Object(o))) = vm.session.object_store.get_full(&uuid) else { continue };
+        let class_name = o.class_name.clone();
+        let c = erase_conds(vm, &class_name);
+        if c.conds.is_empty() { continue; }
+        if vm.session.des_erasing.iter().any(|e| uuid == *e) || crate::world::is_remote(vm, &uuid) { continue; }
+        let me = Value::Ref(uuid.clone());
+        let fires = c.conds.iter().any(|f| match vm.run_tick_formula_ref(f, &[("self", &me)], &[at]) {
+            Ok(Value::Bool(b)) => b,
+            Ok(Value::Int(i)) => i != 0,
+            Ok(Value::Float(f)) => f != 0.0,
+            _ => false,
+        });
+        if fires { erase_object(vm, &uuid, c.on_erase.as_deref())?; }
     }
     Ok(())
 }

@@ -156,7 +156,7 @@ pub struct Session {
     pub(crate) moved_away: HashMap<String, String>,
     /// While a DES action runs: the objects it changed, so their erase
     /// transitions are checked as soon as it finishes.
-    pub(crate) des_touched: Option<Vec<String>>,
+    pub(crate) des_touched: Option<Vec<crate::value::ObjId>>,
     /// Objects whose `on erase:` action is running: not erased again.
     pub(crate) des_erasing: Vec<String>,
     /// The main program's world of regions (`tick(regions)`).
@@ -302,8 +302,9 @@ pub struct Session {
 impl Session {
     /// Notes that the object `uuid` changed, when a DES action is running.
     #[inline]
-    pub(crate) fn touch(&mut self, uuid: &str) {
-        if let Some(t) = &mut self.des_touched { t.push(uuid.to_string()); }
+    pub(crate) fn touch(&mut self, uuid: &(impl crate::value::IdKey + ?Sized)) {
+        // Text no id has names no object here: nothing to check.
+        if let Some(t) = &mut self.des_touched { if let Some(id) = uuid.id() { t.push(id.into_owned()); } }
     }
 
     /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.

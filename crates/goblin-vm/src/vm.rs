@@ -168,6 +168,12 @@ pub struct Vm {
     /// `:objects` predicates seen, by function, with what running them
     /// directly needs (worked out once, not on every call).
     predicates: rustc_hash::FxHashMap<usize, Rc<Predicate>>,
+    /// Per class: its `erase when` conditions that don't roll dice,
+    /// compiled, and its `on erase:` action (tick.rs `erase_changed`).
+    /// Emptied with `tick_exprs`, when definitions change.
+    pub(crate) erase_conds: rustc_hash::FxHashMap<Rc<str>, Rc<crate::tick::EraseConds>>,
+    /// The class table `erase_conds` was made from.
+    pub(crate) erase_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -192,7 +198,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2691,6 +2697,7 @@ impl Vm {
                     },
                 };
                 self.tick_exprs.clear();
+                self.erase_conds.clear();
                 self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
@@ -2795,6 +2802,7 @@ impl Vm {
                     range: Some(range),
                 };
                 self.tick_exprs.clear();
+                self.erase_conds.clear();
                 self.session.link_defs.insert((def.class_name[..].to_string(), channel), std::rc::Rc::new(link_def));
             }
 
@@ -2815,6 +2823,7 @@ impl Vm {
                     range: None,
                 };
                 self.tick_exprs.clear();
+                self.erase_conds.clear();
                 self.session.object_link_defs.insert((uuid, channel), std::rc::Rc::new(link_def));
             }
 
@@ -2877,6 +2886,7 @@ impl Vm {
                 d.formula_min = min;
                 d.formula_max = max;
                 self.tick_exprs.clear();
+                self.erase_conds.clear();
                 self.session.object_decisions.insert(key.to_string(), std::rc::Rc::new(d));
             }
 
@@ -4242,6 +4252,7 @@ impl Vm {
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
         self.tick_exprs.clear();
+        self.erase_conds.clear();
         crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums, Some(&module_prefix));
 
         // Track the importing file's directory in base_dir so that GLAM files (which
