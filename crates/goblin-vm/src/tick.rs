@@ -328,21 +328,23 @@ fn film_off(s: &mut crate::session::Session, host: &str) {
 pub(crate) fn settle_films(s: &mut crate::session::Session) {
     if !s.overlay_instances.has_dirty() { return; }
     for host in s.overlay_instances.take_dirty() {
-        put_film(s, &host, false);
+        put_film(s, &host, None);
     }
 }
 
 /// Hosts that came from another session with their overlays: their fields
 /// already read through the film, so the stored values are worked out
 /// from them.
-pub(crate) fn adopt_films(s: &mut crate::session::Session, hosts: &[String]) {
+pub(crate) fn adopt_films(s: &mut crate::session::Session, hosts: &[String], fp: &mut crate::portable::FromPortable) {
     for h in hosts {
         s.overlay_instances.unmark(h);
-        put_film(s, h, true);
+        let stored = fp.take_stored(h);
+        put_film(s, h, Some(&stored));
     }
 }
 
-fn put_film(s: &mut crate::session::Session, host: &str, adopt: bool) {
+/// `adopt`: the object came with this film on, and these stored values.
+fn put_film(s: &mut crate::session::Session, host: &str, adopt: Option<&[(usize, Value)]>) {
     let mut sum: Vec<(&str, f64)> = Vec::new();
     for &p in s.overlay_instances.on_host(host) {
         for (f, d) in &s.overlay_instances[p].applied {
@@ -355,11 +357,14 @@ fn put_film(s: &mut crate::session::Session, host: &str, adopt: bool) {
     let Some(Value::Object(o)) = s.object_store.get(host) else { return };
     if sum.is_empty() && !o.fields.has_film() { return; }
     let adds: Vec<(usize, f64)> = sum.iter().filter_map(|(f, d)| o.fields.get_index_of(f).map(|i| (i, *d))).collect();
-    if !adopt { s.touch(host); }
+    if adopt.is_none() { s.touch(host); }
     let Some(Value::Object(o)) = s.object_store.get_mut(host) else { return };
     let traits = o.trait_fields.clone();
     let fields = std::rc::Rc::make_mut(&mut o.fields);
-    if adopt { fields.adopt_film(&adds, &|n| traits.contains(n)) } else { fields.set_film(&adds, &|n| traits.contains(n)) }
+    match adopt {
+        Some(stored) => fields.adopt_film(&adds, stored, &|n| traits.contains(n)),
+        None => fields.set_film(&adds, &|n| traits.contains(n)),
+    }
 }
 
 fn catches(vm: &mut Vm, chance: f64) -> bool {
@@ -1830,6 +1835,9 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), Gob
     for gone in vm.session.overlay_instances.take_at(&off) { forget_overlay(vm, &gone); }
     let at = vm.session.overlay_instances.len();
     vm.session.overlay_instances.push(inst);
+    // A `modify` amount that reads the host reads it as stored, as
+    // `refresh_films` does.
+    if def.modifiers.iter().any(|(_, e)| !constant_amount(e)) { film_off(&mut vm.session, &host); }
     let amounts = modify_amounts(vm, at)?;
     vm.session.overlay_instances[at].applied = amounts;
     settle_films(&mut vm.session);
