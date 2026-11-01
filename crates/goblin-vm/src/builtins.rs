@@ -5396,7 +5396,8 @@ pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid
 /// `owner_id` text is its id.
 fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
     let mut at: Vec<usize> = store.contents_of(owner).filter_map(|u| store.get_index_of(u)).collect();
-    for (i, (_, v)) in store.iter().enumerate() {
+    for i in store.places() {
+        let Some((_, v)) = store.get_index(i) else { continue };
         if matches!(v, Value::Object(o) if matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner)) {
             at.push(i);
         }

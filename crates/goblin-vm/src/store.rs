@@ -1,20 +1,32 @@
 //! The object store: every object by id, in creation order, with the ids of
 //! each class kept alongside so `:objects("Rabbit")` reads them directly.
 //!
-//! Reads go through `Deref` to the map. Every change that adds or removes an
+//! Every change that adds or removes an
 //! object goes through the methods here, so the class lists stay right.
 //! `get_mut` changes an object's fields; an object's class only changes by
 //! `insert` or `replace`.
 
 use crate::value::{IdKey, ObjId as Id, Value};
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexSet;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
-type Map = IndexMap<Id, Value, FxBuildHasher>;
+/// One object in the store: its id and the object.
+#[derive(Clone, Debug)]
+pub struct Entry { id: Id, val: Value }
 
+/// Objects sit at fixed places (`slots`), in creation order: a new object
+/// goes at the end, an erased one leaves a hole, and the holes are closed
+/// up (`compact`) only when an object is removed and they outnumber the
+/// objects, so places shift no more often than they did in an ordered map.
+/// Each id remembers the place it was last found at (`ObjId::place_hint`),
+/// so a lookup by id checks that place and reads it: no hashing. The map
+/// from id to place (`at`) is for ids whose remembered place is wrong (an
+/// id shared with another store on this thread, or places closed up).
 #[derive(Default, Clone, Debug)]
 pub struct ObjectStore {
-    map: Map,
+    slots: Vec<Option<Entry>>,
+    live: usize,
+    at: FxHashMap<Id, u32>,
     /// Class name -> ids of that class's objects, in creation order.
     by_class: FxHashMap<String, IndexSet<Id, FxBuildHasher>>,
     /// Ownership: each object whose `owner` field holds another object, by
@@ -158,30 +170,111 @@ fn class_rc(uuid: &str, v: &Value) -> Option<std::rc::Rc<str>> {
     }
 }
 
-impl std::ops::Deref for ObjectStore {
-    type Target = Map;
-    fn deref(&self) -> &Map { &self.map }
+type Iter<'a> = std::iter::FilterMap<std::slice::Iter<'a, Option<Entry>>, fn(&'a Option<Entry>) -> Option<(&'a Id, &'a Value)>>;
+
+/// Whether the store with these places holds `id` (`ObjectStore::place`,
+/// for use while another part of the store is borrowed).
+#[inline]
+fn held(slots: &[Option<Entry>], at: &FxHashMap<Id, u32>, id: &Id) -> bool {
+    matches!(slots.get(id.place_hint()), Some(Some(e)) if e.id.same(id)) || at.contains_key(id)
 }
 
+/// The object with this id, as `held` finds it.
+#[inline]
+fn value_in<'a>(slots: &'a [Option<Entry>], at: &FxHashMap<Id, u32>, id: &Id) -> Option<&'a Value> {
+    if let Some(Some(e)) = slots.get(id.place_hint()) {
+        if e.id.same(id) { return Some(&e.val); }
+    }
+    slots.get(*at.get(id)? as usize)?.as_ref().map(|e| &e.val)
+}
+
+fn pair(e: &Option<Entry>) -> Option<(&Id, &Value)> { e.as_ref().map(|e| (&e.id, &e.val)) }
+
 impl<'a> IntoIterator for &'a ObjectStore {
-    type Item = (&'a crate::value::ObjId, &'a Value);
-    type IntoIter = indexmap::map::Iter<'a, crate::value::ObjId, Value>;
-    fn into_iter(self) -> Self::IntoIter { self.map.iter() }
+    type Item = (&'a Id, &'a Value);
+    type IntoIter = Iter<'a>;
+    fn into_iter(self) -> Iter<'a> { self.iter() }
 }
 
 impl ObjectStore {
-    // Lookups by id or by an id's text (in front of the map's own, which
-    // take only an id).
+    /// Where the object with this id sits: the place the id remembers when
+    /// that place holds it, else by the map (and the id remembers it).
     #[inline]
-    pub fn get(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Value> { self.map.get(&*uuid.id()?) }
+    fn place(&self, id: &Id) -> Option<usize> {
+        let h = id.place_hint();
+        if let Some(Some(e)) = self.slots.get(h) {
+            if e.id.same(id) { return Some(h); }
+        }
+        self.place_slow(id)
+    }
+
+    #[cold]
+    fn place_slow(&self, id: &Id) -> Option<usize> {
+        let i = *self.at.get(id)? as usize;
+        id.set_place_hint(i);
+        Some(i)
+    }
+
     #[inline]
-    pub fn get_index_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.map.get_index_of(&*uuid.id()?) }
+    fn place_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.place(&*uuid.id()?) }
+
+    // Lookups by id or by an id's text.
     #[inline]
-    pub fn contains_key(&self, uuid: &(impl IdKey + ?Sized)) -> bool { uuid.id().is_some_and(|u| self.map.contains_key(&*u)) }
+    pub fn get(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Value> {
+        let i = self.place_of(uuid)?;
+        self.slots[i].as_ref().map(|e| &e.val)
+    }
+    /// An object's place: fixed until an object is removed.
     #[inline]
-    pub fn get_full(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(usize, &Id, &Value)> { self.map.get_full(&*uuid.id()?) }
+    pub fn get_index_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<usize> { self.place_of(uuid) }
     #[inline]
-    pub fn get_key_value(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(&Id, &Value)> { self.map.get_key_value(&*uuid.id()?) }
+    pub fn contains_key(&self, uuid: &(impl IdKey + ?Sized)) -> bool { self.place_of(uuid).is_some() }
+    #[inline]
+    pub fn get_full(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(usize, &Id, &Value)> {
+        let i = self.place_of(uuid)?;
+        self.slots[i].as_ref().map(|e| (i, &e.id, &e.val))
+    }
+    #[inline]
+    pub fn get_key_value(&self, uuid: &(impl IdKey + ?Sized)) -> Option<(&Id, &Value)> {
+        let i = self.place_of(uuid)?;
+        pair(&self.slots[i])
+    }
+    /// The object at a place (none when that place is empty).
+    #[inline]
+    pub fn get_index(&self, i: usize) -> Option<(&Id, &Value)> { self.slots.get(i).and_then(pair) }
+
+    /// The objects in creation order.
+    pub fn iter(&self) -> Iter<'_> { self.slots.iter().filter_map(pair as fn(&Option<Entry>) -> Option<(&Id, &Value)>) }
+    pub fn keys(&self) -> impl Iterator<Item = &Id> { self.iter().map(|(k, _)| k) }
+    pub fn values(&self) -> impl Iterator<Item = &Value> { self.iter().map(|(_, v)| v) }
+    /// The places that hold objects, in creation order.
+    pub fn places(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots.iter().enumerate().filter_map(|(i, e)| e.as_ref().map(|_| i))
+    }
+    pub fn len(&self) -> usize { self.live }
+    pub fn is_empty(&self) -> bool { self.live == 0 }
+    /// The newest object.
+    pub fn last(&self) -> Option<(&Id, &Value)> { self.slots.iter().rev().find_map(pair) }
+
+    /// Closes up the holes once they outnumber the objects.
+    fn maybe_compact(&mut self) {
+        if self.slots.len() <= 2 * self.live + 64 { return; }
+        self.slots.retain(Option::is_some);
+        self.at.clear();
+        for (i, e) in self.slots.iter().enumerate() {
+            let e = e.as_ref().expect("kept");
+            e.id.set_place_hint(i);
+            self.at.insert(e.id.clone(), i as u32);
+        }
+    }
+
+    /// Takes the object at `i` out, leaving a hole.
+    fn take_at(&mut self, i: usize) -> Entry {
+        let e = self.slots[i].take().expect("a place that holds an object");
+        self.at.remove(&e.id);
+        self.live -= 1;
+        e
+    }
 
     fn file(&mut self, uuid: &Id, class: &str) {
         match self.by_class.get_mut(class) {
@@ -228,7 +321,7 @@ impl ObjectStore {
     pub fn refile_owner(&mut self, uuid: &(impl IdKey + ?Sized)) {
         let Some(uuid) = uuid.id() else { return };
         let uuid: &Id = &uuid;
-        let Some((k, v)) = self.map.get_key_value(uuid) else {
+        let Some((k, v)) = self.get_key_value(uuid) else {
             if let Some((k, _)) = self.owner_of.get_key_value(uuid) { let k = k.clone(); self.set_owner(&k, None); }
             return;
         };
@@ -240,7 +333,7 @@ impl ObjectStore {
     pub fn holder_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Id> {
         let uuid = uuid.id()?;
         let uuid: &Id = &uuid;
-        if !self.map.contains_key(uuid) { return None; }
+        if !self.contains_key(uuid) { return None; }
         self.owner_of.get(uuid)
     }
 
@@ -261,13 +354,13 @@ impl ObjectStore {
     /// The ids of what `owner` contains (the objects whose `owner` field
     /// names it), in the order they came to it.
     pub fn contents_of(&self, owner: &(impl IdKey + ?Sized)) -> impl Iterator<Item = &str> {
-        let map = &self.map;
+        let map = self;
         owner.id().and_then(|o| self.contents.get(&*o)).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u)).map(Id::as_str)
     }
 
     /// `contents_of`, as ids.
     pub fn contents_ids(&self, owner: &(impl IdKey + ?Sized)) -> impl Iterator<Item = &Id> {
-        let map = &self.map;
+        let map = self;
         owner.id().and_then(|o| self.contents.get(&*o)).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u))
     }
 
@@ -276,7 +369,7 @@ impl ObjectStore {
     pub fn contents_at(&self, owner: &(impl IdKey + ?Sized), class: Option<&str>) -> Vec<usize> {
         let Some(set) = owner.id().and_then(|o| self.contents.get(&*o)) else { return Vec::new() };
         let mut same = SameClass::default();
-        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u) {
+        let mut at: Vec<usize> = set.iter().filter_map(|u| match self.get_full(u) {
             Some((i, _, Value::Object(o))) if class.is_none_or(|c| same.is(&o.class_name, c)) => Some(i),
             Some((i, _, _)) if class.is_none() => Some(i),
             _ => None,
@@ -290,7 +383,7 @@ impl ObjectStore {
     pub fn contents_count(&self, owner: &Id, class: &str) -> usize {
         let Some(set) = self.contents.get(owner) else { return 0 };
         let mut same = SameClass::default();
-        set.iter().filter(|u| matches!(self.map.get(*u), Some(Value::Object(o)) if same.is(&o.class_name, class))).count()
+        set.iter().filter(|u| matches!(self.get(*u), Some(Value::Object(o)) if same.is(&o.class_name, class))).count()
     }
 
     /// Everything `uuid` contains, at any depth (what it holds, what those
@@ -322,17 +415,17 @@ impl ObjectStore {
         let Some(id) = uuid.id() else { return };
         let uuid: &Id = &id;
         let Some(kids) = self.contents.get(uuid).map(|s| s.iter().cloned().collect::<Vec<_>>()) else { return };
-        let up = match self.map.get(uuid) {
+        let up = match self.get(uuid) {
             Some(Value::Object(o)) => o.fields.get(OWNER_FIELD).cloned().unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
         let up = if owner_in_value(&up).is_some_and(|o| o == uuid) { Value::Nil } else { up };
         for k in kids {
             self.touched(&k);
-            if let Some(Value::Object(o)) = self.map.get_mut(&k) {
+            if let Some(Value::Object(o)) = self.get_mut(&k) {
                 std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.to_string(), up.clone());
             }
-            let owner = self.map.get(&k).and_then(owner_in).cloned();
+            let owner = self.get(&k).and_then(owner_in).cloned();
             self.set_owner(&k, owner.as_ref());
         }
     }
@@ -346,7 +439,17 @@ impl ObjectStore {
             Some(o) => { let o = o.clone(); self.set_owner(&uuid, Some(&o)) }
             None => if self.owner_of.contains_key(&uuid) { self.set_owner(&uuid, None); },
         }
-        let old = self.map.insert(uuid.clone(), v);
+        let old = match self.place(&uuid) {
+            Some(i) => Some(std::mem::replace(&mut self.slots[i].as_mut().expect("held").val, v)),
+            None => {
+                let i = self.slots.len();
+                uuid.set_place_hint(i);
+                self.at.insert(uuid.clone(), i as u32);
+                self.slots.push(Some(Entry { id: uuid.clone(), val: v }));
+                self.live += 1;
+                None
+            }
+        };
         let old_class = old.as_ref().and_then(|o| class_rc(&uuid, o));
         if old_class != new_class {
             if let Some(c) = &old_class { self.unfile(&uuid, c); }
@@ -359,36 +462,47 @@ impl ObjectStore {
     pub fn replace(&mut self, uuid: &(impl IdKey + ?Sized), v: Value) {
         let Some(uuid) = uuid.id() else { return };
         let uuid: &Id = &uuid;
-        if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.insert(k, v); }
+        if let Some((k, _)) = self.get_key_value(uuid) { let k = k.clone(); self.insert(k, v); }
     }
 
     pub fn shift_remove(&mut self, uuid: &(impl IdKey + ?Sized)) -> Option<Value> {
         let uuid = uuid.id()?;
         let uuid: &Id = &uuid;
-        let (_, k, old) = self.map.shift_remove_full(uuid)?;
+        let i = self.place(uuid)?;
+        let Entry { id: k, val: old } = self.take_at(i);
         self.touched(&k);
         if self.owner_of.contains_key(&k) { self.set_owner(&k, None); }
         if let Some(c) = class_of(&k, &old).map(str::to_string) { self.unfile(&k, &c); }
+        self.maybe_compact();
         Some(old)
     }
 
     /// Keep only the objects `keep` says yes to.
     pub fn retain(&mut self, mut keep: impl FnMut(&crate::value::ObjId, &mut Value) -> bool) {
-        let before = self.map.len();
+        let before = self.live;
         self.peak = self.peak.max(before);
         // `keep` may change the objects it keeps.
         if !self.indexes.is_empty() { self.stale = true; self.dirty.clear(); }
-        self.map.retain(|k, v| keep(k, v));
-        if self.map.len() == before { return; }
+        for slot in self.slots.iter_mut() {
+            let Some(e) = slot else { continue };
+            if !keep(&e.id, &mut e.val) {
+                self.at.remove(&e.id);
+                *slot = None;
+                self.live -= 1;
+            }
+        }
+        if self.live == before { return; }
+        self.maybe_compact();
         // Once per class list, not once per object (a region drops
         // thousands of copies a tick), and without copying the ids.
-        let map = &self.map;
+        let (slots, at) = (&self.slots, &self.at);
+        let held = |u: &Id| held(slots, at, u);
         for set in self.by_class.values_mut() {
-            set.retain(|u| map.contains_key(u));
+            set.retain(|u| held(u));
         }
         self.by_class.retain(|_, set| !set.is_empty());
         if self.owner_of.len() > 2 * self.peak + 64 {
-            self.owner_of.retain(|u, _| map.contains_key(u));
+            self.owner_of.retain(|u, _| held(u));
             let owner_of = &self.owner_of;
             for set in self.contents.values_mut() {
                 set.retain(|u| owner_of.contains_key(u));
@@ -402,16 +516,18 @@ impl ObjectStore {
     pub fn get_mut(&mut self, uuid: &(impl IdKey + ?Sized)) -> Option<&mut Value> {
         let uuid = uuid.id()?;
         let uuid: &Id = &uuid;
+        let i = self.place(uuid)?;
         if !self.indexes.is_empty() && !self.stale {
-            if let Some((k, _)) = self.map.get_key_value(uuid) { let k = k.clone(); self.touched(&k); }
+            let k = self.slots[i].as_ref().expect("held").id.clone();
+            self.touched(&k);
         }
-        self.map.get_mut(uuid)
+        self.slots[i].as_mut().map(|e| &mut e.val)
     }
 
     /// `uuid` may change: the indexes look at it again when next used.
     fn touched(&mut self, uuid: &Id) {
         if self.indexes.is_empty() || self.stale { return; }
-        if self.dirty.len() > self.map.len() + 64 { self.stale = true; self.dirty.clear(); return; }
+        if self.dirty.len() > self.live + 64 { self.stale = true; self.dirty.clear(); return; }
         self.dirty.push(uuid.clone());
     }
 
@@ -431,15 +547,16 @@ impl ObjectStore {
         if !self.indexes.contains_key(&id) {
             let mut ix = FieldIndex::default();
             for u in self.by_class.get(class).into_iter().flatten() {
-                if let Some(f) = filed_as(self.map.get(u), class, field) { ix.file(u, f); }
+                if let Some(f) = filed_as(self.get(u), class, field) { ix.file(u, f); }
             }
             self.indexes.insert(id.clone(), ix);
         }
         if !self.dirty.is_empty() {
             let dirty = std::mem::take(&mut self.dirty);
+            let (slots, at) = (&self.slots, &self.at);
             for ((c, f), ix) in self.indexes.iter_mut() {
                 for u in &dirty {
-                    let now = filed_as(self.map.get(u), c, f);
+                    let now = filed_as(value_in(slots, at, u), c, f);
                     if ix.filed.get(u) == now.as_ref() { continue; }
                     ix.unfile(u);
                     if let Some(now) = now { ix.file(u, now); }
@@ -448,7 +565,7 @@ impl ObjectStore {
         }
         let ix = &self.indexes[&id];
         let mut at: Vec<usize> = ix.by.get(key).into_iter().flatten().chain(ix.other.iter())
-            .filter_map(|u| self.map.get_index_of(u))
+            .filter_map(|u| self.get_index_of(u))
             .collect();
         at.sort_unstable();
         at
@@ -468,7 +585,7 @@ impl ObjectStore {
     pub fn places_of(&self, mut wanted: impl FnMut(&str) -> bool) -> Vec<usize> {
         let mut at: Vec<usize> = Vec::new();
         for (class, set) in &self.by_class {
-            if wanted(class) { at.extend(set.iter().filter_map(|u| self.map.get_index_of(u))); }
+            if wanted(class) { at.extend(set.iter().filter_map(|u| self.get_index_of(u))); }
         }
         at.sort_unstable();
         at

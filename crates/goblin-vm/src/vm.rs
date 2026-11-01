@@ -5961,7 +5961,7 @@ impl Vm {
         let all: Vec<usize>;
         let places = match only {
             Some(p) => p,
-            None => { all = (0..self.session.object_store.len()).collect(); &all }
+            None => { all = self.session.object_store.places().collect(); &all }
         };
         for &i in places {
             let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());

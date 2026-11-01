@@ -439,7 +439,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     // overlays spread, so the list is made once per pass.
                     let candidates = candidate_lists.entry(def.host_types.clone()).or_insert_with(|| {
                         let store = &vm.session.object_store;
-                        let at: Vec<usize> = if def.host_types.is_empty() { (0..store.len()).collect() }
+                        let at: Vec<usize> = if def.host_types.is_empty() { store.places().collect() }
                             else { store.places_of(|c| def.host_types.iter().any(|h| h == c)) };
                         std::rc::Rc::new(at.into_iter()
                             .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
