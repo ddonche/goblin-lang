@@ -1,0 +1,30 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// A member declared inside an action gets its class too (the class is
+/// declared above it), and a class's `conflicts:` join each member's.
+<>C |
+    a: 0
+xx
+<^>Mood |
+    lasts: 3
+    dup: replace
+    conflicts: ice
+xx
+overlay ice
+xx
+act setup()
+    overlay calm <^> Mood
+    xx
+    overlay angry <^> Mood
+    xx
+xx
+setup()
+c <> C | a: 0
+:overlay!(c, calm)
+:overlay!(c, angry)
+say(:overlays_of(c))
+:overlay!(c, ice, .5)
+say(:overlays_of(c))
+:detach!(c, angry)
+:overlay!(c, ice, .5)
+:overlay!(c, calm, .4)
+say(:overlays_of(c))

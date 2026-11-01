@@ -321,6 +321,9 @@ pub struct Parser<'t> {
     /// The overlay classes this file declares (`<^>Mood |` ... `xx`); their
     /// lines are given to their members once the file is read.
     overlay_classes: Vec<ast::OverlayDefStmt>,
+    /// Members read before their class was declared (member, class): filled
+    /// in once the file is read; only top-level ones can be.
+    overlay_members_waiting: Vec<(String, String)>,
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -370,7 +373,8 @@ fn old_apply_behavior(d: &ast::OverlayDup) -> ast::OverlayApplyBehavior {
 
 /// Gives a member of an overlay class the class's lines it doesn't write
 /// itself: settings, `modify` lines for other fields, data fields, spreads,
-/// transitions, `on start` / `on end`, and the class's `every` blocks too.
+/// transitions, `on start` / `on end`, and the class's `every` blocks too;
+/// its `conflicts:` join the member's.
 /// The class's `dup:` also decides the member put on twice, unless the
 /// member has its own.
 fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
@@ -391,6 +395,9 @@ fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt)
     m.modifiers = mods;
     for (k, v) in &c.extra_fields {
         if !m.extra_fields.iter().any(|(j, _)| j == k) { m.extra_fields.push((k.clone(), v.clone())); }
+    }
+    for x in &c.conflicts {
+        if !m.conflicts.contains(x) { m.conflicts.push(x.clone()); }
     }
     if m.spreads.is_empty() { m.spreads = c.spreads.clone(); }
     if m.transitions.is_empty() { m.transitions = c.transitions.clone(); }
@@ -429,6 +436,7 @@ impl<'t> Parser<'t> {
             bound_names: scan_bound_names(toks),
             self_scope: 0,
             overlay_classes: Vec::new(),
+            overlay_members_waiting: Vec::new(),
         }
     } 
 
@@ -6408,12 +6416,24 @@ impl<'t> Parser<'t> {
 
         for item in items.iter_mut() {
             let ast::Stmt::OverlayDef(def) = item else { continue };
-            let Some(class) = def.class.clone() else { continue };
+            let Some(at) = self.overlay_members_waiting.iter().position(|(m, _)| *m == def.name) else { continue };
+            let (_, class) = self.overlay_members_waiting.swap_remove(at);
             let Some(c) = self.overlay_classes.iter().find(|c| c.name == class) else {
                 return Err(derr_help("P1295", &format!("No overlay class named {class}"),
                     &format!("Declare it in this file:\n  <^>{class} |\n      dup: replace\n  xx"), def.span.clone()));
             };
             fill_from_overlay_class(def, c);
+        }
+        // A member inside an action or block needs its class declared above it.
+        if let Some((m, class)) = self.overlay_members_waiting.first() {
+            let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+            let known = self.overlay_classes.iter().any(|c| c.name == *class);
+            let (msg, help) = if known {
+                (format!("Overlay {m} is inside a block, above its class {class}"), format!("Declare <^>{class} above overlay {m}."))
+            } else {
+                (format!("No overlay class named {class}"), format!("Declare it in this file:\n  <^>{class} |\n      dup: replace\n  xx"))
+            };
+            return Err(derr_help("P1295", &msg, &help, sp));
         }
 
         Ok(ast::Module { items })
@@ -7561,8 +7581,16 @@ impl<'t> Parser<'t> {
                     &format!("Write:\n  overlay {name} <^> {class}\n      modify\n          @focus + .2\n      xx\n  xx")));
             }
             let col = self.toks[start_i].span.col_start;
-            let mut stmt = self.with_self(|p| p.parse_overlay_block(name, start_i, col))?;
-            if let ast::Stmt::OverlayDef(d) = &mut stmt { d.class = Some(class); }
+            let mut stmt = self.with_self(|p| p.parse_overlay_block(name.clone(), start_i, col))?;
+            if let ast::Stmt::OverlayDef(d) = &mut stmt {
+                d.class = Some(class.clone());
+                // Its class is known: fill it in now (it may sit inside an
+                // action or block). Otherwise once the file is read.
+                match self.overlay_classes.iter().find(|c| c.name == class) {
+                    Some(c) => fill_from_overlay_class(d, c),
+                    None => self.overlay_members_waiting.push((name, class)),
+                }
+            }
             return Ok(stmt);
         }
 
