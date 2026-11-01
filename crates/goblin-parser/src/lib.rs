@@ -8333,6 +8333,13 @@ impl<'t> Parser<'t> {
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'link'
 
+        // `link culture` and its lines under it, closed by `xx`.
+        if matches!(self.toks.get(self.i + 1).map(|t| &t.kind), Some(goblin_lexer::TokenKind::Newline)) {
+            let name = self.eat_ident().unwrap_or_default();
+            let col = self.toks[start_i].span.col_start;
+            return self.parse_link_block(name, start_i, col);
+        }
+
         let Some(class_name) = self.eat_ident() else {
             return Err(s_help_site!(
                 "P1300",
@@ -8434,6 +8441,108 @@ impl<'t> Parser<'t> {
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: true, range, span }))
+    }
+
+    /// `link culture` ... `xx` (the name is eaten): `hosts: A, B`, `range:
+    /// lo...hi` (or `range: bool`), and `score => formula` or a `score`
+    /// block (it reads `@` and `target`; without one a link starts at the
+    /// low end of its range).
+    fn parse_link_block(&mut self, name: String, start_i: usize, col: u32) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let mut hosts: Vec<String> = Vec::new();
+        let mut range: Option<ast::LinkRange> = None;
+        let mut formula: Option<ast::Expr> = None;
+        let example = "Write: link culture\n    hosts: Kingdom\n    range: 0...1\n    score => 1 - :abs((@faith) - (target >> faith))\nxx";
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P1306", &format!("The link '{name}' is missing its closing 'xx'"), "Close the link with 'xx' under 'link'."));
+            }
+            if self.peek_block_close() {
+                let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if c != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                        "Put 'xx' (crossbones) directly under 'link'."));
+                }
+                self.expect_block_close("link")?;
+                break;
+            }
+            let line_col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            let Some(kw) = self.eat_ident() else {
+                return Err(s_help_site!("P1307", &format!("Expected `hosts:`, `range:` or `score` in the link '{name}'"), example));
+            };
+            match kw.as_str() {
+                "hosts" => {
+                    if !self.eat_op(":") { return Err(s_help_site!("P1307", "Expected ':' after 'hosts'", "Write: hosts: Kingdom")); }
+                    loop {
+                        self.skip_layout_inline();
+                        let Some(h) = self.eat_ident() else {
+                            return Err(s_help_site!("P1307", "Expected a class name after 'hosts:'", "Write: hosts: Kingdom, Duchy"));
+                        };
+                        hosts.push(h);
+                        self.skip_layout_inline();
+                        if !self.eat_op(",") { break; }
+                    }
+                }
+                "range" => {
+                    if !self.eat_op(":") { return Err(s_help_site!("P1304", "Expected ':' after 'range'", "Write: range: 0...1")); }
+                    self.skip_layout_inline();
+                    if self.peek_ident() == Some("bool") {
+                        let _ = self.eat_ident();
+                        range = Some(ast::LinkRange::Bool);
+                    } else {
+                        let neg_lo = self.eat_op("-");
+                        let lo = self.eat_number_f64();
+                        let ok = lo.is_some() && self.eat_op("...");
+                        let neg_hi = ok && self.eat_op("-");
+                        let hi = if ok { self.eat_number_f64() } else { None };
+                        let (Some(lo), Some(hi)) = (lo, hi) else {
+                            return Err(s_help_site!("P1304", "A link's range is two numbers with '...' between them, or bool", "Write: range: 0...1"));
+                        };
+                        let (lo, hi) = (if neg_lo { -lo } else { lo }, if neg_hi { -hi } else { hi });
+                        if hi < lo {
+                            return Err(s_help_site!("P1305", "A link's range must go from low to high", "Write: range: -100...100"));
+                        }
+                        range = Some(ast::LinkRange::Between(lo, hi));
+                    }
+                }
+                "score" => {
+                    self.skip_layout_inline();
+                    if self.eat_op("=>") {
+                        self.skip_layout_inline();
+                        let pe = self.parse_coalesce()?;
+                        formula = Some(self.lower_expr(pe));
+                    } else {
+                        let sp0 = Self::span_from_tokens(self.toks, self.i, self.i);
+                        let body = self.parse_head_block(line_col, "score")?;
+                        formula = Some(ast::Expr::Block { stmts: body, span: sp0 });
+                    }
+                }
+                other => {
+                    return Err(s_help_site!("P1307", &format!("`{other}` is not part of a link: write `hosts:`, `range:` or `score`"), example));
+                }
+            }
+        }
+        if hosts.is_empty() {
+            return Err(s_help_site!("P1308", &format!("The link '{name}' has no `hosts:`"), "Write: hosts: Kingdom"));
+        }
+        let Some(range) = range else {
+            return Err(s_help_site!("P1308", &format!("The link '{name}' has no `range:`"), "Write: range: 0...1  (or range: bool)"));
+        };
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        // Without a score a link starts at the low end of its range.
+        let has_formula = true;
+        let formula = formula.unwrap_or_else(|| {
+            let lo = match range { ast::LinkRange::Between(lo, _) => lo, _ => 0.0 };
+            ast::Expr::Number(format!("{lo}"), span.clone())
+        });
+        let mut defs: Vec<ast::Stmt> = hosts.into_iter().map(|class_name| ast::Stmt::LinkDef(ast::LinkDefStmt {
+            class_name, channel: Some(name.clone()), formula: formula.clone(), has_formula, range: Some(range.clone()), span: span.clone(),
+        })).collect();
+        if defs.len() == 1 { return Ok(defs.pop().unwrap()); }
+        Ok(ast::Stmt::Block { stmts: defs, span })
     }
 
     /// Parse `ObjectName link [channel] by [ formula ]`

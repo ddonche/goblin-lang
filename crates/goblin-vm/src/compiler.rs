@@ -3455,6 +3455,16 @@ impl Compiler {
             Some(b) => b,
             None    => return Ok(None),
         };
+        // `:get_where(xs, it > 1)`: the condition is code with `it`, run for
+        // each item (text keeps its meaning: a value to match, an action's name).
+        if matches!(bid, BuiltinId::GetWhere | BuiltinId::DeleteWhere | BuiltinId::UpdateWhere | BuiltinId::ReapWhere | BuiltinId::ReapWhere2)
+            && args.len() >= 2 && !matches!(args[1], Expr::Str(..)) {
+            self.compile_expr(&args[0])?;
+            self.compile_predicate_lambda(&args[1])?;
+            for arg in &args[2..] { self.compile_expr(arg)?; }
+            self.emit(Opcode::CallBuiltin(bid, args.len() as u8));
+            return Ok(Some(()));
+        }
         // `:objects(pred)`, `:objects("Rabbit")`, `:objects("Rabbit", pred)`:
         // a predicate is compiled as `fn(it)`; a class name is a plain value.
         if bare == "objects" || bare == "overlays" {

@@ -2209,10 +2209,7 @@ impl Vm {
                         }
                         let mut it = arg_vals.into_iter();
                         let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "get_where predicate")),
-                        };
+                        let pred = WherePred::of(it.next().unwrap(), "get_where")?;
                         let result = self.vm_where_get(coll, &pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
@@ -2223,10 +2220,7 @@ impl Vm {
                         }
                         let mut it = arg_vals.into_iter();
                         let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "delete_where predicate")),
-                        };
+                        let pred = WherePred::of(it.next().unwrap(), "delete_where")?;
                         let result = self.vm_where_delete(coll, &pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
@@ -2237,10 +2231,7 @@ impl Vm {
                         }
                         let mut it = arg_vals.into_iter();
                         let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "update_where predicate")),
-                        };
+                        let pred = WherePred::of(it.next().unwrap(), "update_where")?;
                         let new_val = it.next().unwrap();
                         let result = self.vm_where_update(coll, &pred, new_val)?;
                         self.stack.push(Operand::Val(result));
@@ -2252,10 +2243,7 @@ impl Vm {
                         }
                         let mut it = arg_vals.into_iter();
                         let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
-                        };
+                        let pred = WherePred::of(it.next().unwrap(), "reap_where")?;
                         let result = self.vm_where_get(coll, &pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
@@ -2266,10 +2254,7 @@ impl Vm {
                         }
                         let mut it = arg_vals.into_iter();
                         let coll = it.next().unwrap();
-                        let pred = match it.next().unwrap() {
-                            Value::Str(s) => s,
-                            other => return Err(GoblinError::type_error("str", other.type_name(), "reap_where predicate")),
-                        };
+                        let pred = WherePred::of(it.next().unwrap(), "reap_where")?;
                         let result = self.vm_where_get(coll, &pred)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
@@ -4759,7 +4744,18 @@ impl Vm {
 
     /// Implements interpreter Position::Where two-mode predicate:
     /// non-identifier string → literal match; identifier string → call as action.
-    fn vm_where_match(&mut self, pred: &str, is_literal: bool, v: &Value) -> Result<bool, GoblinError> {
+    fn vm_where_match(&mut self, pred: &WherePred, is_literal: bool, v: &Value) -> Result<bool, GoblinError> {
+        let pred = match pred {
+            WherePred::Code(f) => {
+                // Code with `it`: true or false for each item.
+                return match self.call_callable(f.clone(), vec![v.clone()])? {
+                    Value::Bool(b) => Ok(b),
+                    other => Err(GoblinError::Runtime(format!(
+                        "R0321: where-not-bool: the condition gave {}, not true or false", other.type_name()))),
+                };
+            }
+            WherePred::Text(t) => t.as_str(),
+        };
         if is_literal {
             return Ok(match v {
                 Value::Str(s) => s == pred,
@@ -4771,8 +4767,8 @@ impl Vm {
         Ok(matches!(result, Value::Bool(true)))
     }
 
-    fn vm_where_get(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
-        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+    fn vm_where_get(&mut self, coll: Value, pred: &WherePred) -> Result<Value, GoblinError> {
+        let is_literal = pred.is_literal();
         match coll {
             Value::Array(xs) => {
                 let mut out = Vec::new();
@@ -4812,8 +4808,8 @@ impl Vm {
         }
     }
 
-    fn vm_where_delete(&mut self, coll: Value, pred: &str) -> Result<Value, GoblinError> {
-        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+    fn vm_where_delete(&mut self, coll: Value, pred: &WherePred) -> Result<Value, GoblinError> {
+        let is_literal = pred.is_literal();
         match coll {
             Value::Array(xs) => {
                 let mut out = Vec::new();
@@ -4838,7 +4834,7 @@ impl Vm {
             }
             Value::Str(s) => {
                 // delete_where on a string: always literal substring removal, pred is the needle
-                Ok(Value::Str(s.replace(pred, "").into()))
+                Ok(Value::Str(s.replace(pred.text("delete_where")?, "").into()))
             }
             // A map collection keeps map semantics (insertion-ordered map).
             Value::Collection(col) if col.is_map() => self.vm_where_delete(Value::Collection(col).into_legacy(), pred),
@@ -4854,8 +4850,8 @@ impl Vm {
         }
     }
 
-    fn vm_where_update(&mut self, coll: Value, pred: &str, new_val: Value) -> Result<Value, GoblinError> {
-        let is_literal = !pred.chars().all(|c| c.is_alphanumeric() || c == '_');
+    fn vm_where_update(&mut self, coll: Value, pred: &WherePred, new_val: Value) -> Result<Value, GoblinError> {
+        let is_literal = pred.is_literal();
         match coll {
             Value::Array(xs) => {
                 let mut out = Vec::new();
@@ -4889,7 +4885,7 @@ impl Vm {
                     Value::Char(c) => c.to_string().into(),
                     _ => return Err(GoblinError::type_error("str", new_val.type_name(), "update_where on string")),
                 };
-                Ok(Value::Str(s.replace(pred, &repl).into()))
+                Ok(Value::Str(s.replace(pred.text("update_where")?, &repl).into()))
             }
             // A map collection keeps map semantics (insertion-ordered map).
             Value::Collection(col) if col.is_map() => self.vm_where_update(Value::Collection(col).into_legacy(), pred, new_val),
@@ -6680,6 +6676,29 @@ pub(crate) const OVERLAY_RECORD: &str = "overlay:";
 /// change to it shows through the field. Anything else is kept as it is.
 /// The arguments of `:objects(...)` / `:overlays(...)`: an optional name
 /// (a class or an overlay) and an optional predicate.
+/// A `*_where` builtin's condition: code with `it` (`:get_where(xs, it > 1)`),
+/// or text (a value to match, or an action's name).
+pub(crate) enum WherePred { Text(String), Code(Value) }
+
+impl WherePred {
+    fn of(v: Value, what: &'static str) -> Result<Self, GoblinError> {
+        match v {
+            Value::Str(s) => Ok(WherePred::Text(s.to_string())),
+            f @ (Value::Function(_) | Value::Closure(_)) => Ok(WherePred::Code(f)),
+            other => Err(GoblinError::type_error("condition", other.type_name(), what)),
+        }
+    }
+    fn is_literal(&self) -> bool {
+        match self { WherePred::Text(t) => !t.chars().all(|c| c.is_alphanumeric() || c == '_'), WherePred::Code(_) => false }
+    }
+    fn text(&self, what: &str) -> Result<&str, GoblinError> {
+        match self {
+            WherePred::Text(t) => Ok(t),
+            WherePred::Code(_) => Err(GoblinError::Runtime(format!("{what} on a string takes the text to find, not a condition"))),
+        }
+    }
+}
+
 fn query_args(args: Vec<Value>, what: &'static str) -> Result<(Option<String>, Option<Value>), GoblinError> {
     let mut it = args.into_iter();
     match (it.next(), it.next()) {
