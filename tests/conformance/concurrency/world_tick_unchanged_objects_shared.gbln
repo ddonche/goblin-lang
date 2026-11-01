@@ -17,12 +17,13 @@ xx
 <>Watcher |
     saw_level: 0
     saw_n: 0
-    score | decision against Post by [
-        1
-    ]
-    judge using score
-        >= .5: look(target)
-    end
+    decision post
+        targets: Post
+        score => 1
+    xx
+    judge
+        post and (post >> score) >= .5: look(self, post >> target)
+    xx
 xx
 act look(w, p)
     w >> saw_level |= p >> level
