@@ -4627,7 +4627,25 @@ impl<'t> Parser<'t> {
             if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("on")
                 && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
             {
+                let on_col = act_tok.span.col_start;
                 self.i += 2; // 'on' 'erase'
+                self.skip_layout_inline();
+                // `on erase => fall(self)` or an `on erase` block: code run
+                // on the object (as `self`) just before it is erased.
+                let one_line = self.eat_op("=>");
+                if one_line || matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+                    let body = if one_line {
+                        self.skip_layout_inline();
+                        vec![self.parse_stmt()?]
+                    } else {
+                        self.parse_head_block(on_col, "on erase")?
+                    };
+                    let action = "on erase".to_string();
+                    actions.push(PAction { name: action.clone(), params: Vec::new(), body, is_single: false });
+                    on_erase = Some(action);
+                    self.skip_stmt_separators();
+                    continue;
+                }
                 if !self.eat_op(":") {
                     return Err(s_help_site!(
                         "P1561",
@@ -8556,10 +8574,8 @@ impl<'t> Parser<'t> {
 
         self.skip_layout_inline();
 
-        // Consume 'when'
         if self.peek_ident() != Some("when") {
-            return Err(s_help_site!("P1502", "Expected 'when' after transition kind",
-                "Write: transition split when self >> stability < .2"));
+            return self.parse_transition_block(start_i, kind, target_class);
         }
         let _ = self.eat_ident();
 
@@ -8705,6 +8721,154 @@ impl<'t> Parser<'t> {
             link_rule,
             span,
         })
+    }
+
+    /// `transition erase where cond` (one line), or a transition with a
+    /// body of data lines and field lists:
+    /// `into: Class`, `targets: Class where cond`, `carries:` / `fragment:` /
+    /// `child:` / `first:` / `second:` (fields, closed with `xx`),
+    /// `overlays: transfer|split|drop`, `links: inherit|reset`.
+    /// A long condition is a block: `transition erase where` ... `xx`.
+    fn parse_transition_block(&mut self, start_i: usize, kind: ast::TransitionKind, mut target_class: Option<String>) -> Result<ast::TransitionDef, String> {
+        use goblin_lexer::TokenKind;
+        let col = self.toks[start_i].span.col_start;
+        let help = "Write: transition erase where @hp <= 0";
+        let mut trigger: Option<ast::Expr> = None;
+        if self.peek_ident() == Some("where") {
+            let _ = self.eat_ident();
+            self.skip_layout_inline();
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+                let body = self.parse_head_block(col, "transition")?;
+                let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                trigger = Some(ast::Expr::Block { stmts: body, span: sp.clone() });
+                return Ok(ast::TransitionDef { kind, trigger: trigger.unwrap(), target_class, into_classes: Vec::new(),
+                    successors: Vec::new(), overlay_rule: ast::OverlayContinuity::Drop, link_rule: ast::LinkContinuity::Reset, span: sp });
+            }
+            let pe = self.parse_coalesce()?;
+            trigger = Some(self.lower_expr(pe));
+        } else if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            return Err(s_help_site!("P1502", "Expected 'where' after the transition kind", help));
+        }
+        // A body: the next line is indented under `transition`.
+        let mut j = self.i;
+        while let Some(t) = self.toks.get(j) {
+            if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { j += 1; } else { break; }
+        }
+        let has_body = self.toks.get(j).is_some_and(|t| !matches!(t.kind, TokenKind::Eof) && t.span.col_start > col);
+        let mut into_classes: Vec<String> = Vec::new();
+        let mut successors: Vec<ast::SuccessorDef> = Vec::new();
+        let mut overlay_rule = ast::OverlayContinuity::Drop;
+        let mut link_rule = ast::LinkContinuity::Reset;
+        if has_body {
+            loop {
+                self.skip_layout();
+                if self.is_eof() {
+                    return Err(s_help_site!("P0212", "This transition is missing its closing 'xx' (crossbones).", "Close the transition with 'xx' under 'transition'."));
+                }
+                if self.peek_block_close() {
+                    let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if c != col {
+                        return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                            "Put 'xx' (crossbones) directly under 'transition'."));
+                    }
+                    self.expect_block_close("transition")?;
+                    break;
+                }
+                let line_col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                let Some(kw) = self.eat_ident() else {
+                    return Err(s_help_site!("P1503", "Expected a transition line such as `into: Class` or `carries:`", help));
+                };
+                self.skip_layout_inline();
+                if !self.eat_op(":") {
+                    return Err(s_help_site!("P1504", &format!("Expected ':' after '{kw}' in a transition"), &format!("Write: {kw}: ...")));
+                }
+                self.skip_layout_inline();
+                match kw.as_str() {
+                    "into" => loop {
+                        let Some(cls) = self.eat_ident() else {
+                            return Err(s_help_site!("P1505", "Expected a class name after 'into:'", "Write: into: WarlordState"));
+                        };
+                        into_classes.push(cls);
+                        self.skip_layout_inline();
+                        if !self.eat_op(",") { break; }
+                        self.skip_layout_inline();
+                    },
+                    "targets" => {
+                        let Some(cls) = self.eat_ident() else {
+                            return Err(s_help_site!("P1505", "Expected a class name after 'targets:'", "Write: targets: Kingdom where (target >> power) < @power"));
+                        };
+                        target_class = Some(cls);
+                        self.skip_layout_inline();
+                        if self.peek_ident() == Some("where") {
+                            if trigger.is_some() {
+                                return Err(s_help_site!("P1506", "This transition already has its condition", "Write the condition once: on `targets:` when it is about the target."));
+                            }
+                            let _ = self.eat_ident();
+                            self.skip_layout_inline();
+                            let pe = self.parse_coalesce()?;
+                            trigger = Some(self.lower_expr(pe));
+                        }
+                    }
+                    "overlays" => {
+                        let rule = self.eat_ident().unwrap_or_default();
+                        overlay_rule = match rule.as_str() {
+                            "split" => ast::OverlayContinuity::Split,
+                            "transfer" => ast::OverlayContinuity::Transfer,
+                            "drop" => ast::OverlayContinuity::Drop,
+                            other => return Err(s_help_site!("P1507", &format!("`overlays: {other}` is not a rule: write transfer, split or drop"), "Write: overlays: transfer")),
+                        };
+                    }
+                    "links" => {
+                        let rule = self.eat_ident().unwrap_or_default();
+                        link_rule = match rule.as_str() {
+                            "inherit" => ast::LinkContinuity::Inherit,
+                            "reset" => ast::LinkContinuity::Reset,
+                            other => return Err(s_help_site!("P1507", &format!("`links: {other}` is not a rule: write inherit or reset"), "Write: links: inherit")),
+                        };
+                    }
+                    label @ ("first" | "second" | "child" | "fragment" | "carries") => {
+                        let mut fields: Vec<(String, ast::Expr)> = Vec::new();
+                        loop {
+                            self.skip_layout();
+                            if self.is_eof() { break; }
+                            if self.peek_block_close() {
+                                let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                                if c != line_col {
+                                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", line_col, c),
+                                        &format!("Put 'xx' (crossbones) directly under '{label}:'.")));
+                                }
+                                self.expect_block_close(label)?;
+                                break;
+                            }
+                            let raw_prefix = self.eat_op("~");
+                            let Some(fname) = self.eat_ident() else {
+                                return Err(s_help_site!("P1508", &format!("Expected a field in `{label}:`"), "Write: population: @population * .85"));
+                            };
+                            self.skip_layout_inline();
+                            if !self.eat_op(":") {
+                                return Err(s_help_site!("P1508", &format!("Expected ':' after the field '{fname}'"), "Write: population: @population * .85"));
+                            }
+                            self.skip_layout_inline();
+                            let fval_pe = self.parse_coalesce()?;
+                            if raw_prefix && not_a_number(&fval_pe) {
+                                return Err(tilde_error(&fname));
+                            }
+                            let fval = self.lower_expr(fval_pe);
+                            fields.push((fname, fval));
+                        }
+                        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+                        successors.push(ast::SuccessorDef { label: label.to_string(), fields, span: sp });
+                    }
+                    other => return Err(s_help_site!("P1503", &format!("`{other}:` is not part of a transition"),
+                        "A transition takes into:, targets:, carries:, fragment:, child:, first:, second:, overlays: and links:")),
+                }
+            }
+        }
+        let Some(trigger) = trigger else {
+            return Err(s_help_site!("P1502", "This transition has no condition", "Write: transition erase where @hp <= 0, or targets: Kingdom where ..."));
+        };
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::TransitionDef { kind, trigger, target_class, into_classes, successors, overlay_rule, link_rule, span })
     }
 
     /// Parse optional `at rate [per tick]` after a spread mode keyword.
