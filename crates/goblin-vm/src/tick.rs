@@ -1796,10 +1796,23 @@ fn normalize_score(raw: f64, formula_min: f64, formula_max: f64) -> f64 {
     if range.abs() < 1e-12 { 0.5 } else { ((raw - formula_min) / range).clamp(0.0, 1.0) }
 }
 
+/// The runtime's form of a `dup:` rule.
+pub(crate) fn dup_rule(d: &goblin_ast::OverlayDup) -> crate::session::OverlayApplyBehavior {
+    use crate::session::OverlayApplyBehavior as Dup;
+    match d {
+        goblin_ast::OverlayDup::Ignore => Dup::Caps,
+        goblin_ast::OverlayDup::Replace => Dup::Replaces,
+        goblin_ast::OverlayDup::Stack => Dup::Stacks { label: None },
+        goblin_ast::OverlayDup::Stronger => Dup::Stronger,
+    }
+}
+
 /// Puts an overlay copy on its host. `dup:` decides what a second copy
 /// does: `ignore` keeps the one there, `replace` takes it off first (its
 /// `on end` doesn't run: it didn't run out), `stack` adds a copy with its
-/// own clock. An overlay can't share a host with one it `conflicts:` with
+/// own clock, `stronger` keeps the one with the higher intensity. A member
+/// of an overlay class meets another member on the host by the class's
+/// `dup:` the same way. An overlay can't share a host with one it `conflicts:` with
 /// (either side naming the other): the one with the lower intensity comes
 /// off, and on a tie the one already there stays. Then the copy's `modify`
 /// film goes on and its `on start` runs.
@@ -1813,21 +1826,35 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), Gob
     use crate::session::OverlayApplyBehavior as Dup;
     let existing = vm.session.overlay_instances.find(&host, &inst.overlay_name);
     let mut off: Vec<usize> = Vec::new();
-    match def.apply_behavior {
-        Dup::Caps => if existing.is_some() { return Ok(()); },
-        Dup::Replaces => if let Some(p) = existing { off.push(p); },
-        Dup::Stacks { .. } => {}
-    }
     {
         let defs = &vm.session.overlay_defs;
         let list = &vm.session.overlay_instances;
+        // What `rule` does with `other`, already on the host: false when
+        // the new copy doesn't go on.
+        let mut meet = |rule: &Dup, p: usize, off: &mut Vec<usize>| -> bool {
+            match rule {
+                Dup::Caps => false,
+                Dup::Replaces => { off.push(p); true }
+                Dup::Stacks { .. } => true,
+                Dup::Stronger => if list[p].strength >= inst.strength { false } else { off.push(p); true },
+            }
+        };
+        if let Some(p) = existing {
+            if !meet(&def.apply_behavior, p, &mut off) { return Ok(()); }
+        }
         for &p in list.on_host(&host) {
             let other = &list[p];
+            if other.overlay_name == inst.overlay_name { continue; }
             let rival = def.conflicts.iter().any(|c| *c == other.overlay_name)
                 || defs.get(&other.overlay_name).is_some_and(|d| d.conflicts.iter().any(|c| *c == inst.overlay_name));
-            if !rival { continue; }
-            if other.strength >= inst.strength { return Ok(()); }
-            off.push(p);
+            if rival {
+                if other.strength >= inst.strength { return Ok(()); }
+                off.push(p);
+                continue;
+            }
+            // Another member of its overlay class.
+            let same_class = def.class.is_some() && defs.get(&other.overlay_name).is_some_and(|d| d.class == def.class);
+            if same_class && !meet(&def.class_dup, p, &mut off) { return Ok(()); }
         }
     }
     off.sort_unstable();

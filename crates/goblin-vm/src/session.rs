@@ -36,6 +36,10 @@ pub struct OverlayDef {
     pub spreads: Vec<goblin_ast::OverlaySpread>,
     /// `conflicts: a, b`: can't share a host with this overlay.
     pub conflicts: Vec<String>,
+    /// `overlay calm <^> Mood`: its overlay class, and the class's `dup:`
+    /// (what it does on a host that has another member).
+    pub class: Option<String>,
+    pub class_dup: OverlayApplyBehavior,
     /// The overlay's blocks (`on start`, `every N ticks #k`, `on end`),
     /// compiled as methods taking the host, `intensity` and the overlay's
     /// own data fields.
@@ -47,7 +51,7 @@ pub struct OverlayDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> } }
+pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> }, Stronger }
 
 impl Default for OverlayApplyBehavior { fn default() -> Self { OverlayApplyBehavior::Caps } }
 

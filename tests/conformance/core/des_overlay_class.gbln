@@ -1,0 +1,55 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// `<^>Mood |` ... `xx` declares an overlay class; `overlay calm <^> Mood`
+/// makes calm a member. A member gets the class's lines it doesn't write
+/// itself (here `hosts:`, `lasts:` and the `on start` block). The class's
+/// `dup:` says what a member does on a host that already has another
+/// member: with `replace`, angry takes calm's place. A class with no `dup:`
+/// lets its members stay together, and bare overlays sit beside any class.
+<>Creature |
+    focus: 0
+    attack: 0
+    hp: 10
+xx
+<^>Mood |
+    hosts: Creature
+    lasts: 3
+    dup: replace
+    on start => say("mood on")
+xx
+overlay calm <^> Mood
+    modify
+        @focus + 2
+    xx
+xx
+overlay angry <^> Mood
+    lasts: 1
+    modify
+        @attack + 3
+    xx
+xx
+<^>Ailment |
+    hosts: Creature
+xx
+overlay sick <^> Ailment
+    modify
+        @hp - 2
+    xx
+xx
+overlay delirious <^> Ailment
+    modify
+        @focus - 1
+    xx
+xx
+overlay blessed
+xx
+c <> Creature | hp: 10
+:overlay!(c, calm)
+say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
+:overlay!(c, angry)
+say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
+:overlay!(c, sick)
+:overlay!(c, delirious)
+:overlay!(c, blessed)
+say("{:overlays_of(c)} hp {c >> hp} focus {c >> focus}")
+tick()
+say("{:overlays_of(c)}")

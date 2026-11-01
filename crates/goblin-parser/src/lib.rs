@@ -318,6 +318,9 @@ pub struct Parser<'t> {
     /// overlay, a link, an object decision, a sweep) are open here. `@name`
     /// is only valid when this is above zero.
     self_scope: u32,
+    /// The overlay classes this file declares (`<^>Mood |` ... `xx`); their
+    /// lines are given to their members once the file is read.
+    overlay_classes: Vec<ast::OverlayDefStmt>,
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -355,6 +358,60 @@ fn scan_bound_names(toks: &[Token]) -> std::collections::HashSet<String> {
     out
 }
 
+/// The older `apply_behavior` a `dup:` rule maps to, for engines that read
+/// only that (`stronger` has none: it reads as `ignore` there).
+fn old_apply_behavior(d: &ast::OverlayDup) -> ast::OverlayApplyBehavior {
+    match d {
+        ast::OverlayDup::Ignore | ast::OverlayDup::Stronger => ast::OverlayApplyBehavior::Caps,
+        ast::OverlayDup::Replace => ast::OverlayApplyBehavior::Replaces,
+        ast::OverlayDup::Stack => ast::OverlayApplyBehavior::Stacks { label: None },
+    }
+}
+
+/// Gives a member of an overlay class the class's lines it doesn't write
+/// itself: settings, `modify` lines for other fields, data fields, spreads,
+/// transitions, `on start` / `on end`, and the class's `every` blocks too.
+/// The class's `dup:` also decides the member put on twice, unless the
+/// member has its own.
+fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
+    let writes = |m: &ast::OverlayDefStmt, k: &str| m.written.iter().any(|w| w == k);
+    if !writes(m, "hosts") { m.host_types = c.host_types.clone(); }
+    if !writes(m, "lasts") { m.default_duration = c.default_duration; }
+    if !writes(m, "decays") { m.decay_rate = c.decay_rate; }
+    if !writes(m, "intensity") { m.intensity = c.intensity; }
+    m.class_dup = Some(c.dup.clone().unwrap_or(ast::OverlayDup::Stack));
+    if m.dup.is_none() {
+        let d = c.dup.clone().unwrap_or(ast::OverlayDup::Ignore);
+        m.apply_behavior = old_apply_behavior(&d);
+        m.dup = Some(d);
+    }
+    let mut mods: Vec<(String, ast::Expr)> = c.modifiers.iter()
+        .filter(|(f, _)| !m.modifiers.iter().any(|(g, _)| g == f)).cloned().collect();
+    mods.append(&mut m.modifiers);
+    m.modifiers = mods;
+    for (k, v) in &c.extra_fields {
+        if !m.extra_fields.iter().any(|(j, _)| j == k) { m.extra_fields.push((k.clone(), v.clone())); }
+    }
+    if m.spreads.is_empty() { m.spreads = c.spreads.clone(); }
+    if m.transitions.is_empty() { m.transitions = c.transitions.clone(); }
+    for (slot, name) in [(&mut m.on_start, "on start"), (&mut m.on_end, "on end")] {
+        if slot.is_none() {
+            if let Some(a) = c.actions.iter().find(|a| a.name == name) {
+                *slot = Some(name.to_string());
+                m.actions.push(a.clone());
+            }
+        }
+    }
+    for (n, a) in &c.every {
+        let Some(block) = c.actions.iter().find(|x| &x.name == a) else { continue };
+        let name = format!("every {} ticks #{}", n, m.every.len() + 1);
+        let mut block = block.clone();
+        block.name = name.clone();
+        m.every.push((*n, name));
+        m.actions.push(block);
+    }
+}
+
 fn is_block_starter_name(name: &str) -> bool {
     matches!(name, "if" | "for" | "while" | "repeat" | "judge" | "judge_all")
 }
@@ -371,6 +428,7 @@ impl<'t> Parser<'t> {
             in_object_construction: false,
             bound_names: scan_bound_names(toks),
             self_scope: 0,
+            overlay_classes: Vec::new(),
         }
     } 
 
@@ -6348,6 +6406,16 @@ impl<'t> Parser<'t> {
         // Ensure nothing but NEWLINE/EOF remains after the last statement
         self.ensure_no_trailing_tokens_after_parse()?;
 
+        for item in items.iter_mut() {
+            let ast::Stmt::OverlayDef(def) = item else { continue };
+            let Some(class) = def.class.clone() else { continue };
+            let Some(c) = self.overlay_classes.iter().find(|c| c.name == class) else {
+                return Err(derr_help("P1295", &format!("No overlay class named {class}"),
+                    &format!("Declare it in this file:\n  <^>{class} |\n      dup: replace\n  xx"), def.span.clone()));
+            };
+            fill_from_overlay_class(def, c);
+        }
+
         Ok(ast::Module { items })
     }
 
@@ -6740,6 +6808,9 @@ impl<'t> Parser<'t> {
         // -------- overlay declarations and applications --------
         // `:overlay!(...)`, `:detach!(...)`, `:link!(...)` are calls.
         let bang_call = self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, goblin_lexer::TokenKind::Op(op) if op == "!"));
+        if self.peek_op("<^>") {
+            return self.parse_overlay_class();
+        }
         if self.peek_ident() == Some("overlay") && !bang_call {
             return self.parse_overlay_stmt();
         }
@@ -7477,6 +7548,24 @@ impl<'t> Parser<'t> {
             return self.with_self(|p| p.parse_overlay_block(name, start_i, col));
         }
 
+        // `overlay calm <^> Mood`: a member of the overlay class Mood.
+        if self.eat_op("<^>") {
+            self.skip_layout_inline();
+            let class = match self.eat_ident() {
+                Some(c) if c.starts_with(|ch: char| ch.is_ascii_uppercase()) => c,
+                _ => return Err(s_help_site!("P1294", "Expected the overlay class's name after '<^>'",
+                    &format!("Write: overlay {name} <^> Mood"))),
+            };
+            if !matches!(self.peek().map(|t| &t.kind), Some(goblin_lexer::TokenKind::Newline)) {
+                return Err(s_help_site!("P1294", &format!("The lines of overlay {name} go under its name"),
+                    &format!("Write:\n  overlay {name} <^> {class}\n      modify\n          @focus + .2\n      xx\n  xx")));
+            }
+            let col = self.toks[start_i].span.col_start;
+            let mut stmt = self.with_self(|p| p.parse_overlay_block(name, start_i, col))?;
+            if let ast::Stmt::OverlayDef(d) = &mut stmt { d.class = Some(class); }
+            return Ok(stmt);
+        }
+
         self.skip_layout();
 
         if self.peek_op("|") {
@@ -7500,6 +7589,32 @@ impl<'t> Parser<'t> {
         ))
     }
 
+    /// `<^>Mood |` ... `xx`: an overlay class. Its lines are an overlay's
+    /// lines; each member (`overlay calm <^> Mood`) gets the ones it doesn't
+    /// write itself, and its `dup:` says what a second member does.
+    fn parse_overlay_class(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        let _ = self.eat_op("<^>");
+        let name = match self.eat_ident() {
+            Some(n) if n.starts_with(|ch: char| ch.is_ascii_uppercase()) => n,
+            _ => return Err(s_help_site!("P1294", "An overlay class's name starts with a capital letter", "Write: <^>Mood |")),
+        };
+        self.skip_layout_inline();
+        if !self.eat_op("|") || !matches!(self.peek().map(|t| &t.kind), Some(goblin_lexer::TokenKind::Newline)) {
+            return Err(s_help_site!("P1294", &format!("Expected '|' and then the class's lines under <^>{name}"),
+                &format!("Write:\n  <^>{name} |\n      dup: replace\n  xx")));
+        }
+        if self.overlay_classes.iter().any(|c| c.name == name) {
+            return Err(s_help_site!("P1296", &format!("The overlay class {name} is declared twice"), "Keep one <^> declaration per class."));
+        }
+        let stmt = self.with_self(|p| p.parse_overlay_block(name, start_i, col))?;
+        let ast::Stmt::OverlayDef(def) = stmt else { unreachable!() };
+        let span = def.span.clone();
+        self.overlay_classes.push(def);
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+    }
+
     /// `overlay plague` ... `xx` (the name is eaten): data lines
     /// (`hosts:`, `lasts:`, `decays:`, `dup:`, `~intensity:`, `conflicts:`,
     /// `spread: chance where condition`, any other `name: value`), a
@@ -7521,6 +7636,8 @@ impl<'t> Parser<'t> {
         let mut on_start: Option<String> = None;
         let mut on_end: Option<String> = None;
         let mut every: Vec<(u64, String)> = Vec::new();
+        let mut dup: Option<ast::OverlayDup> = None;
+        let mut written: Vec<String> = Vec::new();
         let sp0 = self.toks[start_i].span.clone();
         let intensity_param = || vec![ast::Param { name: "intensity".to_string(), type_name: None, default: None, span: sp0.clone() }];
         let mk = |n: &str, body: Vec<ast::Stmt>| ast::ActionDecl {
@@ -7558,6 +7675,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!("P1204", &format!("An overlay's intensity goes from 0 to 1, not {n}"), "Write: ~intensity: .5"));
                 }
                 intensity = n;
+                written.push("intensity".to_string());
                 continue;
             }
             if self.peek_ident() == Some("intensity") && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":")) {
@@ -7570,6 +7688,7 @@ impl<'t> Parser<'t> {
             };
             let colon = self.eat_op(":");
             self.skip_layout_inline();
+            if colon && matches!(kw.as_str(), "hosts" | "lasts" | "decays" | "dup") { written.push(kw.clone()); }
             match (kw.as_str(), colon) {
                 ("hosts", true) | ("conflicts", true) => {
                     let mut names = Vec::new();
@@ -7598,12 +7717,15 @@ impl<'t> Parser<'t> {
                 }
                 ("dup", true) => {
                     let rule = self.eat_ident().unwrap_or_default();
-                    apply_behavior = match rule.as_str() {
-                        "ignore" => ast::OverlayApplyBehavior::Caps,
-                        "replace" => ast::OverlayApplyBehavior::Replaces,
-                        "stack" => ast::OverlayApplyBehavior::Stacks { label: None },
-                        other => return Err(s_help_site!("P1209", &format!("`dup: {other}` is not a rule: write ignore, replace or stack"), "Write: dup: stack")),
+                    let d = match rule.as_str() {
+                        "ignore" => ast::OverlayDup::Ignore,
+                        "replace" => ast::OverlayDup::Replace,
+                        "stack" => ast::OverlayDup::Stack,
+                        "stronger" => ast::OverlayDup::Stronger,
+                        other => return Err(s_help_site!("P1209", &format!("`dup: {other}` is not a rule: write ignore, replace, stack or stronger"), "Write: dup: stack")),
                     };
+                    apply_behavior = old_apply_behavior(&d);
+                    dup = Some(d);
                 }
                 ("spread", _) => {
                     let chance_pe = self.parse_coalesce()?;
@@ -7713,7 +7835,7 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
             name, host_types, spread_rules: Vec::new(), decay_rate, modifiers, conflict_rules: Vec::new(), spawn_rules: Vec::new(),
             transitions, default_duration, apply_behavior, extra_fields, on_end, each_tick: Vec::new(),
-            intensity, spreads, conflicts, actions, on_start, every, span,
+            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, span,
         }))
     }
 
@@ -8165,6 +8287,10 @@ impl<'t> Parser<'t> {
             intensity: 1.0,
             spreads: Vec::new(),
             conflicts: Vec::new(),
+            dup: None,
+            class: None,
+            class_dup: None,
+            written: Vec::new(),
             actions: Vec::new(),
             on_start: None,
             every: Vec::new(),

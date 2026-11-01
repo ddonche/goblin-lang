@@ -2726,11 +2726,14 @@ impl Vm {
                     host_types: def.host_types.clone(),
                     decay_rate: def.decay_rate,
                     default_duration: def.default_duration,
-                    apply_behavior: match &def.apply_behavior {
-                        goblin_ast::OverlayApplyBehavior::Caps => OverlayApplyBehavior::Caps,
-                        goblin_ast::OverlayApplyBehavior::Replaces => OverlayApplyBehavior::Replaces,
-                        goblin_ast::OverlayApplyBehavior::Stacks { label } => OverlayApplyBehavior::Stacks { label: label.clone() },
+                    apply_behavior: match (&def.dup, &def.apply_behavior) {
+                        (Some(d), _) => crate::tick::dup_rule(d),
+                        (None, goblin_ast::OverlayApplyBehavior::Caps) => OverlayApplyBehavior::Caps,
+                        (None, goblin_ast::OverlayApplyBehavior::Replaces) => OverlayApplyBehavior::Replaces,
+                        (None, goblin_ast::OverlayApplyBehavior::Stacks { label }) => OverlayApplyBehavior::Stacks { label: label.clone() },
                     },
+                    class: def.class.clone(),
+                    class_dup: def.class_dup.as_ref().map(crate::tick::dup_rule).unwrap_or(OverlayApplyBehavior::Stacks { label: None }),
                     modifiers: def.modifiers.iter().map(|(k, e)| (k.clone(), e.clone())).collect(),
                     conflict_rules: def.conflict_rules.iter().map(|r| (r.opponent.clone(), r.suppress_rate)).collect(),
                     spread_rules: def.spread_rules.clone(),

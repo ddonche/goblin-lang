@@ -181,6 +181,19 @@ pub enum SpreadRule {
 
 /// What happens when an overlay is applied to a host that already carries it.
 #[derive(Debug, Clone, PartialEq)]
+pub enum OverlayDup {
+    /// `dup: ignore`: the one already there stays; the new one doesn't take.
+    Ignore,
+    /// `dup: replace`: the new one takes the old one's place.
+    Replace,
+    /// `dup: stack`: both stay.
+    Stack,
+    /// `dup: stronger`: the one with the higher intensity stays (on a tie,
+    /// the one already there).
+    Stronger,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum OverlayApplyBehavior {
     /// First application wins. Subsequent applications are silently dropped. Default.
     Caps,
@@ -233,6 +246,19 @@ pub struct OverlayDefStmt {
     pub spreads: Vec<OverlaySpread>,
     /// `conflicts: a, b`: overlays that can't share a host with this one.
     pub conflicts: Vec<String>,
+    /// `dup:` as written, None when the block has no `dup:` line. When
+    /// set, `apply_behavior` holds the nearest older rule (`stronger` as
+    /// `Caps`), for engines that read only that.
+    pub dup: Option<OverlayDup>,
+    /// `overlay calm <^> Mood`: the overlay class it belongs to. The
+    /// parser has already given it the class's lines it doesn't write.
+    pub class: Option<String>,
+    /// Its class's `dup:`: what putting it on a host that has another
+    /// member of the class does (`Stack` when the class has none).
+    pub class_dup: Option<OverlayDup>,
+    /// The settings lines the block writes (`hosts`, `lasts`, `decays`,
+    /// `intensity`, `dup`), so a class fills in only the others.
+    pub written: Vec<String>,
     /// The overlay's code blocks (`on start`, `every N ticks`, `on end`),
     /// each run as a method on the host with `intensity` in view.
     pub actions: Vec<ActionDecl>,

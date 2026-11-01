@@ -2063,6 +2063,12 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
                     let start_col = state.col;
                     state.advance_by(2);
                     state.tokens.push(Token::simple_op("<=".to_string(), state.span(start_i, start_col)));
+                } else if state.peek(1) == Some(b'^') && state.peek(2) == Some(b'>') {
+                    // `<^>`: the overlay class symbol (`<^>Mood |`, `overlay calm <^> Mood`)
+                    let start_i = state.i;
+                    let start_col = state.col;
+                    state.advance_by(3);
+                    state.tokens.push(Token::simple_op("<^>".to_string(), state.span(start_i, start_col)));
                 } else if state.peek(1) == Some(b'>') {
                     // <>ClassName or <> ClassName => class declaration/instantiation sigil
                     // <>lowercase or <> alone => plain Op("<>") for parser to handle
