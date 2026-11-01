@@ -170,6 +170,11 @@ pub struct Vm {
     /// During a decision pass: the memo of the decisions worked out since
     /// anything last changed, kept for the next one (see `tick::decide`).
     pub(crate) memo_kept: Option<Box<crate::memo::Memo>>,
+    /// Per class judge (by its action's address): the actions its
+    /// conditions call, or None when they may change things.
+    pub(crate) judge_calls: rustc_hash::FxHashMap<usize, Option<std::rc::Rc<[String]>>>,
+    /// The class table `judge_calls` was worked out from (keys are class addresses in it).
+    pub(crate) judge_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// The object whose class judge is running, with the picks made so far.
     pub(crate) deciding: Option<Box<crate::tick::Deciding>>,
     /// Whether each function seen only reads (memo.rs), kept with it.
@@ -220,7 +225,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -689,8 +694,7 @@ impl Vm {
                 };
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.put_object(&uuid, val);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(val)
@@ -1966,6 +1970,14 @@ impl Vm {
                 if self.stack.len() < arg_count {
                     return Err(GoblinError::Runtime("stack underflow on CallBuiltin".into()));
                 }
+                // A decision read in its class's judge (the decision's place,
+                // or nothing for "a deed starts"): no argument list.
+                if id == BuiltinId::DecisionPick {
+                    let at = match arg_count { 0 => None, _ => match self.pop_value()? { Value::Int(i) => Some(i as usize), _ => Some(usize::MAX) } };
+                    let result = crate::tick::decision_pick(self, at)?;
+                    self.stack.push(Operand::Val(result));
+                    return Ok(());
+                }
                 let start = self.stack.len() - arg_count;
                 // `:swarm` needs to see whether its context is frozen.
                 let arg_vals = if matches!(id, BuiltinId::Swarm | BuiltinId::SwarmBang) {
@@ -2009,11 +2021,6 @@ impl Vm {
                     }
                     BuiltinId::Summon => {
                         let result = self.vm_summon(arg_vals)?;
-                        self.stack.push(Operand::Val(result));
-                        return Ok(());
-                    }
-                    BuiltinId::DecisionPick => {
-                        let result = crate::tick::decision_pick(self, arg_vals)?;
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -3687,8 +3694,7 @@ impl Vm {
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
                 let t = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), val);
+                    self.session.put_object(&uuid, val);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(val)
@@ -6048,20 +6054,27 @@ impl Vm {
     /// What `:overlays(...)` shows for one overlay: a record of its name,
     /// host, strength, age, time left, count and own fields.
     fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
-        use indexmap::IndexMap;
-        let mut fields: crate::value::FieldMap = Default::default();
-        fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
-        fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
-        fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
-        fields.insert("intensity".to_string(), Value::Float(inst.strength));
-        fields.insert("age".to_string(), Value::Int(inst.age as i64));
-        fields.insert("ticks_remaining".to_string(), match inst.ticks_remaining {
-            Some(t) => Value::Int(t as i64),
-            None => Value::Nil,
-        });
-        for (k, v) in &inst.extra_fields {
-            fields.insert(k.clone(), v.clone());
+        thread_local! {
+            static RECORD_LAYOUT: std::cell::RefCell<Option<std::rc::Rc<crate::fields::Layout>>> = const { std::cell::RefCell::new(None) };
         }
+        const BASE: [&str; 6] = ["overlay_name", "host_uuid", "host_var", "intensity", "age", "ticks_remaining"];
+        let mut vals = Vec::with_capacity(BASE.len() + inst.extra_fields.len());
+        vals.push(Value::Str(inst.overlay_name.as_str().into()));
+        vals.push(Value::Str(inst.host_uuid.as_str().into()));
+        vals.push(Value::Str(inst.host_var.as_str().into()));
+        vals.push(Value::Float(inst.strength));
+        vals.push(Value::Int(inst.age as i64));
+        vals.push(match inst.ticks_remaining { Some(t) => Value::Int(t as i64), None => Value::Nil });
+        vals.extend(inst.extra_fields.values().cloned());
+        let names = BASE.iter().copied().chain(inst.extra_fields.keys().map(|k| k.as_str()));
+        let fields = if inst.extra_fields.keys().any(|k| BASE.contains(&k.as_str())) {
+            // An extra field named like a base one replaces it, as before.
+            let mut f = crate::value::FieldMap::default();
+            for (n, v) in names.zip(vals) { f.insert(n.to_string(), v); }
+            f
+        } else {
+            RECORD_LAYOUT.with(|g| crate::value::FieldMap::from_names(names.collect::<Vec<_>>().into_iter(), vals, &mut g.borrow_mut()))
+        };
         Value::Object(Box::new(crate::value::ObjectVal {
             class_name: inst.overlay_name.as_str().into(),
             fields: std::rc::Rc::new(fields),

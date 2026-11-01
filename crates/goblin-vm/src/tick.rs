@@ -179,8 +179,7 @@ fn run_overlay_block(vm: &mut Vm, inst: &OverlayInstance, block: &str) -> Result
     let mut args = Vec::with_capacity(2 + inst.extra_fields.len());
     args.push(Value::Ref(inst.host_uuid.clone().into()));
     args.push(Value::Float(inst.strength));
-    let names: Vec<String> = def.extra_fields.keys().cloned().collect();
-    for k in &names {
+    for k in def.extra_fields.keys() {
         args.push(inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil));
     }
     with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), args).map(|_| ()))
@@ -191,22 +190,45 @@ fn run_overlay_block(vm: &mut Vm, inst: &OverlayInstance, block: &str) -> Result
 /// host runs them in its own region.
 fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
     if vm.session.overlay_defs.values().all(|d| d.every.is_empty()) { return Ok(()); }
-    let due: Vec<(OverlayInstance, String)> = vm.session.overlay_instances.iter()
-        .filter(|i| i.strength > 0.0 && !crate::world::is_remote(vm, &i.host_uuid))
-        .flat_map(|i| {
-            let every = vm.session.overlay_defs.get(&i.overlay_name).map(|d| d.every.clone()).unwrap_or_default();
-            every.into_iter()
-                .filter(move |(n, _)| i.age as u64 % *n == 0)
-                .map(move |(_, block)| (i.clone(), block))
-        })
-        .collect();
-    for (inst, block) in due {
-        // Taken off by an earlier block this tick: nothing to run.
-        if !vm.session.overlay_instances.on_host(&inst.host_uuid).iter()
-            .any(|&p| vm.session.overlay_instances[p].des_id == inst.des_id) { continue; }
-        run_overlay_block(vm, &inst, &block)?;
+    let mut due: Vec<(usize, crate::session::OverlayInstanceId)> = Vec::new();
+    {
+        let defs = &vm.session.overlay_defs;
+        for (p, i) in vm.session.overlay_instances.iter().enumerate() {
+            if i.strength <= 0.0 { continue; }
+            let Some(d) = defs.get(&i.overlay_name) else { continue };
+            if d.every.iter().any(|(n, _)| i.age as u64 % *n == 0) && !crate::world::is_remote(vm, &i.host_uuid) {
+                due.push((p, i.des_id));
+            }
+        }
+    }
+    for (p, id) in due {
+        // The list may have changed since: find the copy again by its id.
+        let list = &vm.session.overlay_instances;
+        let p = if p < list.len() && list[p].des_id == id { p } else {
+            match list.iter().position(|i| i.des_id == id) { Some(p) => p, None => continue }
+        };
+        let inst = list[p].clone();
+        let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+        for (n, block) in &def.every {
+            if inst.age as u64 % *n != 0 { continue; }
+            // Taken off by an earlier block this tick: nothing more to run.
+            if !vm.session.overlay_instances.on_host(&inst.host_uuid).iter()
+                .any(|&q| vm.session.overlay_instances[q].des_id == inst.des_id) { break; }
+            run_overlay_block(vm, &inst, block)?;
+        }
     }
     Ok(())
+}
+
+/// A `modify` amount written as a plain number (`3`, `-2.5`), read here
+/// without running it.
+fn literal_amount(e: &goblin_ast::Expr) -> Option<f64> {
+    use goblin_ast::Expr as E;
+    match e {
+        E::Number(t, _) if t.bytes().all(|b| b.is_ascii_digit() || b == b'.' || b == b'_') => t.replace('_', "").parse().ok(),
+        E::Prefix(op, inner, _) if op == "-" => literal_amount(inner).map(|n| -n),
+        _ => None,
+    }
 }
 
 /// Whether a `modify` line's amount never changes (a number).
@@ -242,7 +264,9 @@ fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)>, GoblinEr
             },
             _ => return Ok(Vec::new()),
         }
-        let amount = if constant_amount(expr) {
+        let amount = if let Some(n) = literal_amount(expr) {
+            Ok(Value::Float(n))
+        } else if constant_amount(expr) {
             vm.eval_tick_expr(expr, Vec::new())
         } else {
             let mut bind: Vec<(&str, Value)> = vec![
@@ -850,6 +874,9 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 }
 
 fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>) -> Result<(), GoblinError> {
+    // The judge method of the class decided last (most objects in a row
+    // are of one class), so it is not looked up again for each object.
+    let mut judge_fn: Option<(String, Option<std::rc::Rc<crate::value::FunctionObject>>)> = None;
     for (self_uuid, class_name) in candidates {
         // Borrow the definitions (an Rc copy, not a deep one), so each
         // formula keeps its address for the tick-expr cache. Taken per
@@ -866,9 +893,24 @@ fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value:
                 picks: vec![None; class.decisions.len()],
                 targets: std::mem::take(targets),
             }));
-            let out = action_result(vm, &self_uuid, action, Vec::new());
+            if !judge_fn.as_ref().is_some_and(|(c, _)| *c == class_name) {
+                let f = vm.session.compiled_methods.get(&(class_name.clone(), action.clone())).cloned();
+                judge_fn = Some((class_name.clone(), f));
+            }
+            let out = match judge_fn.as_ref().and_then(|(_, f)| f.clone()) {
+                // Erased earlier this tick: it decides nothing.
+                _ if !vm.session.object_store.contains_key(&self_uuid) => Ok(Value::Nil),
+                Some(f) => {
+                    let me = vec![Value::Ref(self_uuid.clone())];
+                    with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), me).map(|_| ())).map(|_| Value::Nil)
+                }
+                None => action_result(vm, &self_uuid, action, Vec::new()),
+            };
             if let Some(d) = std::mem::replace(&mut vm.deciding, prev) { *targets = d.targets; }
-            vm.memo_kept = None;
+            // What the decisions worked out stays good for the next object
+            // unless a deed ran (it clears it) or a judge condition may
+            // change things.
+            if !judge_reads_only(vm, class, action) { vm.memo_kept = None; }
             out?;
             continue;
         }
@@ -1296,6 +1338,44 @@ pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionD
     Ok(m)
 }
 
+/// Whether the conditions of a class's judge over its decisions only read.
+fn judge_reads_only(vm: &mut Vm, class: &goblin_ast::ClassDecl, action: &str) -> bool {
+    // Kept while the class table is the one they were worked out from.
+    if !vm.judge_classes.as_ref().is_some_and(|c| std::rc::Rc::ptr_eq(c, &vm.session.classes)) {
+        vm.judge_calls.clear();
+        vm.judge_classes = Some(vm.session.classes.clone());
+    }
+    let key = class as *const _ as usize;
+    let calls = match vm.judge_calls.get(&key) {
+        Some(c) => c.clone(),
+        None => {
+            let Some(a) = class.actions.iter().find(|a| a.name == action) else { return false };
+            let mut calls = Some(Vec::new());
+            let body: &[goblin_ast::Stmt] = match &a.body { goblin_ast::ActionBody::Block(b) => b, _ => &[] };
+            for st in body {
+                let arms = match st {
+                    goblin_ast::Stmt::Judge(j) => &j.arms,
+                    goblin_ast::Stmt::JudgeAll(j) => &j.arms,
+                    _ => continue,
+                };
+                for c in arms.iter().filter_map(|a| a.condition.as_ref()) {
+                    calls = match (calls, crate::compiler::read_calls_rolling(c)) {
+                        (Some(mut a), Some(b)) => { a.extend(b); Some(a) }
+                        _ => None,
+                    };
+                }
+            }
+            let calls: Option<std::rc::Rc<[String]>> = calls.map(|c| c.into());
+            vm.judge_calls.insert(key, calls.clone());
+            calls
+        }
+    };
+    match calls {
+        None => false,
+        Some(c) => c.iter().all(|n| vm.action_reads_only(n)),
+    }
+}
+
 /// The object whose class judge runs, and its decisions' picks so far.
 pub(crate) struct Deciding {
     self_uuid: crate::value::ObjId,
@@ -1307,23 +1387,23 @@ pub(crate) struct Deciding {
 
 /// A decision's name read in its class's judge: its pick (`{target,
 /// score}`), or nil when no target qualifies. Made once, when first read.
-pub(crate) fn decision_pick(vm: &mut Vm, args: Vec<Value>) -> Result<Value, GoblinError> {
-    let name = match args.first() { Some(Value::Str(s)) => s.to_string(), _ => String::new() };
+pub(crate) fn decision_pick(vm: &mut Vm, at: Option<usize>) -> Result<Value, GoblinError> {
+    // No place: a judge arm's deed starts; nothing kept for the decisions
+    // stays good.
+    let Some(i) = at else { vm.memo_kept = None; return Ok(Value::Nil) };
     let Some(mut d) = vm.deciding.take() else {
-        return Err(GoblinError::Runtime(format!("R1223: decision-outside-judge: `{name}` is a decision; its pick is read in the class's judge")));
+        return Err(GoblinError::Runtime("R1223: decision-outside-judge: a decision's pick is read in its class's judge".into()));
     };
+    if let Some(Some(v)) = d.picks.get(i) {
+        let v = v.clone();
+        vm.deciding = Some(d);
+        return Ok(v);
+    }
     let out = (|| {
         let class = d.class.get(&d.class_name).ok_or_else(|| GoblinError::Runtime("decision class is gone".into()))?;
-        let Some(i) = class.decisions.iter().position(|nd| nd.name == name) else { return Ok(Value::Nil) };
-        if let Some(v) = &d.picks[i] { return Ok(v.clone()); }
-        let nd = &class.decisions[i];
+        let Some(nd) = class.decisions.get(i) else { return Ok(Value::Nil) };
         let v = match pick(vm, &mut d.targets, &d.self_uuid, &nd.name, &nd.decision, None)? {
-            Some(Pick { target, score }) => {
-                let mut m = std::collections::BTreeMap::new();
-                m.insert("target".to_string(), Value::Ref(target));
-                m.insert("score".to_string(), Value::Float(score));
-                Value::Map(m)
-            }
+            Some(Pick { target, score }) => pick_record(target, score),
             None => Value::Nil,
         };
         d.picks[i] = Some(v.clone());
@@ -1335,6 +1415,30 @@ pub(crate) fn decision_pick(vm: &mut Vm, args: Vec<Value>) -> Result<Value, Gobl
 
 /// A decision's pick: the target it chose and that target's score.
 struct Pick { target: crate::value::ObjId, score: f64 }
+
+thread_local! {
+    static PICK_SHAPE: std::cell::RefCell<(Option<std::rc::Rc<crate::fields::Layout>>, Option<crate::value::ObjId>, Option<std::rc::Rc<str>>)> = const { std::cell::RefCell::new((None, None, None)) };
+}
+
+/// A pick as the judge reads it: a record with `target` and `score`. It is
+/// not a stored object (its id has the record prefix), and every pick
+/// shares one layout, id and class name, so making one allocates little.
+fn pick_record(target: crate::value::ObjId, score: f64) -> Value {
+    PICK_SHAPE.with(|c| {
+        let mut c = c.borrow_mut();
+        let fields = crate::fields::FieldMap::from_names(["target", "score"].into_iter(), vec![Value::Ref(target), Value::Float(score)], &mut c.0);
+        let uuid = c.1.get_or_insert_with(|| format!("{}pick", crate::vm::OVERLAY_RECORD).into()).clone();
+        let class_name = c.2.get_or_insert_with(|| "pick".into()).clone();
+        Value::Object(Box::new(crate::value::ObjectVal {
+            class_name,
+            fields: std::rc::Rc::new(fields),
+            readonly_fields: Default::default(),
+            trait_fields: Default::default(),
+            uuid,
+        }))
+    })
+}
+
 
 /// One decision of one object: score the targets and pick the best (within
 /// the object's `margin`). None: no target qualifies.
@@ -1729,6 +1833,7 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), Gob
     let amounts = modify_amounts(vm, at)?;
     vm.session.overlay_instances[at].applied = amounts;
     settle_films(&mut vm.session);
+    if !def.methods.contains_key("on start") { return Ok(()); }
     let inst = vm.session.overlay_instances[at].clone();
     run_overlay_block(vm, &inst, "on start")
 }

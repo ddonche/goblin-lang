@@ -1110,6 +1110,12 @@ impl Compiler {
     }
 
     fn compile_arm_body(&mut self, body: &goblin_ast::JudgeArmBody) -> Result<(), GoblinError> {
+        // In a class's judge over its decisions: a deed starts here, so
+        // what the decisions kept (memo) goes.
+        if !self.lazy_picks.is_empty() {
+            self.emit(Opcode::CallBuiltin(BuiltinId::DecisionPick, 0));
+            self.emit(Opcode::Pop);
+        }
         match body {
             goblin_ast::JudgeArmBody::Expr(e) => {
                 self.compile_expr(e)?;
@@ -1404,7 +1410,10 @@ impl Compiler {
             // later decisions unscored, and their random draws unmade).
             Expr::Ident(name, _) if self.lazy_picks.iter().any(|n| n == name)
                 && !self.scopes.iter().any(|sc| sc.find_local(name).is_some()) => {
-                let idx = self.add_constant(Value::Str(name.clone().into()));
+                // The decision by its place in the class (`lazy_picks` is in
+                // the class's order), so reading it looks nothing up by name.
+                let at = self.lazy_picks.iter().position(|n| n == name).unwrap_or(0);
+                let idx = self.add_constant(Value::Int(at as i64));
                 self.emit(Opcode::LoadConst(idx));
                 self.emit(Opcode::CallBuiltin(BuiltinId::DecisionPick, 1));
             }
@@ -3674,6 +3683,26 @@ pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> 
 pub(crate) fn read_calls(e: &Expr) -> Option<Vec<String>> {
     let mut names = Vec::new();
     only_reads_with(e, &mut |name| { names.push(name.to_string()); true }).then_some(names)
+}
+
+/// `read_calls` for a judge condition, which may also roll (`pick 1 from
+/// 1...10`, `roll 1d6`): a roll changes nothing a read-only action reads,
+/// so the answers worked out for the decisions stay good across it.
+pub(crate) fn read_calls_rolling(e: &Expr) -> Option<Vec<String>> {
+    fn walk(e: &Expr, names: &mut Vec<String>) -> bool {
+        match e {
+            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.as_str()) => args.iter().all(|a| walk(a, names)),
+            Expr::Object(fields, _) => fields.iter().all(|(_, v)| walk(v, names)),
+            Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => walk(l, names) && walk(r, names),
+            Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => walk(x, names),
+            Expr::Array(xs, _) => xs.iter().all(|x| walk(x, names)),
+            Expr::FreeCall(name, args, _) if !name.starts_with(':') => { names.push(name.to_string()); args.iter().all(|a| walk(a, names)) }
+            _ => only_reads_with(e, &mut |n| { names.push(n.to_string()); true }),
+        }
+    }
+    const ROLLS: &[&str] = &["pick", "roll", "roll_detail"];
+    let mut names = Vec::new();
+    walk(e, &mut names).then_some(names)
 }
 
 /// Builtins that only read: no effects, no randomness, no calls back into

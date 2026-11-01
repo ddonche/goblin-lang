@@ -125,7 +125,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
 
 /// Installs the definitions and overlays in a freshly built session.
 pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
-    let mut defs = HashMap::with_capacity(img.overlay_defs.len());
+    let mut defs: rustc_hash::FxHashMap<String, Rc<crate::session::OverlayDef>> = rustc_hash::FxHashMap::with_capacity_and_hasher(img.overlay_defs.len(), Default::default());
     for d in &img.overlay_defs {
         let extra_fields: indexmap::IndexMap<String, crate::value::Value> = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
         let extra_names: Vec<String> = extra_fields.keys().cloned().collect();

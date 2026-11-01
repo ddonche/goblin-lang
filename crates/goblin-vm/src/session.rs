@@ -257,7 +257,7 @@ pub struct Session {
     // ── DES / Overlay / Link state ───────────────────────────────────────────
     // Definitions are shared (Rc), so a tick that copies a table copies
     // pointers, and each formula keeps one address for the tick-expr cache.
-    pub overlay_defs: HashMap<String, Rc<OverlayDef>>,
+    pub overlay_defs: rustc_hash::FxHashMap<String, Rc<OverlayDef>>,
     pub link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>,
@@ -319,6 +319,19 @@ impl Session {
     pub(crate) fn touch(&mut self, uuid: &(impl crate::value::IdKey + ?Sized)) {
         // Text no id has names no object here: nothing to check.
         if let Some(t) = &mut self.des_touched { if let Some(id) = uuid.id() { t.push(id.into_owned()); } }
+    }
+
+    /// Binds an object value to a name: the store takes it, and a DES
+    /// action notes the change. Binding the very object the store holds
+    /// (same fields, not a changed copy) changes nothing.
+    #[inline]
+    pub(crate) fn put_object(&mut self, uuid: &crate::value::ObjId, val: Value) {
+        if let (Value::Object(new), Some(Value::Object(old))) = (&val, self.object_store.get(uuid)) {
+            if Rc::ptr_eq(&new.fields, &old.fields) && Rc::ptr_eq(&new.class_name, &old.class_name)
+                && Rc::ptr_eq(&new.readonly_fields, &old.readonly_fields) && Rc::ptr_eq(&new.trait_fields, &old.trait_fields) { return; }
+        }
+        self.touch(uuid);
+        self.object_store.insert(uuid.clone(), val);
     }
 
     /// `#ns::name | v` (tether) or `|= v`: the interpreter's Box write rules.
@@ -408,7 +421,7 @@ impl Session {
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),
             imported: Default::default(),
-            overlay_defs: HashMap::new(),
+            overlay_defs: Default::default(),
             link_defs: Default::default(),
             object_link_defs: Default::default(),
             link_offsets: Default::default(),
