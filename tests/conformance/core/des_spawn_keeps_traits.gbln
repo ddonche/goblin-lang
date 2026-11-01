@@ -4,9 +4,9 @@
 <>Hive |
     ~calm: .5
     bees: 2
-    transition spawn when @bees >= 2
-        into Hive
-    end
+    transition spawn where @bees >= 2
+        into: Hive
+    xx
 xx
 h <> Hive | calm: .5
 tick()

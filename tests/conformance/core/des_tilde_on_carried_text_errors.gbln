@@ -2,11 +2,11 @@
 <>Town |
     name: "Ash"
     ~people: 10
-    transition mutate when self >> people > 100
-        into Town
+    transition mutate where @people > 100
+        into: Town
         carries:
             ~name: "City"
-        end
-    end
+        xx
+    xx
 xx
 say("never printed")

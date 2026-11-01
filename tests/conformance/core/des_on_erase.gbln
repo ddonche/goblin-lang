@@ -1,29 +1,27 @@
-/// known-gap: interp has no `on erase:` in classes
-/// `on erase: action` runs on an object just before an erase transition
+/// known-gap: interp has no `on erase =>` or `transition ... where` (new DES syntax); the interpreter is being retired
+/// `on erase => code` runs on an object just before an erase transition
 /// removes it, with its fields still readable: here the old man's money
-/// goes to the town fund before he is gone. A class action of that name
-/// runs with `self`; otherwise a program action gets the object.
+/// goes to the town fund before he is gone. It is ordinary code: it calls a
+/// program action with `self`, or the class's own action as `self.bury()`.
 <>Fund |
     cash: 0
 xx
 <>Person |
     age: 0
     money: 0
-    on erase: settle_estate
+    on erase => settle_estate(self)
     every 1 tick
         self >> age |= self >> age + 1
     end
-    transition erase when (self >> age) > 3
-    end
+    transition erase where @age > 3
 xx
 <>Dog |
     age: 0
-    on erase: bury
+    on erase => self.bury()
     every 1 tick
         self >> age |= self >> age + 1
     end
-    transition erase when (self >> age) > 2
-    end
+    transition erase where @age > 2
     act bury()
         a | self >> age
         say("the dog is buried at age {a}")

@@ -14,8 +14,7 @@
         say("checked")
         return (pick 1 from 1...1000000) == 0
     end
-    transition erase when (self.risky())
-    end
+    transition erase where self.risky()
 xx
 :rand_seed(1)
 m <> Mote | age: 0
