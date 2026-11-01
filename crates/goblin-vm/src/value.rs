@@ -174,23 +174,21 @@ impl PartialEq<GStr> for String { fn eq(&self, o: &GStr) -> bool { *self == o.0.
 /// It hashes and compares like its text, so maps keyed by ids can be
 /// looked up with a `&str`.
 #[derive(Clone)]
-pub struct ObjId(Rc<IdCell>);
+pub struct ObjId(Rc<[std::cell::Cell<u8>]>);
 
-/// An id's text, and where the object with this id sat in the object store
-/// that last looked it up (`store::ObjectStore` checks that the place still
-/// holds this id before using it, so a stale or foreign place only costs a
-/// lookup by id).
-pub struct IdCell {
-    text: Box<str>,
-    at: std::cell::Cell<u32>,
-}
+/// An id is one allocation: four bytes for the place the object store that
+/// last looked it up found it at (`store::ObjectStore` checks that the
+/// place still holds this id before using it, so a stale or foreign place
+/// only costs a lookup by id), then the id's text. The text bytes are
+/// written once, when the id is made, and only read after.
+const HINT: usize = 4;
 
 /// The interner's key: an id, found by its text.
-struct Interned(Rc<IdCell>);
-impl std::borrow::Borrow<str> for Interned { fn borrow(&self) -> &str { &self.0.text } }
-impl PartialEq for Interned { fn eq(&self, o: &Interned) -> bool { self.0.text == o.0.text } }
+struct Interned(ObjId);
+impl std::borrow::Borrow<str> for Interned { fn borrow(&self) -> &str { self.0.as_str() } }
+impl PartialEq for Interned { fn eq(&self, o: &Interned) -> bool { self.0.as_str() == o.0.as_str() } }
 impl Eq for Interned {}
-impl std::hash::Hash for Interned { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.0.text.hash(h) } }
+impl std::hash::Hash for Interned { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.0.as_str().hash(h) } }
 
 thread_local! {
     static IDS: RefCell<(rustc_hash::FxHashSet<Interned>, usize)> = RefCell::new((Default::default(), 1024));
@@ -198,38 +196,59 @@ thread_local! {
 
 impl ObjId {
     #[inline]
-    pub fn as_str(&self) -> &str { &self.0.text }
+    pub fn as_str(&self) -> &str {
+        // SAFETY: an id always has its `HINT` bytes; `Cell<u8>` has the
+        // layout of `u8`; the text bytes were copied from a `&str` when the
+        // id was made and are never written again.
+        unsafe {
+            let p = (self.0.as_ptr() as *const u8).add(HINT);
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(p, self.0.len() - HINT))
+        }
+    }
+    fn make(s: &str) -> ObjId {
+        ObjId([u8::MAX; HINT].iter().chain(s.as_bytes()).map(|b| std::cell::Cell::new(*b)).collect())
+    }
     /// The id with this text, if this thread holds one (an object with
     /// that id can only exist then).
     pub fn existing(s: &str) -> Option<ObjId> {
-        IDS.with(|t| t.borrow().0.get(s).map(|r| ObjId(r.0.clone())))
+        IDS.with(|t| t.borrow().0.get(s).map(|r| r.0.clone()))
     }
     /// The text, copied (without going through `Display`).
     #[allow(clippy::inherent_to_string_shadow_display)]
-    pub fn to_string(&self) -> String { String::from(&*self.0.text) }
-    /// Where a store last found this id (see `IdCell`).
+    pub fn to_string(&self) -> String { String::from(self.as_str()) }
+    /// Where a store last found this id.
     #[inline]
-    pub(crate) fn place_hint(&self) -> usize { self.0.at.get() as usize }
+    pub(crate) fn place_hint(&self) -> usize {
+        // SAFETY: the first `HINT` bytes are the hint, read and written only
+        // here and in `set_place_hint` (through `Cell`, on this thread).
+        unsafe { (self.0.as_ptr() as *const u32).read_unaligned() as usize }
+    }
     #[inline]
-    pub(crate) fn set_place_hint(&self, at: usize) { self.0.at.set(at as u32) }
+    pub(crate) fn set_place_hint(&self, at: usize) {
+        // SAFETY: as in `place_hint`; the bytes are `Cell`s, so writing them
+        // through a shared id is allowed.
+        unsafe { (self.0.as_ptr() as *mut u32).write_unaligned(at as u32) }
+    }
     /// The same id (one allocation), not only the same text.
     #[inline]
-    pub fn same(&self, o: &ObjId) -> bool { Rc::ptr_eq(&self.0, &o.0) }
+    pub fn same(&self, o: &ObjId) -> bool { std::ptr::eq(self.0.as_ptr(), o.0.as_ptr()) }
+    #[inline]
+    fn addr(&self) -> usize { self.0.as_ptr() as usize }
 }
 
 impl From<&str> for ObjId {
     fn from(s: &str) -> ObjId {
         IDS.with(|t| {
             let (set, next_clean) = &mut *t.borrow_mut();
-            if let Some(r) = set.get(s) { return ObjId(r.0.clone()); }
+            if let Some(r) = set.get(s) { return r.0.clone(); }
             // Drop the ids nothing holds any more, now and then.
             if set.len() >= *next_clean {
-                set.retain(|r| Rc::strong_count(&r.0) > 1);
+                set.retain(|r| Rc::strong_count(&r.0.0) > 1);
                 *next_clean = (set.len() * 2).max(1024);
             }
-            let r = Rc::new(IdCell { text: s.into(), at: std::cell::Cell::new(u32::MAX) });
+            let r = ObjId::make(s);
             set.insert(Interned(r.clone()));
-            ObjId(r)
+            r
         })
     }
 }
@@ -267,36 +286,36 @@ impl From<Rc<str>> for ObjId { fn from(s: Rc<str>) -> ObjId { ObjId::from(&*s) }
 
 impl std::ops::Deref for ObjId {
     type Target = str;
-    fn deref(&self) -> &str { &self.0.text }
+    fn deref(&self) -> &str { self.as_str() }
 }
-impl AsRef<str> for ObjId { fn as_ref(&self) -> &str { &self.0.text } }
+impl AsRef<str> for ObjId { fn as_ref(&self) -> &str { self.as_str() } }
 impl PartialEq for ObjId {
-    fn eq(&self, o: &ObjId) -> bool { Rc::ptr_eq(&self.0, &o.0) || self.0.text == o.0.text }
+    fn eq(&self, o: &ObjId) -> bool { self.same(o) || self.as_str() == o.as_str() }
 }
 impl Eq for ObjId {}
-impl PartialEq<str> for ObjId { fn eq(&self, o: &str) -> bool { &*self.0.text == o } }
-impl PartialEq<&str> for ObjId { fn eq(&self, o: &&str) -> bool { &*self.0.text == *o } }
-impl PartialEq<String> for ObjId { fn eq(&self, o: &String) -> bool { &*self.0.text == o.as_str() } }
-impl PartialEq<ObjId> for String { fn eq(&self, o: &ObjId) -> bool { self.as_str() == &*o.0.text } }
-impl PartialEq<ObjId> for str { fn eq(&self, o: &ObjId) -> bool { self == &*o.0.text } }
-impl PartialEq<ObjId> for &str { fn eq(&self, o: &ObjId) -> bool { *self == &*o.0.text } }
-impl PartialEq<ObjId> for GStr { fn eq(&self, o: &ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0.text } }
-impl PartialEq<&ObjId> for GStr { fn eq(&self, o: &&ObjId) -> bool { AsRef::<str>::as_ref(self) == &*o.0.text } }
+impl PartialEq<str> for ObjId { fn eq(&self, o: &str) -> bool { self.as_str() == o } }
+impl PartialEq<&str> for ObjId { fn eq(&self, o: &&str) -> bool { self.as_str() == *o } }
+impl PartialEq<String> for ObjId { fn eq(&self, o: &String) -> bool { self.as_str() == o.as_str() } }
+impl PartialEq<ObjId> for String { fn eq(&self, o: &ObjId) -> bool { self.as_str() == o.as_str() } }
+impl PartialEq<ObjId> for str { fn eq(&self, o: &ObjId) -> bool { self == o.as_str() } }
+impl PartialEq<ObjId> for &str { fn eq(&self, o: &ObjId) -> bool { *self == o.as_str() } }
+impl PartialEq<ObjId> for GStr { fn eq(&self, o: &ObjId) -> bool { AsRef::<str>::as_ref(self) == o.as_str() } }
+impl PartialEq<&ObjId> for GStr { fn eq(&self, o: &&ObjId) -> bool { AsRef::<str>::as_ref(self) == o.as_str() } }
 impl Default for ObjId { fn default() -> ObjId { ObjId::from("") } }
 impl PartialOrd for ObjId { fn partial_cmp(&self, o: &ObjId) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
-impl Ord for ObjId { fn cmp(&self, o: &ObjId) -> std::cmp::Ordering { self.0.text.cmp(&o.0.text) } }
+impl Ord for ObjId { fn cmp(&self, o: &ObjId) -> std::cmp::Ordering { self.as_str().cmp(o.as_str()) } }
 /// Ids are held once per thread (see `From<&str>`), so two ids with the
 /// same text are the same allocation: an id hashes by where its text is,
 /// without reading the text. Maps keyed by ids are looked up with an id,
 /// never with text (`ObjId::existing` finds the id for a text).
 impl std::hash::Hash for ObjId {
-    fn hash<H: std::hash::Hasher>(&self, h: &mut H) { (Rc::as_ptr(&self.0) as *const u8 as usize).hash(h) }
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.addr().hash(h) }
 }
 impl std::fmt::Display for ObjId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.0.text) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.as_str()) }
 }
 impl std::fmt::Debug for ObjId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(&*self.0.text, f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Debug::fmt(self.as_str(), f) }
 }
 
 /// An object's fields, by name. Fx hashing: field names are short and come
