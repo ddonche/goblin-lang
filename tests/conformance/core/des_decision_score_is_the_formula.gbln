@@ -8,9 +8,9 @@
 xx
 <>Walker |
     steps: 0
-    rest | decision against Spot by [
+    rest | decision against Spot by (
         target >> shade * 40
-    ]
+    )
     judge using rest
         > 30: sit(target, rest)
         else: pass(target, rest)
@@ -18,7 +18,7 @@ xx
 xx
 <>Child |
     steps: 0
-    play | decision against Spot by [ 7 ]
+    play | decision against Spot by 7
     judge using play
         == 7: sit(target, play)
     end

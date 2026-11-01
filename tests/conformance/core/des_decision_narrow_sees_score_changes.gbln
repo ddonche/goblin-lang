@@ -6,7 +6,7 @@
 <>Lord |
     name: ""
     owner: nil
-    claim | decision against Knight where [ target >> owner == self ] by [ annex(self, target) ]
+    claim | decision against Knight where target >> owner == self by annex(self, target)
     judge using claim
         >= 0: hire(target)
     end

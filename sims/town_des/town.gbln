@@ -164,15 +164,15 @@ xx
     /// Open shops only; cheaper ones score higher (prices run 15 to 24, so
     /// scores 6 to 15). `margin 10` spreads people over the shops within 10
     /// of the best.
-    shop | decision against Business margin 10 where [ target >> open == 1 ] by [
+    shop | decision against Business margin 10 where target >> open == 1 by (
         30 - target >> price
-    ]
+    )
     judge using shop
         > 0: buy(target)
     end
-    work | decision against Business by [
+    work | decision against Business by (
         target >> hiring
-    ]
+    )
     judge using work
         >= .5: apply(target)
     end

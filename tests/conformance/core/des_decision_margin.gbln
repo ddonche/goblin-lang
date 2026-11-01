@@ -11,15 +11,15 @@
 xx
 <>Buyer |
     margin: 0
-    buy | decision against Shop margin 5 by [
+    buy | decision against Shop margin 5 by (
         target >> stock
-    ]
+    )
     judge using buy
         > 0: purchase(target)
     end
-    visit | decision against Shop by [
+    visit | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using visit
         > 0: drop_in(target)
     end

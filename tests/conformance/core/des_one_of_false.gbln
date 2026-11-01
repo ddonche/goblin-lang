@@ -5,11 +5,11 @@
 <>P |
     name: ""
     brave: 0
-    flee | decision against P by [ 1 ]
+    flee | decision against P by 1
     judge using flee
         >= 0: run_away(target)
     end
-    work | decision against P by [ 1 ]
+    work | decision against P by 1
     judge using work
         >= 0: dig(target)
     end

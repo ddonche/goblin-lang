@@ -8,7 +8,7 @@
 <>Wolf |
     name: ""
     pen: 0
-    hunt | decision against Sheep where [ target >> pen == self >> pen ] by [ target >> fat ]
+    hunt | decision against Sheep where target >> pen == self >> pen by target >> fat
     judge using hunt
         >= 0: eat(target)
     end

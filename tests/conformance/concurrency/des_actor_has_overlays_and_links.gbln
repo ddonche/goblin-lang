@@ -11,9 +11,9 @@ overlay Sick |
         health - .05
     end
 end
-link Person contact 0...1 by [
+link Person contact 0...1 by (
     self >> hunger * .5 + target >> hunger * .5
-]
+)
 act region(st, msg)
     p <> Person | health: .8, hunger: .4
     overlay Sick on p at .9

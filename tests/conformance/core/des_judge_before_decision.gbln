@@ -9,9 +9,9 @@ xx
     judge using score
         >= .5: buy(target)
     end
-    score | decision against Shop by [
+    score | decision against Shop by (
         target >> cheap
-    ]
+    )
 xx
 act buy(p, s)
     p >> bought |= p >> bought + 1

@@ -37,9 +37,9 @@ xx
     hunger: .5
     town: 0
     margin: .2
-    score | decision against Sheep by [
+    score | decision against Sheep by (
         self >> hunger * .5 + target >> town * .5
-    ]
+    )
     judge using score
         >= .3: bite(target)
         else: rest(target)
@@ -51,9 +51,9 @@ xx
 act rest(w, s)
     return nil
 xx
-link Person contact 0...1 by [
+link Person contact 0...1 by (
     1 - abs((self >> town) - (target >> town)) * .5
-]
+)
 overlay Flu |
     hosts Person
     spreads where :link_score(self, target, "contact") > .3 at .5

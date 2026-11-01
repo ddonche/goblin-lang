@@ -482,7 +482,7 @@ For multiple lines
         end
     end
 
-    score | decision against Kingdom by [
+    score | decision against Kingdom by (
         self >> aggression * .14
         + self >> ambition * .12
         + self >> fear * .04
@@ -512,7 +512,7 @@ For multiple lines
         + ((1 - (target >> cohesion)) * .05)
         + ((self >> food) * .00002)
         + ((self >> gold) * .00002)
-    ]
+    )
 
     judge using score
         >= .96: invade(target)

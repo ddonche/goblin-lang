@@ -88,7 +88,7 @@ pub struct Arrival {
     overlays: Vec<POverlay>,
     name: Option<(String, bool)>,
     links: Vec<((String, String, String), Vec<crate::session::LinkOffset>)>,
-    /// The object's own link formulas (`obj link trade by [ ... ]`).
+    /// The object's own link formulas (`obj link trade by ...`).
     link_defs: Vec<((String, String), crate::session::LinkDef)>,
     decision: Option<goblin_ast::DecisionDef>,
 }

@@ -252,7 +252,7 @@
     /// This is a hostile-pressure score, not a friendliness/link score.
     /// High score means the actor is more likely to choose coercive or violent action.
     /// Low score means the actor is more likely to cooperate, trade, aid, or consolidate.
-    score | decision against Nation by [
+    score | decision against Nation by (
         self >> aggression * .20
         + self >> military * .14
         - target >> military * .16
@@ -264,7 +264,7 @@
         - link_score("Nation", "trade", self >> id, target >> id) * .10
         - link_score("Nation", "culture", self >> id, target >> id) * .08
         + link_score("Nation", "border", self >> id, target >> id) * .06
-    ]
+    )
 
     /// Judge bands now map hostile pressure to action tiers.
     /// Highest bands are war/force.
@@ -521,23 +521,23 @@ overlay Famine |
     end
 end
 
-link Nation border by [
+link Nation border by (
     self >> military * .4
     + self >> aggression * .3
     - target >> military * .3
-]
+)
 
-link Nation trade by [
+link Nation trade by (
     self >> economy * .35
     + self >> cooperation * .35
     + target >> economy * .3
-]
+)
 
-link Nation culture by [
+link Nation culture by (
     self >> democracy * .4
     + self >> cooperation * .3
     + target >> democracy * .3
-]
+)
 
 @Nation matrix
     id:          "{id}",  Britain, France,  Germany, AustriaHungary, Russia, OttomanEmpire, Italy, USA,  Japan

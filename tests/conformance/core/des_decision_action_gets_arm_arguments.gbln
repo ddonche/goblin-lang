@@ -12,9 +12,9 @@ xx
     spent: 0
     rests: 0
     want: 1
-    score | decision against Shop by [
+    score | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using score
         >= .5: purchase(target, 3)
         else: rest()
@@ -29,9 +29,9 @@ xx
 xx
 <>Tipper |
     kind: 1
-    score | decision against Shop by [
+    score | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using score
         else: tip(target, score > .5)
     end

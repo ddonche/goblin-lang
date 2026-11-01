@@ -1,5 +1,5 @@
-/// known-gap: interp requires `by [ ... ]`
-/// A decision can leave out `by [ ... ]`: every target that passes its
+/// known-gap: interp requires `by ...`
+/// A decision can leave out `by ...`: every target that passes its
 /// `where` scores the same, 1, and the judge sees that score.
 <>Village |
     n: 0
@@ -7,7 +7,7 @@
 xx
 <>P |
     village: 0
-    eat | decision against Village where [ target >> n == self >> village ]
+    eat | decision against Village where target >> n == self >> village
     judge using eat
         >= 1: take(target)
     end
@@ -24,7 +24,7 @@ tick()
 say(v0 >> food)
 say(v1 >> food)
 Germany <> P | village: 1
-Germany score | decision against Village where [ target >> n == 0 ]
+Germany score | decision against Village where target >> n == 0
 tick()
 say(v0 >> food)
 say(v1 >> food)

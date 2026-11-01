@@ -7,9 +7,9 @@
 xx
 <>Wolf |
     hunger: .5
-    score | decision against Sheep by [
+    score | decision against Sheep by (
         self >> hunger
-    ]
+    )
     judge using score
         >= .2: shear(target)
     end

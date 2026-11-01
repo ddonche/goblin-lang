@@ -1,0 +1,6 @@
+/// The expression after `where` and `by` is plain Goblin: brackets would
+/// make an array, so `by [ ... ]` is an error that names the plain form.
+<>F |
+    hp: 10
+    attack | decision against F by [ target >> hp ]
+xx

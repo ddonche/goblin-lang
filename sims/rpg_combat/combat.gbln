@@ -25,23 +25,23 @@ loud | false
     /// The cleric mends the most hurt ally below half health; everyone
     /// else (and the cleric, when nobody needs healing) strikes the most
     /// hurt enemy. `one of`: a fighter that heals doesn't also strike.
-    heal | decision against Fighter where [
+    heal | decision against Fighter where (
         @role == "cleric" and target >> side == @side and target >> hp * 2 < target >> max_hp
-    ] by [
+    ) by (
         (target >> max_hp - target >> hp) / target >> max_hp
-    ]
+    )
     judge using heal
         >= 0: mend(target)
     end
-    attack | decision against Fighter where [ target >> side != @side ] by [
+    attack | decision against Fighter where target >> side != @side by (
         (target >> max_hp - target >> hp) / target >> max_hp
-    ]
+    )
     judge using attack
         >= 0: strike(target)
     end
     one of heal, attack
     /// The fastest act first.
-    order by [ @speed ] desc
+    order by @speed desc
     transition erase when @hp <= 0
     end
 xx

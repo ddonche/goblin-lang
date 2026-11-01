@@ -17,7 +17,7 @@ xx
             @owner |= :objects("Meadow", it >> n == 2)[0]
         xx
     end
-    graze | decision against Grass where [ target >> owner == @owner ]
+    graze | decision against Grass where target >> owner == @owner
     judge using graze
         >= 0: eat(target)
     end

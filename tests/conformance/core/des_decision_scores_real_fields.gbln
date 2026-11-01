@@ -8,9 +8,9 @@
 xx
 <>Buyer |
     hunger: .5
-    buy | decision against Shop by [
+    buy | decision against Shop by (
         0 - target >> price
-    ]
+    )
     judge using buy
         >= -10: purchase(target)
         else: browse(target)

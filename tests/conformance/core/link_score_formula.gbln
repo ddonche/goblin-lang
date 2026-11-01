@@ -6,9 +6,9 @@
     military: .5
     economy: .5
 xx
-link Nation border 0...1 by [
+link Nation border 0...1 by (
     self >> military * .5 + target >> economy * .25
-]
+)
 link Nation respect -10...10
 a <> Nation | military: .8, economy: .2
 b <> Nation | military: .4, economy: .4

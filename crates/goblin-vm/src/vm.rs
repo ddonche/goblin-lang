@@ -2837,7 +2837,7 @@ impl Vm {
                 self.session.link_defs.insert((def.class_name[..].to_string(), channel), std::rc::Rc::new(link_def));
             }
 
-            // `Rome link trust by [ formula ]`: that object's own formula,
+            // `Rome link trust by formula`: that object's own formula,
             // kept under its id.
             Opcode::ObjectLinkDef(i) => {
                 let crate::opcode::OpData::ObjectLinkDef(def) = self.op_data_at(i) else { unreachable!() };
@@ -5091,7 +5091,7 @@ impl Vm {
         let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
         // Compiled against the program's globals, so a formula can read a
-        // variable and call an action (`where [ kingdom(target) == 2 ]`).
+        // variable and call an action (`where kingdom(target) == 2`).
         let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec());
         let f = Self::compile_expr_fn(expr, param_names, compiler)?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();

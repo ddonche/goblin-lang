@@ -70,30 +70,30 @@ xx
         @age |= @age + 1
         live(self)
     end
-    defect | decision against Realm where [
+    defect | decision against Realm where (
         @age >= 16 and @loyalty < 20 and :is_type(@owner, "Noble")
         and target >> n != kingdom(self) and strength(self) * 2 > strength(@owner)
-    ] by [ 0 - target >> seized ]
+    ) by 0 - target >> seized
     /// The best-scored realm (fewest seizures) is the choice, whatever its score.
     judge using defect
         else: defect(target)
     end
-    sell | decision against Noble where [
+    sell | decision against Noble where (
         @gold < 0 and target >> owner == @owner and target >> gold >= 60 and estates(self) >= 2
-    ] by [ target >> gold ]
+    ) by target >> gold
     judge using sell
         >= 0: sell(target)
     end
-    seize | decision against Estate where [
+    seize | decision against Estate where (
         @age >= 16 and target >> owner >> owner == @owner and target >> owner != self
         and strength(self) >= 2 * strength(target >> owner) + 2
-    ] by [ target >> yield ]
+    ) by target >> yield
     judge using seize
         >= 0: seize(target)
     end
-    grant | decision against Noble where [
+    grant | decision against Noble where (
         target >> owner == self and target >> age >= 16 and estates(target) == 0 and estates(self) >= 3
-    ] by [ target >> loyalty ]
+    ) by target >> loyalty
     judge using grant
         >= 0: grant(target)
     end

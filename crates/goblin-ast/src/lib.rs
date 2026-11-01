@@ -59,7 +59,7 @@ pub enum Stmt {
     ObjectLinkDef(ObjectLinkDefStmt),
     LinkOffset(LinkOffsetStmt),
     ClearLink(ClearLinkStmt),
-    /// `VarName score | decision against Class by [ formula ]`
+    /// `VarName score | decision against Class by formula`
     ObjectDecision(String, DecisionDef),
     UnitDecl(UnitDecl),
 
@@ -100,7 +100,7 @@ pub struct UnitDecl {
     pub span: Span,
 }
 
-/// `link ClassName [channel] by [ formula ]` — defines a class-level link formula.
+/// `link ClassName [channel] by formula` — defines a class-level link formula.
 /// If channel is None, defaults to "default".
 #[derive(Debug, Clone)]
 pub struct LinkDefStmt {
@@ -109,7 +109,7 @@ pub struct LinkDefStmt {
     pub channel: Option<String>,
     /// The formula expression. May reference `self` and `target` as identifiers.
     pub formula: Expr,
-    /// Whether `by [ formula ]` was written; without it, a link starts at
+    /// Whether `by formula` was written; without it, a link starts at
     /// 0 (or the nearer end of its range when 0 is outside it).
     pub has_formula: bool,
     /// `link Nation trade 0...1` / `link Nation border bool`: the values
@@ -127,7 +127,7 @@ pub enum LinkRange {
     Between(f64, f64),
 }
 
-/// `ObjectName link [channel] by [ formula ]` — defines an object-level link formula override.
+/// `ObjectName link [channel] by formula` — defines an object-level link formula override.
 #[derive(Debug, Clone)]
 pub struct ObjectLinkDefStmt {
     pub object_var: String,
@@ -287,7 +287,7 @@ pub struct ClassDecl {
     /// `action`) on every object of the class, every N ticks.
     pub every: Vec<EveryDecl>,
     /// Every decision of the class with its judge, in the order written:
-    /// `shop | decision against Business by [ ... ]` / `judge using shop`.
+    /// `shop | decision against Business by ...` / `judge using shop`.
     /// `decision` and `judge` above hold the first of them.
     pub decisions: Vec<NamedDecision>,
     /// `on erase: action`: run on an object (with `self`) just before an
@@ -295,7 +295,7 @@ pub struct ClassDecl {
     pub on_erase: Option<String>,
     /// `one of heal, attack`: groups of decisions that are alternatives.
     pub one_of: Vec<Vec<String>>,
-    /// `order by [ expr ] desc`: the order the class's objects make their
+    /// `order by expr desc`: the order the class's objects make their
     /// decisions in; true = descending.
     pub order_by: Option<(Expr, bool)>,
     pub span: Span,
@@ -378,7 +378,7 @@ pub struct TransitionDef {
 
 // ── Decision AST nodes ───────────────────────────────────────────────────────
 
-/// `score | decision against TargetClass by [ formula ]`
+/// `score | decision against TargetClass by formula`
 /// Declared inside a class body. The runtime evaluates this formula
 /// against all valid targets each tick and selects the best one.
 #[derive(Debug, Clone)]
@@ -394,7 +394,7 @@ pub struct DecisionDef {
     /// `margin N` written on the decision: how far below the best score a
     /// target may be and still be picked. None = the object's `margin` field.
     pub margin: Option<f64>,
-    /// `where [ condition ]`: only targets for which it is true are scored.
+    /// `where condition`: only targets for which it is true are scored.
     pub filter: Option<Expr>,
     pub span: Span,
 }

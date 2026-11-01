@@ -8,9 +8,9 @@
 xx
 <>Buyer |
     margin: 2
-    buy | decision against Shop by [
+    buy | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using buy
         >= 8: purchase(target)
     end

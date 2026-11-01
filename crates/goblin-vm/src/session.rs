@@ -61,7 +61,7 @@ pub struct LinkDef {
     pub class_name: String,
     pub channel: String,
     pub formula: goblin_ast::Expr,
-    /// Whether `by [ formula ]` was written (else the link starts at 0,
+    /// Whether `by formula` was written (else the link starts at 0,
     /// kept inside its range).
     pub has_formula: bool,
     /// The values the link can take (None only for an object's own

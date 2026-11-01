@@ -20,9 +20,9 @@ xx
     hunger: .5
     saw: 0
     seen_mood: "none"
-    score | decision against Sheep by [
+    score | decision against Sheep by (
         self >> hunger
-    ]
+    )
     judge using score
         >= .2: bite(target)
     end

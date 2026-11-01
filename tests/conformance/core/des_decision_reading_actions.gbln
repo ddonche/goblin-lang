@@ -7,9 +7,9 @@
 <>Lord |
     name: ""
     owner: nil
-    seize | decision against Land where [
+    seize | decision against Land where (
         target >> owner != self and might(self) >= 2 * might(target >> owner)
-    ] by [ target >> yield + might(target >> owner) ]
+    ) by target >> yield + might(target >> owner)
     judge using seize
         >= 0: take(target)
     end
@@ -20,14 +20,14 @@ xx
 xx
 <>Peer |
     name: ""
-    look | decision against Land where [ note(target) and seen() > 0 ] by [ seen() ]
+    look | decision against Land where note(target) and seen() > 0 by seen()
     judge using look
         >= 0: show(target)
     end
 xx
 <>Scout |
     name: ""
-    look | decision against Land where [ apply(note, target) and seen() > 0 ] by [ seen() ]
+    look | decision against Land where apply(note, target) and seen() > 0 by seen()
     judge using look
         >= 0: show(target)
     end

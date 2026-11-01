@@ -4,11 +4,11 @@
 <>F |
     name: ""
     key: 0
-    move | decision against T by [ 1 ]
+    move | decision against T by 1
     judge using move
         >= 0: go(target)
     end
-    order by [ self >> key ] desc
+    order by self >> key desc
 xx
 <>T |
     n: 0

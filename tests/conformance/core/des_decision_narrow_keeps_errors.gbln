@@ -4,7 +4,7 @@
 /// the tick stops with that error.
 <>Lord |
     name: ""
-    reward | decision against Knight where [ 10 / target >> deeds > 1 and target >> owner == self ] by [ target >> deeds ]
+    reward | decision against Knight where 10 / target >> deeds > 1 and target >> owner == self by target >> deeds
     judge using reward
         >= 0: pay(target)
     end

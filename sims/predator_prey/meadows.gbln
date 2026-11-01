@@ -49,9 +49,9 @@ xx
         xx
         wander(self)
     end
-    graze | decision against Grass where [
+    graze | decision against Grass where (
         target >> owner == @owner and target >> amount >= 1
-    ] by [ target >> amount ]
+    ) by target >> amount
     judge using graze
         >= 0: eat_grass(target)
     end
@@ -71,7 +71,7 @@ xx
         wander(self)
     end
     /// A fox hunts only when it is hungry.
-    hunt | decision against Rabbit where [ @energy < 30 and target >> owner == @owner ]
+    hunt | decision against Rabbit where @energy < 30 and target >> owner == @owner
     judge using hunt
         >= 0: catch(target)
     end

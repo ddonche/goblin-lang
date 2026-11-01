@@ -16,9 +16,9 @@ overlay Sick |
         health - .08
     end
 end
-link Person contact 0...1 by [
+link Person contact 0...1 by (
     self >> hunger * .5 + target >> hunger * .5
-]
+)
 act world(n)
     people | []
     repeat :range(0, n) as i

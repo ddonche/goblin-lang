@@ -1,0 +1,5 @@
+/// `order by` takes a plain expression too; `order by [ ... ]` is an error.
+<>F |
+    speed: 1
+    order by [ @speed ] desc
+xx

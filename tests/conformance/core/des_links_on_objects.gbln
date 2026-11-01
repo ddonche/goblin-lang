@@ -10,7 +10,7 @@
     act praise(target)
         self link to target on respect offset +3
     xx
-    ally | decision against Nation where [ :link_score(self, target, "respect") >= 5 ] by [ :link_score(self, target, "respect") ]
+    ally | decision against Nation where :link_score(self, target, "respect") >= 5 by :link_score(self, target, "respect")
     judge using ally
         >= 0: send_gold(target)
     end

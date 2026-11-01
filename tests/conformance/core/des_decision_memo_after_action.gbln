@@ -15,7 +15,7 @@ act fill(a, b)
 xx
 <>Agent |
     name: ""
-    want | decision against Box where [ level(target) == 0 ] by [ 1 ]
+    want | decision against Box where level(target) == 0 by 1
     judge using want
         >= 0: fill(target)
     end

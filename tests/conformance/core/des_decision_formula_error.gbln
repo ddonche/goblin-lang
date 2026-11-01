@@ -5,9 +5,9 @@
 <>F |
     side: 0
     hp: 10
-    attack | decision against F by [
+    attack | decision against F by (
         (target >> side != self >> side) * (target >> hp)
-    ]
+    )
     judge using attack
         > 0: hit(target)
     end

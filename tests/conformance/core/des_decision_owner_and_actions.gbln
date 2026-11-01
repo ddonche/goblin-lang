@@ -7,11 +7,11 @@
     name: ""
     gold: 0
     owner: nil
-    reward | decision against Knight where [ target >> owner == self and target >> deeds > 0 ] by [ worth(target) ]
+    reward | decision against Knight where target >> owner == self and target >> deeds > 0 by worth(target)
     judge using reward
         >= 0: pay(target)
     end
-    tax | decision against Knight where [ self >> gold < 5 and target >> owner == self ] by [ target >> purse ]
+    tax | decision against Knight where self >> gold < 5 and target >> owner == self by target >> purse
     judge using tax
         >= 0: levy(target)
     end

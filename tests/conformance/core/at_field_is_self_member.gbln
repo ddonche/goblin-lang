@@ -11,7 +11,7 @@
     every 1 tick
         @hp |= @hp - 1
     end
-    hit | decision against F margin 0 where [ target >> side != @side ] by [ @hp / 10 ]
+    hit | decision against F margin 0 where target >> side != @side by @hp / 10
     judge using hit
         >= 0: strike(target)
     end

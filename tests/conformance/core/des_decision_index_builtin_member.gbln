@@ -4,7 +4,7 @@
 /// targets the decision still finds them all (an object is not an int).
 <>Hunter |
     name: ""
-    pick | decision against Prey where [ target >> is_int == false ] by [ target >> n ]
+    pick | decision against Prey where target >> is_int == false by target >> n
     judge using pick
         >= 0: take(target)
     end

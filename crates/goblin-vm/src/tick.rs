@@ -999,7 +999,7 @@ fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value:
     Ok(())
 }
 
-/// `order by [ expr ] desc`: the objects of such a class decide in that
+/// `order by expr desc`: the objects of such a class decide in that
 /// order (ascending unless `desc`; ties keep the order they were made in).
 /// They take the places the class's objects had in the pass, so other
 /// classes keep theirs. Keys are worked out once, at the start of the pass.
@@ -1347,7 +1347,7 @@ fn score_targets(
             Ok(Value::Float(f)) => f,
             Ok(Value::Int(i)) => i as f64,
             Ok(other) => return Err(formula_error(vm, format!(
-                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where [ ... ]` to leave targets out)",
+                "the formula gave {} {}, not a number; a score must be a number (a comparison gives a bool: use `where ...` to leave targets out)",
                 if other.type_name().starts_with(['a','e','i','o','u']) { "an" } else { "a" }, other.type_name()))),
             Err(e) => return Err(formula_error(vm, format!("the formula failed: {e}"))),
         };
@@ -1390,7 +1390,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
     };
     let plan = decide_plan(vm, decision, judge).map_err(|e| formula_error(vm, e))?;
     let formula = plan.formula.clone();
-    // `where [ ... ]`: the targets that qualify; the others are not scored.
+    // `where ...`: the targets that qualify; the others are not scored.
     let filter = plan.filter.clone();
     // While the targets are scored nothing changes, so an action the
     // condition or the formula calls that only reads gives the same answer

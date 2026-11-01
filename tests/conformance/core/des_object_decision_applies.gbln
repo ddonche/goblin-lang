@@ -13,9 +13,9 @@ xx
 <>Buyer |
     who: 0
     margin: 0
-    score | decision against Shop by [
+    score | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using score
         > 0: purchase(target)
         else: purchase(target)
@@ -35,12 +35,12 @@ small <> Shop | stock: 6
 ann <> Buyer | who: 1
 bob <> Buyer | who: 2
 cy <> Buyer | who: 3
-ann score | decision against Shop by [
+ann score | decision against Shop by (
     0 - target >> stock
-]
-cy score | decision against Shop margin 5 by [
+)
+cy score | decision against Shop margin 5 by (
     target >> stock
-]
+)
 repeat 20
     tick()
 xx

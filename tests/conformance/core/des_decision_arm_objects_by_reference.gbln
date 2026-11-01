@@ -8,9 +8,9 @@ xx
 <>Fighter |
     want: 1
     seen: 5
-    pick_one | decision against Dummy by [
+    pick_one | decision against Dummy by (
         target >> hp
-    ]
+    )
     judge using pick_one
         >= .5: strike(target, target, self)
         else: strike(target, target, self)

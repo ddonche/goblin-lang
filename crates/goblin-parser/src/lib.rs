@@ -4080,7 +4080,7 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
-                // `order by [ ... ]` (a field named `order` is followed by ':').
+                // `order by ...` (a field named `order` is followed by ':').
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("order")
                     && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
                 {
@@ -4221,7 +4221,7 @@ impl<'t> Parser<'t> {
         // `on erase: action`: run on an object before an erase transition removes it.
         let mut on_erase: Option<String> = None;
         let mut one_of: Vec<Vec<String>> = Vec::new();
-        // `order by [ expr ] desc`: the order the class's objects decide in.
+        // `order by expr desc`: the order the class's objects decide in.
         let mut order_by: Option<(ast::Expr, bool)> = None;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
@@ -4289,7 +4289,7 @@ impl<'t> Parser<'t> {
                 || (matches!(act_tok.kind, TokenKind::Ident)
                     && matches!(act_tok.value.as_deref(), Some("act") | Some("action")));
 
-            // Handle decision formula: `score | decision against TargetClass by [ formula ]`
+            // Handle decision formula: `score | decision against TargetClass by formula`
             let is_decision = matches!(act_tok.kind, TokenKind::Ident)
                 && (act_tok.value.as_deref() == Some("score") || self.is_named_decision_at(self.i));
             let decision_name = act_tok.value.clone().unwrap_or_default();
@@ -4304,14 +4304,14 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P1400",
                         "Expected '|' after 'score' in decision declaration",
-                        "Write: score | decision against Fighter by [ formula ]",
+                        "Write: score | decision against Fighter by formula",
                     ));
                 }
                 if self.peek_ident() != Some("decision") {
                     return Err(s_help_site!(
                         "P1401",
                         "Expected 'decision' after 'score |'",
-                        "Write: score | decision against Fighter by [ formula ]",
+                        "Write: score | decision against Fighter by formula",
                     ));
                 }
                 let _ = self.eat_ident(); // consume 'decision'
@@ -4320,7 +4320,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P1402",
                         "Expected 'against' after 'decision'",
-                        "Write: score | decision against Fighter by [ formula ]",
+                        "Write: score | decision against Fighter by formula",
                     ));
                 }
                 let _ = self.eat_ident(); // consume 'against'
@@ -4329,44 +4329,26 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P1403",
                         "Expected target class name after 'against'",
-                        "Write: score | decision against Fighter by [ formula ]",
+                        "Write: score | decision against Fighter by formula",
                     ));
                 };
                 self.skip_layout();
                 let mut margin = self.parse_decision_margin()?;
                 let filter = self.parse_decision_where()?;
                 if margin.is_none() { margin = self.parse_decision_margin()?; }
-                // Without `by [ ... ]` every target scores the same (1).
+                // Without `by ...` every target scores the same (1).
                 let formula = if self.peek_ident() != Some("by") {
                     self.unskip_layout();
                     PExpr::Int("1".into())
                 } else {
                 let _ = self.eat_ident(); // consume 'by'
-                self.skip_layout();
-                if !self.eat_op("[") {
-                    return Err(s_help_site!(
-                        "P1405",
-                        "Expected '[' to open decision formula",
-                        "Write: score | decision against Fighter by [ formula ]",
-                    ));
-                }
-                self.skip_layout();
-                let formula = self.parse_coalesce()?;
-                self.skip_layout();
-                if !self.eat_op("]") {
-                    return Err(s_help_site!(
-                        "P1406",
-                        "Expected ']' to close decision formula",
-                        "Write: score | decision against Fighter by [ self >> aggression ]",
-                    ));
-                }
-                formula
+                self.parse_des_expr("by", "score | decision against Fighter by target >> hp")?
                 };
                 if named.iter().any(|(n, _, _)| *n == decision_name) {
                     return Err(s_help_site!(
                         "P1407",
                         &format!("This class already has a decision named '{}'", decision_name),
-                        "Give each decision its own name: shop | decision against Shop by [ ... ], work | decision against Shop by [ ... ]",
+                        "Give each decision its own name: shop | decision against Shop by ..., work | decision against Shop by ...",
                     ));
                 }
                 let d = PDecisionDef { target_class, formula: Box::new(formula), margin, filter: filter.map(Box::new) };
@@ -4452,30 +4434,13 @@ impl<'t> Parser<'t> {
                 continue;
             }
 
-            // `order by [ self >> speed ] desc`: the class's objects make
+            // `order by @speed desc`: the class's objects make
             // their decisions in this order (ascending unless `desc`).
             if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("order")
                 && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
             {
                 self.i += 2; // 'order' 'by'
-                self.skip_layout_inline();
-                if !self.eat_op("[") {
-                    return Err(s_help_site!(
-                        "P1566",
-                        "Expected '[' after 'order by'",
-                        "Write: order by [ self >> speed ] desc  (the value each object is ordered by)",
-                    ));
-                }
-                self.skip_layout();
-                let key_pe = self.parse_coalesce()?;
-                self.skip_layout();
-                if !self.eat_op("]") {
-                    return Err(s_help_site!(
-                        "P1567",
-                        "Expected ']' to close 'order by ['",
-                        "Write: order by [ self >> speed ] desc",
-                    ));
-                }
+                let key_pe = self.parse_des_expr("order by", "order by @speed desc")?;
                 self.skip_layout_inline();
                 let desc = match self.peek_ident() {
                     Some("desc") => { let _ = self.eat_ident(); true }
@@ -4486,7 +4451,7 @@ impl<'t> Parser<'t> {
                     return Err(s_help_site!(
                         "P1568",
                         "A class can have only one 'order by'",
-                        "Order by one value: order by [ self >> speed ] desc",
+                        "Order by one value: order by @speed desc",
                     ));
                 }
                 order_by = Some((self.lower_expr(key_pe), desc));
@@ -6520,7 +6485,7 @@ impl<'t> Parser<'t> {
         }
 
         // -------- link definitions --------
-        // class-level: link ClassName by [ formula ]
+        // class-level: link ClassName by formula
         if self.peek_ident() == Some("link") {
             return self.parse_link_def();
         }
@@ -6530,8 +6495,8 @@ impl<'t> Parser<'t> {
             return self.parse_unit_decl();
         }
 
-        // object-level: ObjectName link by [ formula ]
-        // object-level: ObjectName score | decision against Class by [ formula ]
+        // object-level: ObjectName link by formula
+        // object-level: ObjectName score | decision against Class by formula
         if let Some(t0) = self.peek() {
             if matches!(t0.kind, TokenKind::Ident) {
                 let next_tok = self.toks.get(self.i + 1)
@@ -7838,24 +7803,25 @@ impl<'t> Parser<'t> {
     }
 
     /// Eat a numeric token and return it as u32.
-    /// `where [ condition ]` between a decision's target class and `by`.
+    /// `where condition` between a decision's target class and `by`.
     fn parse_decision_where(&mut self) -> Result<Option<PExpr>, String> {
         if self.peek_ident() != Some("where") { return Ok(None); }
         let _ = self.eat_ident();
-        self.skip_layout();
-        if !self.eat_op("[") {
-            return Err(s_help_site!("P1417", "Expected '[' after 'where'",
-                "Write: heal | decision against Fighter where [ target >> side == self >> side ] by [ formula ]"));
-        }
-        self.skip_layout();
-        let cond = self.parse_coalesce()?;
-        self.skip_layout();
-        if !self.eat_op("]") {
-            return Err(s_help_site!("P1418", "Expected ']' to close the 'where' condition",
-                "Write: heal | decision against Fighter where [ target >> hp > 0 ] by [ formula ]"));
-        }
+        let cond = self.parse_des_expr("where", "heal | decision against Fighter where target >> side == @side by target >> hp")?;
         self.skip_layout();
         Ok(Some(cond))
+    }
+
+    /// The expression after a DES word (`where`, `by`, `order by`). It is
+    /// plain Goblin: no brackets (they make an array); `( )` spans lines.
+    fn parse_des_expr(&mut self, word: &str, example: &str) -> Result<PExpr, String> {
+        self.skip_layout_inline();
+        if self.peek_op("[") {
+            return Err(s_help_site!("P1417",
+                &format!("Write the expression after '{}' without '[ ]' (brackets make an array)", word),
+                &format!("Write: {}  (wrap it in ( ) to continue over several lines)", example)));
+        }
+        self.parse_coalesce()
     }
 
     /// `margin N` between a decision's target class and `by`.
@@ -7865,7 +7831,7 @@ impl<'t> Parser<'t> {
         self.skip_layout_inline();
         let Some(m) = self.eat_number_f64() else {
             return Err(s_help_site!("P1409", "Expected a number after 'margin'",
-                "Write: shop | decision against Business margin .8 by [ formula ]"));
+                "Write: shop | decision against Business margin .8 by formula"));
         };
         self.skip_layout();
         Ok(Some(m))
@@ -7875,7 +7841,7 @@ impl<'t> Parser<'t> {
         self.eat_number_f64().map(|f| f as u32)
     }
 
-    /// Parse `link ClassName [channel] by [ formula ]`
+    /// Parse `link ClassName [channel] by formula`
     fn parse_link_def(&mut self) -> Result<ast::Stmt, String> {
         self.with_self(|p| p.parse_link_def_body())
     }
@@ -7888,14 +7854,14 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1300",
                 "Expected class name after 'link'",
-                "Write: link Nation border by [ formula ]",
+                "Write: link Nation border by formula",
             ));
         };
 
         self.skip_layout_inline();
 
-        // Optional channel name: link Nation border by [...]
-        //                        link Nation by [...]  (no channel)
+        // Optional channel name: link Nation border by ...
+        //                        link Nation by ...  (no channel)
         let channel = if self.peek_ident() != Some("by") && self.peek_ident() != Some("bool") {
             self.eat_ident()
         } else {
@@ -7956,38 +7922,19 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1301",
                 "Expected a range or 'by' after the link's name",
-                "Write: link Nation trade 0...1, or link Nation trade 0...1 by [ formula ]",
+                "Write: link Nation trade 0...1, or link Nation trade 0...1 by formula",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
 
-        self.skip_layout();
-
-        if !self.eat_op("[") {
-            return Err(s_help_site!(
-                "P1302",
-                "Expected '[' to open link formula",
-                "Write: link Nation border by [ formula ]",
-            ));
-        }
-
-        let formula_pe = self.parse_link_formula()?;
+        let formula_pe = self.parse_des_expr("by", "link Nation border by @power - target >> aggression")?;
         let formula = self.lower_expr(formula_pe);
-
-        self.skip_layout();
-        if !self.eat_op("]") {
-            return Err(s_help_site!(
-                "P1303",
-                "Expected ']' to close link formula",
-                "Write: link Nation border by [ formula ]",
-            ));
-        }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         Ok(ast::Stmt::LinkDef(ast::LinkDefStmt { class_name, channel, formula, has_formula: true, range, span }))
     }
 
-    /// Parse `ObjectName link [channel] by [ formula ]`
+    /// Parse `ObjectName link [channel] by formula`
     /// OR   `VarA link to VarB on channel offset value [for N ticks]`
     fn parse_object_link_def(&mut self) -> Result<ast::Stmt, String> {
         self.with_self(|p| p.parse_object_link_def_body())
@@ -8000,7 +7947,7 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1310",
                 "Expected object variable name before 'link'",
-                "Write: Russia link border by [ formula ]",
+                "Write: Russia link border by formula",
             ));
         };
 
@@ -8089,39 +8036,20 @@ impl<'t> Parser<'t> {
             return Err(s_help_site!(
                 "P1311",
                 "Expected 'by' after 'link' in object link declaration",
-                "Write: Russia link border by [ formula ]",
+                "Write: Russia link border by formula",
             ));
         }
         let _ = self.eat_ident(); // consume 'by'
 
-        self.skip_layout();
-
-        if !self.eat_op("[") {
-            return Err(s_help_site!(
-                "P1312",
-                "Expected '[' to open link formula",
-                "Write: Russia link border by [ self >> power - target >> aggression ]",
-            ));
-        }
-
-        let formula_pe = self.parse_link_formula()?;
+        let formula_pe = self.parse_des_expr("by", "Russia link border by @power - target >> aggression")?;
         let formula = self.lower_expr(formula_pe);
-
-        self.skip_layout();
-        if !self.eat_op("]") {
-            return Err(s_help_site!(
-                "P1313",
-                "Expected ']' to close link formula",
-                "Write: Russia link border by [ self >> power - target >> aggression ]",
-            ));
-        }
 
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         Ok(ast::Stmt::ObjectLinkDef(ast::ObjectLinkDefStmt { object_var, channel, formula, span }))
     }
 
     /// Parse `clear link VarA to VarB on channel`
-    /// Parse `VarName score | decision against Class by [ formula ]`
+    /// Parse `VarName score | decision against Class by formula`
     fn parse_object_decision(&mut self) -> Result<ast::Stmt, String> {
         self.with_self(|p| p.parse_object_decision_body())
     }
@@ -8134,48 +8062,36 @@ impl<'t> Parser<'t> {
         let _ = self.eat_ident(); // consume 'score'
         if !self.eat_op("|") {
             return Err(s_help_site!("P1410", "Expected '|' after 'score'",
-                "Write: Germany score | decision against Nation by [ formula ]"));
+                "Write: Germany score | decision against Nation by formula"));
         }
         if self.peek_ident() != Some("decision") {
             return Err(s_help_site!("P1411", "Expected 'decision' after 'score |'",
-                "Write: Germany score | decision against Nation by [ formula ]"));
+                "Write: Germany score | decision against Nation by formula"));
         }
         let _ = self.eat_ident(); // consume 'decision'
         self.skip_layout();
         if self.peek_ident() != Some("against") {
             return Err(s_help_site!("P1412", "Expected 'against'",
-                "Write: Germany score | decision against Nation by [ formula ]"));
+                "Write: Germany score | decision against Nation by formula"));
         }
         let _ = self.eat_ident(); // consume 'against'
         self.skip_layout();
         let Some(target_class) = self.eat_ident() else {
             return Err(s_help_site!("P1413", "Expected target class name",
-                "Write: Germany score | decision against Nation by [ formula ]"));
+                "Write: Germany score | decision against Nation by formula"));
         };
         self.skip_layout();
         let mut margin = self.parse_decision_margin()?;
         let filter = self.parse_decision_where()?.map(|f| self.lower_expr(f));
         if margin.is_none() { margin = self.parse_decision_margin()?; }
-        // Without `by [ ... ]` every target scores the same (1).
+        // Without `by ...` every target scores the same (1).
         let formula = if self.peek_ident() != Some("by") {
             self.unskip_layout();
             self.lower_expr(PExpr::Int("1".into()))
         } else {
         let _ = self.eat_ident(); // consume 'by'
-        self.skip_layout();
-        if !self.eat_op("[") {
-            return Err(s_help_site!("P1415", "Expected '[' to open formula",
-                "Write: Germany score | decision against Nation by [ formula ]"));
-        }
-        self.skip_layout();
-        let formula_pe = self.parse_coalesce()?;
-        let formula = self.lower_expr(formula_pe);
-        self.skip_layout();
-        if !self.eat_op("]") {
-            return Err(s_help_site!("P1416", "Expected ']' to close formula",
-                "Write: Germany score | decision against Nation by [ formula ]"));
-        }
-        formula
+        let formula_pe = self.parse_des_expr("by", "Germany score | decision against Nation by @power - target >> power")?;
+        self.lower_expr(formula_pe)
         };
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         let def = ast::DecisionDef {
@@ -8308,16 +8224,6 @@ impl<'t> Parser<'t> {
     /// Parse the expression inside a link formula block `[ ... ]`.
     /// Allows multi-line expressions with `self` and `target` as identifiers.
     /// Newlines inside the brackets are treated as whitespace.
-    fn parse_link_formula(&mut self) -> Result<PExpr, String> {
-        self.skip_layout();
-
-        // Collect all tokens until the matching ']', substituting newlines with spaces
-        // so the expression parser sees a flat expression.
-        // We parse it as a normal expression — `self` and `target` are just idents.
-        let expr = self.parse_coalesce()?;
-        Ok(expr)
-    }
-
     /// Parse a `transition KIND [(TargetClass)] when CONDITION ... end` inside a class body.
     fn parse_transition_def(&mut self) -> Result<ast::TransitionDef, String> {
         use goblin_lexer::TokenKind;

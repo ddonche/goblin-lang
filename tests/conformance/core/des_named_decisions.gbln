@@ -10,15 +10,15 @@ xx
 <>Person |
     bought: 0
     jobs: 0
-    shop | decision against Shop by [
+    shop | decision against Shop by (
         target >> cheap
-    ]
+    )
     judge using shop
         >= .5: buy(target)
     end
-    work | decision against Shop by [
+    work | decision against Shop by (
         target >> hiring
-    ]
+    )
     judge using work
         >= .95: apply(target)
         else: wait(target)

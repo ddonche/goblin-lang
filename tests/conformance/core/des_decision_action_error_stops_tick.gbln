@@ -6,9 +6,9 @@
 xx
 <>Buyer |
     margin: 0
-    score | decision against Shop by [
+    score | decision against Shop by (
         target >> stock
-    ]
+    )
     judge using score
         > 0: purchase(target)
     end
