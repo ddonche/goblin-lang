@@ -843,7 +843,7 @@ pub(crate) fn detach_in_region(s: &mut crate::session::Session, uuid: &str, over
 }
 
 /// Whether this object belongs to another region (in view during a tick).
-pub(crate) fn is_remote(vm: &Vm, uuid: &str) -> bool {
+pub(crate) fn is_remote(vm: &Vm, uuid: &(impl crate::value::IdKey + ?Sized)) -> bool {
     vm.session.region.as_ref().is_some_and(|c| c.remote.contains(uuid))
         || vm.session.world.as_ref().is_some_and(|w| w.view.contains(uuid))
 }

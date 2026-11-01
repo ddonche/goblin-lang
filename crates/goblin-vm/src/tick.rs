@@ -1124,7 +1124,7 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 /// It stops at the first condition that names `target` and isn't one of
 /// those tests. The caller uses it only when scoring changes nothing
 /// either (so who holds what stays as it was while the targets are scored).
-fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
+fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
     use goblin_ast::Expr as E;
     if !all.iter().any(|(t, _)| t != self_ref) { return None; }
     let mut parts = Vec::new();
@@ -1132,7 +1132,8 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
     let epoch = vm.memo.as_ref().map(|m| m.epoch);
     let changed = |vm: &Vm, e: Option<u64>| vm.memo.as_ref().map(|m| m.epoch) != e;
     for c in parts {
-        if !reads(vm, c) { return None; }
+        // A part of a condition that only reads only reads.
+        if !filter_reads && !reads(vm, c) { return None; }
         if !names(c, "target") {
             let f = vm.tick_formula(c, &["self", "target"]).ok()?;
             let r = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
@@ -1237,9 +1238,9 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, class: &str, self_ref: &Value,
         }
         let store = &vm.session.object_store;
         // What `x` holds, what those hold, ...: `depth` levels down.
-        let mut level: Vec<String> = vec![uuid.to_string()];
+        let mut level: Vec<crate::value::ObjId> = vec![uuid.clone()];
         for _ in 0..depth - 1 {
-            level = level.iter().flat_map(|h| store.contents_of(h).map(str::to_string)).collect();
+            level = level.iter().flat_map(|h| store.contents_ids(h).cloned()).collect();
         }
         let mut at: Vec<usize> = level.iter().flat_map(|h| store.contents_at(h, Some(class))).collect();
         at.sort_unstable();
@@ -1264,10 +1265,11 @@ fn score_targets(
     target_candidates: std::rc::Rc<Vec<(Value, usize)>>,
     is_self: &dyn Fn(&Value) -> bool,
     formula_error: &dyn Fn(&Vm, String) -> GoblinError,
+    (filter_reads, formula_reads): (bool, bool),
 ) -> Result<(std::rc::Rc<Vec<(Value, usize)>>, Vec<(usize, f64)>), GoblinError> {
     // Fewer candidates, same result: see `narrow`.
     let target_candidates = match &decision.filter {
-        Some(f) if reads(vm, &decision.formula) => match narrow(vm, f, &decision.target_class, self_ref, self_at, &target_candidates) {
+        Some(f) if formula_reads => match narrow(vm, f, filter_reads, &decision.target_class, self_ref, self_at, &target_candidates) {
             Some(fewer) => std::rc::Rc::new(fewer),
             None => target_candidates,
         },
@@ -1300,8 +1302,8 @@ fn score_targets(
     Ok((target_candidates, scored))
 }
 
-fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
-    let self_uuid = self_uuid.to_string();
+fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, name: &str, decision: &goblin_ast::DecisionDef, judge: &goblin_ast::JudgeStmt) -> Result<bool, GoblinError> {
+    let self_uuid = self_uuid.clone();
     let margin = match vm.session.object_store.get(&self_uuid) {
         Some(Value::Object(_)) if decision.margin.is_some() => decision.margin.unwrap_or(0.0),
         Some(Value::Object(o)) => o.fields.get("margin").and_then(|v| match v {
@@ -1314,7 +1316,7 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     };
     // Formulas see `self` and `target` by reference: they read fields
     // where the objects live instead of copying every candidate.
-    let self_ref = Value::Ref(self_uuid.clone().into());
+    let self_ref = Value::Ref(self_uuid.clone());
     let self_at = vm.session.object_store.get_index_of(&self_uuid).unwrap_or(usize::MAX);
 
     let target_candidates = targets.of(vm, &decision.target_class);
@@ -1349,10 +1351,14 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &str, name: &str, decis
     // next one's) as long as nothing changes in between: they are kept
     // until a judge runs an action, or a decision's own steps may change
     // things.
-    let memo = decision.filter.as_ref().is_none_or(|f| reads(vm, f)) && reads(vm, &decision.formula);
+    // Nothing runs between here and the scoring that could change what an
+    // action does, so these hold for both.
+    let filter_reads = decision.filter.as_ref().is_none_or(|f| reads(vm, f));
+    let formula_reads = reads(vm, &decision.formula);
+    let memo = filter_reads && formula_reads;
     if memo { vm.memo = Some(vm.memo_kept.take().unwrap_or_default()); } else { vm.memo_kept = None; }
     let epoch = vm.memo.as_ref().map(|m| m.epoch);
-    let scored = score_targets(vm, decision, &formula, filter.as_deref(), &self_ref, self_at, target_candidates, &is_self, &formula_error);
+    let scored = score_targets(vm, decision, &formula, filter.as_deref(), &self_ref, self_at, target_candidates, &is_self, &formula_error, (filter_reads, formula_reads));
     if let Some(m) = vm.memo.take() {
         // A call that may have changed things ran: nothing is kept.
         if m.changing == 0 && Some(m.epoch) == epoch && scored.is_ok() { vm.memo_kept = Some(m); }

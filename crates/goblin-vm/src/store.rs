@@ -248,6 +248,12 @@ impl ObjectStore {
         owner.id().and_then(|o| self.contents.get(&*o)).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u)).map(Id::as_str)
     }
 
+    /// `contents_of`, as ids.
+    pub fn contents_ids(&self, owner: &(impl IdKey + ?Sized)) -> impl Iterator<Item = &Id> {
+        let map = &self.map;
+        owner.id().and_then(|o| self.contents.get(&*o)).into_iter().flat_map(|s| s.iter()).filter(move |u| map.contains_key(*u))
+    }
+
     /// The places of what `owner` contains, of `class` when one is given,
     /// in creation order: one lookup per object held.
     pub fn contents_at(&self, owner: &(impl IdKey + ?Sized), class: Option<&str>) -> Vec<usize> {
