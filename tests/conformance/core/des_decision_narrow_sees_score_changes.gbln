@@ -1,4 +1,4 @@
-/// known-gap: interp has no contents list, and its formulas can't call actions
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
 /// Looking only at what a holder holds gives the same result as checking
 /// every target: a score that changes who holds what is seen by the targets
 /// after it, and a condition before the ownership test still runs (and
@@ -6,10 +6,13 @@
 <>Lord |
     name: ""
     owner: nil
-    claim | decision against Knight where [ target >> owner == self ] by [ annex(self, target) ]
-    judge using claim
-        >= 0: hire(target)
-    end
+    decision vassal
+        targets: Knight where (target >> owner) == self
+        score => annex(self, target)
+    xx
+    judge
+        vassal and (vassal >> score) >= 0: hire(self, vassal >> target)
+    xx
 xx
 <>Knight |
     name: ""

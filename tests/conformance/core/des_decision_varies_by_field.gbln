@@ -1,0 +1,47 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// Decisions belong to the class; an object decides differently through
+/// its own fields. Ann's `taste` of -1 makes her pick the shop with the
+/// least stock; Bob picks the most; Cy's `margin` of 5 spreads her over both.
+:rand_seed(5)
+<>Shop |
+    stock: 0
+    ann: 0
+    bob: 0
+    cy: 0
+xx
+<>Buyer |
+    who: 0
+    taste: 1
+    margin: 0
+    decision shop
+        targets: Shop
+        score => @taste * (target >> stock)
+    xx
+    judge
+        shop: purchase(self, shop >> target)
+    xx
+xx
+act purchase(b, s)
+    if b >> who == 1
+        s >> ann |= s >> ann + 1
+    elif b >> who == 2
+        s >> bob |= s >> bob + 1
+    else
+        s >> cy |= s >> cy + 1
+    xx
+xx
+big <> Shop | stock: 10
+small <> Shop | stock: 6
+ann <> Buyer | who: 1, taste: -1
+bob <> Buyer | who: 2
+cy <> Buyer | who: 3, margin: 5
+repeat 20
+    tick()
+xx
+repeat :objects(it >> stock > 0)
+    st | it >> stock
+    a | it >> ann
+    b | it >> bob
+    spread | it >> cy > 0
+    say("stock {st}: ann {a}, bob {b}, cy came {spread}")
+xx
