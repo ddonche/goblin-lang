@@ -37,6 +37,23 @@ pub struct ObjectStore {
     stale: bool,
 }
 
+/// Whether objects' class names are `class`, remembering the last name
+/// that was: objects of one class mostly share one name, so the text is
+/// compared once.
+#[derive(Default)]
+struct SameClass(Option<*const str>);
+impl SameClass {
+    #[inline]
+    fn is(&mut self, name: &std::rc::Rc<str>, class: &str) -> bool {
+        // Only compared by address, never read.
+        let p: *const str = &**name;
+        if self.0.is_some_and(|y| std::ptr::eq(y, p)) { return true; }
+        let yes = **name == *class;
+        if yes { self.0 = Some(p); }
+        yes
+    }
+}
+
 /// A field's value as far as `==` can tell values apart: values that are
 /// equal get the same key (numbers of any kind by their f64 value, which may
 /// also give some unequal ones the same key; that only costs a check).
@@ -258,8 +275,9 @@ impl ObjectStore {
     /// in creation order: one lookup per object held.
     pub fn contents_at(&self, owner: &(impl IdKey + ?Sized), class: Option<&str>) -> Vec<usize> {
         let Some(set) = owner.id().and_then(|o| self.contents.get(&*o)) else { return Vec::new() };
+        let mut same = SameClass::default();
         let mut at: Vec<usize> = set.iter().filter_map(|u| match self.map.get_full(u) {
-            Some((i, _, Value::Object(o))) if class.is_none_or(|c| &*o.class_name == c) => Some(i),
+            Some((i, _, Value::Object(o))) if class.is_none_or(|c| same.is(&o.class_name, c)) => Some(i),
             Some((i, _, _)) if class.is_none() => Some(i),
             _ => None,
         }).collect();
@@ -271,7 +289,8 @@ impl ObjectStore {
     /// `contents_at(owner, Some(class)).len()`, without listing them).
     pub fn contents_count(&self, owner: &Id, class: &str) -> usize {
         let Some(set) = self.contents.get(owner) else { return 0 };
-        set.iter().filter(|u| matches!(self.map.get(*u), Some(Value::Object(o)) if &*o.class_name == class)).count()
+        let mut same = SameClass::default();
+        set.iter().filter(|u| matches!(self.map.get(*u), Some(Value::Object(o)) if same.is(&o.class_name, class))).count()
     }
 
     /// Everything `uuid` contains, at any depth (what it holds, what those

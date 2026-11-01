@@ -208,6 +208,23 @@ impl From<&str> for ObjId {
         })
     }
 }
+thread_local! {
+    static CLASS_NAMES: RefCell<rustc_hash::FxHashMap<Box<str>, Rc<str>>> = RefCell::new(Default::default());
+}
+
+/// A class name for an object: one shared text per class on this thread,
+/// so objects of a class can be told apart from others by address
+/// (`store::SameClass`) before their names are compared.
+pub fn class_rc(name: &str) -> Rc<str> {
+    CLASS_NAMES.with(|t| {
+        let mut t = t.borrow_mut();
+        if let Some(r) = t.get(name) { return r.clone(); }
+        let r: Rc<str> = name.into();
+        t.insert(name.into(), r.clone());
+        r
+    })
+}
+
 /// What a map keyed by ids can be looked up with: an id, or its text
 /// (found among the ids this thread holds; text no id has finds nothing).
 pub trait IdKey {

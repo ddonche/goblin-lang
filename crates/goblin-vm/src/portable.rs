@@ -438,7 +438,7 @@ impl FromPortable {
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } if self.adopt => {
                 let fields = Rc::new(self.object_fields(fields, session));
                 session.object_store.insert(uuid.clone(), Value::Object(Box::new(ObjectVal {
-                    class_name: class_name.as_str().into(),
+                    class_name: crate::value::class_rc(class_name),
                     fields,
                     readonly_fields: Rc::new(readonly_fields.clone()),
                     trait_fields: Rc::new(trait_fields.clone()),
@@ -467,7 +467,7 @@ impl FromPortable {
             PValue::CtrlStop => Value::CtrlStop,
             PValue::CtrlReturn(v) => Value::CtrlReturn(Box::new(self.value(v, session))),
             PValue::Object { class_name, fields, readonly_fields, trait_fields, uuid } => Value::Object(Box::new(ObjectVal {
-                class_name: class_name.as_str().into(),
+                class_name: crate::value::class_rc(class_name),
                 fields: Rc::new(self.object_fields(fields, session)),
                 readonly_fields: Rc::new(readonly_fields.clone()),
                 trait_fields: Rc::new(trait_fields.clone()),

@@ -181,6 +181,10 @@ pub struct Vm {
     pub(crate) erase_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// Emptied local lists of returned calls, for the next calls to reuse.
     spare_locals: Vec<Vec<Option<Tether>>>,
+    /// `objects_owned`: per query, whether its class can be read from
+    /// contents lists, for the class table `owned_classes`.
+    owned_usable: rustc_hash::FxHashMap<usize, (String, String, bool)>,
+    owned_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -205,7 +209,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, spare_locals: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1599,7 +1603,7 @@ impl Vm {
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
 
-                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: class_name.as_str().into(), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid: uuid.into() }));
+                let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: crate::value::class_rc(class_name.as_str()), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid: uuid.into() }));
                 self.stack.push(Operand::Val(obj));
             }
 
@@ -5762,8 +5766,24 @@ impl Vm {
             _ => return None,
         };
         self.session.object_store.get_index_of(&owner)?;
-        let usable = self.session.classes.get(q.class.as_str()).is_some_and(|c|
-            c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
+        // Whether the class can be read from contents lists: it has an
+        // `owner` field and none named like the variable. That depends on
+        // the class table only, so it is kept per query (by its place,
+        // checked against its class and variable) while the table stays.
+        if !self.owned_classes.as_ref().is_some_and(|c| Rc::ptr_eq(c, &self.session.classes)) {
+            self.owned_usable.clear();
+            self.owned_classes = Some(self.session.classes.clone());
+        }
+        let key = &**q as *const crate::opcode::ObjectsOwned as usize;
+        let usable = match self.owned_usable.get(&key) {
+            Some((c, v, u)) if *c == q.class && *v == q.var => *u,
+            _ => {
+                let u = self.session.classes.get(q.class.as_str()).is_some_and(|c|
+                    c.fields.iter().any(|f| f.name == crate::store::OWNER_FIELD) && !c.fields.iter().any(|f| f.name == q.var));
+                self.owned_usable.insert(key, (q.class.clone(), q.var.clone(), u));
+                u
+            }
+        };
         if !usable { return None; }
         let store = &self.session.object_store;
         if q.count {

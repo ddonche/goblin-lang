@@ -1520,7 +1520,7 @@ fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
                         }
                         let traits = crate::vm::trait_fields_of(&mut fields, &child_decl.fields);
                         let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
-                            class_name: child_class.as_str().into(),
+                            class_name: crate::value::class_rc(&child_class),
                             fields: std::rc::Rc::new(fields),
                             readonly_fields: Default::default(),
                             trait_fields: std::rc::Rc::new(traits),
