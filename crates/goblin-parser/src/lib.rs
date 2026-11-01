@@ -4492,6 +4492,11 @@ impl<'t> Parser<'t> {
             }
 
             if is_decision {
+                if self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "|"))
+                    && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("decision")) {
+                    return Err(s_help_site!("P1490", "`name | decision against Class` is the old form",
+                        "Write a decision block, and one judge for the class:\n  decision prey\n      targets: Sheep where (target >> owner) == @owner\n      score => target >> fat\n  xx\n  judge\n      prey: eat(self, prey >> target)\n  xx"));
+                }
                 self.i += 1; // consume the decision's name
                 if !self.eat_op("|") {
                     return Err(s_help_site!(
@@ -4644,6 +4649,10 @@ impl<'t> Parser<'t> {
                     self.skip_stmt_separators();
                     continue;
                 }
+                if self.peek().is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":")) {
+                    return Err(s_help_site!("P1591", "`on erase: action` is the old form",
+                        "Write it as code: on erase => settle_estate(self)"));
+                }
                 if !self.eat_op(":") {
                     return Err(s_help_site!(
                         "P1561",
@@ -4668,6 +4677,10 @@ impl<'t> Parser<'t> {
             if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("order")
                 && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("by"))
             {
+                if true {
+                    return Err(s_help_site!("P1592", "`order by [ ... ]` is the old form",
+                        "Write: order: -@speed  (lowest first; a minus turns a number round)"));
+                }
                 self.i += 2; // 'order' 'by'
                 self.skip_layout_inline();
                 if !self.eat_op("[") {
@@ -4711,6 +4724,10 @@ impl<'t> Parser<'t> {
             if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("one")
                 && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("of"))
             {
+                if true {
+                    return Err(s_help_site!("P1593", "`one of` is gone",
+                        "The class's judge takes the first arm that holds: put each deed's conditions in its arm"));
+                }
                 self.i += 2; // 'one' 'of'
                 self.skip_layout_inline();
                 let mut group = Vec::new();
@@ -8157,6 +8174,9 @@ impl<'t> Parser<'t> {
 
     /// Parse `overlay Name on target [at strength] [for N ticks]`
     fn parse_overlay_apply(&mut self, overlay_name: String, start_i: usize) -> Result<ast::Stmt, String> {
+        if true {
+            return Err(s_help_site!("P1290", "`overlay X on host` is the old form", "Write: :overlay!(host, x)  (or :overlay!(host, x, intensity, ticks))"));
+        }
         // target expression
         let host_pe = self.parse_coalesce()?;
         let host_expr = self.lower_expr(host_pe);
@@ -8219,6 +8239,9 @@ impl<'t> Parser<'t> {
 
     /// Parse `detach Name from target`
     fn parse_overlay_detach(&mut self) -> Result<ast::Stmt, String> {
+        if true {
+            return Err(s_help_site!("P1291", "`detach X from host` is the old form", "Write: :detach!(host, x)"));
+        }
         let start_i = self.i;
         let _ = self.eat_ident(); // consume 'detach'
 
@@ -8338,6 +8361,10 @@ impl<'t> Parser<'t> {
             return self.parse_link_block(name, start_i, col);
         }
 
+        if self.peek_ident().is_some() {
+            return Err(s_help_site!("P1390", "`link Class name ...` is the old form",
+                "Write a link block:\n  link border\n      hosts: Nation\n      range: 0...1\n      score => @military * .5\n  xx"));
+        }
         let Some(class_name) = self.eat_ident() else {
             return Err(s_help_site!(
                 "P1300",
@@ -8550,6 +8577,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_object_link_def_body(&mut self) -> Result<ast::Stmt, String> {
+        if true {
+            return Err(s_help_site!("P1391", "`a link to b on name offset n` and `a link name by [...]` are old forms",
+                "Change a link with a call: :link!(a, b, trust, 3)  (or :link!(a, b, trust, 3, ticks)); a link's score is in its link block"));
+        }
         let start_i = self.i;
 
         let Some(object_var) = self.eat_ident() else {
@@ -8683,6 +8714,10 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_object_decision_body(&mut self) -> Result<ast::Stmt, String> {
+        if true {
+            return Err(s_help_site!("P1491", "A decision for one object (`x score | decision against ...`) is gone",
+                "Decisions belong to the class: let an object decide differently through its own fields (score => @taste * (target >> stock))"));
+        }
         let start_i = self.i;
         let Some(var_name) = self.eat_ident() else {
             return Err("expected var name".to_string());
@@ -8917,6 +8952,10 @@ impl<'t> Parser<'t> {
 
         if self.peek_ident() != Some("when") {
             return self.parse_transition_block(start_i, kind, target_class);
+        }
+        if true {
+            return Err(s_help_site!("P1590", "`transition ... when ... end` is the old form",
+                "Write: transition erase where @hp <= 0  (a body goes under it, closed with xx)"));
         }
         let _ = self.eat_ident();
 
