@@ -8,39 +8,39 @@
     gold: 0
     x: 0
 xx
-overlay Hurt |
-    hosts Person
-    modifies:
-        x + 1
-    end
-end
+overlay hurt
+    hosts: Person
+    modify
+        @x + 1
+    xx
+xx
 act make_one()
     p <> Person | health: .9, gold: 0
     return {"people": [p]}
 xx
 act day(st, msg)
-    repeat :objects("Person") as p
+    repeat :objects(Person) as p
         g | p >> gold
         h | p >> health
         say("region sees gold {g}, health {h}")
     xx
-    n | :len(:overlays("Hurt"))
-    say("region sees {n} Hurt")
+    n | :len(:overlays(hurt))
+    say("region sees {n} hurt")
     return st
 xx
 r | :actor(make_one(), day)
 tick([r])
-repeat :objects("Person") as p
+repeat :objects(Person) as p
     p >> health |= .2
     p >> gold |= p >> gold + 5
     g | p >> gold
     say("program reads gold {g}")
-    overlay Hurt on p at .5
+    :overlay!(p, hurt, .5)
 xx
-n | :len(:overlays("Hurt"))
-say("program sees {n} Hurt")
+n | :len(:overlays(hurt))
+say("program sees {n} hurt")
 tick([r])
-repeat :objects("Person") as p
+repeat :objects(Person) as p
     h | p >> health
     g | p >> gold
     say("after: health {h}, gold {g}")

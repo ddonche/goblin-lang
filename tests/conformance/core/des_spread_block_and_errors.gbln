@@ -1,0 +1,32 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// A spread condition can be a block that returns true or false, and its
+/// chance a formula. A condition that gives something else is an error
+/// (R1232), not a quiet "no".
+<>P |
+    age: 0
+xx
+overlay yawn
+    hosts: P
+    spread 1 - (target >> age) / 100 where
+        if (target >> age) > 50
+            return false
+        xx
+        return true
+    xx
+xx
+overlay bad
+    hosts: P
+    spread: 1 where target >> age
+xx
+a <> P | age: 0
+b <> P | age: 0
+c <> P | age: 90
+:overlay!(a, yawn)
+tick()
+say([:len(:overlays(b)), :len(:overlays(c))])
+:overlay!(a, bad)
+attempt
+    tick()
+rescue e
+    say(:has("{e}", "R1232"))
+xx

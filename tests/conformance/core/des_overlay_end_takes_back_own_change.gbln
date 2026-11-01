@@ -1,33 +1,34 @@
-/// known-gap: interp puts every modified field back to its value from before the overlay
-/// When a timed overlay ends it takes back only what its `modifies:` added,
-/// so other changes to the field meanwhile stay, and two overlays on one
-/// field can end in either order.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// A `modify` line adjusts what reading gives, never the stored value: when
+/// a timed overlay ends only its own adjustment goes, so other changes to
+/// the field meanwhile stay, and two overlays on one field can end in
+/// either order.
 <>F |
     hp: 20
     def: 2
 xx
-overlay Weak |
-    lasts 3 ticks
-    modifies:
-        hp - 2
-    end
-end
-overlay Shield |
-    lasts 2 ticks
-    modifies:
-        def + 3
-    end
-end
-overlay Blessed |
-    lasts 4 ticks
-    modifies:
-        def + 1
-    end
-end
+overlay weak
+    lasts: 3
+    modify
+        @hp - 2
+    xx
+xx
+overlay shield
+    lasts: 2
+    modify
+        @def + 3
+    xx
+xx
+overlay blessed
+    lasts: 4
+    modify
+        @def + 1
+    xx
+xx
 a <> F | hp: 20
-overlay Weak on a at 1
-overlay Shield on a at 1
-overlay Blessed on a at 1
+:overlay!(a, weak)
+:overlay!(a, shield)
+:overlay!(a, blessed)
 repeat :range(1, 6) as d
     a >> hp |= a >> hp - 1
     if d == 1

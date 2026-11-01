@@ -1,0 +1,26 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `conflicts: a, b`: the overlays can't share a host (either side may
+/// name the other). Putting one on a host that has a rival keeps the one
+/// with the higher intensity; on a tie the one already there stays.
+<>T |
+    heat: 0
+xx
+overlay fire
+    conflicts: ice
+    modify
+        @heat + 10
+    xx
+xx
+overlay ice
+    modify
+        @heat - 10
+    xx
+xx
+t <> T | heat: 0
+:overlay!(t, fire, .5)
+:overlay!(t, ice, .5)
+say("{:overlays_of(t)} heat {t >> heat}")
+:overlay!(t, ice, .6)
+say("{:overlays_of(t)} heat {t >> heat}")
+:overlay!(t, fire, .4)
+say("{:overlays_of(t)} heat {t >> heat}")

@@ -1,13 +1,15 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
 /// An overlay applied "for N ticks" modifies its host until N ticks have run.
 <>Polity |
     stability: .8
 xx
-overlay Stunned |
-    modifies:
-        stability - .25
-    end
+overlay stunned
+    modify
+        @stability - .25
+    xx
+xx
 rome <> Polity | stability: .8
-overlay Stunned on rome at .5 for 2 ticks
+:overlay!(rome, stunned, .5, 2)
 say(rome >> stability)
 tick()
 say(rome >> stability)

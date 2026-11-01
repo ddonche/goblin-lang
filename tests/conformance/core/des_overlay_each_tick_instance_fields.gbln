@@ -1,38 +1,38 @@
-/// known-gap: interp has no `each tick:` on overlays
-/// `each tick:` uses the fields of the overlay as it was put on: an overlay
-/// defined again later does not change one already on a host. Clauses come
-/// in any order (`each tick:` before `modifies:`), and a field named `each`
-/// can be changed.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay's blocks use the fields of the overlay as it was put on: an
+/// overlay defined again later does not change one already on a host.
+/// Lines come in any order (`every` before `modify`), and a field named
+/// `every` can be changed.
 <>F |
     hp: 20
     def: 0
-    each: 0
+    every: 0
 xx
-overlay Bleed |
+overlay bleed
     rate: 2
-    lasts 5 ticks
-    each tick:
-        hp - rate
-        each + 1
-    end
-    modifies:
-        def + 1
-    end
-end
+    lasts: 5
+    every 1 tick
+        @hp |= @hp - rate
+        @every |= @every + 1
+    xx
+    modify
+        @def + 1
+    xx
+xx
 a <> F | hp: 20
-overlay Bleed on a at 1
-overlay Bleed |
+:overlay!(a, bleed)
+overlay bleed
     rate: 5
-    lasts 5 ticks
-    each tick:
-        hp - rate
-        each + 1
-    end
-    modifies:
-        def + 1
-    end
-end
+    lasts: 5
+    every 1 tick
+        @hp |= @hp - rate
+        @every |= @every + 1
+    xx
+    modify
+        @def + 1
+    xx
+xx
 tick()
 say(a >> hp)
 say(a >> def)
-say(a >> each)
+say(a >> every)

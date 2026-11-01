@@ -1,13 +1,15 @@
-/// Fields an overlay declares (here `kind`) appear on each of its instances.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// Fields an overlay declares (here `kind`) appear on each of its copies.
 <>Polity |
     stability: .8
 xx
-overlay Latin |
+overlay latin
     kind: "language"
-    modifies:
-        stability + .01
-    end
+    modify
+        @stability + .01
+    xx
+xx
 rome <> Polity | stability: .8
-overlay Latin on rome at .9
+:overlay!(rome, latin, .9)
 say(:overlays()[0] >> kind)
 say(:len(:overlays(it >> kind == "language")))

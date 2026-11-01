@@ -1,23 +1,23 @@
-/// known-gap: interp spreads to every target once strength * rate passes 0.15, and to none below it
-/// `spreads ... at rate`: each tick, each object the rule reaches catches
-/// the overlay with chance rate (times the spreader's strength). At .1 about
-/// a tenth of the town catches it on the first day; at 1 all of it; at 0
-/// none. Below .15 it used to reach nobody, and above it everyone at once.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `spread: chance where condition`: each tick, each object the condition
+/// holds for catches the overlay with that chance, nothing scaled. At .1
+/// about a tenth of the town catches it on the first day; at 1 all of it;
+/// at 0 none.
 <>P |
     town: 0
 xx
-overlay Cold |
-    hosts P
-    spreads where target >> town == self >> town at .1 per tick
-end
-overlay Flu |
-    hosts P
-    spreads where target >> town == self >> town at 1 per tick
-end
-overlay Pox |
-    hosts P
-    spreads where target >> town == self >> town at 0 per tick
-end
+overlay cold
+    hosts: P
+    spread: .1 where (target >> town) == @town
+xx
+overlay flu
+    hosts: P
+    spread: 1 where (target >> town) == @town
+xx
+overlay pox
+    hosts: P
+    spread: 0 where (target >> town) == @town
+xx
 act day_one(name)
     :rand_seed(3)
     repeat :objects() as o
@@ -30,17 +30,11 @@ act day_one(name)
             first |= p
         xx
     xx
-    if name == "Cold"
-        overlay Cold on first at 1
-    elif name == "Flu"
-        overlay Flu on first at 1
-    else
-        overlay Pox on first at 1
-    xx
+    :overlay!(first, name)
     tick()
-    return :len(:overlays(it >> overlay_name == name)) - 1
+    return :len(:overlays(name)) - 1
 xx
-cold | day_one("Cold")
-say(cold > 0 and cold < 25)
-say(day_one("Flu"))
-say(day_one("Pox"))
+colds | day_one("cold")
+say(colds > 0 and colds < 25)
+say(day_one("flu"))
+say(day_one("pox"))

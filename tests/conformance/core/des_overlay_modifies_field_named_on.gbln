@@ -1,21 +1,22 @@
-/// known-gap: interp has no `on end:` on overlays
-/// A field named `on` can be changed in `modifies:`; only `on end:` starts
-/// the next clause.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// A field named `on` can be adjusted in `modify`; only `on end` at the
+/// start of an overlay line starts that block.
 <>Lamp |
     on: 2
     ended: 0
 xx
-overlay Bright |
-    lasts 2 ticks
-    on end: dim
-    modifies:
-        on + 1
-end
+overlay bright
+    lasts: 2
+    on end => dim(self)
+    modify
+        @on + 1
+    xx
+xx
 act dim(l)
     l >> ended |= 1
 xx
 l <> Lamp | on: 2
-overlay Bright on l at 1
+:overlay!(l, bright)
 say(l >> on)
 tick()
 tick()

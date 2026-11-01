@@ -1,17 +1,20 @@
-/// An overlay put on a parameter inside an action, then detached from that
-/// parameter, is gone and its effect with it.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay put on a parameter inside an action, then taken off that
+/// parameter, is gone and its adjustment with it.
 <>Polity |
     stability: .8
 xx
-overlay Stunned |
-    modifies:
-        stability - .25
-    end
+overlay stunned
+    modify
+        @stability - .25
+    xx
+xx
 act stun_then_free(target)
-    overlay Stunned on target at .5
-    detach Stunned from target
+    :overlay!(target, stunned, .5)
+    :detach!(target, stunned)
 end
 rome <> Polity | stability: .8
 stun_then_free(rome)
 say(:overlays_of("rome"))
 say(:len(:overlays()))
+say(rome >> stability)

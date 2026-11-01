@@ -1,9 +1,8 @@
-/// known-gap: interp has no `on end:` on overlays (it ignores the line)
-/// `on end: action` runs the action with the host when the overlay runs
-/// out: its time is up (Pregnant, 3 ticks) or its strength reaches 0
-/// (Fever decays away). Taking an overlay off by hand (`detach`) runs
-/// nothing. A class action of that name runs with `self`; otherwise a
-/// program action gets the host.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `on end` runs when the overlay runs out: its time is up (pregnant, 3
+/// ticks) or its intensity reaches 0 (fever decays away in two ticks).
+/// Taking an overlay off by hand (`:detach!`) runs nothing. The block runs
+/// with the host as `@`.
 <>Person |
     kids: 0
     fevers: 0
@@ -11,26 +10,26 @@
         self >> fevers |= self >> fevers + 1
     end
 xx
-overlay Pregnant |
-    lasts 3 ticks
-    on end: give_birth
-end
-overlay Fever |
-    decays .5 per tick
-    on end: recover
-end
+overlay pregnant
+    lasts: 3
+    on end => give_birth(self)
+xx
+overlay fever
+    decays: .5
+    on end => @recover()
+xx
 act give_birth(mom)
     mom >> kids |= mom >> kids + 1
     say("a baby")
 xx
 ann <> Person | kids: 0
 bea <> Person | kids: 0
-overlay Pregnant on ann at 1
-overlay Pregnant on bea at 1
-overlay Fever on bea at 1
+:overlay!(ann, pregnant)
+:overlay!(bea, pregnant)
+:overlay!(bea, fever)
 repeat :range(1, 5) as d
     if d == 2
-        detach Pregnant from bea
+        :detach!(bea, pregnant)
     xx
     tick()
     k | ann >> kids

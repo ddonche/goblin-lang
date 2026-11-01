@@ -1,32 +1,36 @@
-/// known-gap: interp has no name form of :overlays
-/// `:overlays("Sick")` gives that overlay's instances, in the order they
-/// were put on; `:overlays("Sick", pred)` those the predicate holds for;
-/// `:overlays_of(x)` and `:overlay_strength` read the host's own list. An
-/// overlay taken off leaves the lists; an unknown overlay name is an error.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// `:overlays(sick)` gives that overlay's copies, in the order they were
+/// put on; `:overlays(sick, pred)` those the predicate holds for;
+/// `:overlays(host)` and `:overlays(host, sick)` the copies on one object.
+/// An overlay taken off leaves the lists; an unknown overlay name is an
+/// error.
 <>P |
     n: 0
 xx
-overlay Sick |
-end
-overlay Cold |
-end
+overlay sick
+xx
+overlay cold
+xx
 a <> P | n: 1
 b <> P | n: 2
 c <> P | n: 3
-overlay Sick on a at .5
-overlay Cold on a at .5
-overlay Sick on c at .9
-say(:len(:overlays("Sick")))
-say(:len(:overlays("Cold")))
+:overlay!(a, sick, .5)
+:overlay!(a, cold, .5)
+:overlay!(c, sick, .9)
+say(:len(:overlays(sick)))
+say(:len(:overlays(cold)))
 say(:len(:overlays()))
-say(:len(:overlays("Sick", it >> strength > .6)))
+say(:len(:overlays(sick, it >> intensity > .6)))
 say(:overlays_of(a))
-say(:overlay_strength("Sick", c))
-detach Sick from a
-say(:len(:overlays("Sick")))
+say(:len(:overlays(a)))
+say(:len(:overlays(a, cold)))
+say(:len(:overlays(b)))
+say(:overlay_strength("sick", c))
+:detach!(a, sick)
+say(:len(:overlays(sick)))
 say(:overlays_of(a))
 attempt
-    :overlays("Sik")
+    :overlays("sik")
 rescue e
     say("error")
 end

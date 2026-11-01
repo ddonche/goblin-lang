@@ -1,28 +1,31 @@
-/// known-gap: interp binding an :overlays() result to `it` replaces its host object (same bug, not reproduced)
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
 /// Going through :overlays() with `it` does not touch the overlays' hosts:
-/// the hosts keep their class and fields, so spreading goes on next tick,
-/// and the overlay records don't show up as objects.
+/// the hosts keep their class and fields, and the overlay records don't
+/// show up as objects. A target that has the overlay already doesn't
+/// catch it again.
 <>Person |
     health: 1
     town: 0
 xx
-link Person contact 0...1 by [
-    1 - abs((self >> town) - (target >> town)) * .5
-]
-overlay Flu |
-    hosts Person
-    spreads where :link_score(self, target, "contact") > .3 at .6
-    decays .05
-end
+link contact
+    hosts: Person
+    range: 0...1
+    score => 1 - :abs((@town) - (target >> town)) * .5
+xx
+overlay flu
+    hosts: Person
+    spread: .6 where :link_score(@, target, contact) > .3
+    decays: .05
+xx
 x <> Person | health: 1
 y <> Person | health: 1
-overlay Flu on x at .9
-overlay Flu on y at .9
+:overlay!(x, flu, .9)
+:overlay!(y, flu, .9)
 d | 1
 repeat d <= 3
     tick()
-    repeat :overlays(it >> overlay_name == "Flu")
-        s | :round((it >> strength) * 1000) / 1000
+    repeat :overlays(flu)
+        s | :round((it >> intensity) * 1000) / 1000
         say("tick {d}: flu {s}")
     xx
     n | :len(:objects(it >> health > -1))

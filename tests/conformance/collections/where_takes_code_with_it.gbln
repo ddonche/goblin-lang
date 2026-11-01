@@ -1,0 +1,23 @@
+/// known-gap: interp takes only text (a value to match or an action's name) in the *_where builtins
+/// The collection `*_where` builtins take code with `it` (each item):
+/// `:get_where(xs, it > 1)`. It may read variables. Text still works
+/// (a value to match, or an action's name).
+act small(x)
+    return x < 3
+xx
+xs | [1, 2, 3, 4]
+lim | 2
+say(:get_where(xs, it > lim))
+say(:delete_where(xs, it % 2 == 0))
+say(:update_where(xs, it == 3, 30))
+say(:reap_where(xs, it < 3))
+:update_where!(xs, it == 1, 10)
+say(xs)
+say(:get_where({"a": 1, "b": 5}, it > 2))
+say(:get_where(["a-b", "c"], "a-b"))
+say(:get_where(xs, "small"))
+attempt
+    :get_where(xs, it + 1)
+rescue e
+    say(:has("{e}", "R0321"))
+xx

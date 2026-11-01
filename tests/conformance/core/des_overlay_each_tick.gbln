@@ -1,39 +1,35 @@
-/// known-gap: interp has no `each tick:` on overlays
-/// `each tick:` changes the host on every tick the overlay is on, the tick
-/// it runs out included, and nothing is taken back when it ends (unlike
-/// `modifies:`). The changes see `strength` and the overlay's fields.
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay's `every 1 tick` block runs on every tick the overlay is on,
+/// the tick it runs out included, and its `|=` changes stay when it ends
+/// (unlike `modify`). The block sees `intensity` and the overlay's fields.
 <>F |
     hp: 20
     def: 2
 xx
-overlay Poisoned |
-    lasts 3 ticks
-    each tick:
-        hp - 2
-    end
-    on end: cured
-end
-overlay Regen |
+overlay poisoned
+    lasts: 3
+    every 1 tick => @hp |= @hp - 2
+    on end => cured(self)
+xx
+overlay regen
     rate: 3
-    lasts 2 ticks
-    modifies:
-        def + 1
-    end
-    each tick:
-        hp + rate * strength
-    end
-end
+    lasts: 2
+    modify
+        @def + 1
+    xx
+    every 1 tick => @hp |= @hp + rate * intensity
+xx
 act cured(f)
     say("cured")
 xx
 a <> F | hp: 20
-overlay Poisoned on a at 1
+:overlay!(a, poisoned)
 repeat :range(1, 4) as d
     tick()
     h | a >> hp
     say("tick {d}: hp {h}")
 xx
-overlay Regen on a at 1
+:overlay!(a, regen)
 repeat :range(1, 3) as d
     tick()
     h | a >> hp
