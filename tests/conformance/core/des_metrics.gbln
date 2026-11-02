@@ -33,6 +33,13 @@ repeat :range(0, 2000) as i
 xx
 more | :metrics()
 :say("{more{"objects"}} {more{"des_mb"} > m{"des_mb"}}")
+big | {}
+repeat :range(0, 300) as i
+    :update!(big{"key number {i} with a long name to count"}, i)
+xx
+dust <> Dust | n: :freeze(big)
+held | :metrics()
+:say(held{"des_mb"} > more{"des_mb"})
 :say(m{"peak_rss_mb"} >= m{"rss_mb"})
 :say(:keys(m{"tick_ms"}))
 :say(:keys(m{"layer_ms"}))
