@@ -1,0 +1,58 @@
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~,,,,,,,,,,,,,~~~~~~~~~
+~~~~~~~~~,,,..fff........=~~~~~~~~
+~~~~~~~~=fff.............=,~~~~~~~
+~~~~~~~,=....nnnnnnnnssss=s,,~~~~~
+~~~~~~,ssssn^nnnnnnnnddd==ddd,,,,~
+~~~~~,....n^^^^^^^^nnndd=dss.....,
+~~~~~=ffffn^^^^^^^^^nnss==.......,
+~~,~~=ffffnn^^n^^^^^nns===......,~
+~~~~~,ffffnn^^^^nnnnnn..s......,~~
+~~~~~====fnn^^^nnn..f..nn......,~~
+~~~~~,...ffnnnnn....n..nn....,,~~~
+~~~~~,........n=.....=.snss==~~~~~
+~~~~~~,ssssssss=sss===ssdss,~~~~~~
+~~~~~~,,..==========.nn....,~~~~~~
+~~~~~~~~,==...ff=fffffffff.,~~~~~~
+~~~~~~~~~~,.....=fffffffff.,~~~~~~
+~~~~~~~~~~~,.....fff,,,,,,,~~~~~~~
+~~~~~~~~~~~~,,.....,~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~,...,~~~~~~~~~~~~~~~
+~ sea  ^ mountains  n hills  = river  , coast  d desert  s steppe  f forest  . plain
+year 0: 5850 people, 20 of 400 provinces settled
+year 100: 8072 people, 20 of 400 provinces settled
+year 200: 10566 people, 83 of 400 provinces settled
+year 300: 14179 people, 83 of 400 provinces settled
+year 400: 19360 people, 86 of 400 provinces settled
+year 500: 25809 people, 90 of 400 provinces settled
+year 600: 33432 people, 160 of 400 provinces settled
+year 700: 42915 people, 197 of 400 provinces settled
+year 800: 54061 people, 250 of 400 provinces settled
+year 900: 66814 people, 276 of 400 provinces settled
+year 1000: 80164 people, 315 of 400 provinces settled
+year 1100: 93102 people, 339 of 400 provinces settled
+year 1200: 105019 people, 361 of 400 provinces settled
+year 1300: 115740 people, 375 of 400 provinces settled
+year 1400: 125208 people, 385 of 400 provinces settled
+year 1500: 133321 people, 394 of 400 provinces settled
+year 1600: 140011 people, 399 of 400 provinces settled
+year 1700: 145150 people, 399 of 400 provinces settled
+year 1800: 148728 people, 399 of 400 provinces settled
+year 1900: 151073 people, 399 of 400 provinces settled
+year 2000: 152558 people, 399 of 400 provinces settled
+year 2100: 153480 people, 399 of 400 provinces settled
+year 2200: 154047 people, 399 of 400 provinces settled
+year 2300: 154394 people, 399 of 400 provinces settled
+year 2400: 154605 people, 399 of 400 provinces settled
+year 2500: 154733 people, 399 of 400 provinces settled
+year 2600: 154810 people, 399 of 400 provinces settled
+year 2700: 154858 people, 399 of 400 provinces settled
+year 2800: 154886 people, 399 of 400 provinces settled
+year 2900: 154903 people, 399 of 400 provinces settled
+year 3000: 154914 people, 399 of 400 provinces settled
+map 34x22
+80% full by year: {river: 1200, steppe: 1300, desert: 1300, forest: 1400, hills: 1400, mountains: 1400, plain: 1500, coast: 1600}
+check: first to fill: river
+check: growth over the last 300 years: 0.04%

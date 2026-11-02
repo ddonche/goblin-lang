@@ -1,0 +1,42 @@
+/// A province: a piece of the map that never moves. People grow toward
+/// what the land can feed and move to bordering land with more room.
+<>Land |
+    x: 0
+    y: 0
+    terrain: "plain"
+    /// How many people the land can feed.
+    food: 100.0
+    people: 0.0
+    /// Growth a year when the land is empty (logistic).
+    growth: 0.005
+    /// How full the land is before people start to leave.
+    crowded: 0.5
+    /// The share of people who leave in a year, times how much more room
+    /// the new land has.
+    leaving: 0.05
+    every 1 tick
+        @people |= @people + @growth * @people * (1.0 - @people / @food)
+    xx
+    decision settle
+        targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food
+        score => room(target) - room(self)
+    xx
+    judge
+        settle and (settle >> score) > 0: self.move_people(settle >> target, settle >> score)
+    xx
+    act move_people(to, gain)
+        n | @people * @leaving * gain
+        @people |= @people - n
+        to >> people |= to >> people + n
+    xx
+xx
+
+link border
+    hosts: Land
+    range: bool
+xx
+
+/// The share of the land's food not yet eaten.
+act room(l)
+    return 1.0 - (l >> people) / (l >> food)
+xx
