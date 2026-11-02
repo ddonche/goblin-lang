@@ -75,6 +75,17 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
     walk(v, session, &mut Vec::new())
 }
 
+/// The overlays on `host` when it is another region's object: as of the end
+/// of last tick (in a region, or in the program that runs the world).
+fn elsewhere_overlays(session: &mut Session, host: &Value) -> Vec<crate::session::OverlayInstance> {
+    let uuid = match host { Value::Ref(u) => u.to_string(), Value::Object(o) => o.uuid.to_string(), _ => return Vec::new() };
+    if session.region.is_some() { return crate::world::remote_overlays(session, Some(&uuid)); }
+    if crate::world::in_view(session, &uuid) {
+        return crate::world::view_overlays_in(session).into_iter().filter(|i| i.host_uuid == uuid).collect();
+    }
+    Vec::new()
+}
+
 /// `fmt_value_raw`, showing the objects that fields name.
 pub(crate) fn fmt_value_in(v: &Value, session: &Session) -> String {
     if session.object_store.is_empty() || !holds_entry_fields(v) { return fmt_value_raw(v); }
@@ -3897,12 +3908,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 _ => false,
             };
             let list = &session.overlay_instances;
-            let overlays: Vec<Value> = match &host {
+            let mut overlays: Vec<Value> = match &host {
                 // An object's overlays are kept in its own list.
                 Value::Ref(u) => list.on_host(u).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
                 Value::Object(o) => list.on_host(&o.uuid).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
                 _ => list.iter().filter(|oi| on_host(oi)).map(|oi| Value::Str(oi.overlay_name.clone().into())).collect(),
             };
+            // Another region's object: its overlays as of the end of last tick.
+            for oi in elsewhere_overlays(session, &host) {
+                overlays.push(Value::Str(oi.overlay_name.clone().into()));
+            }
             Ok(Value::Array(overlays))
         }
         BuiltinId::OverlayStrength => {
@@ -3929,7 +3944,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             match found {
                 Some(oi) => Ok(Value::Float(oi.strength)),
-                None => Ok(Value::Nil),
+                None => Ok(elsewhere_overlays(session, &host).iter()
+                    .find(|oi| *oi.overlay_name == *overlay).map(|oi| Value::Float(oi.strength)).unwrap_or(Value::Nil)),
             }
         }
         // link_score reads variables by name and evaluates code, so the VM handles it.

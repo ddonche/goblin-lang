@@ -6299,6 +6299,9 @@ impl Vm {
                 if inst.host_uuid == host && name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
             }
         }
+        for inst in crate::world::remote_overlays(&mut self.session, Some(host)) {
+            if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+        }
         Ok(Value::Array(records))
     }
 
@@ -6318,6 +6321,9 @@ impl Vm {
             for inst in crate::world::view_overlays(self) {
                 if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
             }
+        }
+        for inst in crate::world::remote_overlays(&mut self.session, None) {
+            if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
         }
         let Some(pred_fn) = pred else { return Ok(Value::Array(records)) };
         let mut results = Vec::new();

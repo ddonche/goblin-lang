@@ -1,0 +1,72 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// absorb across regions: USA (region a) absorbs Canada (region b). The
+/// claim is settled when the tick ends and carried out at the start of the
+/// next: Canada leaves the world, USA takes its power, its land and its
+/// overlay; Canada's own link to France reaches USA a tick later (it was
+/// held in Canada's region). Mexico claims Canada on the same tick and
+/// loses: claims are settled in region order. France, in Canada's region,
+/// absorbs nothing (its rule says so).
+<>Land |
+    name: ..
+    owner: nil
+xx
+<>Realm |
+    name: ..
+    power: 0
+    trade: 0
+    owner: nil
+    every 1 tick
+        @power |= @power + 1
+        @trade |= :link_score(self, :objects(Realm, it >> name == "France")[0], "trade")
+    xx
+    transition absorb
+        targets: Realm where @name != "France" and (target >> power) * 3 < @power and (target >> name) != "France"
+        carries:
+            power: @power + (target >> power)
+        xx
+    xx
+    on absorb => :say("{self >> name} absorbs {target >> name}")
+xx
+link trade
+    hosts: Realm
+    range: 0...10
+xx
+overlay faith
+    hosts: Realm
+xx
+act make(which)
+    if which == 1
+        usa <> Realm | name: "USA", power: 30
+        ohio <> Land | name: "Ohio", owner: usa
+        return {"things": [usa, ohio]}
+    xx
+    if which == 2
+        can <> Realm | name: "Canada", power: 5
+        fra <> Realm | name: "France", power: 100
+        :overlay!(can, faith)
+        :link!(can, fra, "trade", 4)
+        ont <> Land | name: "Ontario", owner: can
+        return {"things": [can, fra, ont]}
+    xx
+    mex <> Realm | name: "Mexico", power: 29
+    return {"things": [mex]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make(1), day)
+b | :actor(make(2), day)
+c | :actor(make(3), day)
+repeat :range(1, 5) as t
+    tick([a, b, c])
+    names | []
+    repeat :objects("Realm") as r
+        :put_last!(names, "{r >> name} {r >> power} trade {r >> trade}")
+    xx
+    :say("tick {t}: {:join(:sort(names), ", ")}")
+    o | :objects("Land", it >> name == "Ontario")[0] >> owner
+    shown | "nil"
+    if o != nil => shown |= o >> name
+    :say("tick {t}: Ontario owned by {shown}; faith on {:len(:overlays())}")
+xx
+:say(:metrics(){"objects_gone"})

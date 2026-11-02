@@ -1,9 +1,10 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
 /// A region's handler can move an object while it takes in what other
-/// regions sent: what was sent to that object after the message follows it
-/// to its new region. Here a shop tells the workers' town to move a worker
-/// and pays the worker in the same tick; no pay is lost. On tick 4, the
-/// tick it arrives, the shop still sees it and pays it (the pay is in transit).
+/// regions sent. A region applies what the others changed first, then reads
+/// its messages (seeing the whole world), so here the shop's pay reaches the
+/// worker before the shop's message moves it: no pay is lost, and none is
+/// in transit. On tick 4, the tick it arrives, the shop still sees it and
+/// pays it (that pay is in transit).
 <>Shop |
     cash: 100
     every 2 ticks
@@ -43,7 +44,7 @@ act day(st, msg)
             :move!(it, away)
         xx
     elif :has(msg, "tick")
-        :update!(st{"have"}, :len(:objects(it >> money > -1)))
+        :update!(st{"have"}, :metrics(){"objects"})
     xx
     return st
 xx

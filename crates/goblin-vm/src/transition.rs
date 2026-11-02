@@ -90,10 +90,10 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
 fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Option<String> {
     let class = t.target_class.as_deref()?;
     let ids: Vec<ObjId> = vm.session.object_store.of_class_ids(class).cloned().collect();
-    // subjugate only sets the target's `owner`, so its target may run in
-    // another region (the change goes there). absorb and merge remove the
-    // target, so theirs must run here.
-    let anywhere = matches!(t.kind, K::Subjugate);
+    // A target with a partner may run in another region: subjugate's change
+    // goes there; an absorb or merge of it is a claim the world settles
+    // (see `claim`).
+    let anywhere = matches!(t.kind, K::Subjugate | K::Absorb | K::Merge);
     for id in ids {
         if id == *me || done.contains(id.as_str()) { continue; }
         if crate::world::is_remote(vm, &id) {
@@ -174,6 +174,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
         }
         K::Merge => {
             let other = target.ok_or_else(|| err("merge without a target"))?;
+            if crate::world::is_remote(vm, other) { return claim(vm, me, class, t, other); }
             let cm = into(0);
             let mut fm = copy_fields(vm, me, &cm)?;
             for (k, v) in overrides(vm, fields_of(t, "carries"), me, target)? { fm.insert(k, v); }
@@ -192,6 +193,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
         }
         K::Absorb => {
             let other = target.ok_or_else(|| err("absorb without a target"))?;
+            if crate::world::is_remote(vm, other) { return claim(vm, me, class, t, other); }
             let carries = overrides(vm, fields_of(t, "carries"), me, target)?;
             for (k, v) in carries { write_field(vm, me, &k, v)?; }
             move_contents(vm, other, me)?;
@@ -216,6 +218,105 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             hook(vm, class, K::Subjugate, r(me), vec![r(other)])
         }
     }
+}
+
+// ── Across regions ──────────────────────────────────────────────────────────
+
+/// An absorb or merge whose target runs in another region: this region
+/// claims it. Every region's claims are settled when the tick ends, in a
+/// fixed order (by region, then as made), so an object is taken once; at
+/// the start of the next tick the claimer's region carries it out
+/// (`take_claimed`) and the target's region retires the target
+/// (`retire_claimed`).
+fn claim(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, other: &str) -> Result<(), GoblinError> {
+    let classes = vm.session.classes.clone();
+    let index = classes.get(class).and_then(|d| d.transitions.iter().position(|x| std::ptr::eq(x, t)))
+        .ok_or_else(|| err("transition: claim without its transition"))?;
+    let absorb = matches!(t.kind, K::Absorb);
+    let new_id = (!absorb).then(|| uuid::Uuid::new_v4().to_string());
+    let links = matches!(t.link_rule, LinkContinuity::Inherit);
+    if !crate::world::send_claim(&mut vm.session, crate::world::Claim {
+        absorb, by: me.to_string(), target: other.to_string(), class: class.to_string(), index, new_id, links,
+    }) {
+        return Err(err(format!(
+            "R1248: transition-across-world: the program's {class} can't {} a region's object; give the {class} to a region",
+            if absorb { "absorb" } else { "merge with" })));
+    }
+    Ok(())
+}
+
+/// The claimer's side of a claim the world granted. `other` is in the
+/// store as it was when the claim was made (a copy, gone once this is
+/// done); `overlays` are its overlays then.
+pub(crate) fn take_claimed(vm: &mut Vm, c: &crate::world::Claim, overlays: Vec<OverlayInstance>) -> Result<(), GoblinError> {
+    let (me, other) = (c.by.as_str(), c.target.as_str());
+    let classes = vm.session.classes.clone();
+    let Some(t) = classes.get(&c.class).and_then(|d| d.transitions.get(c.index)) else { return Ok(()) };
+    let r = |u: &str| Value::Ref(u.into());
+    let keep_overlays = !matches!(t.overlay_rule, OverlayContinuity::Drop);
+    let inherit = matches!(t.link_rule, LinkContinuity::Inherit);
+    let put = |vm: &mut Vm, to: &str, list: &[OverlayInstance]| -> Result<(), GoblinError> {
+        let host_var = crate::tick::host_name(vm, to);
+        for inst in list {
+            let des_id = next_overlay_id(vm);
+            let copy = OverlayInstance { host_uuid: to.to_string(), host_var: host_var.clone(), applied: Vec::new(), des_id, ..inst.clone() };
+            crate::tick::overlay_put(vm, copy, false)?;
+        }
+        Ok(())
+    };
+    let old_target = vm.session.object_store.get(other).cloned().unwrap_or(Value::Nil);
+    if c.absorb {
+        let carries = overrides(vm, fields_of(t, "carries"), me, Some(other))?;
+        for (k, v) in carries { write_field(vm, me, &k, v)?; }
+        move_contents(vm, other, me)?;
+        if keep_overlays { put(vm, me, &overlays)?; }
+        if inherit { copy_links(vm, other, me); }
+        hook(vm, &c.class, K::Absorb, r(me), vec![old_target])
+    } else {
+        let cm = t.into_classes.first().cloned().unwrap_or_else(|| c.class.clone());
+        let mut fm = copy_fields(vm, me, &cm)?;
+        for (k, v) in overrides(vm, fields_of(t, "carries"), me, Some(other))? { fm.insert(k, v); }
+        let merged = make_object_as(vm, &cm, fm, c.new_id.as_deref())?;
+        move_contents(vm, me, &merged)?;
+        move_contents(vm, other, &merged)?;
+        if keep_overlays {
+            copy_overlays(vm, me, &merged)?;
+            put(vm, &merged, &overlays)?;
+        }
+        if inherit { copy_links(vm, me, &merged); copy_links(vm, other, &merged); }
+        copy_decision(vm, me, &merged);
+        let old = remove_object(vm, me, &merged);
+        hook(vm, &c.class, K::Merge, old, vec![old_target, r(&merged)])
+    }
+}
+
+/// The target's side of a granted claim: it leaves the world (what it owns
+/// already went to `heir`, which every region heard of). With `links`, its
+/// link offsets go to `heir`: those of other objects to it stay here, its
+/// own (and its own link formulas) are given back to go where `heir` runs.
+pub(crate) fn retire_claimed(vm: &mut Vm, uuid: &str, heir: &str, links: bool) -> crate::world::Links {
+    let mut out = crate::world::Links::default();
+    if !vm.session.object_store.contains_key(uuid) { return out; }
+    if links {
+        let swap = |u: &String| if u == uuid { heir.to_string() } else { u.clone() };
+        let moved: Vec<((String, String, String), Vec<crate::session::LinkOffset>)> = vm.session.link_offsets.iter()
+            .filter(|((a, b, _), _)| a == uuid || b == uuid)
+            .map(|((a, b, c), v)| ((swap(a), swap(b), c.clone()), v.clone()))
+            .filter(|((a, b, _), _)| a != b)
+            .collect();
+        for (k, v) in moved {
+            if k.0 == heir { out.offsets.push((k, v)); } else { vm.session.link_offsets.entry(k).or_default().extend(v); }
+        }
+        out.defs = vm.session.object_link_defs.iter()
+            .filter(|((a, _), _)| a == uuid).map(|((_, c), d)| ((heir.to_string(), c.clone()), (**d).clone())).collect();
+    }
+    take_overlays_off(vm, uuid);
+    vm.session.link_offsets.retain(|(a, b, _), _| a != uuid && b != uuid);
+    vm.session.object_link_defs.retain(|(a, _), _| a != uuid);
+    vm.session.object_decisions.remove(uuid);
+    vm.session.object_store.move_contents_up(uuid);
+    vm.session.object_store.shift_remove(uuid);
+    out
 }
 
 /// The new fields of an object of `class`: its declared defaults.
@@ -290,10 +391,16 @@ fn with_identity(fields: FieldMap, id: &str, decl: &goblin_ast::ClassDecl) -> (F
 }
 
 /// A new object of `class` with these fields (`~` fields kept in 0..1).
-fn make_object(vm: &mut Vm, class: &str, mut fields: FieldMap) -> Result<String, GoblinError> {
+fn make_object(vm: &mut Vm, class: &str, fields: FieldMap) -> Result<String, GoblinError> {
+    make_object_as(vm, class, fields, None)
+}
+
+/// `make_object`, with the id given (a merge across regions picks it when
+/// it claims).
+fn make_object_as(vm: &mut Vm, class: &str, mut fields: FieldMap, id: Option<&str>) -> Result<String, GoblinError> {
     let classes = vm.session.classes.clone();
     let decl = classes.get(class).ok_or_else(|| err(format!("R1241: unknown-class: a transition makes a {class}, and there is no class {class}")))?;
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = id.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let (mut fields, readonly) = with_identity(fields, &id, decl);
     let traits = crate::vm::trait_fields_of(&mut fields, &decl.fields);
     let obj = Value::Object(Box::new(ObjectVal {

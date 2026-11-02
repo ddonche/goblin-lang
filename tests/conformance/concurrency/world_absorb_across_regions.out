@@ -1,0 +1,10 @@
+tick 1: France 101 trade 0, Mexico 30 trade 0, USA 31 trade 0
+tick 1: Ontario owned by USA; faith on 0
+USA absorbs Canada
+tick 2: France 102 trade 0, Mexico 31 trade 0, USA 38 trade 0
+tick 2: Ontario owned by USA; faith on 1
+tick 3: France 103 trade 0, Mexico 32 trade 0, USA 39 trade 4
+tick 3: Ontario owned by USA; faith on 1
+tick 4: France 104 trade 0, Mexico 33 trade 0, USA 40 trade 4
+tick 4: Ontario owned by USA; faith on 1
+1

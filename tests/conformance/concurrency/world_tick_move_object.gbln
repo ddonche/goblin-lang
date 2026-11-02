@@ -38,8 +38,8 @@ act region_day(st, msg)
                 :update!(st{"err"}, "{e}")
             xx
         xx
-        :update!(st{"have"}, :len(:objects(it >> age >= 0)))
-        :update!(st{"tired"}, :len(:overlays(tired)))
+        :update!(st{"have"}, :metrics(){"objects"})
+        :update!(st{"tired"}, :metrics(){"overlays"})
     xx
     return st
 xx

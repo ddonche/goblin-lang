@@ -2,8 +2,10 @@
 /// Transitions in regions. Each place where the old tongue settles turns it
 /// into its own daughter; a region numbers its new kinds apart from the
 /// others (region k of n: k+1, k+1+n, ...), so names never clash and a run
-/// repeats exactly. A split's successors live in its region; an absorb only
-/// takes a target in its own region, so Big never absorbs Small.
+/// repeats exactly. A split's successors live in its region. An absorb
+/// takes a target in another region too: Big splits on tick 1 (one
+/// transition a tick), claims Small on tick 2, and Small is gone from the
+/// end of tick 2 (Big takes it at the start of tick 3).
 :rand_seed(1)
 <>Land |
     name: ..
