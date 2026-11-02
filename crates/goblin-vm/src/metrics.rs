@@ -67,19 +67,24 @@ pub struct Counts {
 /// row, so the clock is read only where the layer changes.
 #[derive(Default)]
 pub struct LayerClock {
-    cur: Option<(String, Instant)>,
+    /// The layer's place in `layer_ns`, and when it started.
+    cur: Option<(usize, Instant)>,
 }
 
 impl LayerClock {
     pub fn at(&mut self, m: &mut DesMetrics, layer: &str) {
-        if self.cur.as_ref().is_some_and(|(n, _)| n == layer) { return; }
+        if let Some((i, _)) = self.cur { if m.layer_ns[i].0 == layer { return; } }
         let now = Instant::now();
-        if let Some((n, t)) = self.cur.take() { m.add_layer(&n, (now - t).as_nanos() as u64); }
-        self.cur = Some((layer.to_string(), now));
+        if let Some((i, t)) = self.cur.take() { m.layer_ns[i].1 += (now - t).as_nanos() as u64; }
+        let i = match m.layer_ns.iter().position(|(n, _)| n == layer) {
+            Some(i) => i,
+            None => { m.layer_ns.push((layer.to_string(), 0)); m.layer_ns.len() - 1 }
+        };
+        self.cur = Some((i, now));
     }
 
     pub fn stop(&mut self, m: &mut DesMetrics) {
-        if let Some((n, t)) = self.cur.take() { m.add_layer(&n, t.elapsed().as_nanos() as u64); }
+        if let Some((i, t)) = self.cur.take() { m.layer_ns[i].1 += t.elapsed().as_nanos() as u64; }
     }
 }
 
@@ -149,13 +154,15 @@ fn is_copy(s: &crate::session::Session, uuid: &str) -> bool {
 }
 
 /// This session's own live objects and overlays, and the bytes they take.
-pub fn own_counts(s: &crate::session::Session) -> Counts {
+/// `objects`: count the objects' bytes too (a region leaves them out: the
+/// program that runs the world has copies of them and counts those).
+pub fn own_counts(s: &crate::session::Session, object_bytes: bool) -> Counts {
     let mut c = Counts { metrics: s.des_metrics.clone(), ..Default::default() };
     for (u, v) in s.object_store.iter() {
         let Value::Object(o) = v else { continue };
         if o.uuid.starts_with(crate::vm::OVERLAY_RECORD) || is_copy(s, u) { continue; }
         c.objects += 1;
-        c.des_bytes += (u.len() + value_bytes(v)) as u64;
+        if object_bytes { c.des_bytes += (u.len() + value_bytes(v)) as u64; }
     }
     for i in s.overlay_instances.iter() {
         if is_copy(s, &i.host_uuid) { continue; }
@@ -175,7 +182,10 @@ pub fn own_counts(s: &crate::session::Session) -> Counts {
 /// `:metrics()`: this program's numbers, and in a world split into regions
 /// the regions' numbers as of their last tick.
 pub fn report(s: &crate::session::Session) -> Value {
-    let mut c = own_counts(s);
+    let mut c = own_counts(s, true);
+    for (u, v) in s.object_store.iter() {
+        if crate::world::in_view(s, u) { c.des_bytes += (u.len() + value_bytes(v)) as u64; }
+    }
     if let Some((regions, moving_objects, moving_overlays)) = crate::world::region_counts(s) {
         for r in regions {
             c.metrics.add(&r.metrics);

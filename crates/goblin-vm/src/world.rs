@@ -458,7 +458,7 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     r?;
     let sent = ctx.map(|c| c.sent).unwrap_or_default();
     let snapshot = snapshot_of(vm)?;
-    let counts = crate::metrics::own_counts(&vm.session);
+    let counts = crate::metrics::own_counts(&vm.session, false);
     *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts });
     Ok(())
 }
