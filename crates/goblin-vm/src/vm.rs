@@ -709,8 +709,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), cast);
+                    self.session.put_object(&uuid, cast);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
@@ -727,8 +726,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), cast);
+                    self.session.put_object(&uuid, cast);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
@@ -1239,13 +1237,15 @@ impl Vm {
             Opcode::MakeArray(n) => {
                 let count = n as usize;
                 let start = self.stack.len().saturating_sub(count);
-                let items = self.drain_operands(start)?;
+                let mut items = self.drain_operands(start)?;
+                self.keep_entries(&mut items);
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_flat(items)))));
             }
             Opcode::MakeMap(n) => {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
-                let flat = self.drain_operands(start)?;
+                let mut flat = self.drain_operands(start)?;
+                self.keep_entries(&mut flat);
                 // A key written twice keeps its first place and its last
                 // value, as the interpreter builds the map.
                 let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(pair_count);
@@ -1299,7 +1299,7 @@ impl Vm {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(result));
+                self.stack.push(Operand::Val(self.as_entry(result)));
             }
             Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
                 let brace = matches!(op, Opcode::KeyGet(_));
@@ -1307,7 +1307,7 @@ impl Vm {
                 if let Some(v) = self.index_get_in_place(brace)? {
                     let len = self.stack.len();
                     self.stack.truncate(len - 2);
-                    self.stack.push(Operand::Val(v));
+                    self.stack.push(Operand::Val(self.as_entry(v)));
                     return Ok(());
                 }
                 let key = self.pop_value()?;
@@ -1319,7 +1319,7 @@ impl Vm {
                         "T0205: type-mismatch: map key must be a scalar (string, int, float, bool, char)".into()));
                 }
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(result));
+                self.stack.push(Operand::Val(self.as_entry(result)));
             }
             Opcode::GuardRebindLocal(slot, name_idx) => {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
@@ -1534,6 +1534,7 @@ impl Vm {
             }
             Opcode::UpdatePath(n, mask) => {
                 let new_val = self.pop_value()?;
+                let new_val = self.as_entry(new_val);
                 let mut keys = Vec::with_capacity(n as usize);
                 for _ in 0..n { keys.push(self.pop_value()?); }
                 keys.reverse();
@@ -1760,6 +1761,7 @@ impl Vm {
                             }
                         }
                     }
+                    self.live_args(&mut arg_vals);
                     if let Some(m) = self.memo.as_mut() {
                         if !crate::memo::builtin_reads(bid) { m.changed(); }
                     }
@@ -1767,6 +1769,7 @@ impl Vm {
                         return self.host_call_on_worker(bid, arg_vals);
                     }
                     let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
+                    let result = self.entries_out(result);
                     self.stack.push(Operand::Val(result));
                 } else {
 
@@ -1863,7 +1866,8 @@ impl Vm {
             Opcode::CallBuiltinMut(id, argc) => {
                 if let Some(t) = self.sole_ref_target(argc as usize) {
                     let start = self.stack.len() - (argc as usize - 1);
-                    let args = self.drain_operands(start)?;
+                    let mut args = self.drain_operands(start)?;
+                    self.keep_entries(&mut args);
                     let stash = self.session.resolve_mut(t.addr)?;
                     if crate::collections::mutate_in_place(&mut stash.value, id, &args) {
                         // The target's Ref stays on the stack as the call's value.
@@ -1879,7 +1883,8 @@ impl Vm {
                 if let Some(t) = self.sole_ref_target(1 + n + rest) {
                     let start = self.stack.len() - (n + rest);
                     let mut keys = self.drain_operands(start)?;
-                    let args = keys.split_off(n);
+                    let mut args = keys.split_off(n);
+                    self.keep_entries(&mut args);
                     let stash = self.session.resolve_mut(t.addr)?;
                     if crate::collections::mutate_nested_in_place(&mut stash.value, &keys, id, &args) {
                         return Ok(());
@@ -1906,7 +1911,7 @@ impl Vm {
                     let mut vals = std::mem::take(&mut self.key_buf);
                     vals.clear();
                     self.drain_operands_into(start, &mut vals)?;
-                    let new_val = vals.pop().unwrap();
+                    let new_val = self.as_entry(vals.pop().unwrap());
                     let func = self.call_stack.last().unwrap().func.clone();
                     let crate::opcode::OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("UpdatePathHint without its data") };
                     let stash = self.session.resolve_mut(t.addr)?;
@@ -1954,7 +1959,7 @@ impl Vm {
                         let mut vals = std::mem::take(&mut self.key_buf);
                         vals.clear();
                         self.drain_operands_into(start, &mut vals)?;
-                        let new_val = vals.pop().unwrap();
+                        let new_val = self.as_entry(vals.pop().unwrap());
                         let stash = self.session.resolve_mut(t.addr)?;
                         if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
                             vals.clear();
@@ -1988,6 +1993,8 @@ impl Vm {
                 } else {
                     self.drain_operands(start)?
                 };
+                let mut arg_vals = arg_vals;
+                self.live_args(&mut arg_vals);
 
                 // Special handling for builtins that need VM call capability.
                 match id {
@@ -2386,6 +2393,7 @@ impl Vm {
                 }
 
                 let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
+                let result = self.entries_out(result);
                 self.stack.push(Operand::Val(result));
             }
 
@@ -3534,6 +3542,75 @@ impl Vm {
     #[inline]
     fn as_entry(&self, v: Value) -> Value { entry_of(&self.session, v) }
 
+    /// Stored objects go into a collection as their ids, as into a field:
+    /// the collection names the object, it does not hold a copy of it.
+    fn keep_entries(&self, vals: &mut [Value]) {
+        for v in vals.iter_mut() {
+            if let Value::Object(o) = v {
+                if !o.uuid.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(&*o.uuid) {
+                    *v = Value::Ref(o.uuid.clone());
+                }
+            }
+        }
+    }
+
+    /// What a builtin gives back names stored objects by id: a stored object
+    /// it returns, and the stored objects in a collection it returns.
+    fn entries_out(&self, mut v: Value) -> Value {
+        use crate::value::CollectionLayout as L;
+        if self.session.object_store.is_empty() { return v; }
+        let store = &self.session.object_store;
+        let stored = |x: &Value| matches!(x, Value::Object(o)
+            if !o.uuid.starts_with(OVERLAY_RECORD) && store.contains_key(&*o.uuid));
+        let to_id = |x: &mut Value| if stored(x) {
+            if let Value::Object(o) = x { *x = Value::Ref(o.uuid.clone()); }
+        };
+        match &mut v {
+            Value::Object(_) => if stored(&v) { return self.as_entry(v); },
+            Value::Collection(rc) => match &rc.layout {
+                L::FlatArray(xs) if xs.iter().any(|x| stored(x)) => {
+                    if let L::FlatArray(xs) = &mut Rc::make_mut(rc).layout { Rc::make_mut(xs).iter_mut().for_each(to_id); }
+                }
+                L::SmallMap(ps) if ps.iter().any(|(_, x)| stored(x)) => {
+                    if let L::SmallMap(ps) = &mut Rc::make_mut(rc).layout { Rc::make_mut(ps).iter_mut().for_each(|(_, x)| to_id(x)); }
+                }
+                L::HashMapBackend(m) if m.values().any(|x| stored(x)) => {
+                    if let L::HashMapBackend(m) = &mut Rc::make_mut(rc).layout { Rc::make_mut(m).values_mut().for_each(to_id); }
+                }
+                L::RingBuf(_) | L::ChunkedSeq(_) => {
+                    let mut xs = crate::collections::to_vec(rc);
+                    if xs.iter().any(|x| stored(x)) {
+                        xs.iter_mut().for_each(to_id);
+                        return Value::Collection(Rc::new(CollectionValue::from_flat(xs)));
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        v
+    }
+
+    /// A builtin gets objects as they are now: an id (an element of a
+    /// collection) gives the stored object, nil once it is erased; a copy
+    /// of a stored object taken earlier is swapped for the stored one.
+    fn live_args(&self, args: &mut [Value]) {
+        for a in args.iter_mut() {
+            if let Value::Ref(u) = a {
+                if !u.starts_with(OVERLAY_RECORD) {
+                    *a = self.session.object_store.get(&**u).cloned().unwrap_or(Value::Nil);
+                }
+                continue;
+            }
+            if let Value::Object(o) = a {
+                if o.uuid.starts_with(OVERLAY_RECORD) { continue; }
+                if let Some(Value::Object(now)) = self.session.object_store.get(&*o.uuid) {
+                    if !Rc::ptr_eq(&now.fields, &o.fields) { *a = Value::Object(now.clone()); }
+                }
+            }
+        }
+    }
+
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
@@ -3714,8 +3791,7 @@ impl Vm {
     /// of them see it. Pending reads of the old value keep the old value.
     fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
         let val = if let Some(uuid) = registered_uuid(&val) {
-            self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), val);
+            self.session.put_object(&uuid, val);
             Value::Ref(uuid.into())
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {

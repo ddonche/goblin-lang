@@ -12,9 +12,11 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
-/// Whether a value holds an object whose field names another stored object.
+/// Whether a value names a stored object (a collection holds objects as
+/// ids) or holds an object whose field names one.
 fn holds_entry_fields(v: &Value) -> bool {
     match v {
+        Value::Ref(u) => !u.starts_with(crate::vm::OVERLAY_RECORD),
         Value::Object(o) => o.fields.values().any(|f| matches!(f, Value::Ref(_)) || holds_entry_fields(f)),
         Value::Array(a) => a.iter().any(holds_entry_fields),
         Value::Map(m) => m.values().any(holds_entry_fields),

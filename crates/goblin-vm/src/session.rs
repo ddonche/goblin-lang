@@ -344,11 +344,11 @@ impl Session {
     /// action notes the change. Binding the very object the store holds
     /// (same fields, not a changed copy) changes nothing.
     #[inline]
+    /// Bind an object: a new one goes into the store; one already there is
+    /// that entry, so a copy of it (taken from a list or an earlier read)
+    /// never replaces what it holds now.
     pub(crate) fn put_object(&mut self, uuid: &crate::value::ObjId, val: Value) {
-        if let (Value::Object(new), Some(Value::Object(old))) = (&val, self.object_store.get(uuid)) {
-            if Rc::ptr_eq(&new.fields, &old.fields) && Rc::ptr_eq(&new.class_name, &old.class_name)
-                && Rc::ptr_eq(&new.readonly_fields, &old.readonly_fields) && Rc::ptr_eq(&new.trait_fields, &old.trait_fields) { return; }
-        }
+        if self.object_store.contains_key(uuid) { return; }
         self.touch(uuid);
         self.object_store.insert(uuid.clone(), val);
     }
