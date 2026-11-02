@@ -16,17 +16,17 @@ act lattice(width, height, spacing)
 xx
 
 act sample(lat, x, y)
-    s  | lat{"spacing"}
-    c  | lat{"cols"}
-    p  | lat{"pts"}
-    gx | x // s
-    gy | y // s
-    fx | (x % s) / (s * 1.0)
-    fy | (y % s) / (s * 1.0)
-    a  | p[gy * c + gx]
-    b  | p[gy * c + gx + 1]
-    d  | p[(gy + 1) * c + gx]
-    e  | p[(gy + 1) * c + gx + 1]
+    s   | lat{"spacing"}
+    c   | lat{"cols"}
+    p   | lat{"pts"}
+    gx  | x // s
+    gy  | y // s
+    fx  | (x % s) / (s * 1.0)
+    fy  | (y % s) / (s * 1.0)
+    a   | p[gy * c + gx]
+    b   | p[gy * c + gx + 1]
+    d   | p[(gy + 1) * c + gx]
+    e   | p[(gy + 1) * c + gx + 1]
     top | a + (b - a) * fx
     low | d + (e - d) * fx
     return top + (low - top) * fy
@@ -36,7 +36,7 @@ xx
 act noise(width, height)
     layers  | [lattice(width, height, 8), lattice(width, height, 4), lattice(width, height, 2)]
     weights | [0.55, 0.3, 0.15]
-    out | []
+    out     | []
     repeat :range(0, width * height) as i
         v | 0.0
         repeat layers as l
@@ -53,8 +53,8 @@ xx
 
 /// The grid cells next to cell i (up to four).
 act around(i, width, height)
-    x | i % width
-    y | i // width
+    x   | i % width
+    y   | i // width
     out | []
     if x > 0 => :put_last!(out, i - 1)
     if x < width - 1 => :put_last!(out, i + 1)
@@ -74,15 +74,15 @@ act generate(cfg)
     raw    | noise(width, height)
     elev   | []
     repeat :range(0, total) as i
-        dx | ((i % width) - width / 2.0) / (width / 2.0)
-        dy | ((i // width) - height / 2.0) / (height / 2.0)
+        dx   | ((i % width) - width / 2.0) / (width / 2.0)
+        dy   | ((i // width) - height / 2.0) / (height / 2.0)
         edge | dx * dx + dy * dy
         /// A tiny step by cell keeps every elevation distinct.
         :put_last!(elev, raw[i] - cfg{"edge_drop"} * edge + i / 1000000000.0)
     xx
     /// Sea up to the elevation that leaves exactly `provinces` cells of land.
     sea_level | :sort(elev)[total - cfg{"provinces"} - 1]
-    land | []
+    land      | []
     repeat elev as e
         :put_last!(land, e > sea_level)
     xx
@@ -137,8 +137,8 @@ act generate(cfg)
     rain  | []
     coast | []
     repeat :range(0, total) as i
-        lat  | :abs((i // width) - height / 2.0) / (height / 2.0)
-        band | 1.0 - cfg{"steppe_dryness"} * :max(0.0, 1.0 - :abs(lat - 0.35) / 0.2)
+        lat      | :abs((i // width) - height / 2.0) / (height / 2.0)
+        band     | 1.0 - cfg{"steppe_dryness"} * :max(0.0, 1.0 - :abs(lat - 0.35) / 0.2)
         sea_next | false
         repeat around(i, width, height) as j
             if !land[j] => sea_next |= true
@@ -154,7 +154,7 @@ xx
 
 /// The value at fraction q (0..1) of the sorted list.
 act quantile(xs, q)
-    s | :sort(xs)
+    s  | :sort(xs)
     at | :min(:len(s) - 1, :floor(q * :len(s)))
     return s[at]
 xx
@@ -163,7 +163,7 @@ xx
 /// water (river, coast), then rain (desert, steppe, forest, plain). The
 /// shares of each come from `cfg`.
 act terrain(m, cfg)
-    land | m{"land"}
+    land    | m{"land"}
     heights | []
     rains   | []
     repeat land as is_land
@@ -178,7 +178,7 @@ act terrain(m, cfg)
     desert   | quantile(rains, shares{"desert"})
     steppe   | quantile(rains, shares{"desert"} + shares{"steppe"})
     forest   | quantile(rains, 1.0 - shares{"forest"})
-    out | []
+    out      | []
     repeat land as is_land
         e | m{"elev"}[idx]
         r | m{"rain"}[idx]

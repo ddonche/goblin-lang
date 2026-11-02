@@ -4,6 +4,7 @@
 # match, river valleys fill first, and the population levels off.
 set -u
 B=${1:-goblin}
+case $B in */*) B=$(cd "$(dirname "$B")" && pwd)/$(basename "$B") ;; esac
 D=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT

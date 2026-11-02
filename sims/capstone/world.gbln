@@ -75,13 +75,13 @@ m       | map::generate(cfg)
 kinds   | map::terrain(m, cfg)
 width   | m{"width"}
 height  | m{"height"}
-say(map::draw(m, kinds))
-say("~ sea  ^ mountains  n hills  = river  , coast  d desert  s steppe  f forest  . plain")
+:say(map::draw(m, kinds))
+:say("~ sea  ^ mountains  n hills  = river  , coast  d desert  s steppe  f forest  . plain")
 
 /// One province per land cell, and a border link each way to every
 /// land cell beside it.
-at     | {}
-lands  | []
+at    | {}
+lands | []
 repeat kinds as k
     if k == "sea" => skip
     p <> Land | x: idx % width, y: idx // width, terrain: k, food: cfg{"food"}{k}
@@ -115,7 +115,7 @@ repeat order as k
 xx
 :write_text!(cfg{"csv"}, "{:join(head, ",")}\n")
 full_at | {}
-t_run | :epoch_ms()
+t_run   | :epoch_ms()
 tick_ms | 0
 history | []
 repeat :range(0, years + 1) as year
@@ -125,13 +125,13 @@ repeat :range(0, years + 1) as year
         tick_ms |= tick_ms + :epoch_ms() - t
     xx
     if year % cfg{"sample_every"} != 0 => skip
-    now     | :epoch_ms() - t_run
-    rate    | 0.0
+    now  | :epoch_ms() - t_run
+    rate | 0.0
     if now > 0 => rate |= year * 1000.0 / now
     fills   | fill_by_terrain(lands, order)
     people  | total_people(lands)
     settled | :len(:objects(Land, it >> people >= 1.0))
-    row | [year, now, :round(rate, 1), tick_ms, :round(:mem_total() / 1048576.0, 1), :len(:objects()), :len(:overlays()),
+    row     | [year, now, :round(rate, 1), tick_ms, :round(:mem_total() / 1048576.0, 1), :len(:objects()), :len(:overlays()),
         :round(people), settled]
     repeat order as k
         :put_last!(row, :round(fills{k}, 3))
@@ -139,12 +139,12 @@ repeat :range(0, years + 1) as year
     xx
     :append_file!(cfg{"csv"}, "{:join(:map(row, "text"), ",")}\n")
     :put_last!(history, people)
-    say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled")
+    :say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled")
     tick_ms |= 0
 xx
-say("map {width}x{height}")
-say("time: map {t_map} ms, {years} years {:epoch_ms() - t_run} ms")
-say("80% full by year: {full_at}")
+:say("map {width}x{height}")
+:say("time: map {t_map} ms, {years} years {:epoch_ms() - t_run} ms")
+:say("80% full by year: {full_at}")
 
 /// Step 1's checks: river valleys are the first land to fill, and the
 /// world's people level off (under 1% growth over the last three samples).
@@ -152,10 +152,10 @@ first | ..
 repeat full_at as k, y
     if first.nix? or y < full_at{first} => first |= k
 xx
-say("check: first to fill: {first}")
+:say("check: first to fill: {first}")
 n | :len(history)
 if n >= 4
     growth | (history[n - 1] - history[n - 4]) / history[n - 4]
     span   | 3 * cfg{"sample_every"}
-    say("check: growth over the last {span} years: {:round(growth * 100.0, 2)}%")
+    :say("check: growth over the last {span} years: {:round(growth * 100.0, 2)}%")
 xx
