@@ -288,6 +288,9 @@ pub struct Session {
     pub des_ticks: i64,
     /// What `:metrics()` reports: objects and overlays made, tick time.
     pub des_metrics: crate::metrics::DesMetrics,
+    /// In a region: its objects that transitioned this tick (see
+    /// `transition::object_transitions`), reported with the tick's result.
+    pub transitioned: Vec<String>,
 
     /// Enum definitions registered at runtime.
     pub enums: Rc<HashMap<String, EnumDecl>>,
@@ -474,6 +477,7 @@ impl Session {
             compiled_methods: Default::default(),
             des_ticks: 0,
             des_metrics: Default::default(),
+            transitioned: Vec::new(),
             enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),

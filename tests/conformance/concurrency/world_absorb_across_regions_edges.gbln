@@ -1,0 +1,65 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Two edges of absorbing across regions. A duke owned by its king, in
+/// another region, absorbs the king: the duke then belongs to the king's
+/// emperor (as within one region), not to itself. And an object a
+/// transition already changed in its own region this tick can't be claimed
+/// too: Brant absorbs Cole at home on tick 1, so Ash's claim on Brant that
+/// tick is turned down; Ash claims Brant on tick 2 and takes it at the
+/// start of tick 3.
+<>Realm |
+    name: ..
+    power: 0
+    owner: nil
+    transition absorb
+        targets: Realm where (target >> power) * 2 < @power and (target >> name) != "Emperor" and @name != "Emperor"
+        carries:
+            power: @power + (target >> power)
+        xx
+    xx
+    on absorb => :say("{self >> name} absorbs {target >> name}")
+xx
+act make(which)
+    if which == 1
+        emp <> Realm | name: "Emperor", power: 1
+        king <> Realm | name: "King", power: 2, owner: emp
+        return {"things": [emp, king], "k": king}
+    xx
+    if which == 2
+        duke <> Realm | name: "Duke", power: 2
+        return {"things": [duke]}
+    xx
+    if which == 3
+        ash <> Realm | name: "Ash", power: 50
+        return {"things": [ash]}
+    xx
+    brant <> Realm | name: "Brant", power: 20
+    cole <> Realm | name: "Cole", power: 3
+    return {"things": [brant, cole]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make(1), day)
+b | :actor(make(2), day)
+tick([a, b])
+d | :objects("Realm", it >> name == "Duke")[0]
+d >> owner |= :objects("Realm", it >> name == "King")[0]
+d >> power |= 9
+repeat :range(1, 5) as t
+    tick([a, b])
+    d |= :objects("Realm", it >> name == "Duke")[0]
+    o | d >> owner
+    shown | "nil"
+    if o != nil => shown |= o >> name
+    :say("tick {t}: Duke power {d >> power} owned by {shown}")
+xx
+c | :actor(make(3), day)
+e | :actor(make(4), day)
+repeat :range(1, 4) as t
+    tick([c, e])
+    names | []
+    repeat :objects("Realm", it >> name != "Duke" and it >> name != "Emperor") as r
+        :put_last!(names, "{r >> name} {r >> power}")
+    xx
+    :say("tick {t}: {:join(:sort(names), ", ")}")
+xx

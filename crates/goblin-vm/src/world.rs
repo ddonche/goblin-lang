@@ -80,7 +80,9 @@ pub enum Item {
     /// up to `up`, the object that owned it (none: nil). A region sees the
     /// others as of the end of last tick, so the erasing region cannot know
     /// everything that names the object as its owner.
-    Erased { uuid: String, up: Option<String> },
+    /// `owner`: the erased object's own owner, for an object it owned that
+    /// is `up` itself (an absorber its target owned): that one goes to it.
+    Erased { uuid: String, up: Option<String>, owner: Option<String> },
     /// To the program that runs the world: an absorb or merge of another
     /// region's object (see `transition::claim`).
     Claim(Claim),
@@ -176,6 +178,8 @@ pub struct WorldOut {
     sent: Vec<(Dest, Item)>,
     /// The region's numbers for `:metrics()`.
     counts: crate::metrics::Counts,
+    /// Its objects that transitioned this tick: no claim can take them.
+    transitioned: Vec<String>,
 }
 
 /// While a region runs a world tick: who else is in the world, which of
@@ -345,21 +349,34 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     }
     // Absorbs and merges across regions, settled in order: an object is
     // taken (or takes) once a tick, and both must still be in the world.
-    let mut taken: HashSet<&str> = HashSet::default();
+    // An object a transition already changed in its own region this tick
+    // can't be taken as well (one transition a tick).
+    let mut taken: HashSet<&str> = outs.iter().flat_map(|o| o.transitioned.iter().map(String::as_str)).collect();
     let mut retired: Vec<(usize, String)> = Vec::new();
+    // Objects already taken by a granted claim: they can't claim.
+    let mut claimed_by: HashSet<&str> = HashSet::default();
     for o in &outs {
         for (dest, item) in &o.sent {
             let (Dest::World, Item::Claim(c)) = (dest, item) else { continue };
             let (Some(&ri), Some(&ti)) = (owner.get(c.by.as_str()), owner.get(c.target.as_str())) else { continue };
-            if taken.contains(c.by.as_str()) || taken.contains(c.target.as_str()) { continue; }
+            // The claimer is among its region's transitioned (it claimed).
+            if taken.contains(c.target.as_str()) || claimed_by.contains(c.by.as_str()) { continue; }
             let Some(object) = outs[ti].snapshot.objects.iter().find(|(u, _)| *u == c.target).map(|(_, p)| (**p).clone()) else { continue };
             taken.insert(c.by.as_str());
             taken.insert(c.target.as_str());
+            claimed_by.insert(c.target.as_str());
             let overlays: Vec<POverlay> = outs[ti].snapshot.overlays.iter().filter(|x| x.host() == c.target).cloned().collect();
             let heir = if c.absorb { c.by.clone() } else { c.new_id.clone().unwrap_or_default() };
+            let owner = match &object {
+                PValue::Object { fields, .. } => fields.iter().find(|(k, _)| k == crate::store::OWNER_FIELD).and_then(|(_, v)| match v {
+                    PValue::ObjRef(u) if *u != c.target => Some(u.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            };
             inbox[ri].push(Item::Take { claim: c.clone(), object, overlays });
             inbox[ti].push(Item::Retire { uuid: c.target.clone(), heir: heir.clone(), links: c.links });
-            for b in inbox.iter_mut() { b.push(Item::Erased { uuid: c.target.clone(), up: Some(heir.clone()) }); }
+            for b in inbox.iter_mut() { b.push(Item::Erased { uuid: c.target.clone(), up: Some(heir.clone()), owner: owner.clone() }); }
             retired.push((ti, c.target.clone()));
         }
     }
@@ -383,12 +400,12 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     refresh_view(vm);
     // What was erased this tick: the program sees its holdings moved up
     // now, as their regions will set them at the start of the next tick.
-    let erased: Vec<(String, Option<String>)> = vm.session.world.as_ref().and_then(|w| w.inbox.first()).map(|b| b.iter().filter_map(|it| match it {
-        Item::Erased { uuid, up } => Some((uuid.clone(), up.clone())),
+    let erased: Vec<(String, Option<String>, Option<String>)> = vm.session.world.as_ref().and_then(|w| w.inbox.first()).map(|b| b.iter().filter_map(|it| match it {
+        Item::Erased { uuid, up, owner } => Some((uuid.clone(), up.clone(), owner.clone())),
         _ => None,
     }).collect()).unwrap_or_default();
     if !erased.is_empty() {
-        let e: Vec<(&str, Option<&str>)> = erased.iter().map(|(u, up)| (u.as_str(), up.as_deref())).collect();
+        let e: Vec<(&str, Option<&str>, Option<&str>)> = erased.iter().map(|(u, up, o)| (u.as_str(), up.as_deref(), o.as_deref())).collect();
         move_up_erased(&mut vm.session, &e);
     }
     Ok(Value::Int(n))
@@ -525,7 +542,8 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     let sent = ctx.map(|c| c.sent).unwrap_or_default();
     let snapshot = snapshot_of(vm)?;
     let counts = crate::metrics::own_counts(&vm.session, false);
-    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts });
+    let transitioned = std::mem::take(&mut vm.session.transitioned);
+    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts, transitioned });
     Ok(())
 }
 
@@ -561,8 +579,8 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     }
     // What objects erased elsewhere owned here moves up before anything is
     // sent on, so an object moved this tick leaves with its new owner.
-    let erased: Vec<(&str, Option<&str>)> = job.inbox.iter().filter_map(|it| match it {
-        Item::Erased { uuid, up } => Some((uuid.as_str(), up.as_deref())),
+    let erased: Vec<(&str, Option<&str>, Option<&str>)> = job.inbox.iter().filter_map(|it| match it {
+        Item::Erased { uuid, up, owner } => Some((uuid.as_str(), up.as_deref(), owner.as_deref())),
         _ => None,
     }).collect();
     if !erased.is_empty() { move_up_erased(&mut vm.session, &erased); }
@@ -1062,12 +1080,12 @@ pub(crate) fn note_removed(s: &mut crate::session::Session, uuid: &str, heir: Op
     };
     if let Some(c) = s.region.as_mut() {
         if c.remote.contains(uuid) { return; }
-        c.sent.push((Dest::All, Item::Erased { uuid: uuid.to_string(), up }));
+        c.sent.push((Dest::All, Item::Erased { uuid: uuid.to_string(), up, owner: None }));
         return;
     }
     if let Some(w) = s.world.as_mut() {
         if w.view.contains(uuid) { return; }
-        for b in w.inbox.iter_mut() { b.push(Item::Erased { uuid: uuid.to_string(), up: up.clone() }); }
+        for b in w.inbox.iter_mut() { b.push(Item::Erased { uuid: uuid.to_string(), up: up.clone(), owner: None }); }
     }
 }
 
@@ -1116,10 +1134,12 @@ fn check_owner_loops(s: &crate::session::Session) -> Result<(), GoblinError> {
 
 /// This region's objects owned by an object erased elsewhere get that
 /// object's owner (following the chain when its owner was erased too).
-fn move_up_erased(s: &mut crate::session::Session, erased: &[(&str, Option<&str>)]) -> Vec<String> {
-    let gone: HashMap<&str, Option<&str>> = erased.iter().copied().collect();
+/// An object that is `up` itself (an absorber owned by its target) gets the
+/// erased object's own owner instead.
+fn move_up_erased(s: &mut crate::session::Session, erased: &[(&str, Option<&str>, Option<&str>)]) -> Vec<String> {
+    let gone: HashMap<&str, Option<&str>> = erased.iter().map(|(u, up, _)| (*u, *up)).collect();
     let mut moved = Vec::new();
-    for (uuid, _) in erased {
+    for (uuid, _, own) in erased {
         let kids: Vec<String> = s.object_store.contents_of(*uuid).map(|k| k.to_string()).collect();
         if kids.is_empty() { continue; }
         let mut up = gone.get(uuid).copied().flatten();
@@ -1132,8 +1152,11 @@ fn move_up_erased(s: &mut crate::session::Session, erased: &[(&str, Option<&str>
         }
         let v = match up { Some(u) => Value::Ref(u.into()), None => Value::Nil };
         for k in kids {
+            let v = if up == Some(k.as_str()) {
+                match own { Some(o) => Value::Ref((*o).into()), None => Value::Nil }
+            } else { v.clone() };
             if let Some(Value::Object(o)) = s.object_store.get_mut(k.as_str()) {
-                std::rc::Rc::make_mut(&mut o.fields).insert(crate::store::OWNER_FIELD.to_string(), v.clone());
+                std::rc::Rc::make_mut(&mut o.fields).insert(crate::store::OWNER_FIELD.to_string(), v);
             }
             s.object_store.refile_owner(k.as_str());
             s.touch(k.as_str());

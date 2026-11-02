@@ -84,6 +84,12 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
         }
     }
     clock.stop(&mut vm.session.des_metrics);
+    // In a region: its objects that transitioned (or were taken) this
+    // tick, so another region's claim on one of them is turned down.
+    if vm.session.region.is_some() {
+        let mine: Vec<String> = done.into_iter().filter(|u| !crate::world::is_remote(vm, u.as_str())).collect();
+        vm.session.transitioned = mine;
+    }
     Ok(())
 }
 
