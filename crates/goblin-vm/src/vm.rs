@@ -5232,8 +5232,11 @@ impl Vm {
         let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
         // Compiled against the program's globals, so a formula can read a
-        // variable and call an action (`where [ kingdom(target) == 2 ]`).
-        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec());
+        // variable and call an action (`where [ kingdom(target) == 2 ]`); a
+        // formula written in an imported module sees that module's names,
+        // as the rest of its code does.
+        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec())
+            .with_global_prefix(self.module_prefix_of(&expr.span().file));
         let f = Self::compile_expr_fn(expr, param_names, compiler)?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let tree = crate::formula_tree::FormulaTree::build(&f);
@@ -5243,6 +5246,15 @@ impl Vm {
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
         self.tick_exprs.insert(key, f.clone());
         Ok(f)
+    }
+
+    /// The global prefix of the imported module `file` (as its spans name
+    /// it), or None for the main program.
+    fn module_prefix_of(&self, file: &str) -> Option<String> {
+        if file.is_empty() { return None; }
+        let path = std::path::Path::new(file);
+        let prefix = format!("{}::", path.canonicalize().ok()?.display());
+        self.session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`

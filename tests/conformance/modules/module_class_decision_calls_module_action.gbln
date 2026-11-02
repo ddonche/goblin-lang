@@ -1,0 +1,8 @@
+/// known-gap: interp has no decision blocks (new DES syntax); the interpreter is being retired
+/// A decision written in an imported module calls that module's actions in
+/// its `where` and its score, as the module's other code does.
+import _support/modules/des_pond as pond
+big <> Frog | name: "big", size: 5
+mid <> Frog | name: "mid", size: 3
+:tick()
+say("{big >> size} {mid >> size}")

@@ -1,0 +1,23 @@
+/// A class whose decision and `where` call this module's own actions.
+<>Frog |
+    name: ..
+    size: 1
+    decision eat
+        targets: Frog where smaller(target, self)
+        score => bite(target)
+    xx
+    judge
+        eat: self.grow(eat >> target)
+    xx
+    act grow(t)
+        @size |= @size + t >> size
+    xx
+xx
+
+act smaller(a, b)
+    return a >> size < b >> size
+xx
+
+act bite(f)
+    return 10 - f >> size
+xx
