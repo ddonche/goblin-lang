@@ -19,7 +19,7 @@ xx
 act make(name)
     r <> Realm | name: name
     l <> Lord | name: "lord of {name}", owner: r
-    return {"realm": r}
+    return {"realm": r, "lord": l}
 xx
 act h(st, msg)
     return st

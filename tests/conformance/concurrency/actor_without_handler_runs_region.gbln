@@ -1,6 +1,6 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// `:actor(meadow)` with no handler: the actor runs the meadow and what it
-/// holds in `tick(regions)`, and takes no messages (posting one is C0107).
+/// `:actor(state)` with no handler: the actor runs the objects in its state
+/// in `tick(regions)`, and takes no messages (posting one is C0107).
 <>Meadow |
     n: 0
 xx
@@ -14,7 +14,7 @@ xx
 act make(i)
     m <> Meadow | n: i
     r <> Rabbit | owner: m
-    return m
+    return [m, r]
 xx
 meadows | [:actor(make(1)), :actor(make(2))]
 tick(meadows)

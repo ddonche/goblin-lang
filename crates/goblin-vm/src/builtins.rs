@@ -5412,6 +5412,7 @@ fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
 
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
+    crate::world::note_erased(session, uuid);
     session.object_store.move_contents_up(uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {

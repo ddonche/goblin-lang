@@ -328,6 +328,20 @@ impl ObjectStore {
         self.set_owner(&k, owner.as_ref());
     }
 
+    /// Whether giving `uuid` the owner `v` would make it own itself, at
+    /// some depth (ownership is a tree). A chain through an object that is
+    /// gone ends there.
+    pub fn would_loop(&self, uuid: &(impl IdKey + ?Sized), v: &Value) -> bool {
+        let (Some(me), Some(start)) = (uuid.id(), owner_in_value(v)) else { return false };
+        let me: &Id = &me;
+        let mut at = start;
+        for _ in 0..=self.len() {
+            if at == me { return true; }
+            match self.holder_of(at) { Some(h) => at = h, None => return false }
+        }
+        true
+    }
+
     /// The id of the object `uuid`'s `owner` field names, if it names one.
     pub fn holder_of(&self, uuid: &(impl IdKey + ?Sized)) -> Option<&Id> {
         let uuid = uuid.id()?;

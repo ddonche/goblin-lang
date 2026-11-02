@@ -1,0 +1,104 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Identities of transition successors in regions. split and merge make new
+/// objects with new ids; fracture, spawn make one new id each and keep the
+/// original's; mutate (even into another class), absorb (the absorber) and
+/// subjugate (both) keep theirs; erase and the retired ones leave. Every id
+/// in the world stays unique, and an object's uuid field is its id.
+<>Thing |
+    name: ..
+    plan: ..
+    owner: nil
+    transition split where @plan == "split"
+        first:
+            name: "{@name}1"
+            plan: "done"
+        xx
+        second:
+            name: "{@name}2"
+            plan: "done"
+        xx
+    xx
+    transition fracture where @plan == "fracture"
+        fragment:
+            name: "{@name} fragment"
+            plan: "done"
+        xx
+        carries:
+            plan: "done"
+        xx
+    xx
+    transition mutate where @plan == "mutate"
+        into: Other
+        carries:
+            plan: "done"
+        xx
+    xx
+    transition spawn where @plan == "spawn"
+        child:
+            name: "{@name} child"
+            plan: "done"
+        xx
+    xx
+    transition erase where @plan == "erase"
+    transition absorb
+        targets: Thing where @plan == "absorb" and (target >> plan) == "absorbed"
+        carries:
+            plan: "done"
+        xx
+    xx
+    transition merge
+        targets: Thing where @plan == "merge" and (target >> plan) == "merged"
+        carries:
+            name: "{@name}+{target >> name}"
+            plan: "done"
+        xx
+    xx
+    transition subjugate
+        targets: Thing where @plan == "subjugate" and (target >> plan) == "vassal"
+    xx
+xx
+<>Other |
+    name: ..
+    plan: ..
+    owner: nil
+xx
+before | {}
+act make(spec)
+    things | []
+    repeat spec as name, what
+        t <> Thing | name: name, plan: what
+        :update!(before{name}, t >> id)
+        :put_last!(things, t)
+    xx
+    return {"things": things}
+xx
+act day(st, msg)
+    return st
+xx
+one | :actor(make({"A": "split", "B": "fracture", "C": "mutate", "D": "spawn"}), day)
+two | :actor(make({"E": "absorb", "F": "absorbed", "G": "merge", "H": "merged"}), day)
+three | :actor(make({"I": "subjugate", "J": "vassal", "K": "erase", "L": "stay"}), day)
+tick([one, two, three])
+act by_name(x)
+    return x >> name
+xx
+all | :sort_by(:objects(it >> name != ..), "by_name")
+ids | []
+repeat all as x
+    old | before{x >> name}
+    kept | "CHANGED"
+    if old.nix? => kept |= "new"
+    if old == x >> id => kept |= "kept"
+    cls | "Thing"
+    if :is_type(x, "Other") => cls |= "Other"
+    say("{x >> name} ({cls}) id {kept}; uuid is id: {(x >> uuid) == (x >> id)}")
+    :put_last!(ids, x >> id)
+xx
+gone | []
+repeat before as name, want
+    if :len(:objects(it >> id == want)) == 0 => :put_last!(gone, name)
+xx
+say("gone: {:sort(gone)}")
+say("{:len(ids)} objects, {:len(:unique(ids))} distinct ids")
+j | :objects(it >> name == "J")[0]
+say("J held by {j >> owner >> name}")

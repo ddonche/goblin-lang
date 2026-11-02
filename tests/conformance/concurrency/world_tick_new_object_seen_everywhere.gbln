@@ -1,9 +1,9 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// An object the main program makes for a meadow is seen by every region
-/// on the tick it arrives, not only by its own. And when the main program
-/// puts an object that another region runs into such a new holder, that
-/// object moves from its own region: it is not copied (the sack counts
-/// one step a tick for it; before, it counted a step twice).
+/// An object the main program makes and moves into a region is seen by
+/// every region on the tick it arrives, not only by its own. And when the
+/// main program moves an object another region runs next to such a new
+/// object, it moves from its own region: it is not copied (the sack counts
+/// one step a tick for it; a copy would count a step twice).
 <>Meadow |
     n: 0
     seen: 0
@@ -30,7 +30,7 @@ xx
 act make(i)
     m <> Meadow | n: i
     r <> Rabbit | name: "r{i}", owner: m
-    return m
+    return [m, r]
 xx
 meadows | []
 repeat :range(1, 3) as i
@@ -62,10 +62,13 @@ repeat :range(1, 7) as t
     if t == 1
         m2 | :objects("Meadow", it >> n == 2)[0]
         kit <> Rabbit | name: "kit", owner: m2
+        :move!(kit, m2)
     elif t == 2
         m2 | :objects("Meadow", it >> n == 2)[0]
         r1 | :objects("Rabbit", it >> name == "r1")[0]
         sack <> Bag | name: "sack", owner: m2
+        :move!(sack, m2)
         r1 >> owner |= sack
+        :move!(r1, sack)
     xx
 xx

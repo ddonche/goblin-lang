@@ -43,8 +43,8 @@ fn entry(vm: &Vm, v: Value) -> Value {
 
 /// Every object's transitions for this tick. An object fires at most one;
 /// the ones on an object alone go first, then the ones with a target. A
-/// target is an object of this region that was here when the transitions
-/// began and has not transitioned yet.
+/// target has not transitioned yet and was here when the transitions
+/// began: an object of this region, or for subjugate any region's.
 pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
     let classes = vm.session.classes.clone();
     let candidates: Vec<(ObjId, String)> = {
@@ -87,9 +87,15 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
 fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Option<String> {
     let class = t.target_class.as_deref()?;
     let ids: Vec<ObjId> = vm.session.object_store.of_class_ids(class).cloned().collect();
+    // subjugate only sets the target's `owner`, so its target may run in
+    // another region (the change goes there). absorb and merge remove the
+    // target, so theirs must run here.
+    let anywhere = matches!(t.kind, K::Subjugate);
     for id in ids {
-        if id == *me || done.contains(id.as_str()) || !started.contains(id.as_str()) { continue; }
-        if crate::world::is_remote(vm, &id) { continue; }
+        if id == *me || done.contains(id.as_str()) { continue; }
+        if crate::world::is_remote(vm, &id) {
+            if !anywhere { continue; }
+        } else if !started.contains(id.as_str()) { continue; }
         if vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(me.clone())), ("target", Value::Ref(id.clone()))]) {
             return Some(id.to_string());
         }
@@ -144,7 +150,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             if matches!(t.link_rule, LinkContinuity::Inherit) { copy_links(vm, me, &first); copy_links(vm, me, &second); }
             copy_decision(vm, me, &first);
             copy_decision(vm, me, &second);
-            let old = remove_object(vm, me);
+            let old = remove_object(vm, me, &first);
             hook(vm, class, K::Split, old, vec![r(&first), r(&second)])
         }
         K::Fracture => {
@@ -177,8 +183,8 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             }
             if matches!(t.link_rule, LinkContinuity::Inherit) { copy_links(vm, me, &merged); copy_links(vm, other, &merged); }
             copy_decision(vm, me, &merged);
-            let old = remove_object(vm, me);
-            let old_target = remove_object(vm, other);
+            let old = remove_object(vm, me, &merged);
+            let old_target = remove_object(vm, other, &merged);
             hook(vm, class, K::Merge, old, vec![old_target, r(&merged)])
         }
         K::Absorb => {
@@ -188,7 +194,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             move_contents(vm, other, me)?;
             if !matches!(t.overlay_rule, OverlayContinuity::Drop) { copy_overlays(vm, other, me)?; }
             if matches!(t.link_rule, LinkContinuity::Inherit) { copy_links(vm, other, me); }
-            let old_target = remove_object(vm, other);
+            let old_target = remove_object(vm, other, me);
             hook(vm, class, K::Absorb, r(me), vec![old_target])
         }
         K::Subjugate => {
@@ -324,6 +330,7 @@ fn recast(vm: &mut Vm, me: &str, class: &str, mut fields: FieldMap) -> Result<()
 /// `owner` refiles the object, another region's object gets the change.
 fn write_field(vm: &mut Vm, uuid: &str, field: &str, v: Value) -> Result<(), GoblinError> {
     let v = entry(vm, v);
+    if field == crate::store::OWNER_FIELD { crate::world::check_owner_write(&vm.session, uuid, &v)?; }
     vm.session.touch(uuid);
     let Some(Value::Object(o)) = vm.session.object_store.get_mut(uuid) else {
         return Err(err(format!("transition: object {uuid} is gone")));
@@ -406,12 +413,15 @@ fn copy_decision(vm: &mut Vm, from: &str, to: &str) {
 
 /// Takes an object out of the world (its overlays and link offsets with
 /// it) and gives what it was, still readable, for its hook.
-fn remove_object(vm: &mut Vm, uuid: &str) -> Value {
+/// Takes `uuid` out of the world; what it owns in other regions goes to
+/// `heir` (this region's contents were moved already).
+fn remove_object(vm: &mut Vm, uuid: &str, heir: &str) -> Value {
     let old = vm.session.object_store.get(uuid).cloned().unwrap_or(Value::Nil);
     take_overlays_off(vm, uuid);
     vm.session.link_offsets.retain(|(a, b, _), _| a != uuid && b != uuid);
     vm.session.object_link_defs.retain(|(a, _), _| a != uuid);
     vm.session.object_decisions.remove(uuid);
+    crate::world::note_removed(&mut vm.session, uuid, Some(heir));
     vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     old

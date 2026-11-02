@@ -1,8 +1,7 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// What an object contains (objects whose `owner` names it, at any depth)
-/// goes with it: to the actor it is handed to, and to the region it moves
-/// to with :move!. The state holds only the person; the bag and the coins
-/// in it come along because they belong to the person.
+/// `owner` is a relationship, not a place: an actor runs only the objects
+/// in its state, and :move! moves one object. The lord moves east; his bag
+/// and coins stay in the west, still his. Moving each of them moves them.
 <>Person |
     name: ""
 xx
@@ -18,11 +17,14 @@ act make_region(name, rich)
     if rich
         p <> Person | name: "lord"
         b <> Bag | owner: p
+        :put_last!(folk, p)
+        :put_last!(folk, b)
         repeat :range(0, 3)
             c <> Coin | owner: b
+            :put_last!(folk, c)
         xx
         c <> Coin | owner: p, worth: 10
-        :put_last!(folk, p)
+        :put_last!(folk, c)
     xx
     return {"name": name, "folk": folk, "peer": nil, "seen": nil}
 xx
@@ -39,10 +41,16 @@ act region_day(st, msg)
     elif :has(msg, "tick")
         if msg{"tick"} == 1 and st{"name"} == "west"
             :move!(st{"folk"}[0], st{"peer"})
+        xx
+        if msg{"tick"} == 2 and st{"name"} == "west"
+            repeat st{"folk"} as x
+                if idx == 0 => skip
+                :move!(x, st{"peer"})
+            xx
             :update!(st{"folk"}, [])
         xx
     elif :has(msg, "ask")
-        :update!(st{"seen"}, {"coins": :len(:objects("Coin")), "bags": :len(:objects("Bag")), "wealth": wealth()})
+        :update!(st{"seen"}, {"people": :len(:objects("Person")), "coins": :len(:objects("Coin")), "bags": :len(:objects("Bag")), "wealth": wealth()})
     xx
     return st
 xx
@@ -50,7 +58,7 @@ west | :actor(make_region("west", true), region_day)
 east | :actor(make_region("east", false), region_day)
 :post(west, {"peer": east})
 :post(east, {"peer": west})
-repeat :range(1, 4) as d
+repeat :range(1, 5) as d
     w | :await(:request(west, {"ask": 1})){"seen"}
     e | :await(:request(east, {"ask": 1})){"seen"}
     say("before tick {d}: west {w}, east {e}")

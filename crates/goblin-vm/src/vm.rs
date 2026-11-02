@@ -1478,6 +1478,7 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
                 let new_val = entry_of(&self.session, new_val);
+                if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 self.session.touch(&uuid);
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
@@ -6657,6 +6658,7 @@ impl Vm {
                 };
                 self.session.touch(&uuid);
                 let replacement = entry_of(&self.session, replacement);
+                if AsRef::<str>::as_ref(field) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &replacement)?; }
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;

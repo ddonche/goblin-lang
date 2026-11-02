@@ -1,28 +1,31 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// Ownership works across actors. An actor given a meadow runs the meadow
-/// and everything it holds. Setting an object's `owner` to a meadow another
-/// actor runs (or to something that meadow holds) sends the object there,
-/// with what it holds, as `:move!` does: it is on its way for one tick, then
-/// its rules run in its new meadow. The main program can set `owner` too,
-/// and an object it makes for a meadow goes to that meadow's actor.
+/// `owner` is a relationship, not a place (Daniel, 2026-11-02). An actor
+/// runs the objects in its state. Setting an object's `owner` to an object
+/// another actor runs changes who owns it and nothing else: it keeps
+/// running where it ran. `:move!(x, y)` moves `x` alone to where `y` runs
+/// (an object or a region actor); what `x` owns stays where it runs. An
+/// object the main program makes runs nowhere until it is moved.
 /// (The main program lists the regions' objects region by region, so the
-/// order of the names shows where each one lives.)
+/// order of the names shows where each one runs.)
 <>Meadow |
     n: 0
 xx
 <>Rabbit |
-    name: ""
+    name: ..
     owner: nil
     age: 0
     every 1 tick
-        self >> age |= self >> age + 1
-        if self >> name == "bun" and self >> age == 2
-            self >> owner |= :objects("Meadow", it >> n == 3)[0]
+        @age |= @age + 1
+        if @name == "bun" and @age == 2
+            @owner |= :objects("Meadow", it >> n == 3)[0]
         xx
-    end
+        if @name == "r3" and @age == 2
+            :move!(self, :objects("Meadow", it >> n == 1)[0])
+        xx
+    xx
 xx
 <>Bag |
-    name: ""
+    name: ..
     owner: nil
 xx
 act make(i)
@@ -31,8 +34,9 @@ act make(i)
     if i == 1
         bun <> Rabbit | name: "bun", owner: m
         b <> Bag | name: "bag", owner: bun
+        return [m, r, bun, b]
     xx
-    return m
+    return [m, r]
 xx
 meadows | []
 repeat :range(1, 4) as i
@@ -49,14 +53,13 @@ act show(t)
     xx
     say("tick {t}: {names}")
 xx
-repeat :range(1, 6) as t
+repeat :range(1, 5) as t
     tick(meadows)
     show(t)
     if t == 3
-        r2 | :objects("Rabbit", it >> name == "r2")[0]
-        m1 | :objects("Meadow", it >> n == 1)[0]
         m2 | :objects("Meadow", it >> n == 2)[0]
-        r2 >> owner |= m1
         kit <> Rabbit | name: "kit", owner: m2
+        idle <> Rabbit | name: "idle", owner: m2
+        :move!(kit, m2)
     xx
 xx

@@ -191,6 +191,10 @@ pub struct Session {
     /// In a region: its copies of the other regions' objects, kept between
     /// ticks so the next tick rebuilds only the fields that changed.
     pub(crate) remote_copies: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Copy>,
+    /// In a region: the `owner` this region gave other regions' objects last
+    /// tick. Their regions set it at the start of this tick, after the
+    /// copies here were made, so the copies are given it too.
+    pub(crate) owners_sent: Vec<(crate::value::ObjId, Value)>,
     /// In a region: its objects as they went into its last snapshot.
     pub(crate) sent_objects: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Sent>,
     /// Compiled field defaults that are not plain literals, per (class, field).
@@ -415,6 +419,7 @@ impl Session {
             world: None,
             region: None,
             remote_copies: Default::default(),
+            owners_sent: Vec::new(),
             sent_objects: Default::default(),
             field_defaults: HashMap::new(),
             next_generation: 1,

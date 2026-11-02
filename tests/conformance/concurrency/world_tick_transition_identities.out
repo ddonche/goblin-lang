@@ -1,0 +1,15 @@
+A1 (Thing) id new; uuid is id: true
+A2 (Thing) id new; uuid is id: true
+B (Thing) id kept; uuid is id: true
+B fragment (Thing) id new; uuid is id: true
+C (Other) id kept; uuid is id: true
+D (Thing) id kept; uuid is id: true
+D child (Thing) id new; uuid is id: true
+E (Thing) id kept; uuid is id: true
+G+H (Thing) id new; uuid is id: true
+I (Thing) id kept; uuid is id: true
+J (Thing) id kept; uuid is id: true
+L (Thing) id kept; uuid is id: true
+gone: [A, F, G, H, K]
+12 objects, 12 distinct ids
+J held by I
