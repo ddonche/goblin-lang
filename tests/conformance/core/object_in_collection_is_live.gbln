@@ -5,6 +5,7 @@
 /// an erased object reads as nil.
 <>Land |
     people: 0
+    near: []
     every 1 tick
         @people |= @people + 1
     xx
@@ -29,3 +30,6 @@ say(:has(:str(lst), "people: 6"))
 :delete_object!(b)
 say(put[0])
 say(:len(put))
+say(put[0] == nil)
+c <> Land | people: 9, near: [a]
+say(:has(:str(c), "people: 6"))
