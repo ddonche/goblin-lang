@@ -431,6 +431,14 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
         return Err(s_help_site!("P1512", &format!("`transition {word}` acts on one object alone and takes no `targets:`"),
             "Only merge, absorb and subjugate take `targets:`"));
     }
+    if overlay {
+        for s in &t.successors {
+            if s.fields.iter().any(|(f, _)| f == "strength") {
+                return Err(s_help_site!("P1510", "An overlay's strength is its `intensity`",
+                    &format!("Write: intensity: intensity * .5  (in `{}:`)", s.label)));
+            }
+        }
+    }
     let labels: &[&str] = match t.kind {
         K::Spawn => &["child"],
         K::Mutate => &["carries"],
@@ -9511,10 +9519,6 @@ impl<'t> Parser<'t> {
                             let Some(fname) = self.eat_ident() else {
                                 return Err(s_help_site!("P1508", &format!("Expected a field in `{label}:`"), "Write: population: @population * .85"));
                             };
-                            if fname == "strength" {
-                                return Err(s_help_site!("P1510", "An overlay's strength is its `intensity`",
-                                    &format!("Write: intensity: intensity * .5  (in `{label}:`)")));
-                            }
                             self.skip_layout_inline();
                             if !self.eat_op(":") {
                                 return Err(s_help_site!("P1508", &format!("Expected ':' after the field '{fname}'"), "Write: population: @population * .85"));

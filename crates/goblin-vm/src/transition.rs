@@ -264,16 +264,33 @@ fn overrides(vm: &mut Vm, list: &[(String, goblin_ast::Expr)], me: &str, target:
     Ok(out)
 }
 
+/// The fields laid out as a new object's are: its own `id` first (read
+/// only), the class's fields, its `uuid` last.
+fn with_identity(fields: FieldMap, id: &str, decl: &goblin_ast::ClassDecl) -> (FieldMap, std::collections::BTreeSet<String>) {
+    let mut out = FieldMap::default();
+    let mut readonly = std::collections::BTreeSet::new();
+    out.insert("id".to_string(), Value::Str(id.into()));
+    readonly.insert("id".to_string());
+    for (k, v) in fields.iter() {
+        if k == "id" || k == "uuid" { continue; }
+        out.insert(k.clone(), v.clone());
+    }
+    for f in &decl.fields { if f.readonly { readonly.insert(f.name.clone()); } }
+    out.insert("uuid".to_string(), Value::Str(id.into()));
+    (out, readonly)
+}
+
 /// A new object of `class` with these fields (`~` fields kept in 0..1).
 fn make_object(vm: &mut Vm, class: &str, mut fields: FieldMap) -> Result<String, GoblinError> {
     let classes = vm.session.classes.clone();
     let decl = classes.get(class).ok_or_else(|| err(format!("R1241: unknown-class: a transition makes a {class}, and there is no class {class}")))?;
-    let traits = crate::vm::trait_fields_of(&mut fields, &decl.fields);
     let id = uuid::Uuid::new_v4().to_string();
+    let (mut fields, readonly) = with_identity(fields, &id, decl);
+    let traits = crate::vm::trait_fields_of(&mut fields, &decl.fields);
     let obj = Value::Object(Box::new(ObjectVal {
         class_name: crate::value::class_rc(class),
         fields: Rc::new(fields),
-        readonly_fields: Default::default(),
+        readonly_fields: Rc::new(readonly),
         trait_fields: Rc::new(traits),
         uuid: id.as_str().into(),
     }));
@@ -287,11 +304,12 @@ fn make_object(vm: &mut Vm, class: &str, mut fields: FieldMap) -> Result<String,
 fn recast(vm: &mut Vm, me: &str, class: &str, mut fields: FieldMap) -> Result<(), GoblinError> {
     let classes = vm.session.classes.clone();
     let decl = classes.get(class).ok_or_else(|| err(format!("R1241: unknown-class: a transition makes a {class}, and there is no class {class}")))?;
+    let (mut fields, readonly) = with_identity(fields, me, decl);
     let traits = crate::vm::trait_fields_of(&mut fields, &decl.fields);
     let obj = Value::Object(Box::new(ObjectVal {
         class_name: crate::value::class_rc(class),
         fields: Rc::new(fields),
-        readonly_fields: Default::default(),
+        readonly_fields: Rc::new(readonly),
         trait_fields: Rc::new(traits),
         uuid: me.into(),
     }));
@@ -596,6 +614,19 @@ fn take_overlay(vm: &mut Vm, inst: &OverlayInstance) {
     crate::tick::settle_films(&mut vm.session);
 }
 
+/// Gives the overlay at `p` a new intensity and fields, and what its
+/// `modify` adds to the host follows.
+fn change_overlay(vm: &mut Vm, p: usize, intensity: Option<f64>, fields: Vec<(String, Value)>) -> Result<(), GoblinError> {
+    if let Some(f) = intensity { vm.session.overlay_instances[p].strength = f; }
+    for (k, v) in fields { vm.session.overlay_instances[p].extra_fields.insert(k, v); }
+    let amounts = crate::tick::modify_amounts(vm, p)?;
+    vm.session.overlay_instances[p].applied = amounts;
+    let host = vm.session.overlay_instances[p].host_uuid.clone();
+    vm.session.overlay_instances.mark(&host);
+    crate::tick::settle_films(&mut vm.session);
+    Ok(())
+}
+
 fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &OverlayInstance, me: &Value, target: Option<&OverlayInstance>) -> Result<(), GoblinError> {
     let name = inst.overlay_name.clone();
     match t.kind {
@@ -608,12 +639,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
                 vm.session.overlay_instances.rename(p, kind);
                 vm.session.overlay_instances[p].age = 0;
             }
-            if let Some(f) = intensity { vm.session.overlay_instances[p].strength = f; }
-            for (k, v) in fields { vm.session.overlay_instances[p].extra_fields.insert(k, v); }
-            let amounts = crate::tick::modify_amounts(vm, p)?;
-            vm.session.overlay_instances[p].applied = amounts;
-            vm.session.overlay_instances.mark(&inst.host_uuid);
-            crate::tick::settle_films(&mut vm.session);
+            change_overlay(vm, p, intensity, fields)?;
             let now = vm.session.overlay_instances[p].clone();
             seed_kind(vm, made, &now);
             overlay_hook(vm, def, K::Mutate, inst, Vec::new())
@@ -638,10 +664,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let (ic, fc) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let frag = successor(vm, inst, kf, i_f, ff);
             seed_kind(vm, mf, &frag);
-            if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) {
-                if let Some(f) = ic { vm.session.overlay_instances[p].strength = f; }
-                for (k, v) in fc { vm.session.overlay_instances[p].extra_fields.insert(k, v); }
-            }
+            if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             crate::tick::overlay_put(vm, frag.clone(), false)?;
             let recs = vec![vm.overlay_record(&frag)];
             overlay_hook(vm, def, K::Fracture, inst, recs)
@@ -686,10 +709,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let (ic, fc) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let old_target = vm.overlay_record(other);
             take_overlay(vm, other);
-            if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) {
-                if let Some(f) = ic { vm.session.overlay_instances[p].strength = f; }
-                for (k, v) in fc { vm.session.overlay_instances[p].extra_fields.insert(k, v); }
-            }
+            if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             overlay_hook(vm, def, K::Absorb, inst, vec![old_target])
         }
         K::Subjugate => Err(err("R1245: overlay-subjugate: an overlay can't subjugate")),
