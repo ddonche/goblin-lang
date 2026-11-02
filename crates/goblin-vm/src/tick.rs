@@ -915,6 +915,7 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         // The first condition that names `target` must be the ownership
         // test: a target it leaves out would have stopped there, before any
         // later condition could run (or fail with an error).
+        if let Some(fewer) = narrow_by_link(vm, c, class, self_ref, self_at) { return fewer; }
         let E::Binary(l, op, r, _) = c else { return None };
         if op != "==" { return None; }
         // `target >> owner` is 1, `target >> owner >> owner` 2, ...
@@ -1017,6 +1018,40 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         return Some(fewer);
     }
     None
+}
+
+/// `:link_score(x, target, "border")`, alone or compared with a number:
+/// the targets `x` has that link to, when a link never set fails the test
+/// (see `Vm::unset_link_fails`). None: not this kind of condition.
+fn narrow_by_link(vm: &mut Vm, c: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize) -> Option<Option<Vec<(Value, usize)>>> {
+    use goblin_ast::Expr as E;
+    let link_call = |e: &E| match e {
+        E::FreeCall(n, args, _) if n.trim_start_matches(':') == "link_score" && args.len() == 3 => Some(args.clone()),
+        _ => None,
+    };
+    let (args, test) = match c {
+        E::Binary(l, op, r, _) if ["==", "!=", ">", ">=", "<", "<="].contains(&op.as_str()) => match (link_call(l), &**r) {
+            (Some(a), E::Number(n, _)) => {
+                let v = if n.contains('.') { Value::Float(n.parse().ok()?) } else { Value::Int(n.parse().ok()?) };
+                (a, Some((op.clone(), v)))
+            }
+            _ => return None,
+        },
+        other => (link_call(other)?, None),
+    };
+    if !matches!(&args[1], E::Ident(n, _) if n == "target") || names(&args[0], "target") { return None; }
+    let E::Str(name, _) = &args[2] else { return None };
+    let f = vm.tick_formula(&args[0], &["self", "target"]).ok()?;
+    let from = match vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()? {
+        Value::Ref(u) => u.to_string(),
+        Value::Object(o) => o.uuid.to_string(),
+        _ => return None,
+    };
+    if !vm.unset_link_fails(&from, name, test.as_ref().map(|(o, v)| (o.as_str(), v))) { return None; }
+    let store = &vm.session.object_store;
+    Some(Some(vm.link_targets_in(&from, name, class).into_iter()
+        .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
+        .collect()))
 }
 
 /// Every target that passes the `where` condition, with its score, by

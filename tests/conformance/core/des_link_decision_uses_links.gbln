@@ -1,0 +1,51 @@
+/// known-gap: interp has no link blocks or :link! (new DES syntax); the interpreter is being retired
+/// A decision whose `where` starts with `:link_score(self, target, "name")`
+/// (alone or compared with a number) picks from the objects linked to, and
+/// picks the same target as checking every object would.
+<>Town |
+    name: ..
+    goods: 0
+    sent: ..
+    decision trade
+        targets: Town where :link_score(self, target, "road") and target >> goods < @goods
+        score => @goods - target >> goods
+    xx
+    decision visit
+        targets: Town where :link_score(self, target, "fame") >= 1
+        score => target >> goods
+    xx
+    judge_all
+        trade: self.give(trade >> target)
+        visit: self.note(visit >> target)
+    xx
+    act give(t)
+        @goods |= @goods - 1
+        t >> goods |= t >> goods + 1
+    xx
+    act note(t)
+        @sent |= t >> name
+    xx
+xx
+link road
+    hosts: Town
+    range: bool
+xx
+link fame
+    hosts: Town
+    range: 1...5
+xx
+towns | []
+repeat ["a", "b", "c", "d"] as n
+    t <> Town | name: n, goods: 10 - 3 * idx
+    :put_last!(towns, t)
+xx
+:link!(towns[0], towns[1], road, 1)
+:link!(towns[0], towns[3], road, 1)
+:link!(towns[1], towns[2], road, 1)
+:link!(towns[2], towns[0], fame, 2)
+repeat 3
+    :tick()
+xx
+repeat :objects(Town) as t
+    say("{t >> name}: {t >> goods} goods, visits {t >> sent}")
+xx

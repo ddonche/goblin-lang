@@ -6076,43 +6076,51 @@ impl Vm {
         };
         let Value::Str(name) = func.constants.get(name_i as usize)? else { return None };
         let name = name.to_string();
-        // Never set, the link is its range's nearest value to 0; that must fail.
-        if self.session.object_link_defs.contains_key(&(from.clone(), name.clone())) { return None; }
-        let class_of_from = match self.session.object_store.get(&*from) { Some(Value::Object(o)) => o.class_name.to_string(), _ => return None };
-        let def = self.session.link_defs.get(&(class_of_from, name.clone()))?.clone();
-        // The start a link block gives without `score` is its range's low end.
-        if def.has_formula && !matches!(def.formula, goblin_ast::Expr::Number(..)) { return None; }
-        let unset = crate::tick::link_value(self, &from, "", &name).ok()?;
-        let fails = match tail {
-            [O::Return] => !unset.is_truthy(),
+        let test = match tail {
+            [O::Return] => None,
             [O::LoadConst(c), op, O::Return] => {
-                let c = func.constants.get(*c as usize)?;
-                let ord = |a: &Value, b: &Value| -> Option<std::cmp::Ordering> {
-                    let f = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(x) => Some(*x), _ => None };
-                    f(a)?.partial_cmp(&f(b)?)
-                };
-                use std::cmp::Ordering::*;
-                match op {
-                    O::Gt => ord(&unset, c)? != Greater,
-                    O::Ge => ord(&unset, c)? == Less,
-                    O::Lt => ord(&unset, c)? != Less,
-                    O::Le => ord(&unset, c)? == Greater,
-                    O::Eq => !values_equal(&unset, c),
-                    O::Ne => values_equal(&unset, c),
-                    _ => return None,
-                }
+                let op = match op { O::Gt => ">", O::Ge => ">=", O::Lt => "<", O::Le => "<=", O::Eq => "==", O::Ne => "!=", _ => return None };
+                Some((op, func.constants.get(*c as usize)?.clone()))
             }
             _ => return None,
         };
-        if !fails { return None; }
+        if !self.unset_link_fails(&from, &name, test.as_ref().map(|(o, c)| (*o, c))) { return None; }
+        Some(self.link_targets_in(&from, &name, class))
+    }
+
+    /// Whether a link `from` never set on `name` fails the test: truthy
+    /// when `test` is None, else `link op value`. False when that can't be
+    /// told (a link starting from a formula, a test on something else).
+    pub(crate) fn unset_link_fails(&mut self, from: &str, name: &str, test: Option<(&str, &Value)>) -> bool {
+        if self.session.object_link_defs.contains_key(&(from.to_string(), name.to_string())) { return false; }
+        let Some(Value::Object(o)) = self.session.object_store.get(from) else { return false };
+        let Some(def) = self.session.link_defs.get(&(o.class_name.to_string(), name.to_string())).cloned() else { return false };
+        // The start a link block gives without `score` is its range's low end.
+        if def.has_formula && !matches!(def.formula, goblin_ast::Expr::Number(..)) { return false; }
+        let Ok(unset) = crate::tick::link_value(self, from, "", name) else { return false };
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(x) => Some(*x), _ => None };
+        let passes = match test {
+            None => unset.is_truthy(),
+            Some(("==", c)) => values_equal(&unset, c),
+            Some(("!=", c)) => !values_equal(&unset, c),
+            Some((op, c)) => {
+                let (Some(a), Some(b)) = (num(&unset), num(c)) else { return false };
+                match op { ">" => a > b, ">=" => a >= b, "<" => a < b, "<=" => a <= b, _ => return false }
+            }
+        };
+        !passes
+    }
+
+    /// Where in the store the objects of `class` that `from` has a `name`
+    /// link change to sit, in store order.
+    pub(crate) fn link_targets_in(&self, from: &str, name: &str, class: &str) -> Vec<usize> {
         let store = &self.session.object_store;
-        let mut at: Vec<usize> = self.session.link_offsets.targets(&from, &name).iter()
+        let mut at: Vec<usize> = self.session.link_offsets.targets(from, name).iter()
             .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if &*o.class_name == class))
             .filter_map(|u| store.get_index_of(u.as_str()))
             .collect();
-        // In the store's order, as the full list gives them.
         at.sort_unstable();
-        Some(at)
+        at
     }
 
     /// What running `func` directly as a one-argument predicate needs,
