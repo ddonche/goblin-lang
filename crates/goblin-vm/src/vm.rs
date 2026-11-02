@@ -1299,7 +1299,7 @@ impl Vm {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(self.as_entry(result)));
+                self.stack.push(Operand::Val(self.read_entry(result)));
             }
             Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
                 let brace = matches!(op, Opcode::KeyGet(_));
@@ -1307,7 +1307,7 @@ impl Vm {
                 if let Some(v) = self.index_get_in_place(brace)? {
                     let len = self.stack.len();
                     self.stack.truncate(len - 2);
-                    self.stack.push(Operand::Val(self.as_entry(v)));
+                    self.stack.push(Operand::Val(self.read_entry(v)));
                     return Ok(());
                 }
                 let key = self.pop_value()?;
@@ -1319,7 +1319,7 @@ impl Vm {
                         "T0205: type-mismatch: map key must be a scalar (string, int, float, bool, char)".into()));
                 }
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(self.as_entry(result)));
+                self.stack.push(Operand::Val(self.read_entry(result)));
             }
             Opcode::GuardRebindLocal(slot, name_idx) => {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
@@ -3542,6 +3542,16 @@ impl Vm {
     /// Pop one operand, resolve it, and dereference Value::Ref through object_store.
     #[inline]
     fn as_entry(&self, v: Value) -> Value { entry_of(&self.session, v) }
+
+    /// An element read out of a collection: a stored object reads as its id,
+    /// and an erased one as nil, as a field does.
+    #[inline]
+    fn read_entry(&self, v: Value) -> Value {
+        match v {
+            Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && !self.session.object_store.contains_key(&*u) => Value::Nil,
+            v => entry_of(&self.session, v),
+        }
+    }
 
     /// Stored objects go into a collection as their ids, as into a field:
     /// the collection names the object, it does not hold a copy of it.
