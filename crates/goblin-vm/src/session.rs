@@ -108,6 +108,39 @@ pub struct LinkOffset {
     pub ticks_remaining: Option<u32>,
 }
 
+type LinkMap = HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>;
+
+/// Every change made to a link, by (from, to, name). Reads go straight to
+/// the map. It also answers "which objects does this one have a link to"
+/// from an index built when first asked and dropped on any change.
+#[derive(Default)]
+pub struct LinkTable {
+    map: LinkMap,
+    from: std::cell::RefCell<Option<HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher>>>,
+}
+
+impl LinkTable {
+    /// The objects `from` has a `name` link change to, in no set order.
+    pub fn targets(&self, from: &str, name: &str) -> Vec<String> {
+        let mut idx = self.from.borrow_mut();
+        let idx = idx.get_or_insert_with(|| {
+            let mut m: HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher> = Default::default();
+            for (a, b, n) in self.map.keys() { m.entry(a.clone()).or_default().push((b.clone(), n.clone())); }
+            m
+        });
+        idx.get(from).map(|v| v.iter().filter(|(_, n)| n == name).map(|(b, _)| b.clone()).collect()).unwrap_or_default()
+    }
+}
+
+impl std::ops::Deref for LinkTable {
+    type Target = LinkMap;
+    fn deref(&self) -> &LinkMap { &self.map }
+}
+
+impl std::ops::DerefMut for LinkTable {
+    fn deref_mut(&mut self) -> &mut LinkMap { *self.from.get_mut() = None; &mut self.map }
+}
+
 /// HTTP response state accumulated during a request.
 #[derive(Debug, Clone, Default)]
 pub struct ResponseState {
@@ -275,7 +308,7 @@ pub struct Session {
     pub overlay_defs: rustc_hash::FxHashMap<String, Rc<OverlayDef>>,
     pub link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
-    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>,
+    pub link_offsets: LinkTable,
     pub object_decisions: HashMap<String, Rc<goblin_ast::DecisionDef>>,
     pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,

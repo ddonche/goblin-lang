@@ -2150,6 +2150,7 @@ impl Vm {
                     BuiltinId::Objects => {
                         let (class, pred) = query_args(arg_vals, "objects")?;
                         let result = self.vm_objects_query(class.as_deref(), pred)?;
+                        let result = self.entries_out(result);
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -3567,6 +3568,7 @@ impl Vm {
         };
         match &mut v {
             Value::Object(_) => if stored(&v) { return self.as_entry(v); },
+            Value::Array(xs) => xs.iter_mut().for_each(to_id),
             Value::Collection(rc) => match &rc.layout {
                 L::FlatArray(xs) if xs.iter().any(|x| stored(x)) => {
                     if let L::FlatArray(xs) = &mut Rc::make_mut(rc).layout { Rc::make_mut(xs).iter_mut().for_each(to_id); }
@@ -5998,7 +6000,11 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!(
                         "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
                 }
-                match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
+                let narrowed = match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
+                    Some(at) => Some(at),
+                    None => pred.as_ref().and_then(|p| self.objects_by_link(c, p)),
+                };
+                match narrowed {
                     Some(at) => Some(at),
                     None => {
                         let store = &self.session.object_store;
@@ -6031,6 +6037,82 @@ impl Vm {
         let mut at = vec![usize::MAX - 1; 1 + env.upvalues.len() + env.globals.len()];
         let key = self.run_formula_key(part, &[("it", &Value::Nil)], &mut at, &env)?;
         Some(self.session.object_store.with_field(class, field, &key))
+    }
+
+    /// `:objects("Land", :link_score(x, it, "border"))`, alone or compared
+    /// with a number (`> 0`): when the link can only pass for objects `x`
+    /// has changed that link to, those objects of the class (the predicate
+    /// still runs on each). A link whose start is a formula, or one that
+    /// passes where it was never set, takes the general path.
+    fn objects_by_link(&mut self, class: &str, pred: &Value) -> Option<Vec<usize>> {
+        use crate::opcode::Opcode as O;
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 { return None; }
+        let mut code: &[O] = &func.bytecode;
+        // A bare name is `it`'s field when its class has one by that name.
+        if let [O::LoadItFieldOrJump(ci, 1), rest @ ..] = code {
+            let Value::Str(name) = func.constants.get(*ci as usize)? else { return None };
+            let decl = self.session.classes.get(class)?;
+            if ["id", "uuid", "owner_id"].contains(&name.as_str()) || decl.fields.iter().any(|f| f.name == name.as_str()) { return None; }
+            code = rest;
+        }
+        let (load, name_i, tail) = match code {
+            [load, O::LoadLocal(0), O::LoadConst(n), O::CallBuiltin(crate::value::BuiltinId::LinkScore, 3), tail @ ..] => (load, *n, tail),
+            _ => return None,
+        };
+        let from = match load {
+            O::LoadUpvalue(i) => self.session.get_stash(&cells.get(*i as usize)?.get()).ok()?.value.clone_fast(),
+            O::LoadGlobal(g) => { let t = self.session.get_global(*g as usize)?.clone(); self.session.get_stash(&t).ok()?.value.clone_fast() }
+            _ => return None,
+        };
+        let from = match &from {
+            Value::Ref(u) => u.to_string(),
+            Value::Object(o) => o.uuid.to_string(),
+            _ => return None,
+        };
+        let Value::Str(name) = func.constants.get(name_i as usize)? else { return None };
+        let name = name.to_string();
+        // Never set, the link is its range's nearest value to 0; that must fail.
+        if self.session.object_link_defs.contains_key(&(from.clone(), name.clone())) { return None; }
+        let class_of_from = match self.session.object_store.get(&*from) { Some(Value::Object(o)) => o.class_name.to_string(), _ => return None };
+        let def = self.session.link_defs.get(&(class_of_from, name.clone()))?.clone();
+        // The start a link block gives without `score` is its range's low end.
+        if def.has_formula && !matches!(def.formula, goblin_ast::Expr::Number(..)) { return None; }
+        let unset = crate::tick::link_value(self, &from, "", &name).ok()?;
+        let fails = match tail {
+            [O::Return] => !unset.is_truthy(),
+            [O::LoadConst(c), op, O::Return] => {
+                let c = func.constants.get(*c as usize)?;
+                let ord = |a: &Value, b: &Value| -> Option<std::cmp::Ordering> {
+                    let f = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(x) => Some(*x), _ => None };
+                    f(a)?.partial_cmp(&f(b)?)
+                };
+                use std::cmp::Ordering::*;
+                match op {
+                    O::Gt => ord(&unset, c)? != Greater,
+                    O::Ge => ord(&unset, c)? == Less,
+                    O::Lt => ord(&unset, c)? != Less,
+                    O::Le => ord(&unset, c)? == Greater,
+                    O::Eq => !values_equal(&unset, c),
+                    O::Ne => values_equal(&unset, c),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if !fails { return None; }
+        let store = &self.session.object_store;
+        let mut at: Vec<usize> = self.session.link_offsets.targets(&from, &name).iter()
+            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if &*o.class_name == class))
+            .filter_map(|u| store.get_index_of(u.as_str()))
+            .collect();
+        // In the store's order, as the full list gives them.
+        at.sort_unstable();
+        Some(at)
     }
 
     /// What running `func` directly as a one-argument predicate needs,

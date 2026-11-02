@@ -1,0 +1,63 @@
+/// known-gap: interp has no link blocks or :link! (new DES syntax); the interpreter is being retired
+/// `:objects(Class, :link_score(x, it, "name") ...)` finds the objects x
+/// links to. It gives the same objects as checking every one: also for a
+/// link changed back to where it started, a link that passes where it was
+/// never set, and a link that starts from a formula.
+<>Land |
+    name: ..
+    rich: 0
+    near: 0
+    every 1 tick
+        @near |= :len(:objects(Land, :link_score(self, it, "border")))
+    xx
+xx
+link border
+    hosts: Land
+    range: bool
+xx
+link trade
+    hosts: Land
+    range: 0...10
+xx
+link ease
+    hosts: Land
+    range: 2...9
+xx
+link fame
+    hosts: Land
+    range: 0...10
+    score => target >> rich
+xx
+act near_of(l)
+    return :str(l >> near)
+xx
+act names(xs)
+    out | []
+    repeat xs as x
+        :put_last!(out, x >> name)
+    xx
+    return :join(:sort(out), " ")
+xx
+all | []
+repeat ["a", "b", "c", "d", "e"] as n
+    l <> Land | name: n, rich: idx
+    :put_last!(all, l)
+xx
+a | all[0]
+:link!(a, all[1], border, 1)
+:link!(a, all[2], border, 1)
+:link!(a, all[3], border, 1)
+:link!(a, all[3], border, -1)
+:link!(a, all[2], trade, 4)
+:link!(a, all[4], trade, 7)
+:link!(a, all[1], ease, 3)
+say(names(:objects(Land, :link_score(a, it, "border"))))
+say(names(:objects(Land, :link_score(a, it, "border") == true)))
+say(names(:objects(Land, :link_score(a, it, "trade") > 0)))
+say(names(:objects(Land, :link_score(a, it, "trade") >= 5)))
+say(names(:objects(Land, :link_score(a, it, "trade") < 5)))
+say(names(:objects(Land, :link_score(a, it, "ease") >= 2)))
+say(names(:objects(Land, :link_score(a, it, "ease") > 2)))
+say(names(:objects(Land, :link_score(a, it, "fame") > 1)))
+tick()
+say(:join(:map(all, "near_of"), " "))
