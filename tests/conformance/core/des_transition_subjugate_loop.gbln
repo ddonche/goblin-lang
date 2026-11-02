@@ -1,0 +1,13 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// subjugate never makes a loop of owners: subjugating what holds you is an error.
+<>Realm |
+    name: ..
+    power: 0
+    owner: nil
+    transition subjugate
+        targets: Realm where (target >> power) < @power
+    xx
+xx
+lord <> Realm | name: "Lord", power: 1
+vassal <> Realm | name: "Vassal", power: 9, owner: lord
+tick()

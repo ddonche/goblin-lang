@@ -1,0 +1,11 @@
+plague splits into plague_1 0.3 and plague_2 0.3
+in Varn a new language
+in Oss a new language
+Varn: language_1
+Oss: language_2
+Oss: plague_1
+Oss: plague_2
+language_1 on a intensity 0.8 age 1
+language_2 on b intensity 0.8 age 1
+plague_1 on b intensity 0.3 age 2
+plague_2 on b intensity 0.3 age 2

@@ -1,0 +1,6 @@
+/// subjugate is about ownership, which overlays don't have: an error.
+overlay plague
+    transition subjugate
+        targets: plague where true
+    xx
+xx

@@ -1,0 +1,5 @@
+/// merge, absorb and subjugate need targets:.
+<>R |
+    p: 0
+    transition absorb where @p > 1
+xx

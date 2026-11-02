@@ -1498,7 +1498,8 @@ impl Vm {
                     // the world: its region gets the new value next tick.
                     crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
                 } else {
-                    return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
+                    return Err(GoblinError::Runtime(format!(
+                        "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
                 }
                 // Push ref back so caller can chain / store back.
                 self.stack.push(Operand::Val(Value::Ref(uuid)));
@@ -2749,6 +2750,8 @@ impl Vm {
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
+                    family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
+                    generated: false,
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
@@ -6056,7 +6059,7 @@ impl Vm {
 
     /// What `:overlays(...)` shows for one overlay: a record of its name,
     /// host, strength, age, time left, count and own fields.
-    fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
+    pub(crate) fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
         thread_local! {
             static RECORD_LAYOUT: std::cell::RefCell<Option<std::rc::Rc<crate::fields::Layout>>> = const { std::cell::RefCell::new(None) };
         }

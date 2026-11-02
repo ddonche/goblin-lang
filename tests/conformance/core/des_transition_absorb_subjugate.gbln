@@ -1,0 +1,44 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// absorb: the absorber keeps its identity and takes its target's holdings;
+/// the target is removed. subjugate: both keep their identities; the target
+/// becomes owned by the subjugator and keeps what it owns. An object fires
+/// one transition a tick, so Big subjugates Mid on the second tick.
+<>Land |
+    name: ..
+    owner: nil
+xx
+<>Realm |
+    name: ..
+    power: 0
+    owner: nil
+    transition absorb
+        targets: Realm where (target >> power) * 3 < @power and (target >> owner) == nil
+        carries:
+            power: @power + (target >> power)
+        xx
+    xx
+    transition subjugate
+        targets: Realm where (target >> power) * 3 >= @power and (target >> power) < @power and (target >> owner) == nil
+    xx
+    on absorb => say("{self >> name} absorbs {target >> name}")
+    on subjugate => say("{self >> name} subjugates {target >> name}")
+xx
+act holder(x)
+    o | x >> owner
+    if o.nix? => send "none"
+    return o >> name
+xx
+big <> Realm | name: "Big", power: 30
+small <> Realm | name: "Small", power: 5
+mid <> Realm | name: "Mid", power: 20
+l1 <> Land | name: "l1", owner: small
+l2 <> Land | name: "l2", owner: mid
+repeat 2
+    tick()
+xx
+repeat :objects("Realm") as r
+    say("{r >> name} power {r >> power} owner {holder(r)}")
+xx
+repeat :objects("Land") as l
+    say("{l >> name} owner {l >> owner >> name}")
+xx

@@ -1,0 +1,82 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Transitions in regions. Each place where the old tongue settles turns it
+/// into its own daughter; a region numbers its new kinds apart from the
+/// others (region k of n: k+1, k+1+n, ...), so names never clash and a run
+/// repeats exactly. A split's successors live in its region; an absorb only
+/// takes a target in its own region, so Big never absorbs Small.
+:rand_seed(1)
+<>Land |
+    name: ..
+    town: 0
+xx
+link road
+    hosts: Land
+    range: 0...1
+    score => 1 - :abs((@town) - (target >> town))
+xx
+<^>Language |
+    hosts: Land
+    spread: 1 where :link_score(@, target, road) > .3
+xx
+overlay old_tongue <^> Language
+    ~intensity: .9
+    gen: 0
+    transition mutate where age == 1 and (self >> gen) == 0
+        carries:
+            gen: 1
+        xx
+    xx
+xx
+<>Realm |
+    name: ..
+    power: 0
+    transition split where @power > 10
+        first:
+            power: @power / 2
+        xx
+        second:
+            name: "{@name} West"
+            power: @power / 2
+        xx
+    xx
+    transition absorb
+        targets: Realm where (target >> power) < @power
+    xx
+xx
+act make(t, names, speak)
+    things | []
+    repeat names as n
+        l <> Land | name: n, town: t
+        if speak => :overlay!(l, old_tongue)
+        :put_last!(things, l)
+    xx
+    return {"things": things}
+xx
+act make_realm(name, power)
+    r <> Realm | name: name, power: power
+    return {"things": [r]}
+xx
+act day(st, msg)
+    return st
+xx
+north | :actor(make(0, ["Varn"], true), day)
+south | :actor(make(.2, ["Oss"], false), day)
+east | :actor(make(.9, ["Kel"], true), day)
+big | :actor(make_realm("Big", 20), day)
+small | :actor(make_realm("Small", 3), day)
+repeat :range(1, 4) as d
+    tick([north, south, east, big, small])
+    langs | []
+    repeat :objects("Land") as x
+        ns | []
+        repeat :overlays(x) as o
+            :put_last!(ns, o >> overlay_name)
+        xx
+        :put_last!(langs, "{x >> name}:{:sort(ns)}")
+    xx
+    realms | []
+    repeat :objects("Realm") as r
+        :put_last!(realms, r >> name)
+    xx
+    say("tick {d}: {:sort(langs)} realms {:sort(realms)}")
+xx

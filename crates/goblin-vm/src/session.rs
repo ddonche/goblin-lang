@@ -48,6 +48,13 @@ pub struct OverlayDef {
     pub actions: Vec<goblin_ast::ActionDecl>,
     pub on_start: Option<String>,
     pub every: Vec<(u64, String)>,
+    /// What the kinds a transition makes from this one are named after:
+    /// its overlay class in lower case, else its own declared name
+    /// (`language_76`, `plague_3`).
+    pub family: String,
+    /// Made by a transition while the program ran, not declared: it goes
+    /// along with its overlays to other regions, which don't know it.
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -271,6 +278,10 @@ pub struct Session {
     pub des_index: EntityIndex,
     pub des_tick_runner: TickRunner,
     pub des_overlay_id_counter: u32,
+    /// How many overlay kinds each family has made by transitions.
+    pub kind_counts: HashMap<String, u64>,
+    /// Generated overlay kinds converted to cross threads, made once each.
+    pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
@@ -435,6 +446,8 @@ impl Session {
             des_index: EntityIndex::default(),
             des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
+            kind_counts: HashMap::new(),
+            portable_kinds: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
             global_type_locks: Default::default(),

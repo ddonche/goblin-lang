@@ -1,0 +1,27 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// fracture: the object stays (carries: changes it) and a fragment, a copy
+/// of it changed by fragment:, breaks off. The object keeps its identity.
+<>Kingdom |
+    name: ..
+    strain: 0
+    people: 100
+    transition fracture where @strain > 5
+        fragment:
+            name: "{@name} Free"
+            strain: 0
+            people: @people / 4
+        xx
+        carries:
+            strain: 0
+            people: @people - @people / 4
+        xx
+    xx
+    on fracture => say("{self >> name} keeps {self >> people}; {fragment >> name} takes {fragment >> people}")
+xx
+k <> Kingdom | name: "Varn", strain: 9
+tick()
+tick()
+repeat :objects("Kingdom") as x
+    say("{x >> name} strain {x >> strain} people {x >> people}")
+xx
+say(k >> name)

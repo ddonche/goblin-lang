@@ -1,0 +1,39 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// merge: an object and its target are removed and one new object, of the
+/// into: class, takes both their places: a copy of the first (fields the
+/// classes share; the new class's defaults for the rest), changed by
+/// carries:, holding what both held. Tribes on another side are left alone.
+<>Tribe |
+    name: ..
+    people: 0
+    side: 0
+    transition merge
+        targets: Tribe where (target >> side) == @side
+        into: Union
+        carries:
+            people: @people + (target >> people)
+            name: "{@name}-{target >> name}"
+        xx
+    xx
+    on merge => say("merge {self >> name} + {target >> name} = {merged >> name}")
+xx
+<>Union |
+    name: ..
+    people: 0
+    side: 0
+    founded: 1
+xx
+<>Item |
+    owner: nil
+xx
+a <> Tribe | name: "Ash", people: 10, side: 1
+b <> Tribe | name: "Birch", people: 5, side: 1
+c <> Tribe | name: "Cedar", people: 7, side: 2
+i <> Item | owner: a
+j <> Item | owner: b
+tick()
+repeat :objects("Tribe") as x
+    say(x >> name)
+xx
+u | :objects("Union")[0]
+say("{u >> name} people {u >> people} side {u >> side} founded {u >> founded} holds {:len(:objects(\"Item\", it >> owner == u))}")

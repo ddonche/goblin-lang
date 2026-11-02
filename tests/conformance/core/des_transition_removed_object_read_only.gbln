@@ -1,0 +1,21 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// In a hook, a removed object reads as it was; writing to it is an error.
+<>Cell |
+    size: 4
+    transition split where @size >= 4
+        first:
+            size: @size / 2
+        xx
+        second:
+            size: @size / 2
+        xx
+    xx
+    on split => grow(self)
+xx
+act grow(old)
+    say("old size {old >> size}")
+    old >> size |= 9
+    say("not reached")
+xx
+c <> Cell | size: 4
+tick()
