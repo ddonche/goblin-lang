@@ -44,11 +44,12 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
                 None => Value::Nil,
             },
             Value::Object(mut o) => {
-                if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
+                let holds = |f: &Value| matches!(f, Value::Object(_)) || holds_entry_fields(f);
+                if !o.fields.values().any(holds) { return Value::Object(o); }
                 seen.push(o.uuid.to_string());
                 let fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, f)| (k.clone(), match f {
-                        Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
+                        f if holds(f) => walk(f.clone(), s, seen),
                         other => other.clone(),
                     })).collect();
                 seen.pop();
