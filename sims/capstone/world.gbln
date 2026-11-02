@@ -106,10 +106,25 @@ repeat :reverse(:sort_by(lands, "food_of")) as p
 xx
 t_map | :epoch_ms() - t_start
 
-/// Every `sample_every` years: speed, memory, counts and how full each
-/// kind of land is.
-order | ["river", "plain", "coast", "forest", "hills", "steppe", "mountains", "desert"]
-head  | ["year", "wall_ms", "years_per_s", "tick_ms", "rss_mb", "objects", "overlays", "people", "settled"]
+/// Every `sample_every` years: speed, memory, counts, where tick time went
+/// (by pass and by layer, over the last `sample_every` years) and how full
+/// each kind of land is.
+order  | ["river", "plain", "coast", "forest", "hills", "steppe", "mountains", "desert"]
+layers | ["Land"]
+passes | :keys(:metrics(){"tick_ms"})
+counts | ["rss_mb", "peak_rss_mb", "des_mb", "objects", "objects_made", "objects_gone", "overlays", "overlays_made", "overlays_gone"]
+head   | ["year", "wall_ms", "years_per_s", "tick_ms"]
+repeat counts as c
+    :put_last!(head, c)
+xx
+:put_last!(head, "people")
+:put_last!(head, "settled")
+repeat passes as p
+    :put_last!(head, "pass_{p}_ms")
+xx
+repeat layers as l
+    :put_last!(head, "layer_{l}_ms")
+xx
 repeat order as k
     :put_last!(head, "fill_{k}")
 xx
@@ -118,6 +133,7 @@ full_at | {}
 t_run   | :epoch_ms()
 tick_ms | 0
 history | []
+prev    | :metrics()
 repeat :range(0, years + 1) as year
     if year > 0
         t | :epoch_ms()
@@ -128,11 +144,22 @@ repeat :range(0, years + 1) as year
     now  | :epoch_ms() - t_run
     rate | 0.0
     if now > 0 => rate |= year * 1000.0 / now
+    stats   | :metrics()
     fills   | fill_by_terrain(lands, order)
     people  | total_people(lands)
     settled | :len(:objects(Land, it >> people >= 1.0))
-    row     | [year, now, :round(rate, 1), tick_ms, :round(:mem_total() / 1048576.0, 1), :len(:objects()), :len(:overlays()),
-        :round(people), settled]
+    row     | [year, now, :round(rate, 1), tick_ms]
+    repeat counts as c
+        :put_last!(row, stats{c})
+    xx
+    :put_last!(row, :round(people))
+    :put_last!(row, settled)
+    repeat passes as p
+        :put_last!(row, :round(stats{"tick_ms"}{p} - prev{"tick_ms"}{p}, 3))
+    xx
+    repeat layers as l
+        :put_last!(row, :round((stats{"layer_ms"}{l} ?? 0.0) - (prev{"layer_ms"}{l} ?? 0.0), 3))
+    xx
     repeat order as k
         :put_last!(row, :round(fills{k}, 3))
         if fills{k} >= 0.8 and !:has(full_at, k) => :update!(full_at{k}, year)
@@ -141,6 +168,7 @@ repeat :range(0, years + 1) as year
     :put_last!(history, people)
     :say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled")
     tick_ms |= 0
+    prev    |= stats
 xx
 :say("map {width}x{height}")
 :say("time: map {t_map} ms, {years} years {:epoch_ms() - t_run} ms")

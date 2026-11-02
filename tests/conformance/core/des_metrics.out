@@ -1,0 +1,9 @@
+2 2 1
+objects 1 made 2 gone 1
+overlays 0 made 1 gone 1
+ticks 3
+2001 true
+true
+[links, spread, decay, overlay_every, overlay_transitions, overlay_end, every, decisions, transitions]
+[Cell, warm]
+4

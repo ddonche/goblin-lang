@@ -76,8 +76,16 @@ fn des_flush_pending(vm: &mut Vm) {
     }
 }
 
+/// Adds the time since `t` to pass `p` of `:metrics()`.
+fn timed(vm: &mut Vm, p: usize, t: std::time::Instant) {
+    vm.session.des_metrics.pass_ns[p] += t.elapsed().as_nanos() as u64;
+}
+
 fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
+    use crate::metrics as m;
+    use std::time::Instant;
     // ── Pass 0: Decay temporary link offsets ─────────────────────────────────
+    let t = Instant::now();
     for offsets in vm.session.link_offsets.values_mut() {
         for o in offsets.iter_mut() {
             if let Some(ref mut t) = o.ticks_remaining {
@@ -88,9 +96,14 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
     vm.session.link_offsets.retain(|_, v| !v.is_empty());
     settle_films(&mut vm.session);
+    timed(vm, m::LINKS, t);
 
     // ── Pass 1: Spread ────────────────────────────────────────────────────────
-    spread_pass(vm)?;
+    let t = Instant::now();
+    let r = spread_pass(vm);
+    timed(vm, m::SPREAD, t);
+    r?;
+    let t = Instant::now();
 
     // ── Pass 2: Intensity decays, age and clock move on ──────────────────────
     {
@@ -110,16 +123,25 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
     // The film for this tick: `modify` lines that read the intensity or
     // the host are worked out again.
-    refresh_films(vm)?;
+    let r = refresh_films(vm);
+    timed(vm, m::DECAY, t);
+    r?;
 
     // ── Pass 3: The overlays' `every N ticks` blocks ─────────────────────────
-    overlay_every(vm)?;
+    let t = Instant::now();
+    let r = overlay_every(vm);
+    timed(vm, m::OVERLAY_EVERY, t);
+    r?;
 
     // ── Pass 4: Transitions ───────────────────────────────────────────────────
-    crate::transition::overlay_transitions(vm)?;
+    let t = Instant::now();
+    let r = crate::transition::overlay_transitions(vm);
+    timed(vm, m::OVERLAY_TRANSITIONS, t);
+    r?;
 
     // ── Pass 5: Overlays that ran out come off, then their `on end` runs ─────
-    {
+    let t = Instant::now();
+    let r = (|| -> Result<(), GoblinError> {
         let gone: Vec<usize> = vm.session.overlay_instances.iter().enumerate()
             .filter(|(_, i)| i.strength <= 0.0 || i.ticks_remaining == Some(0))
             .map(|(p, _)| p)
@@ -128,10 +150,19 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for inst in &taken { forget_overlay(vm, inst); }
         settle_films(&mut vm.session);
         // In the order the overlays were put on. An error stops the tick.
+        let mut clock = m::LayerClock::default();
         for inst in &taken {
-            run_overlay_block(vm, inst, "on end")?;
+            let layer = overlay_layer(vm, &inst.overlay_name);
+            clock.at(&mut vm.session.des_metrics, &layer);
+            let r = run_overlay_block(vm, inst, "on end");
+            if r.is_err() { clock.stop(&mut vm.session.des_metrics); }
+            r?;
         }
-    }
+        clock.stop(&mut vm.session.des_metrics);
+        Ok(())
+    })();
+    timed(vm, m::OVERLAY_END, t);
+    r?;
 
     // ── Pass 6: Remove orphaned overlays ─────────────────────────────────────
     {
@@ -152,13 +183,28 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
 
     // ── Pass 7: `every N ticks` blocks, then decisions ────────────────────────
-    every_tick(vm)?;
-    decision_tick(vm)?;
+    let t = Instant::now();
+    let r = every_tick(vm);
+    timed(vm, m::EVERY, t);
+    r?;
+    let t = Instant::now();
+    let r = decision_tick(vm);
+    timed(vm, m::DECISIONS, t);
+    r?;
 
     // ── Pass 8: Object transition tick ────────────────────────────────────────
-    crate::transition::object_transitions(vm)?;
+    let t = Instant::now();
+    let r = crate::transition::object_transitions(vm);
+    timed(vm, m::TRANSITIONS, t);
+    r?;
 
     Ok(())
+}
+
+/// The layer `:metrics()` counts an overlay kind's time under: its overlay
+/// class, else the kind itself.
+pub(crate) fn overlay_layer(vm: &Vm, kind: &str) -> String {
+    vm.session.overlay_defs.get(kind).and_then(|d| d.class.clone()).unwrap_or_else(|| kind.to_string())
 }
 
 /// Takes an overlay that came off out of the DES index.
@@ -200,6 +246,13 @@ fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
             }
         }
     }
+    let mut clock = crate::metrics::LayerClock::default();
+    let r = overlay_every_due(vm, due, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
+    r
+}
+
+fn overlay_every_due(vm: &mut Vm, due: Vec<(usize, crate::session::OverlayInstanceId)>, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     for (p, id) in due {
         // The list may have changed since: find the copy again by its id.
         let list = &vm.session.overlay_instances;
@@ -208,6 +261,7 @@ fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
         };
         let inst = list[p].clone();
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
         for (n, block) in &def.every {
             if inst.age as u64 % *n != 0 { continue; }
             // Taken off by an earlier block this tick: nothing more to run.
@@ -389,8 +443,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     let mut candidate_lists: HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = HashMap::default();
     let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::default();
 
+    let mut clock = crate::metrics::LayerClock::default();
     for inst in &carriers {
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
         let Some(self_at) = vm.session.object_store.get_index_of(&inst.host_uuid) else { continue };
         let self_ref = Value::Ref(inst.host_uuid.clone().into());
         let intensity = Value::Float(inst.strength);
@@ -464,6 +520,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     // The new copies go on once every carrier has spread.
     for (name, host) in caught {
         let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&name));
         let host_var = host_name(vm, &host);
         let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
         vm.session.des_overlay_id_counter += 1;
@@ -480,6 +537,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             des_id,
         })?;
     }
+    clock.stop(&mut vm.session.des_metrics);
     Ok(())
 }
 
@@ -579,8 +637,16 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         })
         .filter(|(u, _)| !crate::world::is_remote(vm, u))
         .collect();
+    let mut clock = crate::metrics::LayerClock::default();
+    let r = every_selves(vm, &classes, selves, tick, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
+    r
+}
+
+fn every_selves(vm: &mut Vm, classes: &std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>, selves: Vec<(crate::value::ObjId, String)>, tick: i64, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     for (uuid, class_name) in selves {
         let Some(class) = classes.get(&class_name) else { continue };
+        clock.at(&mut vm.session.des_metrics, &class_name);
         for e in &class.every {
             if tick % e.ticks as i64 != 0 { continue; }
             // Erased by an earlier block this tick: nothing to run.
@@ -619,16 +685,19 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
     let mut targets = Targets::default();
     vm.memo_kept = None;
-    let out = decide_all(vm, &mut targets, candidates);
+    let mut clock = crate::metrics::LayerClock::default();
+    let out = decide_all(vm, &mut targets, candidates, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
     vm.memo_kept = None;
     out
 }
 
-fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>) -> Result<(), GoblinError> {
+fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     // The judge method of the class decided last (most objects in a row
     // are of one class), so it is not looked up again for each object.
     let mut judge_fn: Option<(String, Option<std::rc::Rc<crate::value::FunctionObject>>)> = None;
     for (self_uuid, class_name) in candidates {
+        clock.at(&mut vm.session.des_metrics, &class_name);
         // Borrow the definitions (an Rc copy, not a deep one), so each
         // formula keeps its address for the tick-expr cache. Taken per
         // object, so a class an earlier action installed is seen here.
@@ -1564,6 +1633,7 @@ pub(crate) fn overlay_put(vm: &mut Vm, inst: OverlayInstance, start: bool) -> Re
     for gone in vm.session.overlay_instances.take_at(&off) { forget_overlay(vm, &gone); }
     let at = vm.session.overlay_instances.len();
     vm.session.overlay_instances.push(inst);
+    vm.session.des_metrics.overlays_made += 1;
     // A `modify` amount that reads the host reads it as stored, as
     // `refresh_films` does.
     if def.modifiers.iter().any(|(_, e)| !constant_amount(e)) { film_off(&mut vm.session, &host); }

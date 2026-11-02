@@ -286,6 +286,8 @@ pub struct Session {
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
     /// DES ticks run so far (`every N ticks` counts on it).
     pub des_ticks: i64,
+    /// What `:metrics()` reports: objects and overlays made, tick time.
+    pub des_metrics: crate::metrics::DesMetrics,
 
     /// Enum definitions registered at runtime.
     pub enums: Rc<HashMap<String, EnumDecl>>,
@@ -383,6 +385,7 @@ impl Session {
     pub(crate) fn put_object(&mut self, uuid: &crate::value::ObjId, val: Value) {
         if self.object_store.contains_key(uuid) { return; }
         self.touch(uuid);
+        if matches!(val, Value::Object(_)) { self.des_metrics.objects_made += 1; }
         self.object_store.insert(uuid.clone(), val);
     }
 
@@ -470,6 +473,7 @@ impl Session {
             classes: Default::default(),
             compiled_methods: Default::default(),
             des_ticks: 0,
+            des_metrics: Default::default(),
             enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),

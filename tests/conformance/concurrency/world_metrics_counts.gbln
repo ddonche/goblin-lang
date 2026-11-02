@@ -1,0 +1,34 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// `:metrics()` in the program that runs a world counts every region:
+/// their live objects and overlays, and what they made and erased.
+<>Cell |
+    name: ..
+    hp: 3
+    every 1 tick
+        @hp |= @hp - 1
+    xx
+    transition erase where @hp <= 0
+xx
+overlay warm
+    hosts: Cell
+    lasts: 5
+xx
+act make(n)
+    a <> Cell | name: "a{n}", hp: 2
+    b <> Cell | name: "b{n}", hp: 9
+    :overlay!(b, warm)
+    return {"things": [a, b]}
+xx
+act day(st, msg)
+    return st
+xx
+r1 | :actor(make(1), day)
+r2 | :actor(make(2), day)
+repeat 3
+    tick([r1, r2])
+xx
+m | :metrics()
+:say("objects {m{"objects"}} made {m{"objects_made"}} gone {m{"objects_gone"}}")
+:say("overlays {m{"overlays"}} made {m{"overlays_made"}} gone {m{"overlays_gone"}}")
+:say("ticks {m{"ticks"}} des {m{"des_mb"} > 0.0}")
+:say(:keys(m{"layer_ms"}))

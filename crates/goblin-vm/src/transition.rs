@@ -62,10 +62,12 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
         vm.session.object_store.keys().filter(|k| !crate::world::is_remote(vm, *k)).map(|k| k.to_string()).collect()
     } else { Default::default() };
     let mut done: FxHashSet<String> = Default::default();
+    let mut clock = crate::metrics::LayerClock::default();
     for pass in 0..2 {
         for (uuid, class) in &candidates {
             if done.contains(uuid.as_str()) || !vm.session.object_store.contains_key(uuid) { continue; }
             let Some(decl) = classes.get(class) else { continue };
+            clock.at(&mut vm.session.des_metrics, class);
             for t in &decl.transitions {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let target = if alone(&t.kind) {
@@ -81,6 +83,7 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
             }
         }
     }
+    clock.stop(&mut vm.session.des_metrics);
     Ok(())
 }
 
@@ -302,6 +305,7 @@ fn make_object(vm: &mut Vm, class: &str, mut fields: FieldMap) -> Result<String,
     }));
     vm.session.object_store.insert(id.clone(), obj);
     vm.session.touch(id.as_str());
+    vm.session.des_metrics.objects_made += 1;
     Ok(id)
 }
 
@@ -451,12 +455,14 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
         .map(|i| (i.des_id, i.host_uuid.clone()))
         .collect();
     let mut done: FxHashSet<u32> = Default::default();
+    let mut clock = crate::metrics::LayerClock::default();
     for pass in 0..2 {
         for (id, host) in &snap {
             if done.contains(&id.0) { continue; }
             let Some(p) = find_overlay(vm, host, *id) else { continue };
             let inst = vm.session.overlay_instances[p].clone();
             let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+            clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
             for t in &def.transitions {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
@@ -473,6 +479,7 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
             }
         }
     }
+    clock.stop(&mut vm.session.des_metrics);
     Ok(())
 }
 

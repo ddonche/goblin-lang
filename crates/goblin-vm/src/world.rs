@@ -142,6 +142,8 @@ impl IdSet {
 pub struct WorldOut {
     snapshot: Arc<Snapshot>,
     sent: Vec<(Dest, Item)>,
+    /// The region's numbers for `:metrics()`.
+    counts: crate::metrics::Counts,
 }
 
 /// While a region runs a world tick: who else is in the world, which of
@@ -193,6 +195,8 @@ pub struct World {
     /// The program's own objects `:move!` sends into a region: they go at
     /// the start of the next tick (object, index of the region).
     moving: Vec<(String, usize)>,
+    /// Each region's numbers after its last tick, for `:metrics()`.
+    counts: Vec<crate::metrics::Counts>,
 }
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
@@ -255,11 +259,12 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
             }
             in_flight_overlays = old.in_flight_overlays;
         }
-        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving });
+        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new() });
         // Before the first tick, every region reports its objects, so the
         // first tick already sees the whole world.
         let outs = round(vm, &actors, &ids, true)?;
         let w = vm.session.world.as_mut().unwrap();
+        w.counts = outs.iter().map(|o| o.counts.clone()).collect();
         w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
     }
     send_moving(vm)?;
@@ -309,6 +314,7 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
     w.in_flight = in_flight;
     w.in_flight_overlays = in_flight_overlays;
     w.flying = flying.into_iter().map(Arc::new).collect();
+    w.counts = outs.iter().map(|o| o.counts.clone()).collect();
     w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
     w.pending_overlays.clear();
     w.dropped_overlays.clear();
@@ -452,7 +458,8 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     r?;
     let sent = ctx.map(|c| c.sent).unwrap_or_default();
     let snapshot = snapshot_of(vm)?;
-    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent });
+    let counts = crate::metrics::own_counts(&vm.session);
+    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts });
     Ok(())
 }
 
@@ -868,6 +875,18 @@ pub(crate) fn detach_in_region(s: &mut crate::session::Session, uuid: &str, over
         w.dropped_overlays.push((uuid.to_string(), Some(overlay.to_string())));
     }
     true
+}
+
+/// For `:metrics()`: each region's numbers after its last tick, and the
+/// objects and overlays on their way between regions. None outside a world.
+pub(crate) fn region_counts(s: &crate::session::Session) -> Option<(&[crate::metrics::Counts], u64, u64)> {
+    let w = s.world.as_ref()?;
+    Some((&w.counts, w.in_flight.len() as u64, w.in_flight_overlays.len() as u64))
+}
+
+/// The world's tick count.
+pub(crate) fn world_tick(s: &crate::session::Session) -> i64 {
+    s.world.as_ref().map(|w| w.tick).unwrap_or(0)
 }
 
 /// Whether this object belongs to another region (in view during a tick).

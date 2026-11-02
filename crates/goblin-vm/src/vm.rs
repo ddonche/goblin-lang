@@ -6628,6 +6628,7 @@ impl Vm {
                     class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.as_str().into(),
                 }));
                 self.session.object_store.insert(new_uuid, cloned.clone());
+                self.session.des_metrics.objects_made += 1;
                 Ok(cloned)
             }
             _ => Err(GoblinError::Runtime("A0416: clone-object-not-found: clone_object() source object not found".into())),

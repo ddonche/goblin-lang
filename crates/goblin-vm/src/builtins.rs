@@ -3340,6 +3340,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
         BuiltinId::Metrics => {
+            if args.is_empty() { return Ok(crate::metrics::report(session)); }
             expect_n(1)?;
             match read(0)? {
                 Value::Collection(c) => {
@@ -6103,7 +6104,7 @@ fn human_bytes(bytes: usize) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     let contents = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
     let pages = contents.split_whitespace().nth(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     pages * unsafe {
@@ -6113,7 +6114,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     use std::ffi::c_void;
     #[repr(C)] struct Info { virtual_size: usize, resident_size: usize, resident_size_max: usize, user_time: [i32;2], system_time: [i32;2], policy: i32, suspend_count: i32 }
     unsafe extern "C" { fn mach_task_self() -> u32; fn task_info(t: u32, f: i32, out: *mut c_void, cnt: *mut u32) -> i32; }
@@ -6125,7 +6126,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(target_os = "windows")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     #[repr(C)]
     struct PROCESS_MEMORY_COUNTERS { cb: u32, page_fault_count: u32, peak_working_set_size: usize, working_set_size: usize, quota_peak_paged_pool_usage: usize, quota_paged_pool_usage: usize, quota_peak_non_paged_pool_usage: usize, quota_non_paged_pool_usage: usize, pagefile_usage: usize, peak_pagefile_usage: usize }
     extern "system" { fn GetCurrentProcess() -> *mut std::ffi::c_void; fn K32GetProcessMemoryInfo(h: *mut std::ffi::c_void, p: *mut PROCESS_MEMORY_COUNTERS, cb: u32) -> i32; }
@@ -6137,7 +6138,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn process_memory_bytes() -> usize { 0 }
+pub(crate) fn process_memory_bytes() -> usize { 0 }
 
 
 /// Parses JSON straight into Goblin values. Objects keep their key order
