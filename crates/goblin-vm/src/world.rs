@@ -490,6 +490,13 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     for item in &job.inbox {
         if let Item::Arrive(a) = item { arrive(vm, a, &mut fp); }
     }
+    // What objects erased elsewhere owned here moves up before anything is
+    // sent on, so an object moved this tick leaves with its new owner.
+    let erased: Vec<(&str, Option<&str>)> = job.inbox.iter().filter_map(|it| match it {
+        Item::Erased { uuid, up } => Some((uuid.as_str(), up.as_deref())),
+        _ => None,
+    }).collect();
+    if !erased.is_empty() { move_up_erased(&mut vm.session, &erased); }
     for item in &job.inbox {
         // An object that moved away earlier in this list (a message's
         // handler, or the main program, moved it): what was sent to it
@@ -552,11 +559,6 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             }
         }
     }
-    let erased: Vec<(&str, Option<&str>)> = job.inbox.iter().filter_map(|it| match it {
-        Item::Erased { uuid, up } => Some((uuid.as_str(), up.as_deref())),
-        _ => None,
-    }).collect();
-    if !erased.is_empty() { move_up_erased(&mut vm.session, &erased); }
     // 2. The other regions' objects, as they were at the end of last tick.
     // Last tick's copy of an object is brought up to date field by field;
     // only an object that is new here (or changed shape) is built whole.
