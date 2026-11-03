@@ -377,6 +377,103 @@ fn old_apply_behavior(d: &ast::OverlayDup) -> ast::OverlayApplyBehavior {
 /// its `conflicts:` join the member's.
 /// The class's `dup:` also decides the member put on twice, unless the
 /// member has its own.
+/// What a transition does with overlays and links when it doesn't say:
+/// a successor made from the object gets copies (split, fracture), what
+/// two objects become gets both sets (merge), an absorber gets its
+/// target's (absorb). Where nothing is made or taken over, nothing moves.
+fn transition_continuity(kind: &ast::TransitionKind) -> (ast::OverlayContinuity, ast::LinkContinuity) {
+    use ast::TransitionKind as K;
+    match kind {
+        K::Split | K::Fracture => (ast::OverlayContinuity::Split, ast::LinkContinuity::Inherit),
+        K::Merge | K::Absorb => (ast::OverlayContinuity::Transfer, ast::LinkContinuity::Inherit),
+        _ => (ast::OverlayContinuity::Drop, ast::LinkContinuity::Reset),
+    }
+}
+
+/// The names a transition's hook (`on split => ...`) gets besides `self`,
+/// in order. None: not a transition hook (`on erase` is parsed on its own).
+fn hook_params(word: &str) -> Option<&'static [&'static str]> {
+    Some(match word {
+        "spawn" => &["child"],
+        "mutate" => &[],
+        "split" => &["first", "second"],
+        "fracture" => &["fragment"],
+        "merge" => &["target", "merged"],
+        "absorb" | "subjugate" => &["target"],
+        _ => return None,
+    })
+}
+
+fn transition_word(kind: &ast::TransitionKind) -> &'static str {
+    use ast::TransitionKind as K;
+    match kind {
+        K::Spawn => "spawn", K::Erase => "erase", K::Split => "split", K::Fracture => "fracture",
+        K::Merge => "merge", K::Absorb => "absorb", K::Subjugate => "subjugate", K::Mutate => "mutate",
+    }
+}
+
+/// Checks a transition against what its kind can do, in a class
+/// (`overlay` false) or an overlay. Whatever the engine could not run is an
+/// error here, never a transition that quietly does nothing.
+fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String> {
+    use ast::TransitionKind as K;
+    let word = transition_word(&t.kind);
+    let binary = matches!(t.kind, K::Merge | K::Absorb | K::Subjugate);
+    if overlay && matches!(t.kind, K::Subjugate) {
+        return Err(s_help_site!("P1511", "An overlay can't subjugate: subjugate makes one object the owner of another",
+            "Use subjugate in a class; an overlay can absorb or merge with another overlay on its host"));
+    }
+    if binary && t.target_class.is_none() {
+        return Err(s_help_site!("P1512", &format!("`transition {word}` needs the object it acts on"),
+            &format!("Write: transition {word}\n    targets: Kingdom where (target >> power) < @power\nxx")));
+    }
+    if !binary && t.target_class.is_some() {
+        return Err(s_help_site!("P1512", &format!("`transition {word}` acts on one object alone and takes no `targets:`"),
+            "Only merge, absorb and subjugate take `targets:`"));
+    }
+    if overlay {
+        for s in &t.successors {
+            if s.fields.iter().any(|(f, _)| f == "strength") {
+                return Err(s_help_site!("P1510", "An overlay's strength is its `intensity`",
+                    &format!("Write: intensity: intensity * .5  (in `{}:`)", s.label)));
+            }
+        }
+    }
+    let labels: &[&str] = match t.kind {
+        K::Spawn => &["child"],
+        K::Mutate => &["carries"],
+        K::Split => &["first", "second"],
+        K::Fracture => &["fragment", "carries"],
+        K::Merge | K::Absorb => &["carries"],
+        K::Subjugate | K::Erase => &[],
+    };
+    for s in &t.successors {
+        if !labels.contains(&s.label.as_str()) {
+            let help = if labels.is_empty() { format!("`transition {word}` takes no field list") }
+                else { format!("`transition {word}` takes {}", labels.iter().map(|l| format!("`{l}:`")).collect::<Vec<_>>().join(" and ")) };
+            return Err(s_help_site!("P1513", &format!("`{}:` is not part of `transition {word}`", s.label), &help));
+        }
+    }
+    let most = if matches!(t.kind, K::Split) { 2 } else if matches!(t.kind, K::Erase | K::Subjugate | K::Absorb) { 0 } else { 1 };
+    if t.into_classes.len() > most {
+        let help = match most { 0 => format!("`transition {word}` makes nothing new, so it takes no `into:`"),
+            1 => format!("Write one name: into: {}", t.into_classes[0]), _ => "Write at most two names: into: East, West".to_string() };
+        return Err(s_help_site!("P1514", &format!("Too many names after `into:` for `transition {word}`"), &help));
+    }
+    if overlay {
+        // How strong an overlay's successors are is the program's to say.
+        let needs: &[&str] = match t.kind { K::Split => &["first", "second"], K::Fracture => &["fragment"], K::Merge => &["carries"], _ => &[] };
+        for label in needs {
+            let set = t.successors.iter().any(|s| &s.label == label && s.fields.iter().any(|(f, _)| f == "intensity"));
+            if !set {
+                return Err(s_help_site!("P1515", &format!("An overlay's `transition {word}` must say the intensity in `{label}:`"),
+                    &format!("Write:\n    {label}:\n        intensity: intensity * .5\n    xx")));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
     let writes = |m: &ast::OverlayDefStmt, k: &str| m.written.iter().any(|w| w == k);
     if !writes(m, "hosts") { m.host_types = c.host_types.clone(); }
@@ -401,6 +498,12 @@ fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt)
     }
     if m.spreads.is_empty() { m.spreads = c.spreads.clone(); }
     if m.transitions.is_empty() { m.transitions = c.transitions.clone(); }
+    for w in ["spawn", "mutate", "split", "fracture", "merge", "absorb"] {
+        let name = format!("on {w}");
+        if !m.actions.iter().any(|a| a.name == name) {
+            if let Some(a) = c.actions.iter().find(|a| a.name == name) { m.actions.push(a.clone()); }
+        }
+    }
     for (slot, name) in [(&mut m.on_start, "on start"), (&mut m.on_end, "on end")] {
         if slot.is_none() {
             if let Some(a) = c.actions.iter().find(|a| a.name == name) {
@@ -4693,6 +4796,34 @@ impl<'t> Parser<'t> {
 
             // `on erase: action`: the action runs on an object (with `self`,
             // fields still readable) just before an erase transition removes it.
+            // `on split => share(self, first, second)`: code run right after
+            // that transition, with its successors (and target) by name.
+            if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("on")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)
+                    && t.value.as_deref().is_some_and(|w| hook_params(w).is_some()))
+            {
+                let on_col = act_tok.span.col_start;
+                let word = self.toks[self.i + 1].value.clone().unwrap_or_default();
+                self.i += 2;
+                self.skip_layout_inline();
+                let body = if self.eat_op("=>") {
+                    self.skip_layout_inline();
+                    vec![self.parse_stmt()?]
+                } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+                    self.parse_head_block(on_col, &format!("on {word}"))?
+                } else {
+                    return Err(s_help_site!("P1516", &format!("Expected '=>' or a block after 'on {word}'"),
+                        &format!("Write: on {word} => record(self)")));
+                };
+                let params = hook_params(&word).unwrap_or(&[]).iter().map(|p| (p.to_string(), None)).collect();
+                let name = format!("on {word}");
+                if actions.iter().any(|a: &PAction| a.name == name) {
+                    return Err(s_help_site!("P1517", &format!("`on {word}` is written twice in this class"), "Keep one."));
+                }
+                actions.push(PAction { name, params, body, is_single: false });
+                self.skip_stmt_separators();
+                continue;
+            }
             if matches!(act_tok.kind, TokenKind::Ident) && act_tok.value.as_deref() == Some("on")
                 && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
             {
@@ -4876,6 +5007,7 @@ impl<'t> Parser<'t> {
 
             if is_transition {
                 let td = self.parse_transition_def()?;
+                check_transition(&td, false)?;
                 transitions.push(td);
                 continue;
             }
@@ -7808,11 +7940,13 @@ impl<'t> Parser<'t> {
                     }
                 }
                 ("on", false) | ("every", false) => {
+                    let mut hook: Option<&'static [&'static str]> = None;
                     let action = if kw == "on" {
                         match self.eat_ident().as_deref() {
                             Some("start") => "on start".to_string(),
                             Some("end") => "on end".to_string(),
-                            _ => return Err(s_help_site!("P1213", "Expected 'start' or 'end' after 'on'", "Write: on start => @fear |= @fear + .05")),
+                            Some(w) if hook_params(w).is_some() && w != "subjugate" => { hook = hook_params(w); format!("on {w}") }
+                            _ => return Err(s_help_site!("P1213", "Expected 'start', 'end' or a transition (split, fracture, merge, absorb, mutate, spawn) after 'on'", "Write: on start => @fear |= @fear + .05")),
                         }
                     } else {
                         let n = match self.peek().cloned() {
@@ -7839,11 +7973,17 @@ impl<'t> Parser<'t> {
                     };
                     if action == "on start" { on_start = Some(action.clone()); }
                     if action == "on end" { on_end = Some(action.clone()); }
-                    actions.push(mk(&action, body));
+                    let mut a = mk(&action, body);
+                    // A transition's hook gets its successors (or target) as records.
+                    for n in hook.unwrap_or(&[]) {
+                        a.params.push(ast::Param { name: n.to_string(), type_name: None, default: None, span: sp0.clone() });
+                    }
+                    actions.push(a);
                 }
                 ("transition", false) => {
                     self.i = kw_i;
                     let td = self.parse_transition_def()?;
+                    check_transition(&td, true)?;
                     transitions.push(td);
                 }
                 (other, true) => {
@@ -9275,8 +9415,9 @@ impl<'t> Parser<'t> {
                 let body = self.parse_head_block(col, "transition")?;
                 let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
                 trigger = Some(ast::Expr::Block { stmts: body, span: sp.clone() });
+                let (overlay_rule, link_rule) = transition_continuity(&kind);
                 return Ok(ast::TransitionDef { kind, trigger: trigger.unwrap(), target_class, into_classes: Vec::new(),
-                    successors: Vec::new(), overlay_rule: ast::OverlayContinuity::Drop, link_rule: ast::LinkContinuity::Reset, span: sp });
+                    successors: Vec::new(), overlay_rule, link_rule, span: sp });
             }
             let pe = self.parse_coalesce()?;
             trigger = Some(self.lower_expr(pe));
@@ -9291,8 +9432,8 @@ impl<'t> Parser<'t> {
         let has_body = self.toks.get(j).is_some_and(|t| !matches!(t.kind, TokenKind::Eof) && t.span.col_start > col);
         let mut into_classes: Vec<String> = Vec::new();
         let mut successors: Vec<ast::SuccessorDef> = Vec::new();
-        let mut overlay_rule = ast::OverlayContinuity::Drop;
-        let mut link_rule = ast::LinkContinuity::Reset;
+        // What happens to overlays and links when the line doesn't say.
+        let (mut overlay_rule, mut link_rule) = transition_continuity(&kind);
         if has_body {
             loop {
                 self.skip_layout();

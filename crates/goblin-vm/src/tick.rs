@@ -8,7 +8,6 @@
 ///   5. des_flush_pending
 ///   6. end_tick on TickRunner
 use rustc_hash::FxHashMap as HashMap;
-use indexmap::IndexMap;
 
 use crate::error::GoblinError;
 use crate::session::{OverlayInstance, OverlayInstanceId};
@@ -77,8 +76,16 @@ fn des_flush_pending(vm: &mut Vm) {
     }
 }
 
+/// Adds the time since `t` to pass `p` of `:metrics()`.
+fn timed(vm: &mut Vm, p: usize, t: std::time::Instant) {
+    vm.session.des_metrics.pass_ns[p] += t.elapsed().as_nanos() as u64;
+}
+
 fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
+    use crate::metrics as m;
+    use std::time::Instant;
     // ── Pass 0: Decay temporary link offsets ─────────────────────────────────
+    let t = Instant::now();
     for offsets in vm.session.link_offsets.values_mut() {
         for o in offsets.iter_mut() {
             if let Some(ref mut t) = o.ticks_remaining {
@@ -89,9 +96,14 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
     vm.session.link_offsets.retain(|_, v| !v.is_empty());
     settle_films(&mut vm.session);
+    timed(vm, m::LINKS, t);
 
     // ── Pass 1: Spread ────────────────────────────────────────────────────────
-    spread_pass(vm)?;
+    let t = Instant::now();
+    let r = spread_pass(vm);
+    timed(vm, m::SPREAD, t);
+    r?;
+    let t = Instant::now();
 
     // ── Pass 2: Intensity decays, age and clock move on ──────────────────────
     {
@@ -111,16 +123,25 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
     // The film for this tick: `modify` lines that read the intensity or
     // the host are worked out again.
-    refresh_films(vm)?;
+    let r = refresh_films(vm);
+    timed(vm, m::DECAY, t);
+    r?;
 
     // ── Pass 3: The overlays' `every N ticks` blocks ─────────────────────────
-    overlay_every(vm)?;
+    let t = Instant::now();
+    let r = overlay_every(vm);
+    timed(vm, m::OVERLAY_EVERY, t);
+    r?;
 
     // ── Pass 4: Transitions ───────────────────────────────────────────────────
-    transition_pass(vm)?;
+    let t = Instant::now();
+    let r = crate::transition::overlay_transitions(vm);
+    timed(vm, m::OVERLAY_TRANSITIONS, t);
+    r?;
 
     // ── Pass 5: Overlays that ran out come off, then their `on end` runs ─────
-    {
+    let t = Instant::now();
+    let r = (|| -> Result<(), GoblinError> {
         let gone: Vec<usize> = vm.session.overlay_instances.iter().enumerate()
             .filter(|(_, i)| i.strength <= 0.0 || i.ticks_remaining == Some(0))
             .map(|(p, _)| p)
@@ -129,10 +150,19 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         for inst in &taken { forget_overlay(vm, inst); }
         settle_films(&mut vm.session);
         // In the order the overlays were put on. An error stops the tick.
+        let mut clock = m::LayerClock::default();
         for inst in &taken {
-            run_overlay_block(vm, inst, "on end")?;
+            let layer = overlay_layer(vm, &inst.overlay_name);
+            clock.at(&mut vm.session.des_metrics, &layer);
+            let r = run_overlay_block(vm, inst, "on end");
+            if r.is_err() { clock.stop(&mut vm.session.des_metrics); }
+            r?;
         }
-    }
+        clock.stop(&mut vm.session.des_metrics);
+        Ok(())
+    })();
+    timed(vm, m::OVERLAY_END, t);
+    r?;
 
     // ── Pass 6: Remove orphaned overlays ─────────────────────────────────────
     {
@@ -153,17 +183,32 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     }
 
     // ── Pass 7: `every N ticks` blocks, then decisions ────────────────────────
-    every_tick(vm)?;
-    decision_tick(vm)?;
+    let t = Instant::now();
+    let r = every_tick(vm);
+    timed(vm, m::EVERY, t);
+    r?;
+    let t = Instant::now();
+    let r = decision_tick(vm);
+    timed(vm, m::DECISIONS, t);
+    r?;
 
     // ── Pass 8: Object transition tick ────────────────────────────────────────
-    object_transition_tick(vm)?;
+    let t = Instant::now();
+    let r = crate::transition::object_transitions(vm);
+    timed(vm, m::TRANSITIONS, t);
+    r?;
 
     Ok(())
 }
 
+/// The layer `:metrics()` counts an overlay kind's time under: its overlay
+/// class, else the kind itself.
+pub(crate) fn overlay_layer(vm: &Vm, kind: &str) -> String {
+    vm.session.overlay_defs.get(kind).and_then(|d| d.class.clone()).unwrap_or_else(|| kind.to_string())
+}
+
 /// Takes an overlay that came off out of the DES index.
-fn forget_overlay(vm: &mut Vm, inst: &OverlayInstance) {
+pub(crate) fn forget_overlay(vm: &mut Vm, inst: &OverlayInstance) {
     if let Some(hh) = vm.session.des_store.handle_for_name(&inst.host_var) {
         vm.session.des_index.remove_overlay(hh, &inst.overlay_name, inst.des_id);
     }
@@ -201,6 +246,13 @@ fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
             }
         }
     }
+    let mut clock = crate::metrics::LayerClock::default();
+    let r = overlay_every_due(vm, due, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
+    r
+}
+
+fn overlay_every_due(vm: &mut Vm, due: Vec<(usize, crate::session::OverlayInstanceId)>, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     for (p, id) in due {
         // The list may have changed since: find the copy again by its id.
         let list = &vm.session.overlay_instances;
@@ -209,6 +261,7 @@ fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
         };
         let inst = list[p].clone();
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
         for (n, block) in &def.every {
             if inst.age as u64 % *n != 0 { continue; }
             // Taken off by an earlier block this tick: nothing more to run.
@@ -244,7 +297,7 @@ fn constant_amount(e: &goblin_ast::Expr) -> bool {
 /// What the `modify` lines of the overlay at `at` add to each field of its
 /// host now. They see `self` (the host, as stored: the film is off while
 /// they are worked out), `intensity` and the overlay's own fields.
-fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)>, GoblinError> {
+pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)>, GoblinError> {
     let inst = &vm.session.overlay_instances[at];
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { return Ok(Vec::new()) };
     if def.modifiers.is_empty() { return Ok(Vec::new()); }
@@ -390,8 +443,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     let mut candidate_lists: HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = HashMap::default();
     let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::default();
 
+    let mut clock = crate::metrics::LayerClock::default();
     for inst in &carriers {
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
         let Some(self_at) = vm.session.object_store.get_index_of(&inst.host_uuid) else { continue };
         let self_ref = Value::Ref(inst.host_uuid.clone().into());
         let intensity = Value::Float(inst.strength);
@@ -465,6 +520,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
     // The new copies go on once every carrier has spread.
     for (name, host) in caught {
         let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
+        clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&name));
         let host_var = host_name(vm, &host);
         let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
         vm.session.des_overlay_id_counter += 1;
@@ -481,6 +537,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             des_id,
         })?;
     }
+    clock.stop(&mut vm.session.des_metrics);
     Ok(())
 }
 
@@ -562,259 +619,6 @@ fn same_field(
 
 // ── Overlay transition pass ───────────────────────────────────────────────────
 
-fn transition_pass(vm: &mut Vm) -> Result<(), GoblinError> {
-    use goblin_ast::TransitionKind;
-    let defs = vm.session.overlay_defs.clone();
-    let instances_snap: Vec<OverlayInstance> = vm.session.overlay_instances.to_vec();
-
-    let mut to_erase: Vec<usize> = Vec::new();
-    let mut to_mutate: Vec<(usize, String, IndexMap<String, Value>)> = Vec::new();
-    let mut to_spawn_new: Vec<OverlayInstance> = Vec::new();
-
-    for (idx, inst) in instances_snap.iter().enumerate() {
-        let def = match defs.get(&inst.overlay_name) { Some(d) => d, None => continue };
-        if def.transitions.is_empty() { continue; }
-
-        // Build self object for trigger evaluation
-        let mut self_fields = crate::value::FieldMap::default();
-        self_fields.insert("strength".to_string(), Value::Float(inst.strength));
-        self_fields.insert("age".to_string(), Value::Int(inst.age as i64));
-        self_fields.insert("overlay_name".to_string(), Value::Str(inst.overlay_name.clone().into()));
-        self_fields.insert("host_uuid".to_string(), Value::Str(inst.host_uuid.clone().into()));
-        self_fields.insert("host_var".to_string(), Value::Str(inst.host_var.clone().into()));
-        for (k, v) in &inst.extra_fields {
-            self_fields.insert(k.clone(), v.clone());
-        }
-        use std::collections::BTreeSet;
-        let self_val = Value::Object(Box::new(crate::value::ObjectVal {
-            class_name: inst.overlay_name.as_str().into(),
-            fields: std::rc::Rc::new(self_fields),
-            readonly_fields: Default::default(),
-            trait_fields: Default::default(),
-            uuid: inst.host_uuid.as_str().into(),
-        }));
-
-        for tdef in &def.transitions {
-            let trigger_fired = vm.eval_tick_expr_bool(
-                &tdef.trigger,
-                vec![
-                    ("self", self_val.clone()),
-                    ("strength", Value::Float(inst.strength)),
-                    ("age", Value::Int(inst.age as i64)),
-                ],
-            );
-            if !trigger_fired { continue; }
-
-            match tdef.kind {
-                TransitionKind::Erase => {
-                    to_erase.push(idx);
-                    break;
-                }
-                TransitionKind::Mutate => {
-                    let new_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
-                    let mut carries = IndexMap::new();
-                    if let Some(succ) = tdef.successors.iter().find(|s| s.label == "carries") {
-                        for (field, expr) in &succ.fields {
-                            if let Ok(v) = vm.eval_tick_expr(expr, vec![("strength", Value::Float(inst.strength))]) {
-                                carries.insert(field.clone(), v);
-                            }
-                        }
-                    }
-                    to_mutate.push((idx, new_name, carries));
-                    break;
-                }
-                TransitionKind::Spawn => {
-                    let child_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
-                    let mut child_strength = inst.strength * 0.4;
-                    if let Some(succ) = tdef.successors.iter().find(|s| s.label == "child") {
-                        for (field, expr) in &succ.fields {
-                            if field == "strength" {
-                                if let Ok(Value::Float(f)) = vm.eval_tick_expr(expr, vec![("strength", Value::Float(inst.strength))]) {
-                                    child_strength = f;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(cdef) = defs.get(&child_name) {
-                        let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-                        vm.session.des_overlay_id_counter += 1;
-                        to_spawn_new.push(OverlayInstance {
-                            overlay_name: child_name,
-                            host_uuid: inst.host_uuid.clone(),
-                            host_var: inst.host_var.clone(),
-                            strength: child_strength.clamp(0.0, 1.0),
-                            age: 0,
-                            ticks_remaining: cdef.default_duration,
-                            count: 1,
-                            applied: Vec::new(),
-                            extra_fields: cdef.extra_fields.clone(),
-                            des_id,
-                        });
-                    }
-                    break;
-                }
-                TransitionKind::Fracture => {
-                    let frag_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
-                    let mut frag_strength = inst.strength * 0.2;
-                    if let Some(succ) = tdef.successors.iter().find(|s| s.label == "fragment") {
-                        for (field, expr) in &succ.fields {
-                            if field == "strength" {
-                                if let Ok(Value::Float(f)) = vm.eval_tick_expr(expr, vec![("strength", Value::Float(inst.strength))]) {
-                                    frag_strength = f;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(fdef) = defs.get(&frag_name) {
-                        let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-                        vm.session.des_overlay_id_counter += 1;
-                        to_spawn_new.push(OverlayInstance {
-                            overlay_name: frag_name,
-                            host_uuid: inst.host_uuid.clone(),
-                            host_var: inst.host_var.clone(),
-                            strength: frag_strength.clamp(0.0, 1.0),
-                            age: 0,
-                            ticks_remaining: fdef.default_duration,
-                            count: 1,
-                            applied: Vec::new(),
-                            extra_fields: fdef.extra_fields.clone(),
-                            des_id,
-                        });
-                    }
-                    break;
-                }
-                TransitionKind::Split => {
-                    let name_a = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
-                    let name_b = tdef.into_classes.get(1).cloned().unwrap_or(inst.overlay_name.clone());
-                    let mut str_a = inst.strength * 0.55;
-                    let mut str_b = inst.strength * 0.45;
-                    if let Some(succ) = tdef.successors.iter().find(|s| s.label == "first") {
-                        for (f, e) in &succ.fields {
-                            if f == "strength" {
-                                if let Ok(Value::Float(v)) = vm.eval_tick_expr(e, vec![("strength", Value::Float(inst.strength))]) { str_a = v; }
-                            }
-                        }
-                    }
-                    if let Some(succ) = tdef.successors.iter().find(|s| s.label == "second") {
-                        for (f, e) in &succ.fields {
-                            if f == "strength" {
-                                if let Ok(Value::Float(v)) = vm.eval_tick_expr(e, vec![("strength", Value::Float(inst.strength))]) { str_b = v; }
-                            }
-                        }
-                    }
-                    for (name, strength) in [(&name_a, str_a), (&name_b, str_b)] {
-                        if let Some(sdef) = defs.get(name) {
-                            let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-                            vm.session.des_overlay_id_counter += 1;
-                            to_spawn_new.push(OverlayInstance {
-                                overlay_name: name.clone(),
-                                host_uuid: inst.host_uuid.clone(),
-                                host_var: inst.host_var.clone(),
-                                strength: strength.clamp(0.0, 1.0),
-                                age: 0,
-                                ticks_remaining: sdef.default_duration,
-                                count: 1,
-                                applied: Vec::new(),
-                                extra_fields: sdef.extra_fields.clone(),
-                                des_id,
-                            });
-                        }
-                    }
-                    to_erase.push(idx);
-                    break;
-                }
-                TransitionKind::Absorb => {
-                    if let Some(ref tc) = tdef.target_class {
-                        let target_idx = instances_snap.iter().enumerate()
-                            .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
-                            .map(|(tidx, _)| tidx);
-                        if let Some(tidx) = target_idx {
-                            let new_strength = (inst.strength + instances_snap[tidx].strength * 0.6).min(1.0);
-                            let mut m = inst.extra_fields.clone();
-                            m.insert("strength".to_string(), Value::Float(new_strength));
-                            to_mutate.push((idx, inst.overlay_name.clone(), m));
-                            to_erase.push(tidx);
-                            break;
-                        }
-                    }
-                }
-                TransitionKind::Merge => {
-                    if let Some(ref tc) = tdef.target_class {
-                        let target_idx = instances_snap.iter().enumerate()
-                            .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
-                            .map(|(tidx, _)| tidx);
-                        if let Some(tidx) = target_idx {
-                            let new_name = tdef.into_classes.first().cloned().unwrap_or(inst.overlay_name.clone());
-                            let new_strength = (inst.strength + instances_snap[tidx].strength * 0.8).min(1.0);
-                            if let Some(mdef) = defs.get(&new_name) {
-                                let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-                                vm.session.des_overlay_id_counter += 1;
-                                to_spawn_new.push(OverlayInstance {
-                                    overlay_name: new_name,
-                                    host_uuid: inst.host_uuid.clone(),
-                                    host_var: inst.host_var.clone(),
-                                    strength: new_strength,
-                                    age: 0,
-                                    ticks_remaining: mdef.default_duration,
-                                    count: 1,
-                                    applied: Vec::new(),
-                                    extra_fields: mdef.extra_fields.clone(),
-                                    des_id,
-                                });
-                            }
-                            to_erase.push(idx);
-                            to_erase.push(tidx);
-                            break;
-                        }
-                    }
-                }
-                TransitionKind::Subjugate => {
-                    if let Some(ref tc) = tdef.target_class {
-                        let target_idx = instances_snap.iter().enumerate()
-                            .find(|(tidx, ti)| *tidx != idx && &ti.overlay_name == tc && ti.host_uuid != inst.host_uuid)
-                            .map(|(tidx, _)| tidx);
-                        if let Some(tidx) = target_idx {
-                            if tidx < vm.session.overlay_instances.len() {
-                                vm.session.overlay_instances[tidx].strength =
-                                    (vm.session.overlay_instances[tidx].strength * 0.5).max(0.0);
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply mutations: the overlay becomes another, and its film is that one's.
-    for (idx, new_name, carries) in to_mutate {
-        if idx < vm.session.overlay_instances.len() {
-            vm.session.overlay_instances.rename(idx, new_name);
-            for (k, v) in carries {
-                if k == "strength" || k == "intensity" {
-                    if let Value::Float(f) = v {
-                        vm.session.overlay_instances[idx].strength = f.clamp(0.0, 1.0);
-                    }
-                } else {
-                    vm.session.overlay_instances[idx].extra_fields.insert(k, v);
-                }
-            }
-            let amounts = modify_amounts(vm, idx)?;
-            vm.session.overlay_instances[idx].applied = amounts;
-        }
-    }
-    let mut to_erase_dedup = to_erase;
-    to_erase_dedup.sort_unstable();
-    to_erase_dedup.dedup();
-    for gone in vm.session.overlay_instances.take_at(&to_erase_dedup) { forget_overlay(vm, &gone); }
-    settle_films(&mut vm.session);
-    for new_inst in to_spawn_new {
-        overlay_push(vm, new_inst)?;
-    }
-
-    Ok(())
-}
-
 // ── Decision tick ─────────────────────────────────────────────────────────────
 
 /// Runs each class's `every N ticks` blocks on its objects, in the order
@@ -833,8 +637,16 @@ fn every_tick(vm: &mut Vm) -> Result<(), GoblinError> {
         })
         .filter(|(u, _)| !crate::world::is_remote(vm, u))
         .collect();
+    let mut clock = crate::metrics::LayerClock::default();
+    let r = every_selves(vm, &classes, selves, tick, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
+    r
+}
+
+fn every_selves(vm: &mut Vm, classes: &std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>, selves: Vec<(crate::value::ObjId, String)>, tick: i64, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     for (uuid, class_name) in selves {
         let Some(class) = classes.get(&class_name) else { continue };
+        clock.at(&mut vm.session.des_metrics, &class_name);
         for e in &class.every {
             if tick % e.ticks as i64 != 0 { continue; }
             // Erased by an earlier block this tick: nothing to run.
@@ -873,16 +685,19 @@ fn decision_tick(vm: &mut Vm) -> Result<(), GoblinError> {
 
     let mut targets = Targets::default();
     vm.memo_kept = None;
-    let out = decide_all(vm, &mut targets, candidates);
+    let mut clock = crate::metrics::LayerClock::default();
+    let out = decide_all(vm, &mut targets, candidates, &mut clock);
+    clock.stop(&mut vm.session.des_metrics);
     vm.memo_kept = None;
     out
 }
 
-fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>) -> Result<(), GoblinError> {
+fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value::ObjId, String)>, clock: &mut crate::metrics::LayerClock) -> Result<(), GoblinError> {
     // The judge method of the class decided last (most objects in a row
     // are of one class), so it is not looked up again for each object.
     let mut judge_fn: Option<(String, Option<std::rc::Rc<crate::value::FunctionObject>>)> = None;
     for (self_uuid, class_name) in candidates {
+        clock.at(&mut vm.session.des_metrics, &class_name);
         // Borrow the definitions (an Rc copy, not a deep one), so each
         // formula keeps its address for the tick-expr cache. Taken per
         // object, so a class an earlier action installed is seen here.
@@ -1169,6 +984,7 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         // The first condition that names `target` must be the ownership
         // test: a target it leaves out would have stopped there, before any
         // later condition could run (or fail with an error).
+        if let Some(fewer) = narrow_by_link(vm, c, class, self_ref, self_at) { return fewer; }
         let E::Binary(l, op, r, _) = c else { return None };
         if op != "==" { return None; }
         // `target >> owner` is 1, `target >> owner >> owner` 2, ...
@@ -1271,6 +1087,40 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         return Some(fewer);
     }
     None
+}
+
+/// `:link_score(x, target, "border")`, alone or compared with a number:
+/// the targets `x` has that link to, when a link never set fails the test
+/// (see `Vm::unset_link_fails`). None: not this kind of condition.
+fn narrow_by_link(vm: &mut Vm, c: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize) -> Option<Option<Vec<(Value, usize)>>> {
+    use goblin_ast::Expr as E;
+    let link_call = |e: &E| match e {
+        E::FreeCall(n, args, _) if n.trim_start_matches(':') == "link_score" && args.len() == 3 => Some(args.clone()),
+        _ => None,
+    };
+    let (args, test) = match c {
+        E::Binary(l, op, r, _) if ["==", "!=", ">", ">=", "<", "<="].contains(&op.as_str()) => match (link_call(l), &**r) {
+            (Some(a), E::Number(n, _)) => {
+                let v = if n.contains('.') { Value::Float(n.parse().ok()?) } else { Value::Int(n.parse().ok()?) };
+                (a, Some((op.clone(), v)))
+            }
+            _ => return None,
+        },
+        other => (link_call(other)?, None),
+    };
+    if !matches!(&args[1], E::Ident(n, _) if n == "target") || names(&args[0], "target") { return None; }
+    let E::Str(name, _) = &args[2] else { return None };
+    let f = vm.tick_formula(&args[0], &["self", "target"]).ok()?;
+    let from = match vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()? {
+        Value::Ref(u) => u.to_string(),
+        Value::Object(o) => o.uuid.to_string(),
+        _ => return None,
+    };
+    if !vm.unset_link_fails(&from, name, test.as_ref().map(|(o, v)| (o.as_str(), v))) { return None; }
+    let store = &vm.session.object_store;
+    Some(Some(vm.link_targets_in(&from, name, class).into_iter()
+        .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
+        .collect()))
 }
 
 /// Every target that passes the `where` condition, with its score, by
@@ -1606,91 +1456,6 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
 
 // ── Object transition tick ────────────────────────────────────────────────────
 
-fn object_transition_tick(vm: &mut Vm) -> Result<(), GoblinError> {
-    use goblin_ast::TransitionKind;
-
-    let store = &vm.session.object_store;
-    let candidates: Vec<(crate::value::ObjId, String)> = store
-        .places_of(|c| vm.session.classes.get(c).is_some_and(|c| !c.transitions.is_empty()))
-        .into_iter()
-        .filter_map(|i| match store.get_index(i) {
-            Some((uuid, Value::Object(o))) if !crate::world::is_remote(vm, uuid) =>
-                Some((uuid.clone(), o.class_name[..].to_string())),
-            _ => None,
-        }).collect();
-
-    let mut erased: rustc_hash::FxHashSet<String> = Default::default();
-
-    for (self_uuid, class_name) in &candidates {
-        if erased.contains(self_uuid.as_str()) { continue; }
-
-        let classes = vm.session.classes.clone();
-        let transitions = match classes.get(class_name) {
-            Some(c) => &c.transitions,
-            None => continue,
-        };
-        let self_val = match vm.session.object_store.get(self_uuid).cloned() { Some(v) => v, None => continue };
-
-        for tdef in transitions {
-            let trigger_fired = vm.eval_tick_expr_bool(
-                &tdef.trigger,
-                vec![("self", self_val.clone())],
-            );
-            if !trigger_fired { continue; }
-
-            match tdef.kind {
-                TransitionKind::Erase => {
-                    // `on erase: action` runs first, while the object and its
-                    // fields are still there. An error in it stops the tick.
-                    let on_erase = classes.get(class_name).and_then(|c| c.on_erase.clone());
-                    erase_object(vm, self_uuid, on_erase.as_deref())?;
-                    erased.insert(self_uuid.to_string());
-                    break;
-                }
-                TransitionKind::Spawn => {
-                    let child_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
-                    // Borrow the class through the shared table instead of
-                    // copying it: the formula cache knows a formula by its
-                    // address, which a dropped copy could hand to another.
-                    let classes = vm.session.classes.clone();
-                    if let Some(child_decl) = classes.get(&child_class) {
-                        let new_uuid = uuid::Uuid::new_v4().to_string();
-                        let mut fields = crate::value::FieldMap::default();
-                        for fd in &child_decl.fields {
-                            if let Some(ref default_expr) = fd.default {
-                                if let Ok(v) = vm.eval_tick_expr(default_expr, vec![]) {
-                                    fields.insert(fd.name.clone(), v);
-                                }
-                            }
-                        }
-                        let traits = crate::vm::trait_fields_of(&mut fields, &child_decl.fields);
-                        let child_obj = Value::Object(Box::new(crate::value::ObjectVal {
-                            class_name: crate::value::class_rc(&child_class),
-                            fields: std::rc::Rc::new(fields),
-                            readonly_fields: Default::default(),
-                            trait_fields: std::rc::Rc::new(traits),
-                            uuid: new_uuid.as_str().into(),
-                        }));
-                        vm.session.object_store.insert(new_uuid, child_obj);
-                    }
-                    break;
-                }
-                TransitionKind::Mutate => {
-                    let new_class = tdef.into_classes.first().cloned().unwrap_or(class_name.clone());
-                    if let Some(Value::Object(fields)) = vm.session.object_store.get_mut(self_uuid) {
-                        // Keep fields, just change the class (interpreter behavior)
-                        let _ = new_class; // class change not modeled in simple field map
-                    }
-                    break;
-                }
-                _ => { break; } // Other kinds not modeled in VM object transitions
-            }
-        }
-    }
-
-    Ok(())
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// The range a link/decision formula can take, used to normalise its score to
@@ -1817,6 +1582,12 @@ pub(crate) fn dup_rule(d: &goblin_ast::OverlayDup) -> crate::session::OverlayApp
 /// off, and on a tie the one already there stays. Then the copy's `modify`
 /// film goes on and its `on start` runs.
 pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), GoblinError> {
+    overlay_put(vm, inst, true)
+}
+
+/// `overlay_push`; `start`: whether its `on start` runs (not for a copy a
+/// transition makes of an overlay already on).
+pub(crate) fn overlay_put(vm: &mut Vm, inst: OverlayInstance, start: bool) -> Result<(), GoblinError> {
     // On another region's object: its owner applies it, next tick.
     if crate::world::send_overlay(vm, &inst) { return Ok(()); }
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else {
@@ -1862,13 +1633,14 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), Gob
     for gone in vm.session.overlay_instances.take_at(&off) { forget_overlay(vm, &gone); }
     let at = vm.session.overlay_instances.len();
     vm.session.overlay_instances.push(inst);
+    vm.session.des_metrics.overlays_made += 1;
     // A `modify` amount that reads the host reads it as stored, as
     // `refresh_films` does.
     if def.modifiers.iter().any(|(_, e)| !constant_amount(e)) { film_off(&mut vm.session, &host); }
     let amounts = modify_amounts(vm, at)?;
     vm.session.overlay_instances[at].applied = amounts;
     settle_films(&mut vm.session);
-    if !def.methods.contains_key("on start") { return Ok(()); }
+    if !start || !def.methods.contains_key("on start") { return Ok(()); }
     let inst = vm.session.overlay_instances[at].clone();
     run_overlay_block(vm, &inst, "on start")
 }
@@ -1908,7 +1680,7 @@ fn action_result(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) ->
 /// an object whose erase condition now holds goes right away (after its
 /// `on erase:` action), not at the end of the tick, so it neither acts nor
 /// is chosen again this tick. Never in the middle of an action.
-fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinError>) -> Result<(), GoblinError> {
+pub(crate) fn with_erase_check(vm: &mut Vm, f: impl FnOnce(&mut Vm) -> Result<(), GoblinError>) -> Result<(), GoblinError> {
     let outer = vm.session.des_touched.replace(Vec::new());
     let r = f(vm);
     let touched = std::mem::replace(&mut vm.session.des_touched, outer);
@@ -2004,13 +1776,14 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
 
 /// Erases an object for its erase transition, after its `on erase:`
 /// action (which sees the object and its fields; an error in it stops the tick).
-fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), GoblinError> {
+pub(crate) fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), GoblinError> {
     if let Some(action) = on_erase {
         vm.session.des_erasing.push(uuid.to_string());
         let r = call_object_action(vm, uuid, action, Vec::new());
         vm.session.des_erasing.retain(|u| u != uuid);
         r?;
     }
+    crate::world::note_erased(&mut vm.session, uuid);
     vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     Ok(())

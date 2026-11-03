@@ -1,0 +1,5 @@
+before tick 1: west {people: 1, coins: 4, bags: 1, wealth: 13}, east {people: 0, coins: 0, bags: 0, wealth: 0}
+before tick 2: west {people: 0, coins: 4, bags: 1, wealth: 13}, east {people: 0, coins: 0, bags: 0, wealth: 0}
+before tick 3: west {people: 0, coins: 0, bags: 0, wealth: 0}, east {people: 1, coins: 0, bags: 0, wealth: 0}
+before tick 4: west {people: 0, coins: 0, bags: 0, wealth: 0}, east {people: 1, coins: 4, bags: 1, wealth: 13}
+4

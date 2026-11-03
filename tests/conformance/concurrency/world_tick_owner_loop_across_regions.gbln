@@ -1,0 +1,24 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Ownership is a tree. Two regions that change `owner`s in the same tick
+/// each see the other as it was at the end of the last tick, so between
+/// them they can make two objects own each other: the next tick stops with
+/// R1247, naming them.
+<>Lord |
+    name: ..
+    owner: nil
+    every 1 tick
+        other | :objects("Lord", it >> name != @name)[0]
+        @owner |= other
+    xx
+xx
+act make(n)
+    l <> Lord | name: n
+    return {"things": [l]}
+xx
+act day(st, msg)
+    return st
+xx
+regions | [:actor(make("Ash"), day), :actor(make("Birch"), day)]
+tick(regions)
+say("tick 1 done")
+tick(regions)

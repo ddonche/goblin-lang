@@ -1,0 +1,35 @@
+/// known-gap: interp collections hold copies of objects (the interpreter is being retired)
+/// A collection names objects, as a field does: what it holds is the object
+/// as it is now, never a copy. Taking an object out of a list (a loop, an
+/// index, a binding) never puts an old copy back over the live object, and
+/// an erased object reads as nil.
+<>Land |
+    people: 0
+    near: []
+    every 1 tick
+        @people |= @people + 1
+    xx
+xx
+a <> Land | people: 0
+b <> Land | people: 0
+lst | [a]
+m   | {"k": a}
+put | []
+:put_last!(put, b)
+all | :objects(Land)
+a >> people |= 5
+say("{lst[0] >> people} {m{"k"} >> people} {all[0] >> people}")
+:tick()
+say("{a >> people} {lst[0] >> people} {put[0] >> people} {:get_first(all) >> people}")
+repeat all as e
+    say(e >> people)
+xx
+x | lst[0]
+say("{a >> people} {x >> people}")
+say(:has(:str(lst), "people: 6"))
+:delete_object!(b)
+say(put[0])
+say(:len(put))
+say(put[0] == nil)
+c <> Land | people: 9, near: [a]
+say(:has(:str(c), "people: 6"))

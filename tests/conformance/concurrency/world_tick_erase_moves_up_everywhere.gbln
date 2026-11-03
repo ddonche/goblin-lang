@@ -1,0 +1,45 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An erased object's holdings move up to its owner in every region, also
+/// those the erasing region could not see yet: here the main program gives
+/// the field in the east to the doomed lord in the west on the same tick
+/// the lord dies. The field belongs to the lord's owner from then on: its
+/// own region sets it at the start of the next tick, and the program and
+/// the other regions see it so at once.
+<>Lord |
+    name: ..
+    age: 0
+    owner: nil
+    every 1 tick
+        @age |= @age + 1
+    xx
+    transition erase where @name == "doomed" and @age >= 2
+xx
+<>Field |
+    name: ..
+    owner: nil
+xx
+act make(which)
+    if which == 1
+        top <> Lord | name: "top"
+        d <> Lord | name: "doomed", owner: top
+        return {"things": [top, d]}
+    xx
+    f <> Field | name: "far"
+    return {"things": [f]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make(1), day)
+b | :actor(make(2), day)
+tick([a, b])
+far | :objects("Field")[0]
+far >> owner |= :objects("Lord", it >> name == "doomed")[0]
+repeat :range(2, 5) as t
+    tick([a, b])
+    f | :objects("Field")[0]
+    o | f >> owner
+    shown | "nil"
+    if o != nil => shown |= o >> name
+    say("tick {t}: far owned by {shown}; lords {:len(:objects(\"Lord\"))}")
+xx

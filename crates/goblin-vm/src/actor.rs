@@ -855,7 +855,9 @@ fn policy_of(v: Option<Value>) -> Result<Policy, GoblinError> {
     Ok(p)
 }
 
-/// Every object reachable from `v` through fields and collections.
+/// Every object reachable from `v` through fields and collections. An
+/// object's `owner` is a relationship, not part of it: the owner is not
+/// reached through it (it runs where it runs).
 fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
     let mut stack: Vec<Value> = vec![v.clone()];
     while let Some(v) = stack.pop() {
@@ -869,34 +871,17 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
                 // The stored object is the current one; an inline copy may be older.
                 let first = out.insert(o.uuid.to_string());
                 if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
-                    if first { stack.extend(stored.fields.values().cloned()); }
+                    if first { stack.extend(not_owner(&stored.fields)); }
                 }
-                stack.extend(o.fields.values().cloned());
+                stack.extend(not_owner(&o.fields));
             }
             _ => children(&v, &mut |c| stack.push(c.clone())),
         }
     }
 }
 
-/// Adds to `graph` everything its objects contain and what that refers to,
-/// until nothing new turns up. Returns the added objects in store order.
-fn contents_of_graph(graph: &mut HashSet<String>, session: &Session) -> Vec<String> {
-    let start = graph.clone();
-    let mut todo: Vec<String> = graph.iter().cloned().collect();
-    while let Some(u) = todo.pop() {
-        for c in session.object_store.all_contents_of(&u) {
-            if graph.contains(c.as_str()) { continue; }
-            let mut more = HashSet::new();
-            graph_of(&Value::Ref(c.clone().into()), session, &mut more);
-            for m in more { if graph.insert(m.clone()) { todo.push(m); } }
-        }
-    }
-    let mut added: Vec<(usize, String)> = graph.iter()
-        .filter(|u| !start.contains(u.as_str()))
-        .filter_map(|u| session.object_store.get_index_of(u).map(|i| (i, u.clone())))
-        .collect();
-    added.sort();
-    added.into_iter().map(|(_, u)| u).collect()
+fn not_owner(f: &crate::value::FieldMap) -> impl Iterator<Item = Value> + '_ {
+    f.iter().filter(|(k, _)| k.as_str() != crate::store::OWNER_FIELD).map(|(_, v)| v.clone())
 }
 
 /// The values directly inside a container (not through objects).
@@ -964,9 +949,6 @@ impl Vm {
         // the ones being handed over (spec IV.4). Check before changing anything.
         let mut graph = HashSet::new();
         graph_of(&state, &self.session, &mut graph);
-        // What those objects contain (their `owner` names one of them, at
-        // any depth) goes with them, and so does what that refers to.
-        let contents = contents_of_graph(&mut graph, &self.session);
         if !graph.is_empty() {
             let live = self.collect_live_slots();
             let mut n = 0usize;
@@ -975,7 +957,8 @@ impl Vm {
             }
             for (uuid, obj) in &self.session.object_store {
                 if graph.contains(uuid.as_str()) { continue; }
-                if let Value::Object(o) = obj { for x in o.fields.values() { count_refs(x, &graph, &mut n); } }
+                // An `owner` naming a handed object is a relationship, not a share.
+                if let Value::Object(o) = obj { for x in not_owner(&o.fields) { count_refs(&x, &graph, &mut n); } }
             }
             for m in self.session.token_store.values() { for x in m.values() { count_refs(x, &graph, &mut n); } }
             for x in self.session.box_store.values() { count_refs(x, &graph, &mut n); }
@@ -1006,14 +989,7 @@ impl Vm {
             let mut tp = ToPortable::new(&self.session).sharing_values().only_objects(graph.clone());
             let mut roots = vec![&state, &handler];
             if let Some(f) = &policy.stop_when { roots.push(f); }
-            let mut image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
-            if !contents.is_empty() {
-                let mut objs = Vec::with_capacity(contents.len());
-                for u in &contents {
-                    if let Some(v) = self.session.object_store.get(u) { objs.push((u.clone(), tp.value(v)?)); }
-                }
-                image = image.with_contents(objs);
-            }
+            let image = crate::swarm::image_for(&self.session, &mut tp, Some(&roots), Some(&graph))?;
             let p_state = tp.value(&state)?;
             let p_handler = tp.value(&handler)?;
             let p_stop = match &policy.stop_when { Some(f) => Some(tp.value(f)?), None => None };
@@ -1872,8 +1848,6 @@ impl ActorShared {
 }
 
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
-/// The object an actor was given as its state, if it was one.
-pub(crate) fn actor_origin(a: &ActorShared) -> Option<&str> { a.origin.as_deref() }
 
 /// Sends a region its part of one world tick (`tick(regions)`).
 pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {

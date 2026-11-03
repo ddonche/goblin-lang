@@ -1,0 +1,17 @@
+/// known-gap: interp accepts an owner loop (the interpreter is retired; the VM defines it)
+/// Ownership is a tree: an `owner` that would make an object own itself,
+/// at any depth, is an error (R1246).
+<>Land |
+    name: ..
+    owner: nil
+xx
+a <> Land | name: "a"
+b <> Land | name: "b", owner: a
+c <> Land | name: "c", owner: b
+attempt
+    a >> owner |= c
+rescue e
+    say(:has("{e}", "R1246"))
+xx
+say(a >> owner == nil)
+a >> owner |= a

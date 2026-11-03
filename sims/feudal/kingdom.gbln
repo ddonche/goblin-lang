@@ -10,8 +10,8 @@
 ///           gold to his liege. A noble with land has children. At most
 ///           one deed a year (the judge takes the first that holds):
 ///             refuge  a disloyal vassal half as strong as his liege swears to
-///                     another kingdom's king, and goes there with all he
-///                     holds (his `owner` is now in another region)
+///                     another kingdom's king (his `owner` is now in another
+///                     region; he and his lands stay where they are)
 ///             buyer   a noble in debt sells his poorest estate to the
 ///                     richest of his liege's other vassals
 ///             prize   a noble twice as strong as another vassal of his
@@ -286,6 +286,7 @@ xx
 
 act estate(owner, n)
     e <> Estate | name: "estate {n}", yield: 3 + (pick 1 from 0...6), owner: owner
+    return e
 xx
 
 act noble(house, liege, age)
@@ -294,26 +295,28 @@ act noble(house, liege, age)
 xx
 
 /// A kingdom: a king with 4 estates, 4 lords with 3 each, and under each
-/// lord 2 knights with 1. Everything belongs to the realm, so it all goes
-/// with the realm to its region.
+/// lord 2 knights with 1. The kingdom's region runs all of it.
 act make_kingdom(k)
     r <> Realm | n: k, name: realm_names[k]
     h | k * 5
     king | noble(houses[h], r, 30)
+    all | [r, king]
     repeat :range(0, 4) as i
-        estate(king, i)
+        :put_last!(all, estate(king, i))
     xx
     repeat :range(1, 5) as l
         lord | noble(houses[h + l], king, 25 + l * 3)
+        :put_last!(all, lord)
         repeat :range(0, 3) as i
-            estate(lord, i)
+            :put_last!(all, estate(lord, i))
         xx
         repeat :range(0, 2) as i
             kn | noble(houses[h + l], lord, 20 + i * 5)
-            estate(kn, 9)
+            :put_last!(all, kn)
+            :put_last!(all, estate(kn, 9))
         xx
     xx
-    return r
+    return all
 xx
 
 realms | []

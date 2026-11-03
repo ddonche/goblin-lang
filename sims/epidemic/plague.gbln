@@ -1,8 +1,8 @@
 /// An epidemic on DES: a sickness spreads between people in the same town,
 /// lasts a while, and either kills or leaves its host immune. Each town is
-/// a region (an actor that owns the town and the people in it); tick(towns)
+/// a region (an actor that runs the town and the people in it); tick(towns)
 /// runs one day in all of them at once. Now and then a person travels to
-/// the next town: setting `owner` moves them there, sickness and all.
+/// the next town: `:move!` takes them there, sickness and all.
 ///
 ///   sick    overlay: costs 1 health a day for 8 days; when it ends the
 ///           host is immune.
@@ -31,8 +31,9 @@ xx
     immune: false
     every 1 tick
         if n_towns > 1 and (pick 1 from 1...30) == 1
-            next | (@owner >> n + 1) % n_towns
-            @owner |= :objects(Town, it >> n == next)[0]
+            next | :objects(Town, it >> n == (@owner >> n + 1) % n_towns)[0]
+            @owner |= next
+            :move!(self, next)
         xx
     xx
     transition erase where @health <= 0
@@ -48,14 +49,16 @@ xx
 
 act make_town(n)
     town <> Town | n: n
+    all | [town]
     repeat :range(0, people_per_town) as i
         p <> Person | owner: town, health: 6 + (pick 1 from 0...8)
         /// Patient zero, in town 0.
         if n == 0 and i == 0
             :overlay!(p, sick)
         xx
+        :put_last!(all, p)
     xx
-    return town
+    return all
 xx
 
 towns | []

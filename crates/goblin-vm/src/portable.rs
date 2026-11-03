@@ -118,7 +118,7 @@ fn unsupported(what: &str) -> GoblinError {
 /// Converts values out of one session. Functions and shared collections are
 /// converted once each, however often they appear.
 pub struct ToPortable<'s> {
-    session: &'s Session,
+    pub(crate) session: &'s Session,
     funcs: HashMap<*const FunctionObject, Arc<PFunction>>,
     share: bool,
     /// Short texts converted so far: map keys and words like "wage" repeat

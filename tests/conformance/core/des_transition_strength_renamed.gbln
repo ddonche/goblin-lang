@@ -1,0 +1,8 @@
+/// An overlay's strength in a successor list is written intensity:.
+overlay plague
+    transition fracture where true
+        fragment:
+            strength: .2
+        xx
+    xx
+xx

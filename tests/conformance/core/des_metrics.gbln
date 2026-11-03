@@ -1,0 +1,46 @@
+/// known-gap: interp has no :metrics() report (VM only)
+/// `:metrics()` with no argument reports the program: live objects and
+/// overlays, how many were made and are gone, the DES state's memory, and
+/// tick time by pass and by layer (a class, or an overlay kind).
+<>Cell |
+    hp: 3
+    every 1 tick
+        @hp |= @hp - 1
+    xx
+    transition erase where @hp <= 0
+xx
+overlay warm
+    hosts: Cell
+    lasts: 2
+xx
+a <> Cell | hp: 2
+b <> Cell | hp: 5
+:overlay!(b, warm)
+before | :metrics()
+:say("{before{"objects"}} {before{"objects_made"}} {before{"overlays"}}")
+repeat 3
+    :tick()
+xx
+m | :metrics()
+:say("objects {m{"objects"}} made {m{"objects_made"}} gone {m{"objects_gone"}}")
+:say("overlays {m{"overlays"}} made {m{"overlays_made"}} gone {m{"overlays_gone"}}")
+:say("ticks {m{"ticks"}}")
+<>Dust |
+    n: 0
+xx
+repeat :range(0, 2000) as i
+    d <> Dust | n: i
+xx
+more | :metrics()
+:say("{more{"objects"}} {more{"des_mb"} > m{"des_mb"}}")
+big | {}
+repeat :range(0, 300) as i
+    :update!(big{"key number {i} with a long name to count"}, i)
+xx
+dust <> Dust | n: :freeze(big)
+held | :metrics()
+:say(held{"des_mb"} > more{"des_mb"})
+:say(m{"peak_rss_mb"} >= m{"rss_mb"})
+:say(:keys(m{"tick_ms"}))
+:say(:keys(m{"layer_ms"}))
+:say(:len(:metrics([1, 2])))

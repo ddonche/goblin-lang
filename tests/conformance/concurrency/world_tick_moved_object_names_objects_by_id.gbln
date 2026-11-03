@@ -50,8 +50,9 @@ act make(name, squire)
     l <> Lord | owner: r
     if squire
         s <> Squire | go: 1, owner: l
+        return {"realm": r, "lord": l, "squire": s}
     xx
-    return {"realm": r}
+    return {"realm": r, "lord": l}
 xx
 act h(st, msg)
     if :has(msg, "all")

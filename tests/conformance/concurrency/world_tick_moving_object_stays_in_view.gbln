@@ -45,7 +45,7 @@ act day(st, msg)
     if :has(msg, "new_home")
         new_home |= msg{"new_home"}
     elif :has(msg, "tick")
-        :update!(st{"have"}, :len(:objects(it >> employer == 7)))
+        :update!(st{"have"}, :metrics(){"objects"})
     xx
     return st
 xx

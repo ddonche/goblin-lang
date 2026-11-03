@@ -1,0 +1,213 @@
+/// The world's map: a continent from a seed. Elevation is value noise over a
+/// grid with the edges sunk into the sea; the lowest cells are sea until the
+/// configured number of provinces is left. Rivers run downhill and gather
+/// water; rain falls less in the middle latitudes (the steppe belt) and away
+/// from the coast. Cell i is at x = i % width, y = i // width.
+
+/// Noise at one grid point from a lattice of random heights `spacing` apart.
+act lattice(width, height, spacing)
+    cols | width // spacing + 2
+    rows | height // spacing + 2
+    pts  | []
+    repeat cols * rows
+        :put_last!(pts, (pick 1 from 0...1000) / 1000.0)
+    xx
+    return {"cols": cols, "spacing": spacing, "pts": pts}
+xx
+
+act sample(lat, x, y)
+    s   | lat{"spacing"}
+    c   | lat{"cols"}
+    p   | lat{"pts"}
+    gx  | x // s
+    gy  | y // s
+    fx  | (x % s) / (s * 1.0)
+    fy  | (y % s) / (s * 1.0)
+    a   | p[gy * c + gx]
+    b   | p[gy * c + gx + 1]
+    d   | p[(gy + 1) * c + gx]
+    e   | p[(gy + 1) * c + gx + 1]
+    top | a + (b - a) * fx
+    low | d + (e - d) * fx
+    return top + (low - top) * fy
+xx
+
+/// Three octaves of noise, 0..1.
+act noise(width, height)
+    layers  | [lattice(width, height, 8), lattice(width, height, 4), lattice(width, height, 2)]
+    weights | [0.55, 0.3, 0.15]
+    out     | []
+    repeat :range(0, width * height) as i
+        v | 0.0
+        repeat layers as l
+            v |= v + weights[idx] * sample(l, i % width, i // width)
+        xx
+        :put_last!(out, v)
+    xx
+    return out
+xx
+
+act height_of(hc)
+    return hc[0]
+xx
+
+/// The grid cells next to cell i (up to four).
+act around(i, width, height)
+    x   | i % width
+    y   | i // width
+    out | []
+    if x > 0 => :put_last!(out, i - 1)
+    if x < width - 1 => :put_last!(out, i + 1)
+    if y > 0 => :put_last!(out, i - width)
+    if y < height - 1 => :put_last!(out, i + width)
+    return out
+xx
+
+/// The map for `cfg`: per cell its elevation, whether it is land, its
+/// terrain, river flow and rain.
+act generate(cfg)
+    :rand_seed(cfg{"seed"})
+    cells  | :ceil(cfg{"provinces"} / cfg{"land_share"})
+    height | :round(:sqrt(cells / 1.5))
+    width  | :ceil(cells / height)
+    total  | width * height
+    raw    | noise(width, height)
+    elev   | []
+    repeat :range(0, total) as i
+        dx   | ((i % width) - width / 2.0) / (width / 2.0)
+        dy   | ((i // width) - height / 2.0) / (height / 2.0)
+        edge | dx * dx + dy * dy
+        /// A tiny step by cell keeps every elevation distinct.
+        :put_last!(elev, raw[i] - cfg{"edge_drop"} * edge + i / 1000000000.0)
+    xx
+    /// Sea up to the elevation that leaves exactly `provinces` cells of land.
+    sea_level | :sort(elev)[total - cfg{"provinces"} - 1]
+    land      | []
+    repeat elev as e
+        :put_last!(land, e > sea_level)
+    xx
+    /// Rivers: water fills every hollow up to its rim (each land cell's
+    /// water level is at least a step above its lowest neighbour's, with the
+    /// sea at sea level), then each cell drains to the neighbour whose water
+    /// is lowest, so every river reaches the sea. Flow is the number of cells
+    /// upstream, counted from the highest water down.
+    step  | 0.000001
+    water | []
+    repeat :range(0, total) as i
+        if land[i] => :put_last!(water, 10.0)
+        if !land[i] => :put_last!(water, elev[i])
+    xx
+    changed | true
+    repeat changed
+        changed |= false
+        repeat :range(0, total) as i
+            if !land[i] => skip
+            low | water[i]
+            repeat around(i, width, height) as j
+                if water[j] + step < low => low |= water[j] + step
+            xx
+            low |= :max(low, elev[i])
+            if low < water[i]
+                :update!(water[i], low)
+                changed |= true
+            xx
+        xx
+    xx
+    down | []
+    flow | []
+    repeat :range(0, total) as i
+        low | i
+        repeat around(i, width, height) as j
+            if water[j] < water[low] => low |= j
+        xx
+        :put_last!(down, low)
+        :put_last!(flow, 1)
+    xx
+    by_height | []
+    repeat water as w
+        :put_last!(by_height, [w, idx])
+    xx
+    repeat :reverse(:sort_by(by_height, "height_of")) as hc
+        i | hc[1]
+        if !land[i] or down[i] == i => skip
+        :update!(flow[down[i]], flow[down[i]] + flow[i])
+    xx
+    /// Rain: less in the middle band of latitudes and inland.
+    wet   | noise(width, height)
+    rain  | []
+    coast | []
+    repeat :range(0, total) as i
+        lat      | :abs((i // width) - height / 2.0) / (height / 2.0)
+        band     | 1.0 - cfg{"steppe_dryness"} * :max(0.0, 1.0 - :abs(lat - 0.35) / 0.2)
+        sea_next | false
+        repeat around(i, width, height) as j
+            if !land[j] => sea_next |= true
+        xx
+        :put_last!(coast, land[i] and sea_next)
+        r | wet[i] * band
+        if sea_next => r |= r + cfg{"coast_rain"}
+        :put_last!(rain, r)
+    xx
+    return {"width": width, "height": height, "elev": elev, "sea_level": sea_level, "land": land, "down": down,
+        "flow": flow, "rain": rain, "coast": coast}
+xx
+
+/// The value at fraction q (0..1) of the sorted list.
+act quantile(xs, q)
+    s  | :sort(xs)
+    at | :min(:len(s) - 1, :floor(q * :len(s)))
+    return s[at]
+xx
+
+/// Each cell's terrain: "sea", or by height first (mountains, hills), then
+/// water (river, coast), then rain (desert, steppe, forest, plain). The
+/// shares of each come from `cfg`.
+act terrain(m, cfg)
+    land    | m{"land"}
+    heights | []
+    rains   | []
+    repeat land as is_land
+        if is_land
+            :put_last!(heights, m{"elev"}[idx])
+            :put_last!(rains, m{"rain"}[idx])
+        xx
+    xx
+    shares   | cfg{"terrain_shares"}
+    mountain | quantile(heights, 1.0 - shares{"mountains"})
+    hill     | quantile(heights, 1.0 - shares{"mountains"} - shares{"hills"})
+    desert   | quantile(rains, shares{"desert"})
+    steppe   | quantile(rains, shares{"desert"} + shares{"steppe"})
+    forest   | quantile(rains, 1.0 - shares{"forest"})
+    out      | []
+    repeat land as is_land
+        e | m{"elev"}[idx]
+        r | m{"rain"}[idx]
+        judge
+            !is_land: :put_last!(out, "sea")
+            e >= mountain: :put_last!(out, "mountains")
+            e >= hill: :put_last!(out, "hills")
+            m{"flow"}[idx] >= cfg{"river_flow"}: :put_last!(out, "river")
+            m{"coast"}[idx]: :put_last!(out, "coast")
+            r < desert: :put_last!(out, "desert")
+            r < steppe: :put_last!(out, "steppe")
+            r >= forest: :put_last!(out, "forest")
+            else: :put_last!(out, "plain")
+        xx
+    xx
+    return out
+xx
+
+/// The map as text, one character a cell.
+act draw(m, kinds)
+    glyph | {"sea": "~", "mountains": "^", "hills": "n", "river": "=", "coast": ",", "desert": "d",
+        "steppe": "s", "forest": "f", "plain": "."}
+    lines | []
+    repeat :range(0, m{"height"}) as y
+        row | []
+        repeat :range(0, m{"width"}) as x
+            :put_last!(row, glyph{kinds[y * m{"width"} + x]})
+        xx
+        :put_last!(lines, :join(row, ..))
+    xx
+    return :join(lines, "\n")
+xx

@@ -12,9 +12,11 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
-/// Whether a value holds an object whose field names another stored object.
+/// Whether a value names a stored object (a collection holds objects as
+/// ids) or holds an object whose field names one.
 fn holds_entry_fields(v: &Value) -> bool {
     match v {
+        Value::Ref(u) => !u.starts_with(crate::vm::OVERLAY_RECORD),
         Value::Object(o) => o.fields.values().any(|f| matches!(f, Value::Ref(_)) || holds_entry_fields(f)),
         Value::Array(a) => a.iter().any(holds_entry_fields),
         Value::Map(m) => m.values().any(holds_entry_fields),
@@ -42,11 +44,12 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
                 None => Value::Nil,
             },
             Value::Object(mut o) => {
-                if !o.fields.values().any(|f| matches!(f, Value::Ref(_) | Value::Object(_))) { return Value::Object(o); }
+                let holds = |f: &Value| matches!(f, Value::Object(_)) || holds_entry_fields(f);
+                if !o.fields.values().any(holds) { return Value::Object(o); }
                 seen.push(o.uuid.to_string());
                 let fields: crate::value::FieldMap = o.fields.iter()
                     .map(|(k, f)| (k.clone(), match f {
-                        Value::Ref(_) | Value::Object(_) => walk(f.clone(), s, seen),
+                        f if holds(f) => walk(f.clone(), s, seen),
                         other => other.clone(),
                     })).collect();
                 seen.pop();
@@ -70,6 +73,17 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
     }
     if session.object_store.is_empty() || !holds_entry_fields(&v) { return v; }
     walk(v, session, &mut Vec::new())
+}
+
+/// The overlays on `host` when it is another region's object: as of the end
+/// of last tick (in a region, or in the program that runs the world).
+fn elsewhere_overlays(session: &mut Session, host: &Value) -> Vec<crate::session::OverlayInstance> {
+    let uuid = match host { Value::Ref(u) => u.to_string(), Value::Object(o) => o.uuid.to_string(), _ => return Vec::new() };
+    if session.region.is_some() { return crate::world::remote_overlays(session, Some(&uuid)); }
+    if crate::world::in_view(session, &uuid) {
+        return crate::world::view_overlays_in(session).into_iter().filter(|i| i.host_uuid == uuid).collect();
+    }
+    Vec::new()
 }
 
 /// `fmt_value_raw`, showing the objects that fields name.
@@ -3337,6 +3351,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
         BuiltinId::Metrics => {
+            if args.is_empty() { return Ok(crate::metrics::report(session)); }
             expect_n(1)?;
             match read(0)? {
                 Value::Collection(c) => {
@@ -3893,12 +3908,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 _ => false,
             };
             let list = &session.overlay_instances;
-            let overlays: Vec<Value> = match &host {
+            let mut overlays: Vec<Value> = match &host {
                 // An object's overlays are kept in its own list.
                 Value::Ref(u) => list.on_host(u).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
                 Value::Object(o) => list.on_host(&o.uuid).iter().map(|&p| Value::Str(list[p].overlay_name.clone().into())).collect(),
                 _ => list.iter().filter(|oi| on_host(oi)).map(|oi| Value::Str(oi.overlay_name.clone().into())).collect(),
             };
+            // Another region's object: its overlays as of the end of last tick.
+            for oi in elsewhere_overlays(session, &host) {
+                overlays.push(Value::Str(oi.overlay_name.clone().into()));
+            }
             Ok(Value::Array(overlays))
         }
         BuiltinId::OverlayStrength => {
@@ -3925,7 +3944,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             match found {
                 Some(oi) => Ok(Value::Float(oi.strength)),
-                None => Ok(Value::Nil),
+                None => Ok(elsewhere_overlays(session, &host).iter()
+                    .find(|oi| *oi.overlay_name == *overlay).map(|oi| Value::Float(oi.strength)).unwrap_or(Value::Nil)),
             }
         }
         // link_score reads variables by name and evaluates code, so the VM handles it.
@@ -5412,6 +5432,7 @@ fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
 
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
+    crate::world::note_erased(session, uuid);
     session.object_store.move_contents_up(uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
@@ -6099,7 +6120,7 @@ fn human_bytes(bytes: usize) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     let contents = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
     let pages = contents.split_whitespace().nth(1).and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
     pages * unsafe {
@@ -6109,7 +6130,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(target_os = "macos")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     use std::ffi::c_void;
     #[repr(C)] struct Info { virtual_size: usize, resident_size: usize, resident_size_max: usize, user_time: [i32;2], system_time: [i32;2], policy: i32, suspend_count: i32 }
     unsafe extern "C" { fn mach_task_self() -> u32; fn task_info(t: u32, f: i32, out: *mut c_void, cnt: *mut u32) -> i32; }
@@ -6121,7 +6142,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(target_os = "windows")]
-fn process_memory_bytes() -> usize {
+pub(crate) fn process_memory_bytes() -> usize {
     #[repr(C)]
     struct PROCESS_MEMORY_COUNTERS { cb: u32, page_fault_count: u32, peak_working_set_size: usize, working_set_size: usize, quota_peak_paged_pool_usage: usize, quota_paged_pool_usage: usize, quota_peak_non_paged_pool_usage: usize, quota_non_paged_pool_usage: usize, pagefile_usage: usize, peak_pagefile_usage: usize }
     extern "system" { fn GetCurrentProcess() -> *mut std::ffi::c_void; fn K32GetProcessMemoryInfo(h: *mut std::ffi::c_void, p: *mut PROCESS_MEMORY_COUNTERS, cb: u32) -> i32; }
@@ -6133,7 +6154,7 @@ fn process_memory_bytes() -> usize {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn process_memory_bytes() -> usize { 0 }
+pub(crate) fn process_memory_bytes() -> usize { 0 }
 
 
 /// Parses JSON straight into Goblin values. Objects keep their key order

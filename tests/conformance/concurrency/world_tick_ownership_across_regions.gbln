@@ -1,0 +1,69 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Ownership across regions, with nothing moving. The empire runs in the
+/// west and subjugates a kingdom that runs in the east: the kingdom's
+/// `owner` becomes the empire, and the kingdom, its land and the empire
+/// stay where they run. A chain of owners crosses regions (land -> kingdom
+/// -> empire). When the empire is erased, its `on erase` runs, and what it
+/// owned in every region moves up to its owner (none).
+<>Realm |
+    name: ..
+    age: 0
+    owner: nil
+    every 1 tick
+        @age |= @age + 1
+    xx
+    transition erase where @name == "Empire" and @age >= 3
+    on erase => say("the Empire falls, owning {:len(:objects(\"Realm\", it >> owner == self))} realms")
+    transition subjugate
+        targets: Realm where @name == "Empire" and (target >> name) == "Kalor"
+    xx
+xx
+<>Land |
+    name: ..
+    owner: nil
+xx
+act top(x)
+    repeat (x >> owner) != nil
+        x |= x >> owner
+    xx
+    return x >> name
+xx
+act holder(x)
+    h | x >> owner
+    if h.nix? => send "free"
+    return h >> name
+xx
+act make(realm, lands, vassal_of)
+    r <> Realm | name: realm
+    things | [r]
+    repeat lands as n
+        l <> Land | name: n, owner: r
+        :put_last!(things, l)
+    xx
+    return {"things": things}
+xx
+act day(st, msg)
+    return st
+xx
+west | :actor(make("Empire", ["Aster"], nil), day)
+east | :actor(make("Kalor", ["Brin", "Cove"], nil), day)
+north | :actor(make("Nord", ["Dun"], nil), day)
+regions | [west, east, north]
+/// The north becomes the Empire's vassal from the main program: an owner in
+/// another region, nothing moves.
+tick(regions)
+empire | :objects("Realm", it >> name == "Empire")[0]
+nord | :objects("Realm", it >> name == "Nord")[0]
+nord >> owner |= empire
+repeat :range(2, 5) as t
+    tick(regions)
+    rows | []
+    repeat :objects() as o
+        if :is_type(o, "Land")
+            :put_last!(rows, "{o >> name}^{top(o)}")
+        elif :is_type(o, "Realm")
+            :put_last!(rows, "{o >> name}<{holder(o)}")
+        xx
+    xx
+    say("tick {t}: {rows}")
+xx

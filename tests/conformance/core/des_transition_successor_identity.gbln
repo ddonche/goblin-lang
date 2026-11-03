@@ -1,0 +1,62 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// A successor is its own object: its id and uuid are its own, not the
+/// parent's. mutate into another class keeps the object's id. A class may
+/// have a field named strength (only an overlay's is called intensity).
+/// When carries: changes the overlay that stays, what it adds follows.
+<>Kingdom |
+    name: ..
+    strength: 10
+    transition split where @strength > 30
+        first:
+            strength: @strength / 2
+        xx
+        second:
+            strength: @strength / 2
+        xx
+    xx
+    transition mutate where @strength == 20
+        into: Empire
+        carries:
+            strength: @strength + 1
+        xx
+    xx
+    on split => say("parent and first share an id: {(self >> id) == (first >> id)}; first and second: {(first >> id) == (second >> id)}")
+xx
+<>Empire |
+    name: ..
+    strength: 0
+xx
+<>Land |
+    heat: 0
+xx
+overlay fire
+    hosts: Land
+    ~intensity: .2
+    modify
+        @heat + intensity * 10
+    xx
+    transition absorb
+        targets: ember where (target >> intensity) > 0
+        carries:
+            intensity: intensity + .5
+        xx
+    xx
+xx
+overlay ember
+    hosts: Land
+    ~intensity: .1
+xx
+k <> Kingdom | name: "Varn", strength: 40
+m <> Kingdom | name: "Oss", strength: 20
+m_id | m >> id
+l <> Land | heat: 0
+:overlay!(l, fire)
+:overlay!(l, ember)
+tick()
+repeat :objects("Kingdom") as x
+    say("{x >> name} strength {x >> strength} id is uuid {(x >> id) == (x >> uuid)}")
+xx
+repeat :objects("Empire") as e
+    say("{e >> name} strength {e >> strength} kept its id {(e >> id) == m_id} id is uuid {(e >> id) == (e >> uuid)}")
+xx
+say("heat {l >> heat} overlays {:len(:overlays_of(l))}")

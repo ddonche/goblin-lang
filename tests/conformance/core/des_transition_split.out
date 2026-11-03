@@ -1,0 +1,8 @@
+split: Varn (200) -> Varn (100), East Varn (100)
+old still listed: 0
+lands of the first: 2
+World gold 0 unity 0.5 owner none overlays 0
+Varn gold 100 unity 0.5 owner World overlays 1
+East Varn gold 100 unity 0.5 owner World overlays 1
+a owner Varn
+b owner Varn

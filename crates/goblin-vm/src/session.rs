@@ -48,6 +48,13 @@ pub struct OverlayDef {
     pub actions: Vec<goblin_ast::ActionDecl>,
     pub on_start: Option<String>,
     pub every: Vec<(u64, String)>,
+    /// What the kinds a transition makes from this one are named after:
+    /// its overlay class in lower case, else its own declared name
+    /// (`language_76`, `plague_3`).
+    pub family: String,
+    /// Made by a transition while the program ran, not declared: it goes
+    /// along with its overlays to other regions, which don't know it.
+    pub generated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +106,39 @@ pub const GC_BYTE_BUDGET: usize = 64 << 20;
 pub struct LinkOffset {
     pub value: f64,
     pub ticks_remaining: Option<u32>,
+}
+
+type LinkMap = HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>;
+
+/// Every change made to a link, by (from, to, name). Reads go straight to
+/// the map. It also answers "which objects does this one have a link to"
+/// from an index built when first asked and dropped on any change.
+#[derive(Default)]
+pub struct LinkTable {
+    map: LinkMap,
+    from: std::cell::RefCell<Option<HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher>>>,
+}
+
+impl LinkTable {
+    /// The objects `from` has a `name` link change to, in no set order.
+    pub fn targets(&self, from: &str, name: &str) -> Vec<String> {
+        let mut idx = self.from.borrow_mut();
+        let idx = idx.get_or_insert_with(|| {
+            let mut m: HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher> = Default::default();
+            for (a, b, n) in self.map.keys() { m.entry(a.clone()).or_default().push((b.clone(), n.clone())); }
+            m
+        });
+        idx.get(from).map(|v| v.iter().filter(|(_, n)| n == name).map(|(b, _)| b.clone()).collect()).unwrap_or_default()
+    }
+}
+
+impl std::ops::Deref for LinkTable {
+    type Target = LinkMap;
+    fn deref(&self) -> &LinkMap { &self.map }
+}
+
+impl std::ops::DerefMut for LinkTable {
+    fn deref_mut(&mut self) -> &mut LinkMap { *self.from.get_mut() = None; &mut self.map }
 }
 
 /// HTTP response state accumulated during a request.
@@ -184,6 +224,10 @@ pub struct Session {
     /// In a region: its copies of the other regions' objects, kept between
     /// ticks so the next tick rebuilds only the fields that changed.
     pub(crate) remote_copies: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Copy>,
+    /// In a region: the `owner` this region gave other regions' objects last
+    /// tick. Their regions set it at the start of this tick, after the
+    /// copies here were made, so the copies are given it too.
+    pub(crate) owners_sent: Vec<(crate::value::ObjId, Value)>,
     /// In a region: its objects as they went into its last snapshot.
     pub(crate) sent_objects: rustc_hash::FxHashMap<crate::value::ObjId, crate::world::Sent>,
     /// Compiled field defaults that are not plain literals, per (class, field).
@@ -242,6 +286,11 @@ pub struct Session {
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
     /// DES ticks run so far (`every N ticks` counts on it).
     pub des_ticks: i64,
+    /// What `:metrics()` reports: objects and overlays made, tick time.
+    pub des_metrics: crate::metrics::DesMetrics,
+    /// In a region: its objects that transitioned this tick (see
+    /// `transition::object_transitions`), reported with the tick's result.
+    pub transitioned: Vec<String>,
 
     /// Enum definitions registered at runtime.
     pub enums: Rc<HashMap<String, EnumDecl>>,
@@ -264,13 +313,17 @@ pub struct Session {
     pub overlay_defs: rustc_hash::FxHashMap<String, Rc<OverlayDef>>,
     pub link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
-    pub link_offsets: HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>,
+    pub link_offsets: LinkTable,
     pub object_decisions: HashMap<String, Rc<goblin_ast::DecisionDef>>,
     pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,
     pub des_index: EntityIndex,
     pub des_tick_runner: TickRunner,
     pub des_overlay_id_counter: u32,
+    /// How many overlay kinds each family has made by transitions.
+    pub kind_counts: HashMap<String, u64>,
+    /// Generated overlay kinds converted to cross threads, made once each.
+    pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
@@ -329,12 +382,13 @@ impl Session {
     /// action notes the change. Binding the very object the store holds
     /// (same fields, not a changed copy) changes nothing.
     #[inline]
+    /// Bind an object: a new one goes into the store; one already there is
+    /// that entry, so a copy of it (taken from a list or an earlier read)
+    /// never replaces what it holds now.
     pub(crate) fn put_object(&mut self, uuid: &crate::value::ObjId, val: Value) {
-        if let (Value::Object(new), Some(Value::Object(old))) = (&val, self.object_store.get(uuid)) {
-            if Rc::ptr_eq(&new.fields, &old.fields) && Rc::ptr_eq(&new.class_name, &old.class_name)
-                && Rc::ptr_eq(&new.readonly_fields, &old.readonly_fields) && Rc::ptr_eq(&new.trait_fields, &old.trait_fields) { return; }
-        }
+        if self.object_store.contains_key(uuid) { return; }
         self.touch(uuid);
+        if matches!(val, Value::Object(_)) { self.des_metrics.objects_made += 1; }
         self.object_store.insert(uuid.clone(), val);
     }
 
@@ -404,6 +458,7 @@ impl Session {
             world: None,
             region: None,
             remote_copies: Default::default(),
+            owners_sent: Vec::new(),
             sent_objects: Default::default(),
             field_defaults: HashMap::new(),
             next_generation: 1,
@@ -421,6 +476,8 @@ impl Session {
             classes: Default::default(),
             compiled_methods: Default::default(),
             des_ticks: 0,
+            des_metrics: Default::default(),
+            transitioned: Vec::new(),
             enums: Default::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             project_root: std::env::current_dir().unwrap_or_default(),
@@ -435,6 +492,8 @@ impl Session {
             des_index: EntityIndex::default(),
             des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
+            kind_counts: HashMap::new(),
+            portable_kinds: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
             global_type_locks: Default::default(),

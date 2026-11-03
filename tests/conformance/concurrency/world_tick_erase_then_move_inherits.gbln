@@ -1,0 +1,52 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A holding the program moves to a third region on the same tick its
+/// owner died elsewhere still goes up to the owner's owner: the move
+/// carries the holding as its region set it, after the erase.
+<>Lord |
+    name: ..
+    age: 0
+    owner: nil
+    every 1 tick
+        @age |= @age + 1
+    xx
+    transition erase where @name == "doomed" and @age >= 2
+xx
+<>Field |
+    name: ..
+    owner: nil
+xx
+act make(which)
+    if which == 1
+        top <> Lord | name: "top"
+        d <> Lord | name: "doomed", owner: top
+        return {"things": [top, d]}
+    xx
+    if which == 2
+        f <> Field | name: "far"
+        return {"things": [f]}
+    xx
+    g <> Field | name: "other"
+    return {"things": [g]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make(1), day)
+b | :actor(make(2), day)
+c | :actor(make(3), day)
+tick([a, b, c])
+far | :objects("Field", it >> name == "far")[0]
+far >> owner |= :objects("Lord", it >> name == "doomed")[0]
+moved | false
+repeat :range(2, 7) as t
+    tick([a, b, c])
+    if !moved and :len(:objects("Lord")) == 1
+        :move!(:objects("Field", it >> name == "far")[0], c)
+        moved |= true
+    xx
+    f | :objects("Field", it >> name == "far")[0]
+    o | f >> owner
+    shown | "nil"
+    if o != nil => shown |= o >> name
+    say("tick {t}: far owned by {shown}; lords {:len(:objects(\"Lord\"))}")
+xx

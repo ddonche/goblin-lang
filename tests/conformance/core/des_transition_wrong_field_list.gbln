@@ -1,0 +1,9 @@
+/// A field list a transition doesn't make anything for is an error.
+<>R |
+    p: 0
+    transition erase where @p > 1
+        carries:
+            p: 1
+        xx
+    xx
+xx

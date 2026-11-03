@@ -1,0 +1,4 @@
+tick 1: amoeba owner -; x owner amoeba; y owner -
+amoeba merges with cell into amoeba+cell
+tick 2: amoeba+cell owner -; x owner amoeba+cell; y owner amoeba+cell
+tick 3: amoeba+cell owner -; x owner amoeba+cell; y owner amoeba+cell

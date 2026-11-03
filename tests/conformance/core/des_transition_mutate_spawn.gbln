@@ -1,0 +1,35 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// mutate into another class keeps the object (the same variable sees it):
+/// fields both classes share keep their values, new ones take defaults,
+/// carries: changes them. spawn makes a new object from its class's
+/// defaults plus child:.
+<>Village |
+    name: ..
+    people: 0
+    transition mutate where @people > 50
+        into: Town
+        carries:
+            name: "{@name} Town"
+        xx
+    xx
+    transition spawn where @people > 20 and @people <= 50
+        child:
+            name: "{@name} Hamlet"
+        xx
+    xx
+    on mutate => say("{self >> name} now has walls {self >> walls}")
+    on spawn => say("{self >> name} founds {child >> name} with {child >> people}")
+xx
+<>Town |
+    name: ..
+    people: 0
+    walls: 1
+xx
+v <> Village | name: "Oak", people: 60
+w <> Village | name: "Elm", people: 30
+same | v
+tick()
+say("{v >> name} {v >> people} walls {v >> walls}")
+say("same object: {same >> name}")
+say(:len(:objects("Village")))
+say(:len(:objects("Town")))

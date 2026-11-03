@@ -709,8 +709,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), cast);
+                    self.session.put_object(&uuid, cast);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
@@ -727,8 +726,7 @@ impl Vm {
                 let cast = crate::builtins::cast_value_to_lock(val, &lock_type)?;
                 let t = if let Some(uuid) = registered_uuid(&cast) {
                     self.note_object_name(&uuid, NameOf::Global(idx as usize));
-                    self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), cast);
+                    self.session.put_object(&uuid, cast);
                     self.session.alloc_value(Value::Ref(uuid.into()))
                 } else {
                     self.session.alloc_value(cast)
@@ -1239,13 +1237,15 @@ impl Vm {
             Opcode::MakeArray(n) => {
                 let count = n as usize;
                 let start = self.stack.len().saturating_sub(count);
-                let items = self.drain_operands(start)?;
+                let mut items = self.drain_operands(start)?;
+                self.keep_entries(&mut items);
                 self.stack.push(Operand::Val(Value::Collection(Rc::new(CollectionValue::from_flat(items)))));
             }
             Opcode::MakeMap(n) => {
                 let pair_count = n as usize;
                 let start = self.stack.len().saturating_sub(pair_count * 2);
-                let flat = self.drain_operands(start)?;
+                let mut flat = self.drain_operands(start)?;
+                self.keep_entries(&mut flat);
                 // A key written twice keeps its first place and its last
                 // value, as the interpreter builds the map.
                 let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(pair_count);
@@ -1299,7 +1299,7 @@ impl Vm {
                 let key = self.pop_value()?;
                 let coll_val = self.pop_value()?;
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(result));
+                self.stack.push(Operand::Val(self.read_entry(result)));
             }
             Opcode::IndexGet(label_idx) | Opcode::KeyGet(label_idx) => {
                 let brace = matches!(op, Opcode::KeyGet(_));
@@ -1307,7 +1307,7 @@ impl Vm {
                 if let Some(v) = self.index_get_in_place(brace)? {
                     let len = self.stack.len();
                     self.stack.truncate(len - 2);
-                    self.stack.push(Operand::Val(v));
+                    self.stack.push(Operand::Val(self.read_entry(v)));
                     return Ok(());
                 }
                 let key = self.pop_value()?;
@@ -1319,7 +1319,7 @@ impl Vm {
                         "T0205: type-mismatch: map key must be a scalar (string, int, float, bool, char)".into()));
                 }
                 let result = crate::collections::get_index(&coll_val, &key)?;
-                self.stack.push(Operand::Val(result));
+                self.stack.push(Operand::Val(self.read_entry(result)));
             }
             Opcode::GuardRebindLocal(slot, name_idx) => {
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
@@ -1478,6 +1478,7 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
                 let new_val = entry_of(&self.session, new_val);
+                if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
                 self.session.touch(&uuid);
                 if let Some(obj) = self.session.object_store.get_mut(&uuid) {
@@ -1498,7 +1499,8 @@ impl Vm {
                     // the world: its region gets the new value next tick.
                     crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
                 } else {
-                    return Err(GoblinError::Runtime(format!("SetField: uuid {} not in object_store", uuid)));
+                    return Err(GoblinError::Runtime(format!(
+                        "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
                 }
                 // Push ref back so caller can chain / store back.
                 self.stack.push(Operand::Val(Value::Ref(uuid)));
@@ -1532,6 +1534,7 @@ impl Vm {
             }
             Opcode::UpdatePath(n, mask) => {
                 let new_val = self.pop_value()?;
+                let new_val = self.as_entry(new_val);
                 let mut keys = Vec::with_capacity(n as usize);
                 for _ in 0..n { keys.push(self.pop_value()?); }
                 keys.reverse();
@@ -1758,6 +1761,7 @@ impl Vm {
                             }
                         }
                     }
+                    self.live_args(&mut arg_vals);
                     if let Some(m) = self.memo.as_mut() {
                         if !crate::memo::builtin_reads(bid) { m.changed(); }
                     }
@@ -1765,6 +1769,7 @@ impl Vm {
                         return self.host_call_on_worker(bid, arg_vals);
                     }
                     let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
+                    let result = self.entries_out(result);
                     self.stack.push(Operand::Val(result));
                 } else {
 
@@ -1861,7 +1866,8 @@ impl Vm {
             Opcode::CallBuiltinMut(id, argc) => {
                 if let Some(t) = self.sole_ref_target(argc as usize) {
                     let start = self.stack.len() - (argc as usize - 1);
-                    let args = self.drain_operands(start)?;
+                    let mut args = self.drain_operands(start)?;
+                    self.keep_entries(&mut args);
                     let stash = self.session.resolve_mut(t.addr)?;
                     if crate::collections::mutate_in_place(&mut stash.value, id, &args) {
                         // The target's Ref stays on the stack as the call's value.
@@ -1877,7 +1883,8 @@ impl Vm {
                 if let Some(t) = self.sole_ref_target(1 + n + rest) {
                     let start = self.stack.len() - (n + rest);
                     let mut keys = self.drain_operands(start)?;
-                    let args = keys.split_off(n);
+                    let mut args = keys.split_off(n);
+                    self.keep_entries(&mut args);
                     let stash = self.session.resolve_mut(t.addr)?;
                     if crate::collections::mutate_nested_in_place(&mut stash.value, &keys, id, &args) {
                         return Ok(());
@@ -1904,7 +1911,7 @@ impl Vm {
                     let mut vals = std::mem::take(&mut self.key_buf);
                     vals.clear();
                     self.drain_operands_into(start, &mut vals)?;
-                    let new_val = vals.pop().unwrap();
+                    let new_val = self.as_entry(vals.pop().unwrap());
                     let func = self.call_stack.last().unwrap().func.clone();
                     let crate::opcode::OpData::Fused(f) = &func.op_data[idx as usize] else { unreachable!("UpdatePathHint without its data") };
                     let stash = self.session.resolve_mut(t.addr)?;
@@ -1952,7 +1959,7 @@ impl Vm {
                         let mut vals = std::mem::take(&mut self.key_buf);
                         vals.clear();
                         self.drain_operands_into(start, &mut vals)?;
-                        let new_val = vals.pop().unwrap();
+                        let new_val = self.as_entry(vals.pop().unwrap());
                         let stash = self.session.resolve_mut(t.addr)?;
                         if crate::collections::update_path_in_place(&mut stash.value, &vals, new_val.clone()) {
                             vals.clear();
@@ -1986,6 +1993,8 @@ impl Vm {
                 } else {
                     self.drain_operands(start)?
                 };
+                let mut arg_vals = arg_vals;
+                self.live_args(&mut arg_vals);
 
                 // Special handling for builtins that need VM call capability.
                 match id {
@@ -2141,6 +2150,7 @@ impl Vm {
                     BuiltinId::Objects => {
                         let (class, pred) = query_args(arg_vals, "objects")?;
                         let result = self.vm_objects_query(class.as_deref(), pred)?;
+                        let result = self.entries_out(result);
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
@@ -2384,6 +2394,7 @@ impl Vm {
                 }
 
                 let result = crate::builtins::call_builtin(id, arg_vals, &mut self.session)?;
+                let result = self.entries_out(result);
                 self.stack.push(Operand::Val(result));
             }
 
@@ -2749,6 +2760,8 @@ impl Vm {
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
+                    family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
+                    generated: false,
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
@@ -3530,6 +3543,86 @@ impl Vm {
     #[inline]
     fn as_entry(&self, v: Value) -> Value { entry_of(&self.session, v) }
 
+    /// An element read out of a collection: a stored object reads as its id,
+    /// and an erased one as nil, as a field does.
+    #[inline]
+    fn read_entry(&self, v: Value) -> Value {
+        match v {
+            Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && !self.session.object_store.contains_key(&*u) => Value::Nil,
+            v => entry_of(&self.session, v),
+        }
+    }
+
+    /// Stored objects go into a collection as their ids, as into a field:
+    /// the collection names the object, it does not hold a copy of it.
+    fn keep_entries(&self, vals: &mut [Value]) {
+        for v in vals.iter_mut() {
+            if let Value::Object(o) = v {
+                if !o.uuid.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(&*o.uuid) {
+                    *v = Value::Ref(o.uuid.clone());
+                }
+            }
+        }
+    }
+
+    /// What a builtin gives back names stored objects by id: a stored object
+    /// it returns, and the stored objects in a collection it returns.
+    fn entries_out(&self, mut v: Value) -> Value {
+        use crate::value::CollectionLayout as L;
+        if self.session.object_store.is_empty() { return v; }
+        let store = &self.session.object_store;
+        let stored = |x: &Value| matches!(x, Value::Object(o)
+            if !o.uuid.starts_with(OVERLAY_RECORD) && store.contains_key(&*o.uuid));
+        let to_id = |x: &mut Value| if stored(x) {
+            if let Value::Object(o) = x { *x = Value::Ref(o.uuid.clone()); }
+        };
+        match &mut v {
+            Value::Object(_) => if stored(&v) { return self.as_entry(v); },
+            Value::Array(xs) => xs.iter_mut().for_each(to_id),
+            Value::Collection(rc) => match &rc.layout {
+                L::FlatArray(xs) if xs.iter().any(|x| stored(x)) => {
+                    if let L::FlatArray(xs) = &mut Rc::make_mut(rc).layout { Rc::make_mut(xs).iter_mut().for_each(to_id); }
+                }
+                L::SmallMap(ps) if ps.iter().any(|(_, x)| stored(x)) => {
+                    if let L::SmallMap(ps) = &mut Rc::make_mut(rc).layout { Rc::make_mut(ps).iter_mut().for_each(|(_, x)| to_id(x)); }
+                }
+                L::HashMapBackend(m) if m.values().any(|x| stored(x)) => {
+                    if let L::HashMapBackend(m) = &mut Rc::make_mut(rc).layout { Rc::make_mut(m).values_mut().for_each(to_id); }
+                }
+                L::RingBuf(_) | L::ChunkedSeq(_) => {
+                    let mut xs = crate::collections::to_vec(rc);
+                    if xs.iter().any(|x| stored(x)) {
+                        xs.iter_mut().for_each(to_id);
+                        return Value::Collection(Rc::new(CollectionValue::from_flat(xs)));
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        v
+    }
+
+    /// A builtin gets objects as they are now: an id (an element of a
+    /// collection) gives the stored object, nil once it is erased; a copy
+    /// of a stored object taken earlier is swapped for the stored one.
+    fn live_args(&self, args: &mut [Value]) {
+        for a in args.iter_mut() {
+            if let Value::Ref(u) = a {
+                if !u.starts_with(OVERLAY_RECORD) {
+                    *a = self.session.object_store.get(&**u).cloned().unwrap_or(Value::Nil);
+                }
+                continue;
+            }
+            if let Value::Object(o) = a {
+                if o.uuid.starts_with(OVERLAY_RECORD) { continue; }
+                if let Some(Value::Object(now)) = self.session.object_store.get(&*o.uuid) {
+                    if !Rc::ptr_eq(&now.fields, &o.fields) { *a = Value::Object(now.clone()); }
+                }
+            }
+        }
+    }
+
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
@@ -3710,8 +3803,7 @@ impl Vm {
     /// of them see it. Pending reads of the old value keep the old value.
     fn write_shared(&mut self, t: &Tether, val: Value) -> Result<(), GoblinError> {
         let val = if let Some(uuid) = registered_uuid(&val) {
-            self.session.touch(&uuid);
-                    self.session.object_store.insert(uuid.clone(), val);
+            self.session.put_object(&uuid, val);
             Value::Ref(uuid.into())
         } else { val };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
@@ -5150,8 +5242,11 @@ impl Vm {
         let key = tick_expr_key(expr, param_names);
         if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
         // Compiled against the program's globals, so a formula can read a
-        // variable and call an action (`where [ kingdom(target) == 2 ]`).
-        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec());
+        // variable and call an action (`where [ kingdom(target) == 2 ]`); a
+        // formula written in an imported module sees that module's names,
+        // as the rest of its code does.
+        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec())
+            .with_global_prefix(self.module_prefix_of(&expr.span().file));
         let f = Self::compile_expr_fn(expr, param_names, compiler)?;
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let tree = crate::formula_tree::FormulaTree::build(&f);
@@ -5161,6 +5256,15 @@ impl Vm {
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
         self.tick_exprs.insert(key, f.clone());
         Ok(f)
+    }
+
+    /// The global prefix of the imported module `file` (as its spans name
+    /// it), or None for the main program.
+    fn module_prefix_of(&self, file: &str) -> Option<String> {
+        if file.is_empty() { return None; }
+        let path = std::path::Path::new(file);
+        let prefix = format!("{}::", path.canonicalize().ok()?.display());
+        self.session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
@@ -5918,7 +6022,11 @@ impl Vm {
                     return Err(GoblinError::Runtime(format!(
                         "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
                 }
-                match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
+                let narrowed = match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
+                    Some(at) => Some(at),
+                    None => pred.as_ref().and_then(|p| self.objects_by_link(c, p)),
+                };
+                match narrowed {
                     Some(at) => Some(at),
                     None => {
                         let store = &self.session.object_store;
@@ -5951,6 +6059,90 @@ impl Vm {
         let mut at = vec![usize::MAX - 1; 1 + env.upvalues.len() + env.globals.len()];
         let key = self.run_formula_key(part, &[("it", &Value::Nil)], &mut at, &env)?;
         Some(self.session.object_store.with_field(class, field, &key))
+    }
+
+    /// `:objects("Land", :link_score(x, it, "border"))`, alone or compared
+    /// with a number (`> 0`): when the link can only pass for objects `x`
+    /// has changed that link to, those objects of the class (the predicate
+    /// still runs on each). A link whose start is a formula, or one that
+    /// passes where it was never set, takes the general path.
+    fn objects_by_link(&mut self, class: &str, pred: &Value) -> Option<Vec<usize>> {
+        use crate::opcode::Opcode as O;
+        let (func, cells): (&std::rc::Rc<FunctionObject>, &[crate::value::UpvalueCell]) = match pred {
+            Value::Closure(c) => (&c.func, &c.upvalues),
+            Value::Function(f) => (f, &[]),
+            _ => return None,
+        };
+        if func.params != 1 { return None; }
+        let mut code: &[O] = &func.bytecode;
+        // A bare name is `it`'s field when its class has one by that name.
+        if let [O::LoadItFieldOrJump(ci, 1), rest @ ..] = code {
+            let Value::Str(name) = func.constants.get(*ci as usize)? else { return None };
+            let decl = self.session.classes.get(class)?;
+            if ["id", "uuid", "owner_id"].contains(&name.as_str()) || decl.fields.iter().any(|f| f.name == name.as_str()) { return None; }
+            code = rest;
+        }
+        let (load, name_i, tail) = match code {
+            [load, O::LoadLocal(0), O::LoadConst(n), O::CallBuiltin(crate::value::BuiltinId::LinkScore, 3), tail @ ..] => (load, *n, tail),
+            _ => return None,
+        };
+        let from = match load {
+            O::LoadUpvalue(i) => self.session.get_stash(&cells.get(*i as usize)?.get()).ok()?.value.clone_fast(),
+            O::LoadGlobal(g) => { let t = self.session.get_global(*g as usize)?.clone(); self.session.get_stash(&t).ok()?.value.clone_fast() }
+            _ => return None,
+        };
+        let from = match &from {
+            Value::Ref(u) => u.to_string(),
+            Value::Object(o) => o.uuid.to_string(),
+            _ => return None,
+        };
+        let Value::Str(name) = func.constants.get(name_i as usize)? else { return None };
+        let name = name.to_string();
+        let test = match tail {
+            [O::Return] => None,
+            [O::LoadConst(c), op, O::Return] => {
+                let op = match op { O::Gt => ">", O::Ge => ">=", O::Lt => "<", O::Le => "<=", O::Eq => "==", O::Ne => "!=", _ => return None };
+                Some((op, func.constants.get(*c as usize)?.clone()))
+            }
+            _ => return None,
+        };
+        if !self.unset_link_fails(&from, &name, test.as_ref().map(|(o, c)| (*o, c))) { return None; }
+        Some(self.link_targets_in(&from, &name, class))
+    }
+
+    /// Whether a link `from` never set on `name` fails the test: truthy
+    /// when `test` is None, else `link op value`. False when that can't be
+    /// told (a link starting from a formula, a test on something else).
+    pub(crate) fn unset_link_fails(&mut self, from: &str, name: &str, test: Option<(&str, &Value)>) -> bool {
+        if self.session.object_link_defs.contains_key(&(from.to_string(), name.to_string())) { return false; }
+        let Some(Value::Object(o)) = self.session.object_store.get(from) else { return false };
+        let Some(def) = self.session.link_defs.get(&(o.class_name.to_string(), name.to_string())).cloned() else { return false };
+        // The start a link block gives without `score` is its range's low end.
+        if def.has_formula && !matches!(def.formula, goblin_ast::Expr::Number(..)) { return false; }
+        let Ok(unset) = crate::tick::link_value(self, from, "", name) else { return false };
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(x) => Some(*x), _ => None };
+        let passes = match test {
+            None => unset.is_truthy(),
+            Some(("==", c)) => values_equal(&unset, c),
+            Some(("!=", c)) => !values_equal(&unset, c),
+            Some((op, c)) => {
+                let (Some(a), Some(b)) = (num(&unset), num(c)) else { return false };
+                match op { ">" => a > b, ">=" => a >= b, "<" => a < b, "<=" => a <= b, _ => return false }
+            }
+        };
+        !passes
+    }
+
+    /// Where in the store the objects of `class` that `from` has a `name`
+    /// link change to sit, in store order.
+    pub(crate) fn link_targets_in(&self, from: &str, name: &str, class: &str) -> Vec<usize> {
+        let store = &self.session.object_store;
+        let mut at: Vec<usize> = self.session.link_offsets.targets(from, name).iter()
+            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if &*o.class_name == class))
+            .filter_map(|u| store.get_index_of(u.as_str()))
+            .collect();
+        at.sort_unstable();
+        at
     }
 
     /// What running `func` directly as a one-argument predicate needs,
@@ -6056,7 +6248,7 @@ impl Vm {
 
     /// What `:overlays(...)` shows for one overlay: a record of its name,
     /// host, strength, age, time left, count and own fields.
-    fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
+    pub(crate) fn overlay_record(&self, inst: &crate::session::OverlayInstance) -> Value {
         thread_local! {
             static RECORD_LAYOUT: std::cell::RefCell<Option<std::rc::Rc<crate::fields::Layout>>> = const { std::cell::RefCell::new(None) };
         }
@@ -6107,6 +6299,9 @@ impl Vm {
                 if inst.host_uuid == host && name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
             }
         }
+        for inst in crate::world::remote_overlays(&mut self.session, Some(host)) {
+            if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+        }
         Ok(Value::Array(records))
     }
 
@@ -6126,6 +6321,9 @@ impl Vm {
             for inst in crate::world::view_overlays(self) {
                 if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
             }
+        }
+        for inst in crate::world::remote_overlays(&mut self.session, None) {
+            if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
         }
         let Some(pred_fn) = pred else { return Ok(Value::Array(records)) };
         let mut results = Vec::new();
@@ -6436,6 +6634,7 @@ impl Vm {
                     class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.as_str().into(),
                 }));
                 self.session.object_store.insert(new_uuid, cloned.clone());
+                self.session.des_metrics.objects_made += 1;
                 Ok(cloned)
             }
             _ => Err(GoblinError::Runtime("A0416: clone-object-not-found: clone_object() source object not found".into())),
@@ -6654,6 +6853,7 @@ impl Vm {
                 };
                 self.session.touch(&uuid);
                 let replacement = entry_of(&self.session, replacement);
+                if AsRef::<str>::as_ref(field) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &replacement)?; }
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;

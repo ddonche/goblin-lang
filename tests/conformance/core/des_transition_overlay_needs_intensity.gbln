@@ -1,0 +1,11 @@
+/// An overlay's split, fracture or merge must say each successor's intensity.
+overlay plague
+    transition split where intensity > .5
+        first:
+            intensity: .3
+        xx
+        second:
+            name: "b"
+        xx
+    xx
+xx

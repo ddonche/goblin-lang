@@ -1,37 +1,43 @@
 feudal kingdoms: 3 realms, 100 years
 year 25:
-  Aldmark: king Arden (55), 38 nobles, 24 estates; crowned 0, inherited 0, escheated 2, granted 3, sold 0, seized 2, defected 0, arrived 0
-  Brennor: king Fenwick (55), 41 nobles, 24 estates; crowned 0, inherited 2, escheated 0, granted 3, sold 1, seized 1, defected 0, arrived 0
-  Caddis: king Kell (55), 44 nobles, 24 estates; crowned 0, inherited 1, escheated 0, granted 3, sold 0, seized 0, defected 0, arrived 0
+  Aldmark: king Arden (55), 36 nobles, 24 estates; crowned 0, inherited 1, escheated 2, granted 2, sold 1, seized 2, defected 0, arrived 0
+  Brennor: king Fenwick (55), 39 nobles, 24 estates; crowned 0, inherited 1, escheated 0, granted 3, sold 1, seized 2, defected 0, arrived 0
+  Caddis: king Kell (23), 43 nobles, 24 estates; crowned 0, inherited 2, escheated 0, granted 4, sold 0, seized 1, defected 0, arrived 0
   estates 72, held by no realm 0
 year 50:
-  Aldmark: king Arden (36), 30 nobles, 24 estates; crowned 0, inherited 10, escheated 3, granted 10, sold 0, seized 7, defected 0, arrived 0
-  Brennor: king Fenwick (42), 11 nobles, 6 estates; crowned 0, inherited 7, escheated 0, granted 3, sold 1, seized 2, defected 3, arrived 0
-  Caddis: king Ivers (41), 52 nobles, 42 estates; crowned 3, inherited 13, escheated 3, granted 9, sold 2, seized 5, defected 0, arrived 3
+  Aldmark: king Arden (35), 31 nobles, 32 estates; crowned 0, inherited 13, escheated 3, granted 11, sold 1, seized 7, defected 0, arrived 2
+  Brennor: king Fenwick (38), 43 nobles, 27 estates; crowned 0, inherited 9, escheated 1, granted 12, sold 2, seized 7, defected 1, arrived 2
+  Caddis: king Kell (48), 21 nobles, 13 estates; crowned 0, inherited 14, escheated 0, granted 8, sold 2, seized 3, defected 3, arrived 0
   estates 72, held by no realm 0
 year 75:
-  Aldmark: king Arden (61), 27 nobles, 16 estates; crowned 0, inherited 13, escheated 4, granted 15, sold 0, seized 9, defected 2, arrived 1
-  Brennor: king Fenwick (43), 20 nobles, 10 estates; crowned 0, inherited 13, escheated 1, granted 6, sold 1, seized 2, defected 5, arrived 2
-  Caddis: king Ivers (19), 57 nobles, 46 estates; crowned 3, inherited 27, escheated 8, granted 23, sold 3, seized 14, defected 0, arrived 4
+  Aldmark: king Arden (18), 42 nobles, 32 estates; crowned 0, inherited 23, escheated 4, granted 17, sold 1, seized 14, defected 0, arrived 2
+  Brennor: king Fenwick (63), 11 nobles, 4 estates; crowned 0, inherited 20, escheated 1, granted 15, sold 2, seized 10, defected 5, arrived 2
+  Caddis: king Kell (47), 50 nobles, 36 estates; crowned 0, inherited 20, escheated 2, granted 15, sold 3, seized 5, defected 3, arrived 4
   estates 72, held by no realm 0
 year 100:
-  Aldmark: king Arden (31), 4 nobles, 2 estates; crowned 0, inherited 18, escheated 4, granted 22, sold 0, seized 12, defected 4, arrived 2
-  Brennor: king Fenwick (35), 65 nobles, 63 estates; crowned 0, inherited 19, escheated 2, granted 8, sold 1, seized 2, defected 6, arrived 5
-  Caddis: king Ivers (44), 29 nobles, 7 estates; crowned 3, inherited 40, escheated 8, granted 37, sold 4, seized 25, defected 3, arrived 4
+  Aldmark: king Arden (15), 31 nobles, 32 estates; crowned 0, inherited 36, escheated 4, granted 18, sold 1, seized 15, defected 0, arrived 2
+  Brennor: king Fenwick (16), 51 nobles, 33 estates; crowned 0, inherited 26, escheated 1, granted 16, sold 2, seized 12, defected 6, arrived 5
+  Caddis: king Marsh (20), 23 nobles, 7 estates; crowned 1, inherited 33, escheated 5, granted 18, sold 11, seized 8, defected 6, arrived 5
   estates 72, held by no realm 0
 
 the realms at the end:
-  Aldmark: king Arden, 2 estates of his own, gold 1562
-  Brennor: king Fenwick, 2 estates of his own, gold 856
-    Elsing (65): 5 estates, 8 in his household
-    Norwood (31): 8 estates, 3 in his household
-    Jessop (28): 15 estates, 2 in his household
-    Bracken (45): 3 estates, 8 in his household
-    Lorne (37): 5 estates, 10 in his household
-  Caddis: king Ivers, 2 estates of his own, gold 3167
-    Ivers (47): 0 estates, 1 in his household
-    Ivers (43): 0 estates, 4 in his household
-    Marsh (36): 1 estates, 3 in his household
-    Ivers (36): 0 estates, 2 in his household
-    Holt (28): 1 estates, 4 in his household
-    Orme (20): 1 estates, 0 in his household
+  Aldmark: king Arden, 2 estates of his own, gold 4151
+    Dunmore (47): 7 estates, 5 in his household
+    Corvel (18): 6 estates, 2 in his household
+    Garrow (14): 9 estates, 2 in his household
+  Brennor: king Fenwick, 2 estates of his own, gold 1967
+    Holt (54): 1 estates, 2 in his household
+    Holt (50): 1 estates, 1 in his household
+    Holt (34): 1 estates, 2 in his household
+    Ivers (31): 1 estates, 4 in his household
+    Ivers (29): 1 estates, 5 in his household
+    Holt (20): 1 estates, 2 in his household
+    Holt (16): 0 estates, 1 in his household
+    Lorne (55): 0 estates, 7 in his household
+    Orme (41): 20 estates, 5 in his household
+  Caddis: king Marsh, 2 estates of his own, gold -510
+    Kell (56): 0 estates, 1 in his household
+    Marsh (53): 1 estates, 1 in his household
+    Marsh (33): 1 estates, 4 in his household
+    Marsh (23): 1 estates, 2 in his household
+    Marsh (21): 1 estates, 1 in his household

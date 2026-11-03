@@ -1,0 +1,55 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// merge across regions: an amoeba (region 1) and a cell (region 2) become
+/// one Blob in the amoeba's region, holding what both held. The cell is
+/// claimed on tick 1 and gone at its end; the Blob is made at the start of
+/// tick 2, so for that moment the cell's holding `y` names an owner not yet
+/// made (it reads nil).
+<>Cell |
+    name: ..
+    size: 0
+    owner: nil
+    transition merge
+        targets: Cell where (target >> name) != @name and @name == "amoeba"
+        into: Blob
+        carries:
+            size: @size + (target >> size)
+            name: "{@name}+{target >> name}"
+        xx
+    xx
+    on merge => :say("{self >> name} merges with {target >> name} into {merged >> name}")
+xx
+<>Blob |
+    name: ..
+    size: 0
+    owner: nil
+xx
+<>Bit |
+    name: ..
+    owner: nil
+xx
+act make(which)
+    if which == 1
+        a <> Cell | name: "amoeba", size: 3
+        x <> Bit | name: "x", owner: a
+        return {"things": [a, x]}
+    xx
+    c <> Cell | name: "cell", size: 4
+    y <> Bit | name: "y", owner: c
+    return {"things": [c, y]}
+xx
+act day(st, msg)
+    return st
+xx
+r1 | :actor(make(1), day)
+r2 | :actor(make(2), day)
+repeat :range(1, 4) as t
+    tick([r1, r2])
+    names | []
+    repeat :objects() as o
+        h | o >> owner
+        hn | "-"
+        if h != nil => hn |= h >> name
+        :put_last!(names, "{o >> name} owner {hn}")
+    xx
+    :say("tick {t}: {:join(:sort(names), "; ")}")
+xx

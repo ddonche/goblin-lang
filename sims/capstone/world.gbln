@@ -1,0 +1,189 @@
+/// Capstone step 1: land and people. A continent generated from a seed,
+/// its provinces linked to the ones they border, people growing toward
+/// what the land feeds and spreading out from a few homelands.
+/// Run from this folder: goblin run world.gbln
+import map as map
+import land as land
+
+act food_of(p)
+    return p >> food
+xx
+
+act text(v)
+    return :str(v)
+xx
+
+/// Whether p borders (or is) one of `homes`.
+act beside_any(p, homes)
+    repeat homes as h
+        if h == p or :link_score(p, h, "border") => send true
+    xx
+    return false
+xx
+
+act total_people(lands)
+    n | 0.0
+    repeat lands as l
+        n |= n + l >> people
+    xx
+    return n
+xx
+
+/// People over food, for each kind of land.
+act fill_by_terrain(lands, order)
+    fed  | {}
+    room | {}
+    repeat order as k
+        :update!(fed{k}, 0.0)
+        :update!(room{k}, 0.0)
+    xx
+    repeat lands as l
+        k | l >> terrain
+        :update!(fed{k}, fed{k} + l >> people)
+        :update!(room{k}, room{k} + l >> food)
+    xx
+    out | {}
+    repeat order as k
+        f | 0.0
+        if room{k} > 0 => f |= fed{k} / room{k}
+        :update!(out{k}, f)
+    xx
+    return out
+xx
+
+cfg | {
+    "seed": 42,
+    "provinces": 400,
+    "kingdoms": 20,
+    "years": 3000,
+    "sample_every": 100,
+    "land_share": 0.55,
+    "edge_drop": 0.6,
+    "steppe_dryness": 0.6,
+    "coast_rain": 0.15,
+    "river_flow": 8,
+    "terrain_shares": {"mountains": 0.08, "hills": 0.14, "desert": 0.06, "steppe": 0.14, "forest": 0.25},
+    "food": {"river": 1000.0, "plain": 500.0, "coast": 400.0, "forest": 250.0, "hills": 200.0,
+        "steppe": 120.0, "mountains": 60.0, "desert": 40.0},
+    "homeland_fill": 0.3,
+    "csv": "capstone_metrics.csv"
+}
+years | :int(:env("YEARS") ?? cfg{"years"})
+
+t_start | :epoch_ms()
+m       | map::generate(cfg)
+kinds   | map::terrain(m, cfg)
+width   | m{"width"}
+height  | m{"height"}
+:say(map::draw(m, kinds))
+:say("~ sea  ^ mountains  n hills  = river  , coast  d desert  s steppe  f forest  . plain")
+
+/// One province per land cell, and a border link each way to every
+/// land cell beside it.
+at    | {}
+lands | []
+repeat kinds as k
+    if k == "sea" => skip
+    p <> Land | x: idx % width, y: idx // width, terrain: k, food: cfg{"food"}{k}
+    :update!(at{:str(idx)}, p)
+    :put_last!(lands, p)
+xx
+repeat lands as p
+    i | p >> y * width + p >> x
+    repeat map::around(i, width, height) as j
+        q | at{:str(j)} ?? => skip
+        :link!(p, q, border, 1)
+    xx
+xx
+
+/// Homelands: the best-fed provinces, no two side by side.
+homes | []
+repeat :reverse(:sort_by(lands, "food_of")) as p
+    if :len(homes) >= cfg{"kingdoms"} => stop
+    if beside_any(p, homes) => skip
+    :put_last!(homes, p)
+    p >> people |= cfg{"homeland_fill"} * p >> food
+xx
+t_map | :epoch_ms() - t_start
+
+/// Every `sample_every` years: speed, memory, counts, where tick time went
+/// (by pass and by layer, over the last `sample_every` years) and how full
+/// each kind of land is.
+order  | ["river", "plain", "coast", "forest", "hills", "steppe", "mountains", "desert"]
+layers | ["Land"]
+passes | :keys(:metrics(){"tick_ms"})
+counts | ["rss_mb", "peak_rss_mb", "des_mb", "objects", "objects_made", "objects_gone", "overlays", "overlays_made", "overlays_gone"]
+head   | ["year", "wall_ms", "years_per_s", "tick_ms"]
+repeat counts as c
+    :put_last!(head, c)
+xx
+:put_last!(head, "people")
+:put_last!(head, "settled")
+repeat passes as p
+    :put_last!(head, "pass_{p}_ms")
+xx
+repeat layers as l
+    :put_last!(head, "layer_{l}_ms")
+xx
+repeat order as k
+    :put_last!(head, "fill_{k}")
+xx
+:write_text!(cfg{"csv"}, "{:join(head, ",")}\n")
+full_at | {}
+t_run   | :epoch_ms()
+tick_ms | 0
+history | []
+prev    | :metrics()
+repeat :range(0, years + 1) as year
+    if year > 0
+        t | :epoch_ms()
+        :tick()
+        tick_ms |= tick_ms + :epoch_ms() - t
+    xx
+    if year % cfg{"sample_every"} != 0 => skip
+    now  | :epoch_ms() - t_run
+    rate | 0.0
+    if now > 0 => rate |= year * 1000.0 / now
+    stats   | :metrics()
+    fills   | fill_by_terrain(lands, order)
+    people  | total_people(lands)
+    settled | :len(:objects(Land, it >> people >= 1.0))
+    row     | [year, now, :round(rate, 1), tick_ms]
+    repeat counts as c
+        :put_last!(row, stats{c})
+    xx
+    :put_last!(row, :round(people))
+    :put_last!(row, settled)
+    repeat passes as p
+        :put_last!(row, :round(stats{"tick_ms"}{p} - prev{"tick_ms"}{p}, 3))
+    xx
+    repeat layers as l
+        :put_last!(row, :round((stats{"layer_ms"}{l} ?? 0.0) - (prev{"layer_ms"}{l} ?? 0.0), 3))
+    xx
+    repeat order as k
+        :put_last!(row, :round(fills{k}, 3))
+        if fills{k} >= 0.8 and !:has(full_at, k) => :update!(full_at{k}, year)
+    xx
+    :append_file!(cfg{"csv"}, "{:join(:map(row, "text"), ",")}\n")
+    :put_last!(history, people)
+    :say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled")
+    tick_ms |= 0
+    prev    |= stats
+xx
+:say("map {width}x{height}")
+:say("time: map {t_map} ms, {years} years {:epoch_ms() - t_run} ms")
+:say("80% full by year: {full_at}")
+
+/// Step 1's checks: river valleys are the first land to fill, and the
+/// world's people level off (under 1% growth over the last three samples).
+first | ..
+repeat full_at as k, y
+    if first.nix? or y < full_at{first} => first |= k
+xx
+:say("check: first to fill: {first}")
+n | :len(history)
+if n >= 4
+    growth | (history[n - 1] - history[n - 4]) / history[n - 4]
+    span   | 3 * cfg{"sample_every"}
+    :say("check: growth over the last {span} years: {:round(growth * 100.0, 2)}%")
+xx

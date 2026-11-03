@@ -1,0 +1,37 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region's handler sees the other regions' objects and their overlays
+/// as they were at the end of the last tick, as its DES rules do. (Only
+/// region 1 prints, so the output does not depend on thread timing.)
+<>Realm |
+    name: ..
+    power: 0
+    every 1 tick
+        @power |= @power + 1
+    xx
+xx
+overlay faith
+    hosts: Realm
+xx
+act make(which)
+    if which == 1
+        usa <> Realm | name: "USA", power: 30
+        return {"things": [usa], "who": "r1"}
+    xx
+    can <> Realm | name: "Canada", power: 5
+    :overlay!(can, faith)
+    return {"things": [can], "who": "r2"}
+xx
+act day(st, msg)
+    seen | []
+    repeat :objects("Realm") as r
+        :put_last!(seen, "{r >> name} {r >> power}")
+    xx
+    can | :objects("Realm", it >> name == "Canada")[0]
+    if st{"who"} == "r1" => :say("{st{"who"}} sees {:join(:sort(seen), ", ")}; overlays {:len(:overlays())}; Canada has {:overlays_of(can)} at {:overlay_strength("faith", can)}")
+    return st
+xx
+a | :actor(make(1), day)
+b | :actor(make(2), day)
+repeat 2
+    tick([a, b])
+xx
