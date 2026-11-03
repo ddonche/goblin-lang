@@ -219,6 +219,9 @@ pub struct Session {
     pub(crate) des_erasing: Vec<String>,
     /// The main program's world of regions (`tick(regions)`).
     pub world: Option<crate::world::World>,
+    /// `:move!(obj, region)` before the first `tick(regions)`: (object,
+    /// region actor). The first tick that lists the region sends it there.
+    pub moves_before_world: Vec<(String, u64)>,
     /// In a region, while it runs a world tick.
     pub(crate) region: Option<crate::world::RegionCtx>,
     /// In a region: its copies of the other regions' objects, kept between
@@ -456,6 +459,7 @@ impl Session {
             des_erasing: Vec::new(),
             kept_home: HashMap::new(),
             world: None,
+            moves_before_world: Vec::new(),
             region: None,
             remote_copies: Default::default(),
             owners_sent: Vec::new(),

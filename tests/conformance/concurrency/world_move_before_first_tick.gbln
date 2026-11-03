@@ -1,0 +1,56 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Objects the program makes go into regions with :move! before the first
+/// tick(regions): the first tick runs them there. A province in one region
+/// takes its neighbour in another (the change arrives the next tick), and
+/// the kingdom counts its lands in every region.
+<>P |
+    name: ..
+    lands: 0
+    every 1 tick
+        @lands |= :len(:objects(L, it >> owner == self))
+    xx
+xx
+<>L |
+    n: 0
+    owner: nil
+    people: 10.0
+    decision hit
+        targets: L where :link_score(self, target, "border") and (target >> owner) != @owner
+        score => target >> n
+    xx
+    judge
+        hit: take(self, hit >> target)
+    xx
+xx
+link border
+    hosts: L
+    range: bool
+xx
+act take(me, t)
+    t >> owner |= me >> owner
+    t >> people |= t >> people - 1.0
+xx
+k <> P | name: "K"
+a <> L | n: 1, owner: k
+b <> L | n: 2
+c <> L | n: 3
+:link!(a, b, border, 1)
+:link!(b, c, border, 1)
+r1 | :actor([])
+r2 | :actor([])
+:move!(k, r1)
+:move!(a, r1)
+:move!(b, r2)
+:move!(c, r2)
+repeat :range(1, 5) as t
+    :tick([r1, r2])
+    names | []
+    repeat :objects(L) as l
+        o  | l >> owner
+        on | "-"
+        if o != nil => on |= o >> name
+        :put_last!(names, "{l >> n}:{on}:{l >> people}")
+    xx
+    kp | :objects(P)[0]
+    :say("tick {t}: K lands {kp >> lands}; {:join(names, " ")}")
+xx

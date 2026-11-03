@@ -295,6 +295,12 @@ pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinErro
             }
             in_flight_overlays = old.in_flight_overlays;
         }
+        for (u, a) in std::mem::take(&mut vm.session.moves_before_world) {
+            match at(&a) {
+                Some(j) => moving.push((u, j)),
+                None => return Err(err("C0123: tick-regions: an object was moved (:move!) to a region that is not in this list")),
+            }
+        }
         vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new() });
         // Before the first tick, every region reports its objects, so the
         // first tick already sees the whole world.
@@ -1220,7 +1226,18 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
         return send_one(&mut vm.session, &uuid, dest);
     }
     let Some(w) = vm.session.world.as_ref() else {
-        return Err(err("C0125: move-object: :move!(obj, to) moves an object into the regions of tick(regions); there are none here"));
+        // No world yet: the first tick(regions) that lists this region
+        // sends the object there.
+        let Some(a) = to_actor else {
+            return Err(err("C0125: move-object: before the first tick(regions), :move!(obj, to) moves an object to a region actor; there are no regions yet to find where another object runs"));
+        };
+        if !vm.session.object_store.contains_key(&uuid) {
+            return Err(crate::actor::missing_object(&vm.session, &uuid));
+        }
+        let m = &mut vm.session.moves_before_world;
+        m.retain(|(u, _)| *u != *uuid);
+        m.push((uuid.to_string(), a));
+        return Ok(());
     };
     let j = match (&to_actor, &to_obj) {
         (Some(a), _) => match w.ids.iter().position(|id| id == a) {
