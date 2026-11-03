@@ -1,5 +1,10 @@
 /// A province: a piece of the map that never moves. People grow toward
-/// what the land can feed and move to bordering land with more room.
+/// what the land can feed and move to bordering land with more room. A
+/// province a kingdom owns may make war on a bordering province of another
+/// realm, in a year with odds of `war_rate`, when its kingdom is at least
+/// `boldness` times as likely to win as to lose.
+import kingdom as kingdom
+
 <>Land |
     x: 0
     y: 0
@@ -14,6 +19,13 @@
     /// The share of people who leave in a year, times how much more room
     /// the new land has.
     leaving: 0.05
+    owner: nil
+    war_rate: 0.02
+    boldness: 1.5
+    /// The share of each side's people a war kills.
+    war_loss: 0.05
+    /// How hard a province with no kingdom holds out, per person.
+    free_cohesion: 0.2
     every 1 tick
         @people |= @people + @growth * @people * (1.0 - @people / @food)
     xx
@@ -21,8 +33,13 @@
         targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food
         score => room(target) - room(self)
     xx
-    judge
+    decision invade
+        targets: Land where :link_score(self, target, "border") and @owner != nil and kingdom::realm(target >> owner) != kingdom::realm(@owner)
+        score => kingdom::odds(self, target, target >> free_cohesion)
+    xx
+    judge_all
         settle and (settle >> score) > 0: self.move_people(settle >> target, settle >> score)
+        invade and (invade >> score) * (1.0 + @boldness) > @boldness and (pick 1 from 0...9999) < @war_rate * 10000.0: kingdom::war(self, invade >> target, invade >> score, @war_loss)
     xx
     act move_people(to, gain)
         n | @people * @leaving * gain

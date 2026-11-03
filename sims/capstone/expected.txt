@@ -21,38 +21,81 @@
 ~~~~~~~~~~~~,,.....,~~~~~~~~~~~~~~
 ~~~~~~~~~~~~~~,...,~~~~~~~~~~~~~~~
 ~ sea  ^ mountains  n hills  = river  , coast  d desert  s steppe  f forest  . plain
-year 0: 5850 people, 20 of 400 provinces settled
-year 100: 8072 people, 20 of 400 provinces settled
-year 200: 10566 people, 83 of 400 provinces settled
-year 300: 14179 people, 83 of 400 provinces settled
-year 400: 19360 people, 86 of 400 provinces settled
-year 500: 25809 people, 90 of 400 provinces settled
-year 600: 33432 people, 160 of 400 provinces settled
-year 700: 42915 people, 197 of 400 provinces settled
-year 800: 54061 people, 250 of 400 provinces settled
-year 900: 66814 people, 276 of 400 provinces settled
-year 1000: 80164 people, 315 of 400 provinces settled
-year 1100: 93102 people, 339 of 400 provinces settled
-year 1200: 105019 people, 361 of 400 provinces settled
-year 1300: 115740 people, 375 of 400 provinces settled
-year 1400: 125208 people, 385 of 400 provinces settled
-year 1500: 133321 people, 394 of 400 provinces settled
-year 1600: 140011 people, 399 of 400 provinces settled
-year 1700: 145150 people, 399 of 400 provinces settled
-year 1800: 148728 people, 399 of 400 provinces settled
-year 1900: 151073 people, 399 of 400 provinces settled
-year 2000: 152558 people, 399 of 400 provinces settled
-year 2100: 153480 people, 399 of 400 provinces settled
-year 2200: 154047 people, 399 of 400 provinces settled
-year 2300: 154394 people, 399 of 400 provinces settled
-year 2400: 154605 people, 399 of 400 provinces settled
-year 2500: 154733 people, 399 of 400 provinces settled
-year 2600: 154810 people, 399 of 400 provinces settled
-year 2700: 154858 people, 399 of 400 provinces settled
-year 2800: 154886 people, 399 of 400 provinces settled
-year 2900: 154903 people, 399 of 400 provinces settled
-year 3000: 154914 people, 399 of 400 provinces settled
+year 0: 5850 people, 20 of 400 provinces settled; 20 kingdoms (0 vassals); largest realm Rosvar, 5 provinces with its vassals; largest kingdom Arbelcor, 0 provinces, the farthest 1 from its capital
+year 100: 8072 people, 20 of 400 provinces settled; 20 kingdoms (0 vassals); largest realm Halesk, 25 provinces with its vassals; largest kingdom Halesk, 25 provinces, the farthest 3.6 from its capital
+year 200: 10515 people, 82 of 400 provinces settled; 20 kingdoms (0 vassals); largest realm Halesk, 36 provinces with its vassals; largest kingdom Halesk, 36 provinces, the farthest 4.5 from its capital
+year 300: 14170 people, 83 of 400 provinces settled; 20 kingdoms (0 vassals); largest realm Halesk, 44 provinces with its vassals; largest kingdom Halesk, 44 provinces, the farthest 6.4 from its capital
+year 339: Toresk falls
+year 352: Gorarhal becomes a vassal of Belfal
+year 400: 19208 people, 86 of 400 provinces settled; 19 kingdoms (1 vassals); largest realm Sarartor, 47 provinces with its vassals; largest kingdom Sarartor, 47 provinces, the farthest 9.2 from its capital
+year 432: Dunnoresk becomes a vassal of Corjor
+year 481: Falvar becomes a vassal of Belfal
+year 495: Dunnoresk falls
+year 500: 25351 people, 91 of 400 provinces settled; 18 kingdoms (2 vassals); largest realm Sarartor, 51 provinces with its vassals; largest kingdom Sarartor, 50 provinces, the farthest 9.2 from its capital
+year 531: Falvar falls
+year 534: Noresk becomes a vassal of Mararnor
+year 542: Halesk becomes a vassal of Corjor
+year 559: Pelmarquar becomes a vassal of Mararnor
+year 567: Pelmarquar becomes a vassal of Quarros
+year 574: Pelmarquar becomes a vassal of Mararnor
+year 578: Pelmarquar falls
+year 591: Noresk becomes a vassal of Sarartor
+year 600: 32379 people, 159 of 400 provinces settled; 16 kingdoms (3 vassals); largest realm Sarartor, 63 provinces with its vassals; largest kingdom Sarartor, 62 provinces, the farthest 10.2 from its capital
+year 616: Eskros becomes a vassal of Arbelcor
+year 642: Eskros becomes a vassal of Belfal
+year 642: Noresk falls
+year 643: Quarros becomes a vassal of Mararnor
+year 645: Eskros falls
+year 648: Halesk becomes a vassal of Mararnor
+year 655: Halesk becomes a vassal of Corjor
+year 658: Quarros becomes a vassal of Sarartor
+year 671: Kelros becomes a vassal of Belfal
+year 694: Jornorkel becomes a vassal of Belfal
+year 700: 40436 people, 188 of 400 provinces settled; 14 kingdoms (5 vassals); largest realm Belfal, 97 provinces with its vassals; largest kingdom Mararnor, 76 provinces, the farthest 6.3 from its capital
+year 704: Quarros becomes a vassal of Mararnor
+year 718: Jornorkel becomes a vassal of Corjor
+year 725: Halesk becomes a vassal of Mararnor
+year 733: Iskjor becomes a vassal of Mararnor
+year 744: Jornorkel becomes a vassal of Belfal
+year 784: Jornorkel falls
+year 785: Halesk falls
+year 787: Lorvar becomes a vassal of Belfal
+year 800: 50556 people, 232 of 400 provinces settled; 12 kingdoms (5 vassals); largest realm Mararnor, 131 provinces with its vassals; largest kingdom Mararnor, 105 provinces, the farthest 8.2 from its capital
+year 813: Sarartor becomes a vassal of Mararnor
+year 852: Kelros becomes a vassal of Orisk
+year 852: Lorvar falls
+year 875: Kelros becomes a vassal of Belfal
+year 900: 62483 people, 267 of 400 provinces settled; 11 kingdoms (5 vassals); largest realm Mararnor, 168 provinces with its vassals; largest kingdom Mararnor, 112 provinces, the farthest 8.2 from its capital
+year 956: Orisk becomes a vassal of Belfal
+year 1000: 75035 people, 302 of 400 provinces settled; 11 kingdoms (6 vassals); largest realm Mararnor, 166 provinces with its vassals; largest kingdom Belfal, 123 provinces, the farthest 12.1 from its capital
+year 1100: 87675 people, 327 of 400 provinces settled; 11 kingdoms (6 vassals); largest realm Mararnor, 163 provinces with its vassals; largest kingdom Belfal, 146 provinces, the farthest 14.6 from its capital
+year 1161: Arbelcor becomes a vassal of Belfal
+year 1200: 99335 people, 354 of 400 provinces settled; 11 kingdoms (7 vassals); largest realm Belfal, 177 provinces with its vassals; largest kingdom Belfal, 170 provinces, the farthest 15.7 from its capital
+year 1204: Rosvar becomes a vassal of Belfal
+year 1300: 110218 people, 372 of 400 provinces settled; 11 kingdoms (8 vassals); largest realm Belfal, 190 provinces with its vassals; largest kingdom Belfal, 178 provinces, the farthest 15.7 from its capital
+year 1400: 119744 people, 382 of 400 provinces settled; 11 kingdoms (8 vassals); largest realm Belfal, 196 provinces with its vassals; largest kingdom Belfal, 184 provinces, the farthest 15.2 from its capital
+year 1471: Corjor becomes a vassal of Mararnor
+year 1500: 128210 people, 393 of 400 provinces settled; 11 kingdoms (9 vassals); largest realm Mararnor, 200 provinces with its vassals; largest kingdom Belfal, 187 provinces, the farthest 15.2 from its capital
+year 1600: 136048 people, 398 of 400 provinces settled; 11 kingdoms (9 vassals); largest realm Belfal, 204 provinces with its vassals; largest kingdom Belfal, 192 provinces, the farthest 15.2 from its capital
+year 1700: 142283 people, 399 of 400 provinces settled; 11 kingdoms (9 vassals); largest realm Belfal, 205 provinces with its vassals; largest kingdom Belfal, 193 provinces, the farthest 14.9 from its capital
+year 1800: 146774 people, 399 of 400 provinces settled; 11 kingdoms (9 vassals); largest realm Belfal, 207 provinces with its vassals; largest kingdom Belfal, 195 provinces, the farthest 14.9 from its capital
+year 1860: Corjor falls
+year 1900: 149772 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2000: 151746 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2100: 152980 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2200: 153741 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2300: 154207 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2400: 154491 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2500: 154664 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2600: 154769 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2700: 154832 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2800: 154871 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 2900: 154894 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
+year 3000: 154908 people, 399 of 400 provinces settled; 10 kingdoms (8 vassals); largest realm Belfal, 208 provinces with its vassals; largest kingdom Belfal, 196 provinces, the farthest 14.9 from its capital
 map 34x22
-80% full by year: {river: 1200, steppe: 1300, desert: 1300, forest: 1400, hills: 1400, mountains: 1400, plain: 1500, coast: 1600}
+80% full by year: {river: 1200, steppe: 1300, desert: 1300, plain: 1500, forest: 1500, hills: 1500, mountains: 1500, coast: 1700}
 check: first to fill: river
-check: growth over the last 300 years: 0.04%
+check: growth over the last 300 years: 0.05%
+check: kingdoms fallen: 10 of 20
+check: largest kingdom ever: 196 of 400 provinces
+check: farthest province ever held: 15.7 from its capital

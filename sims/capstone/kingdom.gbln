@@ -1,0 +1,90 @@
+/// Kingdoms and war. A kingdom (`Polity`) owns provinces through their
+/// `owner` field, and a vassal is a kingdom whose `owner` is its overlord.
+/// Its strength at a province is its people times its cohesion, halved for
+/// every `reach` provinces between it and the capital (Boulding's loss of
+/// strength gradient): a far border is weak, which is what keeps one
+/// kingdom from taking the world.
+<>Polity |
+    name: ..
+    founded: 0
+    ~cohesion: 0.5
+    capital: nil
+    cx: 0
+    cy: 0
+    /// Every how many provinces from the capital its strength halves.
+    reach: 4.0
+    people: 0.0
+    lands: 0
+    won: 0
+    lost: 0
+    owner: nil
+    every 1 tick
+        mine | :objects(Land, it >> owner == self)
+        @lands |= :len(mine)
+        n    | 0.0
+        best | nil
+        repeat mine as l
+            n |= n + l >> people
+            if best == nil or (l >> people) > (best >> people) => best |= l
+        xx
+        @people |= n
+        if best != nil and (@capital == nil or (@capital >> owner) != self) => self.move_capital(best)
+    xx
+    act move_capital(to)
+        @capital |= to
+        @cx      |= to >> x
+        @cy      |= to >> y
+    xx
+    transition erase where @lands == 0
+xx
+
+/// The kingdom at the top: a vassal's overlord, up to one that has none.
+act realm(p)
+    repeat p != nil and p >> owner != nil
+        p |= p >> owner
+    xx
+    return p
+xx
+
+act distance(p, l)
+    dx | p >> cx - l >> x
+    dy | p >> cy - l >> y
+    return :sqrt(dx * dx + dy * dy)
+xx
+
+/// What a kingdom brings to bear at province `l`.
+act strength_at(p, l)
+    return (p >> people) * (p >> cohesion) * :pow(0.5, distance(p, l) / (p >> reach))
+xx
+
+/// What holds province `l`: its kingdom, or its own people if it has none.
+act defense(l, free_cohesion)
+    p | l >> owner
+    if p == nil => send (l >> people) * free_cohesion
+    return strength_at(p, l)
+xx
+
+/// How much stronger the kingdom that owns `from` is at `to` than what
+/// holds `to`.
+act odds(from, to, free_cohesion)
+    a | strength_at(from >> owner, to)
+    return a / (a + defense(to, free_cohesion) + 1.0)
+xx
+
+/// A war over province `to`, fought from `from`: the attacker wins with
+/// odds `win`; both provinces lose `loss` of their people. A kingdom that
+/// loses its capital and keeps other land becomes the winner's vassal.
+act war(from, to, win, loss)
+    a | from >> owner
+    d | to >> owner
+    from >> people |= from >> people - loss * (from >> people)
+    to   >> people |= to >> people - loss * (to >> people)
+    if (pick 1 from 0...9999) < win * 10000.0
+        to >> owner |= a
+        a >> won    |= a >> won + 1
+        if d != nil
+            d >> lost |= d >> lost + 1
+            if d >> capital == to and d >> lands > 1 => d >> owner |= realm(a)
+        xx
+    xx
+xx

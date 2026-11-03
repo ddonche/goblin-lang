@@ -1,9 +1,13 @@
-/// Capstone step 1: land and people. A continent generated from a seed,
-/// its provinces linked to the ones they border, people growing toward
-/// what the land feeds and spreading out from a few homelands.
+/// Capstone steps 1 and 2: land, people and kingdoms. A continent
+/// generated from a seed, its provinces linked to the ones they border,
+/// people growing toward what the land feeds and spreading out from a few
+/// homelands, each the seat of a kingdom that wars with its neighbours.
+/// The map is cut into bands of provinces, each run by a region actor, so
+/// the years run on every core.
 /// Run from this folder: goblin run world.gbln
 import map as map
 import land as land
+import kingdom as kingdom
 
 act food_of(p)
     return p >> food
@@ -11,6 +15,48 @@ xx
 
 act text(v)
     return :str(v)
+xx
+
+/// Where a province is, read across and then down: the order the map is
+/// cut into regions.
+act place(p)
+    return p >> x * 10000 + p >> y
+xx
+
+/// A kingdom's name from its number: two or three syllables.
+act name_of(i)
+    s | ["ar", "bel", "cor", "dun", "esk", "fal", "gor", "hal", "isk", "jor", "kel", "lor", "mar", "nor", "or", "pel", "quar", "ros", "sar", "tor", "ul", "var", "wen", "yr", "zan"]
+    n | :len(s)
+    a | i % n
+    b | (a + 1 + (i * 3) % (n - 1)) % n
+    w | s[a] + s[b]
+    if i % 3 == 0 => w |= w + s[(b + 1 + (i * 5) % (n - 1)) % n]
+    return :title(w)
+xx
+
+/// The kingdom with the most provinces of its own, and how far its
+/// farthest province is from its capital.
+act biggest(lands)
+    best | nil
+    repeat :objects(Polity) as k
+        if best == nil or (k >> lands) > (best >> lands) => best |= k
+    xx
+    far | 0.0
+    repeat lands as l
+        if l >> owner == best => far |= :max(far, kingdom::distance(best, l))
+    xx
+    return {"kingdom": best, "far": far}
+xx
+
+/// The provinces in each realm: a kingdom's own, and its vassals'.
+act realm_sizes(lands)
+    out | {}
+    repeat lands as l
+        o | l >> owner ?? => skip
+        r | kingdom::realm(o) >> name
+        :update!(out{r}, (out{r} ?? 0) + 1)
+    xx
+    return out
 xx
 
 /// Whether p borders (or is) one of `homes`.
@@ -66,9 +112,12 @@ cfg | {
     "food": {"river": 1000.0, "plain": 500.0, "coast": 400.0, "forest": 250.0, "hills": 200.0,
         "steppe": 120.0, "mountains": 60.0, "desert": 40.0},
     "homeland_fill": 0.3,
+    "regions": :int(:env("REGIONS") ?? 8),
+    "reach": 4.0,
     "csv": "capstone_metrics.csv"
 }
 years | :int(:env("YEARS") ?? cfg{"years"})
+reach | :float(:env("REACH") ?? cfg{"reach"})
 
 t_start | :epoch_ms()
 m       | map::generate(cfg)
@@ -104,13 +153,43 @@ repeat :reverse(:sort_by(lands, "food_of")) as p
     :put_last!(homes, p)
     p >> people |= cfg{"homeland_fill"} * p >> food
 xx
+
+/// A kingdom in every homeland, holding it and the free land around it.
+realms | []
+repeat homes as h
+    k <> Polity | name: name_of(idx), capital: h, cx: h >> x, cy: h >> y, reach: reach
+    h >> owner |= k
+    repeat lands as q
+        if q >> owner == nil and :link_score(h, q, "border") => q >> owner |= k
+    xx
+    :put_last!(realms, k)
+xx
+
+/// Regions: the map in `regions` bands of the same number of provinces,
+/// west to east; a kingdom runs where its capital does.
+n_regions | cfg{"regions"}
+regions   | []
+repeat n_regions
+    :put_last!(regions, :actor([]))
+xx
+band  | :len(lands) // n_regions + 1
+where | {}
+repeat :sort_by(lands, "place") as p
+    r | regions[idx // band]
+    :move!(p, r)
+    :update!(where{:str(p >> x * 10000 + p >> y)}, idx // band)
+xx
+repeat realms as k
+    h | k >> capital
+    :move!(k, regions[where{:str(h >> x * 10000 + h >> y)}])
+xx
 t_map | :epoch_ms() - t_start
 
 /// Every `sample_every` years: speed, memory, counts, where tick time went
 /// (by pass and by layer, over the last `sample_every` years) and how full
 /// each kind of land is.
 order  | ["river", "plain", "coast", "forest", "hills", "steppe", "mountains", "desert"]
-layers | ["Land"]
+layers | ["Land", "Polity"]
 passes | :keys(:metrics(){"tick_ms"})
 counts | ["rss_mb", "peak_rss_mb", "des_mb", "objects", "objects_made", "objects_gone", "overlays", "overlays_made", "overlays_gone"]
 head   | ["year", "wall_ms", "years_per_s", "tick_ms"]
@@ -119,6 +198,11 @@ repeat counts as c
 xx
 :put_last!(head, "people")
 :put_last!(head, "settled")
+:put_last!(head, "kingdoms")
+:put_last!(head, "vassals")
+:put_last!(head, "largest_realm")
+:put_last!(head, "largest_kingdom")
+:put_last!(head, "farthest")
 repeat passes as p
     :put_last!(head, "pass_{p}_ms")
 xx
@@ -134,11 +218,33 @@ t_run   | :epoch_ms()
 tick_ms | 0
 history | []
 prev    | :metrics()
+alive   | {}
+repeat :objects(Polity) as k
+    :update!(alive{k >> name}, ..)
+xx
+fell    | 0
+largest  | []
+farthest | []
 repeat :range(0, years + 1) as year
     if year > 0
         t | :epoch_ms()
-        :tick()
+        :tick(regions)
         tick_ms |= tick_ms + :epoch_ms() - t
+        now_alive | {}
+        repeat :objects(Polity) as k
+            lord | ..
+            if k >> owner != nil => lord |= k >> owner >> name
+            :update!(now_alive{k >> name}, lord)
+            if lord != .. and alive{k >> name} != lord => :say("year {year}: {k >> name} becomes a vassal of {lord}")
+            if lord == .. and alive{k >> name} != .. and :has(alive, k >> name) => :say("year {year}: {k >> name} is free")
+        xx
+        repeat alive as name, lord
+            if !:has(now_alive, name)
+                :say("year {year}: {name} falls")
+                fell |= fell + 1
+            xx
+        xx
+        alive |= now_alive
     xx
     if year % cfg{"sample_every"} != 0 => skip
     now  | :epoch_ms() - t_run
@@ -148,12 +254,29 @@ repeat :range(0, years + 1) as year
     fills   | fill_by_terrain(lands, order)
     people  | total_people(lands)
     settled | :len(:objects(Land, it >> people >= 1.0))
+    sizes   | realm_sizes(lands)
+    top     | ..
+    repeat sizes as r, n
+        if top.nix? or n > sizes{top} => top |= r
+    xx
+    top_n   | sizes{top} ?? 0
+    big     | biggest(lands)
+    own     | big{"kingdom"}
+    own_n   | own >> lands
+    far     | :round(big{"far"}, 1)
+    vassals | :len(:objects(Polity, it >> owner != nil))
+    kings   | :len(:objects(Polity))
     row     | [year, now, :round(rate, 1), tick_ms]
     repeat counts as c
         :put_last!(row, stats{c})
     xx
     :put_last!(row, :round(people))
     :put_last!(row, settled)
+    :put_last!(row, kings)
+    :put_last!(row, vassals)
+    :put_last!(row, top_n)
+    :put_last!(row, own_n)
+    :put_last!(row, far)
     repeat passes as p
         :put_last!(row, :round(stats{"tick_ms"}{p} - prev{"tick_ms"}{p}, 3))
     xx
@@ -166,7 +289,10 @@ repeat :range(0, years + 1) as year
     xx
     :append_file!(cfg{"csv"}, "{:join(:map(row, "text"), ",")}\n")
     :put_last!(history, people)
-    :say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled")
+    :put_last!(largest, own_n)
+    :put_last!(farthest, far)
+    own_name | own >> name
+    :say("year {year}: {:round(people)} people, {settled} of {:len(lands)} provinces settled; {kings} kingdoms ({vassals} vassals); largest realm {top}, {top_n} provinces with its vassals; largest kingdom {own_name}, {own_n} provinces, the farthest {far} from its capital")
     tick_ms |= 0
     prev    |= stats
 xx
@@ -187,3 +313,16 @@ if n >= 4
     span   | 3 * cfg{"sample_every"}
     :say("check: growth over the last {span} years: {:round(growth * 100.0, 2)}%")
 xx
+
+/// Step 2's checks: kingdoms fall, and the largest realm over the run.
+:say("check: kingdoms fallen: {fell} of {cfg{"kingdoms"}}")
+most | 0
+repeat largest as n
+    if n > most => most |= n
+xx
+reach_most | 0.0
+repeat farthest as d
+    if d > reach_most => reach_most |= d
+xx
+:say("check: largest kingdom ever: {most} of {:len(lands)} provinces")
+:say("check: farthest province ever held: {reach_most} from its capital")
