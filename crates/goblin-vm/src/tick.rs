@@ -333,13 +333,15 @@ fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
     let phase = vm.session.phase.clone();
     let phase = phase.as_deref();
     if vm.session.overlay_defs.values().all(|d| d.every_in(phase).is_empty()) { return Ok(()); }
+    // A phase runs before the tick's end moves age on: count this tick.
+    let now = phase.is_some() as u64;
     let mut due: Vec<(usize, crate::session::OverlayInstanceId)> = Vec::new();
     {
         let defs = &vm.session.overlay_defs;
         for (p, i) in vm.session.overlay_instances.iter().enumerate() {
             if i.strength <= 0.0 { continue; }
             let Some(d) = defs.get(&i.overlay_name) else { continue };
-            if d.every_in(phase).iter().any(|(n, _)| i.age as u64 % *n == 0) && !crate::world::is_remote(vm, &i.host_uuid) {
+            if d.every_in(phase).iter().any(|(n, _)| (i.age as u64 + now) % *n == 0) && !crate::world::is_remote(vm, &i.host_uuid) {
                 due.push((p, i.des_id));
             }
         }
@@ -361,8 +363,9 @@ fn overlay_every_due(vm: &mut Vm, due: Vec<(usize, crate::session::OverlayInstan
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
         clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
         let phase = vm.session.phase.clone();
+        let now = phase.is_some() as u64;
         for (n, block) in def.every_in(phase.as_deref()) {
-            if inst.age as u64 % *n != 0 { continue; }
+            if (inst.age as u64 + now) % *n != 0 { continue; }
             // Taken off by an earlier block this tick: nothing more to run.
             if !vm.session.overlay_instances.on_host(&inst.host_uuid).iter()
                 .any(|&q| vm.session.overlay_instances[q].des_id == inst.des_id) { break; }
