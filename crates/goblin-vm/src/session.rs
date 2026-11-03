@@ -48,6 +48,9 @@ pub struct OverlayDef {
     pub actions: Vec<goblin_ast::ActionDecl>,
     pub on_start: Option<String>,
     pub every: Vec<(u64, String)>,
+    /// `phase: NAME` blocks: spreads, `every` blocks and transitions run
+    /// only in that phase of a `tick()` block.
+    pub phases: Vec<goblin_ast::OverlayPhase>,
     /// What the kinds a transition makes from this one are named after:
     /// its overlay class in lower case, else its own declared name
     /// (`language_76`, `plague_3`).
@@ -55,6 +58,25 @@ pub struct OverlayDef {
     /// Made by a transition while the program ran, not declared: it goes
     /// along with its overlays to other regions, which don't know it.
     pub generated: bool,
+}
+
+impl OverlayDef {
+    /// Its phase's block, in a phase; None at the tick's end (its own lines).
+    fn phase_of(&self, phase: Option<&str>) -> Option<Option<&goblin_ast::OverlayPhase>> {
+        phase.map(|p| self.phases.iter().find(|x| x.name == p))
+    }
+    /// The spreads that run now: in a phase, that phase's.
+    pub fn spreads_in(&self, phase: Option<&str>) -> &[goblin_ast::OverlaySpread] {
+        match self.phase_of(phase) { None => &self.spreads, Some(p) => p.map(|p| &p.spreads[..]).unwrap_or(&[]) }
+    }
+    /// The `every N ticks` blocks that run now.
+    pub fn every_in(&self, phase: Option<&str>) -> &[(u64, String)] {
+        match self.phase_of(phase) { None => &self.every, Some(p) => p.map(|p| &p.every[..]).unwrap_or(&[]) }
+    }
+    /// The transitions that run now.
+    pub fn transitions_in(&self, phase: Option<&str>) -> &[goblin_ast::TransitionDef] {
+        match self.phase_of(phase) { None => &self.transitions, Some(p) => p.map(|p| &p.transitions[..]).unwrap_or(&[]) }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -286,6 +308,11 @@ pub struct Session {
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
     /// DES ticks run so far (`every N ticks` counts on it).
     pub des_ticks: i64,
+    /// The phase of a `tick()` block running now (None: the tick's end).
+    pub phase: Option<std::rc::Rc<str>>,
+    /// Each phase's view of the classes (`crate::tick::run_phase`), with
+    /// the classes it was made from.
+    pub phase_views: HashMap<String, (Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>, Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>)>,
     /// What `:metrics()` reports: objects and overlays made, tick time.
     pub des_metrics: crate::metrics::DesMetrics,
     /// In a region: its objects that transitioned this tick (see
@@ -476,6 +503,8 @@ impl Session {
             classes: Default::default(),
             compiled_methods: Default::default(),
             des_ticks: 0,
+            phase_views: Default::default(),
+            phase: None,
             des_metrics: Default::default(),
             transitioned: Vec::new(),
             enums: Default::default(),

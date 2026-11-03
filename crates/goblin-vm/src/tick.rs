@@ -27,6 +27,102 @@ pub fn run_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     Ok(())
 }
 
+type Classes = std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>;
+
+/// One phase of a `tick()` block: what the classes' `phase: NAME` blocks
+/// hold (their `every` blocks, decisions with their judge, transitions)
+/// runs, numbered as the tick it is part of. The tick's time (ageing,
+/// decay, durations, the count) moves only when the tick ends.
+pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
+    let view = phase_view(vm, name)?;
+    let base = std::mem::replace(&mut vm.session.classes, view);
+    let own = std::mem::take(&mut vm.session.object_decisions);
+    vm.session.des_ticks += 1;
+    vm.session.phase = Some(name.into());
+    let r = phase_passes(vm);
+    vm.session.phase = None;
+    vm.session.des_ticks -= 1;
+    vm.session.classes = base;
+    vm.session.object_decisions = own;
+    des_flush_pending(vm);
+    r
+}
+
+/// A phase some class (or overlay) has a `phase: NAME` block for.
+pub fn check_phase(vm: &Vm, name: &str) -> Result<(), GoblinError> {
+    if vm.session.classes.values().any(|c| c.phases.iter().any(|p| p.name == name))
+        || vm.session.overlay_defs.values().any(|d| d.phases.iter().any(|p| p.name == name)) { return Ok(()); }
+    Err(GoblinError::Runtime(format!(
+        "R1250: unknown-phase: no class or overlay has a `phase: {name}` block, so `{name}` in this tick() block runs nothing")))
+}
+
+fn phase_passes(vm: &mut Vm) -> Result<(), GoblinError> {
+    use crate::metrics as m;
+    use std::time::Instant;
+    // The overlays' phase lines first, as in a tick: spreads, `every`
+    // blocks, transitions.
+    let t = Instant::now();
+    let r = spread_pass(vm);
+    timed(vm, m::SPREAD, t);
+    r?;
+    let t = Instant::now();
+    let r = overlay_every(vm);
+    timed(vm, m::OVERLAY_EVERY, t);
+    r?;
+    let t = Instant::now();
+    let r = crate::transition::overlay_transitions(vm);
+    timed(vm, m::OVERLAY_TRANSITIONS, t);
+    r?;
+    let t = Instant::now();
+    let r = every_tick(vm);
+    timed(vm, m::EVERY, t);
+    r?;
+    let t = Instant::now();
+    let r = decision_tick(vm);
+    timed(vm, m::DECISIONS, t);
+    r?;
+    let t = Instant::now();
+    let r = crate::transition::object_transitions(vm);
+    timed(vm, m::TRANSITIONS, t);
+    r
+}
+
+/// The classes as phase `name` sees them: each class's members for that
+/// phase in place of its own (none, for a class without that phase). Made
+/// once, until the classes change.
+fn phase_view(vm: &mut Vm, name: &str) -> Result<Classes, GoblinError> {
+    let base = vm.session.classes.clone();
+    if let Some((from, view)) = vm.session.phase_views.get(name) {
+        if std::rc::Rc::ptr_eq(from, &base) { return Ok(view.clone()); }
+    }
+    let view: std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher> = base.iter().map(|(k, c)| {
+        let mut v = c.clone();
+        v.judge = None;
+        match c.phases.iter().find(|p| p.name == name) {
+            Some(p) => {
+                v.transitions = p.transitions.clone();
+                v.every = p.every.clone();
+                v.decisions = p.decisions.clone();
+                v.decision = p.decisions.first().map(|d| d.decision.clone());
+                v.one_of = p.one_of.clone();
+                v.decide = p.decide.clone();
+            }
+            None => {
+                v.transitions.clear();
+                v.every.clear();
+                v.decisions.clear();
+                v.decision = None;
+                v.one_of.clear();
+                v.decide = None;
+            }
+        }
+        (k.clone(), v)
+    }).collect();
+    let view = std::rc::Rc::new(view);
+    vm.session.phase_views.insert(name.to_string(), (base, view.clone()));
+    Ok(view)
+}
+
 fn grids_tick_begin(vm: &mut Vm) {
     let names: Vec<String> = vm.session.grid_store.names();
     for name in names {
@@ -234,14 +330,16 @@ fn run_overlay_block(vm: &mut Vm, inst: &OverlayInstance, block: &str) -> Result
 /// N divides, in the order the overlays were put on. Another region's
 /// host runs them in its own region.
 fn overlay_every(vm: &mut Vm) -> Result<(), GoblinError> {
-    if vm.session.overlay_defs.values().all(|d| d.every.is_empty()) { return Ok(()); }
+    let phase = vm.session.phase.clone();
+    let phase = phase.as_deref();
+    if vm.session.overlay_defs.values().all(|d| d.every_in(phase).is_empty()) { return Ok(()); }
     let mut due: Vec<(usize, crate::session::OverlayInstanceId)> = Vec::new();
     {
         let defs = &vm.session.overlay_defs;
         for (p, i) in vm.session.overlay_instances.iter().enumerate() {
             if i.strength <= 0.0 { continue; }
             let Some(d) = defs.get(&i.overlay_name) else { continue };
-            if d.every.iter().any(|(n, _)| i.age as u64 % *n == 0) && !crate::world::is_remote(vm, &i.host_uuid) {
+            if d.every_in(phase).iter().any(|(n, _)| i.age as u64 % *n == 0) && !crate::world::is_remote(vm, &i.host_uuid) {
                 due.push((p, i.des_id));
             }
         }
@@ -262,7 +360,8 @@ fn overlay_every_due(vm: &mut Vm, due: Vec<(usize, crate::session::OverlayInstan
         let inst = list[p].clone();
         let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
         clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
-        for (n, block) in &def.every {
+        let phase = vm.session.phase.clone();
+        for (n, block) in def.every_in(phase.as_deref()) {
             if inst.age as u64 % *n != 0 { continue; }
             // Taken off by an earlier block this tick: nothing more to run.
             if !vm.session.overlay_instances.on_host(&inst.host_uuid).iter()
@@ -434,9 +533,11 @@ fn catches(vm: &mut Vm, chance: f64) -> bool {
 /// that already has the overlay is passed over unless it stacks. The new
 /// copy starts at the overlay's `~intensity`.
 fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
-    if vm.session.overlay_defs.values().all(|d| d.spreads.is_empty()) { return Ok(()); }
+    let phase = vm.session.phase.clone();
+    let phase = phase.as_deref();
+    if vm.session.overlay_defs.values().all(|d| d.spreads_in(phase).is_empty()) { return Ok(()); }
     let carriers: Vec<OverlayInstance> = vm.session.overlay_instances.iter()
-        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.spreads.is_empty()))
+        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.spreads_in(phase).is_empty()))
         .cloned()
         .collect();
     let mut caught: Vec<(String, String)> = Vec::new(); // (overlay, host)
@@ -454,7 +555,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let mut names: Vec<&str> = vec!["self", "target", "intensity"];
         names.extend(def.extra_fields.keys().map(String::as_str));
         let extras: Vec<Value> = def.extra_fields.keys().map(|k| inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil)).collect();
-        for rule in &def.spreads {
+        for rule in def.spreads_in(phase) {
             let name = &def.name;
             let cond = vm.tick_formula(&rule.condition, &names)?;
             let fixed_chance = match &rule.chance {

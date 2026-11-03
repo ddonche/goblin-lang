@@ -5895,6 +5895,13 @@ fn eval_stmt(s: &ast::Stmt, sess: &mut Session) -> Result<Option<Value>, Diag> {
             }
             Ok(None)
         },
+        ast::Stmt::TickBlock { span, .. } => Err(Diagnostic::new_with_code(
+            Severity::Error,
+            crate::diagnostics::rtcode::OP_NOT_IMPLEMENTED,
+            "not-implemented",
+            "a tick() block (phases) runs on the VM only",
+            span.clone(),
+        )),
         ast::Stmt::BoxBind { namespace, name, expr, mode, span } => {
             if let Some(current_ns) = sess.box_namespace.as_ref() {
                 if current_ns != namespace {

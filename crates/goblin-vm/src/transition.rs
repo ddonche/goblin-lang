@@ -561,9 +561,11 @@ fn hook(vm: &mut Vm, class: &str, kind: K, me: Value, args: Vec<Value>) -> Resul
 /// were put on: at most one each, the ones on an overlay alone first, then
 /// the ones with a target (another overlay on the same host).
 pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
-    if vm.session.overlay_defs.values().all(|d| d.transitions.is_empty()) { return Ok(()); }
+    let phase = vm.session.phase.clone();
+    let phase = phase.as_deref();
+    if vm.session.overlay_defs.values().all(|d| d.transitions_in(phase).is_empty()) { return Ok(()); }
     let snap: Vec<(OverlayInstanceId, String)> = vm.session.overlay_instances.iter()
-        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.transitions.is_empty()))
+        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.transitions_in(phase).is_empty()))
         .filter(|i| !crate::world::is_remote(vm, &i.host_uuid))
         .map(|i| (i.des_id, i.host_uuid.clone()))
         .collect();
@@ -576,7 +578,7 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
             let inst = vm.session.overlay_instances[p].clone();
             let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
             clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
-            for t in &def.transitions {
+            for t in def.transitions_in(phase) {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
                 let target = if alone(&t.kind) {

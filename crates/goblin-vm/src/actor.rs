@@ -1379,8 +1379,9 @@ impl Slot {
                         match r {
                             Ok(()) => {
                                 reply.set(Ok(Arc::new(PValue::Nil)));
-                                // The tick was a message: stop_when applies after it.
-                                if !job.prime {
+                                // The tick was a message: stop_when applies after it
+                                // (after the whole tick, not each of its phases).
+                                if !job.prime && job.phase.is_none() {
                                     let next = std::mem::replace(&mut self.state, Value::Nil);
                                     if !self.finish_message(next, None) { return false; }
                                 }

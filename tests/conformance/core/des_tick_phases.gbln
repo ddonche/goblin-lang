@@ -1,0 +1,53 @@
+/// known-gap: interp has no tick() block or phase: blocks; the interpreter is being retired
+/// A `tick()` block runs the phases it names, in order, and the tick ends
+/// where the block does: what is in no phase runs then, and the tick count
+/// moves once. A phase line can repeat (`repeat`). `every N ticks` in a
+/// phase counts the tick it is part of. A bare `tick()` runs only what is
+/// in no phase. A field may still be named `phase`.
+<>Land |
+    food: 0
+    phase: 1
+    log: ..
+    phase: grow
+        every 1 tick
+            @food |= @food + 2
+            @log |= "{@log}g"
+        xx
+        every 2 ticks
+            @log |= "{@log}2"
+        xx
+    xx
+    phase: eat
+        decision feast
+            targets: Land where target >> food > 3
+            score => target >> food
+        xx
+        judge
+            feast: self.eat_from(feast >> target)
+        xx
+    xx
+    every 1 tick
+        @log |= "{@log}e"
+    xx
+    act eat_from(t)
+        t >> food |= t >> food - 3
+        @log |= "{@log}f"
+    xx
+xx
+a <> Land | food: 0
+b <> Land | food: 1
+repeat 3
+    tick()
+        grow
+        eat
+    xx
+    say("{a >> food} {b >> food} {a >> log} {b >> log} {:metrics(){"ticks"}}")
+xx
+tick()
+    repeat 2
+        grow
+    xx
+xx
+say("{a >> food} {b >> food} {a >> log} {:metrics(){"ticks"}}")
+tick()
+say("{a >> food} {a >> log} {:metrics(){"ticks"}} {a >> phase}")

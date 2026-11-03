@@ -1312,6 +1312,8 @@ pub enum BuiltinId {
 
     // DES tick
     Tick,
+    /// One phase of a `tick()` block (the compiler's, not a name in code).
+    TickPhase,
 
     // Grid
     Grid,

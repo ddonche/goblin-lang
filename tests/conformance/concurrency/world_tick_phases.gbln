@@ -1,0 +1,51 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A `tick()` block over regions runs each phase in every region together:
+/// a phase sees the other regions' objects as the last phase left them,
+/// and what it does to them reaches them before the next phase. The
+/// regions' handlers get `{"tick": n}` once, when the tick ends.
+<>Land |
+    food: 0
+    name: ..
+    phase: grow
+        every 1 tick
+            @food |= @food + 3
+        xx
+    xx
+    phase: take
+        decision raid
+            targets: Land where target >> food > @food
+            score => target >> food
+        xx
+        judge
+            raid: self.raid(raid >> target)
+        xx
+    xx
+    act raid(t)
+        t >> food |= t >> food - 2
+        @food |= @food + 2
+    xx
+xx
+act make(n, f)
+    l <> Land | name: n, food: f
+    return {"things": [l], "ticks": []}
+xx
+act day(st, msg)
+    if :has(msg, "tick")
+        :put_last!(st{"ticks"}, msg{"tick"})
+    xx
+    return st
+xx
+north | :actor(make("north", 0), day)
+south | :actor(make("south", 5), day)
+repeat 3
+    tick()
+        grow
+        take
+    xx
+    fs | []
+    repeat :objects(Land) as l
+        :put_last!(fs, "{l >> name} {l >> food}")
+    xx
+    say(:join(fs, ", "))
+xx
+say(:await(:request(north, {"ask": 1})){"ticks"})

@@ -3734,7 +3734,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
-        BuiltinId::Tick => {
+        BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
             ))

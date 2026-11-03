@@ -143,6 +143,8 @@ pub struct WorldIn {
     me: u64,
     /// Only report the objects (the first call, before any tick).
     pub(crate) prime: bool,
+    /// One phase of the tick (a line of a `tick()` block), not its end.
+    pub(crate) phase: Option<Arc<str>>,
     inbox: Vec<Item>,
     remote: Vec<Arc<Snapshot>>,
     /// The region each of `remote` belongs to.
@@ -248,7 +250,10 @@ fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into())
 /// The regions keep their order from tick to tick: one that starts holding
 /// DES objects joins at the end (before a tick, or during one when a region
 /// moves or posts an object to it), one that ended leaves.
-pub(crate) fn tick_world(vm: &mut Vm) -> Result<Option<Value>, GoblinError> {
+///
+/// With a phase: that phase of the tick in every region, together; the
+/// tick goes on (its count moves when it ends).
+pub(crate) fn tick_world(vm: &mut Vm, phase: Option<&str>) -> Result<Option<Value>, GoblinError> {
     let live = crate::actor::region_actors(&vm.session);
     if live.is_empty() && vm.session.world.is_none() { return Ok(None); }
     let kept: Vec<Arc<crate::actor::ActorShared>> = match vm.session.world.as_ref() {
@@ -266,14 +271,14 @@ pub(crate) fn tick_world(vm: &mut Vm) -> Result<Option<Value>, GoblinError> {
         w.counts.extend(outs.iter().map(|o| o.counts.clone()));
         w.snaps.extend(outs.into_iter().map(|o| o.snapshot));
     }
-    tick_regions(vm).map(Some)
+    tick_regions(vm, phase.map(Arc::from)).map(Some)
 }
 
 /// Regions that hold objects now and are not in the world yet join it at
 /// the end; each reports its objects first. Their reports are returned.
 fn join(vm: &mut Vm, newcomers: Vec<Arc<crate::actor::ActorShared>>) -> Result<Vec<WorldOut>, GoblinError> {
     let ids: Vec<u64> = newcomers.iter().map(|a| crate::actor::actor_id(a)).collect();
-    let outs = round(vm, &newcomers, &ids, true)?;
+    let outs = round(vm, &newcomers, &ids, true, None)?;
     let w = vm.session.world.as_mut().unwrap();
     for (a, id) in newcomers.into_iter().zip(ids) {
         w.actors.push(a);
@@ -323,17 +328,17 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
     vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new() });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
-    let outs = round(vm, &actors, &ids, true)?;
+    let outs = round(vm, &actors, &ids, true, None)?;
     let w = vm.session.world.as_mut().unwrap();
     w.counts = outs.iter().map(|o| o.counts.clone()).collect();
     w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
     Ok(())
 }
 
-fn tick_regions(vm: &mut Vm) -> Result<Value, GoblinError> {
+fn tick_regions(vm: &mut Vm, phase: Option<Arc<str>>) -> Result<Value, GoblinError> {
     let (actors, ids) = { let w = vm.session.world.as_ref().unwrap(); (w.actors.clone(), w.ids.clone()) };
     send_moving(vm)?;
-    let mut outs = round(vm, &actors, &ids, false)?;
+    let mut outs = round(vm, &actors, &ids, false, phase.clone())?;
     // Moved or posted an object during the tick: it joins now, so what is
     // sent to it gets there.
     let late: Vec<_> = crate::actor::region_actors(&vm.session).into_iter().filter(|a| !actors.iter().any(|b| Arc::ptr_eq(a, b))).collect();
@@ -342,7 +347,7 @@ fn tick_regions(vm: &mut Vm) -> Result<Value, GoblinError> {
         vm.session.world.as_ref().unwrap().ids.clone()
     };
     let w = vm.session.world.as_mut().unwrap();
-    w.tick += 1;
+    if phase.is_none() { w.tick += 1; }
     // Who owns what, after this tick.
     let mut owner: HashMap<&str, usize> = HashMap::default();
     for (i, o) in outs.iter().enumerate() {
@@ -495,7 +500,7 @@ fn refresh_view(vm: &mut Vm) {
 }
 
 /// Sends every region its part of one tick and waits for all of them.
-fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], prime: bool) -> Result<Vec<WorldOut>, GoblinError> {
+fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], prime: bool, phase: Option<Arc<str>>) -> Result<Vec<WorldOut>, GoblinError> {
     let w = vm.session.world.as_mut().unwrap();
     let tick = w.tick + 1;
     let mut sent = Vec::with_capacity(actors.len());
@@ -508,7 +513,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, inbox, remote, remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), inbox, remote, remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -769,13 +774,18 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     }
     // 3. The DES tick, numbered as the world's.
     vm.session.des_ticks = job.tick - 1;
-    crate::tick::run_tick(vm)?;
-    // The region's own code for this tick, with the other regions in view
-    // as its rules had them: what it does to their objects goes to them.
-    let mut m = IndexMap::new();
-    m.insert("tick".to_string(), Value::Int(job.tick));
-    call_handler(vm, state, handler, Value::MapOrd(Box::new(m)))?;
-    vm.stack[root] = crate::vm::Operand::Val(state.clone());
+    if let Some(p) = &job.phase {
+        crate::tick::run_phase(vm, p)?;
+    } else {
+        crate::tick::run_tick(vm)?;
+        // The region's own code for this tick, with the other regions in
+        // view as its rules had them: what it does to their objects goes to
+        // them.
+        let mut m = IndexMap::new();
+        m.insert("tick".to_string(), Value::Int(job.tick));
+        call_handler(vm, state, handler, Value::MapOrd(Box::new(m)))?;
+        vm.stack[root] = crate::vm::Operand::Val(state.clone());
+    }
     // 4. What this tick did to other regions' objects goes to their owners.
     let mut changes = Vec::new();
     let mut owners = Vec::new();

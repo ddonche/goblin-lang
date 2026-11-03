@@ -101,6 +101,8 @@ enum PExpr {
         order_by: Option<(ast::Expr, bool)>,
         /// The class judge's action (`judge` over the block decisions).
         decide: Option<String>,
+        /// `phase: NAME` blocks.
+        phases: Vec<PClassPhase>,
     },
     EnumVariant {
         enum_name: String,
@@ -251,6 +253,17 @@ struct PAction {
     is_single: bool,
 }
 
+/// A class's `phase: NAME` block, as parsed.
+#[derive(Debug, Clone)]
+struct PClassPhase {
+    name: String,
+    transitions: Vec<ast::TransitionDef>,
+    every: Vec<(u64, String)>,
+    named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
+    one_of: Vec<Vec<String>>,
+    decide: Option<String>,
+}
+
 /// Parser-internal representation of a decision formula inside a class.
 #[derive(Debug, Clone)]
 struct PDecisionDef {
@@ -276,7 +289,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String>, phases: Vec<PClassPhase> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -519,6 +532,26 @@ fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt)
         block.name = name.clone();
         m.every.push((*n, name));
         m.actions.push(block);
+    }
+    // The class's phases: a phase the member also has takes the class's
+    // spreads and transitions when it writes none, and its `every` blocks
+    // too; a phase only the class has comes whole.
+    for cp in &c.phases {
+        if !m.phases.iter().any(|p| p.name == cp.name) {
+            m.phases.push(ast::OverlayPhase { name: cp.name.clone(), ..Default::default() });
+        }
+        let at = m.phases.iter().position(|p| p.name == cp.name).unwrap();
+        if m.phases[at].spreads.is_empty() { m.phases[at].spreads = cp.spreads.clone(); }
+        if m.phases[at].transitions.is_empty() { m.phases[at].transitions = cp.transitions.clone(); }
+        for (n, a) in &cp.every {
+            let Some(block) = c.actions.iter().find(|x| &x.name == a) else { continue };
+            let name = format!("every {} ticks #{} @{}", n, m.phases[at].every.len() + 1, cp.name);
+            if m.actions.iter().any(|x| x.name == name) { continue; }
+            let mut block = block.clone();
+            block.name = name.clone();
+            m.phases[at].every.push((*n, name));
+            m.actions.push(block);
+        }
     }
 }
 
@@ -3632,6 +3665,18 @@ impl<'t> Parser<'t> {
     }
 
     // Do we see a block closer at the current position?  (allowed: 'end' or 'xx')
+    /// `phase: NAME` followed by an indented block (a field `phase: x` has
+    /// no block below it).
+    fn is_phase_block_at(&self, i: usize) -> bool {
+        use goblin_lexer::TokenKind;
+        let t = |k: usize| self.toks.get(i + k);
+        t(0).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("phase"))
+            && t(1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":"))
+            && t(2).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && t(3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+            && t(4).is_some_and(|t| matches!(t.kind, TokenKind::Indent))
+    }
+
     fn peek_block_close(&mut self) -> bool {
         let save_i = self.i;
         
@@ -4368,6 +4413,10 @@ impl<'t> Parser<'t> {
                 if matches!(tok.kind, TokenKind::Ident) && self.is_named_decision_at(self.i) {
                     break;
                 }
+                // `phase: NAME` with an indented block below starts a phase.
+                if self.is_phase_block_at(self.i) {
+                    break;
+                }
                 // `every N ticks` starts a block (a field named `every` has a ':').
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("every")
                     && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Int))
@@ -4510,7 +4559,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -4532,6 +4581,11 @@ impl<'t> Parser<'t> {
         let mut block_decisions = false;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
+        // `phase: NAME` blocks. While one is open: its name and column, and
+        // the class's own members, set aside until it closes.
+        let mut phases: Vec<PClassPhase> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut in_phase: Option<(String, u32, (Vec<ast::TransitionDef>, Vec<(u64, String)>, Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, Vec<Vec<String>>, Option<String>, Option<PDecisionDef>, bool))> = None;
 
         loop {
             // Skip layout
@@ -4543,13 +4597,83 @@ impl<'t> Parser<'t> {
                 }
             }
 
+            // The `xx` of an open `phase:` block: the class's own members come back.
+            if let Some((_, pcol, _)) = &in_phase {
+                let pcol = *pcol;
+                if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != pcol {
+                        return Err(s_help_site!("P0222",
+                            &format!("This closer is misaligned: expected column {}, found column {}", pcol, col),
+                            "Close the phase with 'xx' directly under 'phase'."));
+                    }
+                    self.expect_block_close("phase")?;
+                    let (pname, _, (t, e, n, o, d, dec, bd)) = in_phase.take().unwrap();
+                    phases.push(PClassPhase {
+                        name: pname,
+                        transitions: std::mem::replace(&mut transitions, t),
+                        every: std::mem::replace(&mut every, e),
+                        named: std::mem::replace(&mut named, n),
+                        one_of: std::mem::replace(&mut one_of, o),
+                        decide: std::mem::replace(&mut decide, d),
+                    });
+                    decision = dec;
+                    block_decisions = bd;
+                    continue;
+                }
+                if self.is_eof() {
+                    return Err(s_help_site!("P0212", "This phase block is missing its closing 'xx' (crossbones).",
+                        "Close the phase with 'xx' directly under 'phase'."));
+                }
+            }
+
+            // `phase: NAME` with its members indented below: what the class
+            // does when the program's `tick()` block runs that phase.
+            if self.is_phase_block_at(self.i) {
+                let col = self.toks[self.i].span.col_start;
+                if in_phase.is_some() {
+                    return Err(s_help_site!("P1580", "A phase cannot hold another phase",
+                        "Close the first phase with 'xx' before the next 'phase:'."));
+                }
+                let pname = self.toks[self.i + 2].value.clone().unwrap_or_default();
+                if phases.iter().any(|p| p.name == pname) {
+                    return Err(s_help_site!("P1582", &format!("This class already has a phase named '{}'", pname),
+                        "Put everything the class does in that phase in one 'phase:' block."));
+                }
+                self.i += 3;
+                let saved = (
+                    std::mem::take(&mut transitions),
+                    std::mem::take(&mut every),
+                    std::mem::take(&mut named),
+                    std::mem::take(&mut one_of),
+                    decide.take(),
+                    decision.take(),
+                    std::mem::replace(&mut block_decisions, false),
+                );
+                in_phase = Some((pname, col, saved));
+                continue;
+            }
+            // Inside a phase: only what DES runs in a phase.
+            if in_phase.is_some() {
+                if let Some(tok) = self.peek() {
+                    let ok = matches!(tok.kind, TokenKind::Ident)
+                        && (matches!(tok.value.as_deref(), Some("judge") | Some("judge_all") | Some("every") | Some("transition"))
+                            || (tok.value.as_deref() == Some("decision") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)))
+                            || (tok.value.as_deref() == Some("one") && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("of"))));
+                    if !ok {
+                        return Err(s_help_site!("P1581", "This cannot go in a phase",
+                            "A phase holds decision blocks, a judge, 'every N ticks' blocks, transitions and 'one of'. Put fields and actions in the class itself."));
+                    }
+                }
+            }
+
             // Allow inline closer on the same line as header (optional)
             if let Some(tok) = self.peek().cloned() {
                 let is_inline_ident = matches!(tok.kind, TokenKind::Ident)
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                 }
             }
 
@@ -4573,7 +4697,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
             }
 
             if self.is_eof() {
@@ -4637,7 +4761,7 @@ impl<'t> Parser<'t> {
                         "Write one judge that chooses between all of the class's decisions."));
                 }
                 let stmt = if act_tok.value.as_deref() == Some("judge") { self.parse_judge_stmt()? } else { self.parse_judge_all_stmt()? };
-                let action = "judge #decisions".to_string();
+                let action = match &in_phase { Some((p, _, _)) => format!("judge #decisions @{p}"), None => "judge #decisions".to_string() };
                 actions.push(PAction { name: action.clone(), params: Vec::new(), body: vec![stmt], is_single: false });
                 decide = Some(action);
                 self.skip_stmt_separators();
@@ -4995,7 +5119,10 @@ impl<'t> Parser<'t> {
                         "Close the block with 'end' or 'xx' (crossbones).",
                     ));
                 }
-                let action = format!("every {} ticks #{}", n, every.len() + 1);
+                let action = match &in_phase {
+                    Some((p, _, _)) => format!("every {} ticks #{} @{}", n, every.len() + 1, p),
+                    None => format!("every {} ticks #{}", n, every.len() + 1),
+                };
                 every.push((n, action.clone()));
                 actions.push(PAction { name: action, params: Vec::new(), body, is_single: false });
                 continue;
@@ -5077,7 +5204,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -5153,7 +5280,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -5302,8 +5429,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                     }
                 }
 
@@ -6571,6 +6698,35 @@ impl<'t> Parser<'t> {
         Ok(ast::Module { items })
     }
 
+    /// `tick()` and its block, closed with `xx` under `tick`.
+    fn parse_tick_block(&mut self) -> Result<ast::Stmt, String> {
+        let tok = self.toks[self.i].clone();
+        let col = tok.span.col_start;
+        self.i += 3; // tick ( )
+        let body = self.parse_indented_block(col, &["end"])?;
+        self.skip_stmt_separators();
+        if self.block_closed_hard {
+            self.block_closed_hard = false;
+        } else if self.peek_block_close() {
+            let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            if c != col {
+                return Err(s_help_site!(
+                    "P0222",
+                    &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                    "Align the closer with its header (same column), placing 'xx' (crossbones) directly under 'tick'.",
+                ));
+            }
+            self.expect_block_close("tick")?;
+        } else if !self.eat_layout_until_close(col) {
+            return Err(s_help_site!(
+                "P0212",
+                "This tick block is missing its closing 'xx' (crossbones).",
+                "Close the block with 'xx' (crossbones) under 'tick'.",
+            ));
+        }
+        Ok(ast::Stmt::TickBlock { body, span: tok.span.clone() })
+    }
+
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -6581,6 +6737,17 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume the colon
                 }
             }
+        }
+
+        // `tick()` with a block below: one tick that runs the phases named
+        // in it.
+        if self.peek_ident() == Some("tick")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "("))
+            && self.toks.get(self.i + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ")"))
+            && self.toks.get(self.i + 3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+            && self.toks.get(self.i + 4).is_some_and(|t| matches!(t.kind, TokenKind::Indent))
+        {
+            return self.parse_tick_block();
         }
 
         // --- block-local bind: local <name> = <expr>
@@ -7443,6 +7610,7 @@ impl<'t> Parser<'t> {
             one_of: Vec::new(),
             order_by: None,
             decide: None,
+            phases: Vec::new(),
             span: sp.clone(),
         }));
 
@@ -7583,7 +7751,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } => {
                 // Each name in `one of` must be a named decision of the class.
                 for n in one_of.iter().flatten() {
                     if !named.iter().any(|(d, _, _)| d == n) {
@@ -7645,6 +7813,32 @@ impl<'t> Parser<'t> {
                         span: sp.clone(),
                     }
                 });
+                for ph in &phases {
+                    for n in ph.one_of.iter().flatten() {
+                        if !ph.named.iter().any(|(d, _, _)| d == n) {
+                            return Err(s_help_site!("P1565",
+                                &format!("'one of' names `{n}`, which is not a decision of phase {} of {name}", ph.name),
+                                "Name decisions of the same phase: decision heal ... xx  then  one of heal, attack"));
+                        }
+                    }
+                }
+                let phases_ast: Vec<ast::ClassPhase> = phases.into_iter().map(|ph| ast::ClassPhase {
+                    name: ph.name,
+                    transitions: ph.transitions,
+                    every: ph.every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
+                    decisions: ph.named.into_iter().map(|(name, d, judge)| {
+                        let formula = self.lower_expr(*d.formula);
+                        let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                        let filter = d.filter.map(|f| self.lower_expr(*f));
+                        ast::NamedDecision {
+                            name,
+                            decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
+                            judge,
+                        }
+                    }).collect(),
+                    one_of: ph.one_of,
+                    decide: ph.decide,
+                }).collect();
                 let decisions_ast: Vec<ast::NamedDecision> = named.into_iter().map(|(name, d, judge)| {
                     let formula = self.lower_expr(*d.formula);
                     let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
@@ -7670,6 +7864,7 @@ impl<'t> Parser<'t> {
                     one_of,
                     order_by,
                     decide,
+                    phases: phases_ast,
                     span: sp,
                 }))
             }
@@ -7798,6 +7993,11 @@ impl<'t> Parser<'t> {
         let mut every: Vec<(u64, String)> = Vec::new();
         let mut dup: Option<ast::OverlayDup> = None;
         let mut written: Vec<String> = Vec::new();
+        // `phase: NAME` blocks. While one is open: its name and column, and
+        // the overlay's own spreads, `every` blocks and transitions, set aside.
+        let mut phases: Vec<ast::OverlayPhase> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut in_phase: Option<(String, u32, (Vec<ast::OverlaySpread>, Vec<(u64, String)>, Vec<ast::TransitionDef>))> = None;
         let sp0 = self.toks[start_i].span.clone();
         let intensity_param = || vec![ast::Param { name: "intensity".to_string(), type_name: None, default: None, span: sp0.clone() }];
         let mk = |n: &str, body: Vec<ast::Stmt>| ast::ActionDecl {
@@ -7809,6 +8009,46 @@ impl<'t> Parser<'t> {
             }
             if self.is_eof() {
                 return Err(s_help_site!("P1203", &format!("The overlay '{name}' is missing its closing 'xx'"), "Close the overlay with 'xx' under 'overlay'."));
+            }
+            // The `xx` of an open `phase:` block: the overlay's own lines come back.
+            if let Some((_, pcol, _)) = &in_phase {
+                let pcol = *pcol;
+                if self.peek_block_close() {
+                    let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if c != pcol {
+                        return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", pcol, c),
+                            "Close the phase with 'xx' directly under 'phase'."));
+                    }
+                    self.expect_block_close("phase")?;
+                    let (pname, _, (sp, ev, tr)) = in_phase.take().unwrap();
+                    phases.push(ast::OverlayPhase {
+                        name: pname,
+                        spreads: std::mem::replace(&mut spreads, sp),
+                        every: std::mem::replace(&mut every, ev),
+                        transitions: std::mem::replace(&mut transitions, tr),
+                    });
+                    continue;
+                }
+            }
+            // `phase: NAME` with its lines indented below.
+            if self.is_phase_block_at(self.i) {
+                let pcol = self.toks[self.i].span.col_start;
+                if in_phase.is_some() {
+                    return Err(s_help_site!("P1580", "A phase cannot hold another phase",
+                        "Close the first phase with 'xx' before the next 'phase:'."));
+                }
+                let pname = self.toks[self.i + 2].value.clone().unwrap_or_default();
+                if phases.iter().any(|p| p.name == pname) {
+                    return Err(s_help_site!("P1582", &format!("This overlay already has a phase named '{}'", pname),
+                        "Put everything the overlay does in that phase in one 'phase:' block."));
+                }
+                self.i += 3;
+                in_phase = Some((pname, pcol, (std::mem::take(&mut spreads), std::mem::take(&mut every), std::mem::take(&mut transitions))));
+                continue;
+            }
+            if in_phase.is_some() && !matches!(self.peek_ident(), Some("spread") | Some("every") | Some("transition")) {
+                return Err(s_help_site!("P1581", "This cannot go in a phase",
+                    "An overlay's phase holds spread:, 'every N ticks' blocks and transitions. Put the overlay's other lines in the overlay itself."));
             }
             if self.peek_block_close() {
                 let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
@@ -7960,7 +8200,10 @@ impl<'t> Parser<'t> {
                         if n == 0 || !matches!(unit.as_deref(), Some("tick") | Some("ticks")) {
                             return Err(s_help_site!("P1560", "Expected a whole number of ticks after 'every'", "Write: every 1 tick ... xx"));
                         }
-                        let a = format!("every {} ticks #{}", n, every.len() + 1);
+                        let a = match &in_phase {
+                            Some((p, _, _)) => format!("every {} ticks #{} @{}", n, every.len() + 1, p),
+                            None => format!("every {} ticks #{}", n, every.len() + 1),
+                        };
                         every.push((n, a.clone()));
                         a
                     };
@@ -8003,7 +8246,7 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
             name, host_types, spread_rules: Vec::new(), decay_rate, modifiers, conflict_rules: Vec::new(), spawn_rules: Vec::new(),
             transitions, default_duration, apply_behavior, extra_fields, on_end, each_tick: Vec::new(),
-            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, span,
+            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, phases, span,
         }))
     }
 
@@ -8462,6 +8705,7 @@ impl<'t> Parser<'t> {
             actions: Vec::new(),
             on_start: None,
             every: Vec::new(),
+            phases: Vec::new(),
             span,
         }))
     }

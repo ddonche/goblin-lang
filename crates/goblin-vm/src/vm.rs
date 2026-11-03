@@ -2105,12 +2105,22 @@ impl Vm {
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
+                    // A phase line of a `tick()` block.
+                    BuiltinId::TickPhase => {
+                        let name = match arg_vals.first() { Some(Value::Str(s)) => s.to_string(), _ => String::new() };
+                        crate::tick::check_phase(self, &name)?;
+                        if crate::world::tick_world(self, Some(&name))?.is_none() {
+                            crate::tick::run_phase(self, &name)?;
+                        }
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
                     BuiltinId::Tick => {
                         if !arg_vals.is_empty() {
                             return Err(GoblinError::ArityMismatch { expected: 0, got: arg_vals.len(), name: "tick".into() });
                         }
                         // Regions running: one tick of every region together.
-                        if let Some(n) = crate::world::tick_world(self)? {
+                        if let Some(n) = crate::world::tick_world(self, None)? {
                             self.stack.push(Operand::Val(n));
                             return Ok(());
                         }
@@ -2761,6 +2771,7 @@ impl Vm {
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
+                    phases: def.phases.clone(),
                     family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
                     generated: false,
                     // Other fields the overlay declares (`kind: "language"`),
