@@ -1,0 +1,37 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// An overlay transition's `self` stays the overlay when it is bound to a
+/// variable (here in a helper), and a new kind with a field its parent
+/// lacked (`strain`) still runs the `every` block it inherited.
+<>Land |
+    name: ..
+    hits: 0
+xx
+act strong(o)
+    r | o
+    return r >> intensity > .5
+xx
+overlay plague
+    hosts: Land
+    ~intensity: .6
+    rate: 1
+    every 1 tick => @hits |= @hits + rate
+    transition split where strong(self)
+        first:
+            intensity: intensity * .5
+        xx
+        second:
+            intensity: intensity * .5
+            strain: "b"
+        xx
+    xx
+    on split => :say("plague splits into {first >> overlay_name} and {second >> overlay_name} {second >> strain}")
+xx
+b <> Land | name: "Oss"
+:overlay!(b, plague)
+repeat 3
+    tick()
+xx
+:say("hits {b >> hits}")
+repeat :overlays() as o
+    :say("{o >> overlay_name} intensity {o >> intensity}")
+xx

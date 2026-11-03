@@ -617,7 +617,9 @@ fn self_record(inst: &OverlayInstance) -> Value {
         fields: Rc::new(f),
         readonly_fields: Default::default(),
         trait_fields: Default::default(),
-        uuid: inst.host_uuid.as_str().into(),
+        // Its own id, as `:overlays` records have: binding it or passing it
+        // to a builtin must not turn it into its host.
+        uuid: format!("{}{}:{}", crate::vm::OVERLAY_RECORD, inst.host_uuid, inst.des_id.0).into(),
     }))
 }
 
@@ -712,7 +714,13 @@ fn successor_kind(vm: &mut Vm, t: &TransitionDef, i: usize, parent: &str) -> Res
 fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
     if !made { return; }
     let Some(d) = vm.session.overlay_defs.get(&inst.overlay_name) else { return };
-    let seeded = OverlayDef { extra_fields: inst.extra_fields.clone(), intensity: inst.strength, ..(**d).clone() };
+    let mut seeded = OverlayDef { extra_fields: inst.extra_fields.clone(), intensity: inst.strength, ..(**d).clone() };
+    // Its blocks take one argument per field, so a field the parent lacked
+    // means compiling them again.
+    if !inst.extra_fields.keys().eq(d.extra_fields.keys()) {
+        let names: Vec<String> = inst.extra_fields.keys().cloned().collect();
+        seeded.methods = crate::tick::compile_overlay_methods(&seeded.name, &seeded.actions, &names).unwrap_or_default();
+    }
     vm.session.overlay_defs.insert(inst.overlay_name.clone(), Rc::new(seeded));
 }
 
