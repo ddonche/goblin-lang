@@ -5264,7 +5264,10 @@ impl Vm {
         if file.is_empty() { return None; }
         let path = std::path::Path::new(file);
         let prefix = format!("{}::", path.canonicalize().ok()?.display());
-        self.session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
+        // An actor's session has no imports of its own, only the program's
+        // globals, which name the module's by its prefix.
+        (self.session.import_paths.values().any(|p| *p == prefix)
+            || self.session.global_names.iter().any(|g| g.starts_with(&prefix))).then_some(prefix)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`

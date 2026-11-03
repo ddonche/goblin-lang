@@ -1,0 +1,23 @@
+import _support/core/des_rules as rules
+<>Cell |
+    name: ..
+    n: 0
+    every 1 tick
+        @n |= rules::grow(@n)
+    xx
+    decision lean
+        targets: Cell where :link_score(self, target, "next") and rules::pull(self, target) > 0
+        score => rules::pull(self, target)
+    xx
+    judge
+        lean: self.tell(lean >> target, lean >> score)
+    xx
+    act tell(t, by)
+        name | t >> name
+        :say("{@name} leans to {name} by {by}")
+    xx
+xx
+link next
+    hosts: Cell
+    range: bool
+xx

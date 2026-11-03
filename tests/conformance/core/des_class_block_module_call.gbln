@@ -1,0 +1,13 @@
+/// known-gap: interp is retired; the VM defines DES
+/// A class from an imported module calls the actions of a module it imports
+/// itself (`rules::grow`) from its `every` block, its decision's `where`
+/// and its `score`, as its other code does.
+import _support/core/des_cells as cells
+a <> Cell | name: "a", n: 0
+b <> Cell | name: "b", n: 5
+c <> Cell | name: "c", n: 2
+:link!(a, b, next, 1)
+:link!(a, c, next, 1)
+:tick()
+:tick()
+:say("{a >> n} {b >> n} {c >> n}")

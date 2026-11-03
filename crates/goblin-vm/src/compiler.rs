@@ -1789,7 +1789,15 @@ impl Compiler {
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
                     let full_name = format!("{}::{}", ns, name);
-                    match self.resolve_load(&full_name) {
+                    // A class method (an `every` block, a decision, a judge) is
+                    // compiled apart from its module: `ns::f` there is the
+                    // module's import, found by name, not a program variable.
+                    let load = if self.is_class_method && self.global_index(&full_name).is_none() {
+                        Err(GoblinError::UndefinedVariable { name: full_name.clone() })
+                    } else {
+                        self.resolve_load(&full_name)
+                    };
+                    match load {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
                             // Not known at compile time — emit a runtime named lookup.
@@ -3677,6 +3685,8 @@ pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> 
             };
             ok && args.iter().all(|x| only_reads(x, calls))
         }
+        // An imported module's action, by its qualified name.
+        Expr::NsCall(ns, name, args, _) => calls(&format!("{ns}::{name}")) && args.iter().all(|x| only_reads(x, calls)),
         _ => false,
     }
 }
