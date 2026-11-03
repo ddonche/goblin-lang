@@ -1,4 +1,4 @@
-/// A feudal world on DES: three kingdoms, each a region; tick(realms)
+/// A feudal world on DES: three kingdoms, each a region; tick()
 /// runs one year in all of them at once. Everything is held by someone:
 /// ownership (the `owner` field) is the whole feudal order.
 ///
@@ -319,14 +319,13 @@ act make_kingdom(k)
     return all
 xx
 
-realms | []
 repeat :range(0, n_kingdoms) as k
-    :put_last!(realms, :actor(make_kingdom(k)))
+    :actor(make_kingdom(k))
 xx
 
 say("feudal kingdoms: {n_kingdoms} realms, {years} years")
 repeat :range(1, years + 1) as y
-    tick(realms)
+    tick()
     if y % 25 == 0 or y == years
         say("year {y}:")
         repeat :objects(Realm) as r

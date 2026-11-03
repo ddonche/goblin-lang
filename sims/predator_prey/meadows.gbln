@@ -1,6 +1,6 @@
 /// Predator and prey on DES: rabbits eat grass, foxes eat rabbits, and both
 /// starve without food. Each meadow is a region (an actor that runs the
-/// meadow and what is in it); tick(meadows) runs one day in all of them at
+/// meadow and what is in it); tick() runs one day in all of them at
 /// once. Now and then an animal wanders to the next meadow: `:move!` takes
 /// it there.
 ///
@@ -119,14 +119,13 @@ act make_meadow(n)
     return all
 xx
 
-meadows | []
 repeat :range(0, n_meadows) as n
-    :put_last!(meadows, :actor(make_meadow(n)))
+    :actor(make_meadow(n))
 xx
 
 say("predator and prey: {n_meadows} meadows, {days} days")
 repeat :range(1, days + 1) as t
-    tick(meadows)
+    tick()
     if t % 10 == 0 or t == days
         grass | 0
         repeat :objects(Grass) as g

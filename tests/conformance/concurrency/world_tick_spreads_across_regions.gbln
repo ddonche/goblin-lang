@@ -1,5 +1,5 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// tick(regions) ticks every region together. An overlay spreads inside a
+/// :tick() ticks every region together. An overlay spreads inside a
 /// region during the tick; one that reaches another region's object
 /// through a link lands there at the start of the next tick. The main
 /// program's :objects() and :overlays() see every region. At chance 1,
@@ -38,7 +38,7 @@ xx
 north | :actor(make_town(0, 3, 1), town_day)
 south | :actor(make_town(.5, 2, 0), town_day)
 repeat :range(1, 4) as d
-    n | tick([north, south])
+    n | tick()
     ill | :len(:overlays(flu))
     hit_n | 0
     hit_s | 0

@@ -52,7 +52,7 @@ xx
 a | :actor(make_zone(1, 0), zone_day)
 b | :actor(make_zone(0, 1), zone_day)
 repeat :range(1, 6) as d
-    tick([a, b])
+    tick()
     repeat :objects(it >> hunger == .5)
         saw | it >> saw
         m | it >> seen_mood

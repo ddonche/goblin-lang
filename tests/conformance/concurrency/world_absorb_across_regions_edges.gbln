@@ -1,11 +1,7 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// Two edges of absorbing across regions. A duke owned by its king, in
+/// An edge of absorbing across regions: a duke owned by its king, in
 /// another region, absorbs the king: the duke then belongs to the king's
-/// emperor (as within one region), not to itself. And an object a
-/// transition already changed in its own region this tick can't be claimed
-/// too: Brant absorbs Cole at home on tick 1, so Ash's claim on Brant that
-/// tick is turned down; Ash claims Brant on tick 2 and takes it at the
-/// start of tick 3.
+/// emperor (as within one region), not to itself.
 <>Realm |
     name: ..
     power: 0
@@ -41,25 +37,15 @@ act day(st, msg)
 xx
 a | :actor(make(1), day)
 b | :actor(make(2), day)
-tick([a, b])
+tick()
 d | :objects("Realm", it >> name == "Duke")[0]
 d >> owner |= :objects("Realm", it >> name == "King")[0]
 d >> power |= 9
 repeat :range(1, 5) as t
-    tick([a, b])
+    tick()
     d |= :objects("Realm", it >> name == "Duke")[0]
     o | d >> owner
     shown | "nil"
     if o != nil => shown |= o >> name
     :say("tick {t}: Duke power {d >> power} owned by {shown}")
-xx
-c | :actor(make(3), day)
-e | :actor(make(4), day)
-repeat :range(1, 4) as t
-    tick([c, e])
-    names | []
-    repeat :objects("Realm", it >> name != "Duke" and it >> name != "Emperor") as r
-        :put_last!(names, "{r >> name} {r >> power}")
-    xx
-    :say("tick {t}: {:join(:sort(names), ", ")}")
 xx

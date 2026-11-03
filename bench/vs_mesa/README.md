@@ -26,7 +26,7 @@ Python docstrings and `#`).
 
 Without `xx`/`end` lines Goblin is 6–21% shorter than Mesa; counting them, it is 7–25% longer.
 
-- Regions cost Goblin a few lines per sim: one `:actor(...)` per town, meadow or kingdom, so `tick(regions)` runs them on all cores. Moving something to another region is setting its `owner`; there is no handler and no list of regions to pass around (before #129/#130 this took 15–20 lines). Mesa has no such step.
+- Regions cost Goblin a few lines per sim: one `:actor(...)` per town, meadow or kingdom, so `:tick()` runs them on all cores. Moving something to another region is setting its `owner`; there is no handler and no list of regions to pass around (before #129/#130 this took 15–20 lines). Mesa has no such step.
 - Mesa spends lines on what DES gives Goblin:
   - Ownership: `Held` keeps each holder's list in feudal.py by hand, and a dead noble's holdings move up by hand.
   - Timed overlays: a sickness that lasts N days and then ends.

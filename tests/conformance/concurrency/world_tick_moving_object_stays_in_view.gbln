@@ -54,7 +54,7 @@ old_town | :actor(make_workers(2, 1), day)
 new_town | :actor(make_workers(1, 0), day)
 :post(old_town, {"new_home": new_town})
 repeat :range(1, 4) as t
-    tick([shops, old_town, new_town])
+    tick()
     cash | 0
     repeat :objects(it >> cash > -1)
         c | it >> cash

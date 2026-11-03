@@ -27,7 +27,7 @@ xx
 a | :actor(make_one(), day)
 b | :actor(make_one(), day)
 repeat :range(1, 5) as d
-    tick([a, b])
+    tick()
     repeat :overlays(flu)
         s | :round((it >> intensity) * 1000) / 1000
         say("tick {d}: flu {s}")

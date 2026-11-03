@@ -43,7 +43,7 @@ xx
 a | :actor(make_posts(), day)
 b | :actor(make_watchers(), day)
 repeat :range(1, 7) as d
-    tick([a, b])
+    tick()
     repeat :objects("Post")
         l | it >> level
         n | it >> n

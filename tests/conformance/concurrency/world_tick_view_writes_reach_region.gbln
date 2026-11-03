@@ -1,5 +1,5 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// The program that runs tick(regions) can change a region's object: it
+/// The program that runs :tick() can change a region's object: it
 /// reads back what it wrote at once, and the region gets the new value at
 /// the start of the next tick, before that tick runs. An overlay goes the
 /// same way. A region changes its own objects as before.
@@ -29,7 +29,7 @@ act day(st, msg)
     return st
 xx
 r | :actor(make_one(), day)
-tick([r])
+tick()
 repeat :objects(Person) as p
     p >> health |= .2
     p >> gold |= p >> gold + 5
@@ -39,7 +39,7 @@ repeat :objects(Person) as p
 xx
 n | :len(:overlays(hurt))
 say("program sees {n} hurt")
-tick([r])
+tick()
 repeat :objects(Person) as p
     h | p >> health
     g | p >> gold

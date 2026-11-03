@@ -78,7 +78,7 @@ xx
 one | :actor(make({"A": "split", "B": "fracture", "C": "mutate", "D": "spawn"}), day)
 two | :actor(make({"E": "absorb", "F": "absorbed", "G": "merge", "H": "merged"}), day)
 three | :actor(make({"I": "subjugate", "J": "vassal", "K": "erase", "L": "stay"}), day)
-tick([one, two, three])
+tick()
 act by_name(x)
     return x >> name
 xx

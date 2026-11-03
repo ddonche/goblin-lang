@@ -217,7 +217,7 @@ pub struct Session {
     pub(crate) des_touched: Option<Vec<crate::value::ObjId>>,
     /// Objects whose `on erase:` action is running: not erased again.
     pub(crate) des_erasing: Vec<String>,
-    /// The main program's world of regions (`tick(regions)`).
+    /// The main program's world of regions (`:tick()`).
     pub world: Option<crate::world::World>,
     /// In a region, while it runs a world tick.
     pub(crate) region: Option<crate::world::RegionCtx>,

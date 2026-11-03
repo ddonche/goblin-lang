@@ -37,7 +37,7 @@ xx
 shops | :actor(make_shop(), day)
 homes | :actor(make_workers(), day)
 repeat :range(1, 6) as t
-    tick([shops, homes])
+    tick()
     cash | 0
     repeat :objects(it >> cash > -1)
         c | it >> cash

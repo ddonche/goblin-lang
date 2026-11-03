@@ -419,6 +419,9 @@ pub struct ActorShared {
     /// waiting in `:receive()` counts as idle too.
     idle: Option<Duration>,
     last_active: Mutex<Instant>,
+    /// Holds DES objects, so `:tick()` runs it as a region: it was handed
+    /// objects, was posted one, or has made some. Never cleared.
+    region: AtomicBool,
 }
 
 impl ActorShared {
@@ -931,7 +934,7 @@ impl Vm {
         let mut it = args.into_iter();
         let state = it.next().unwrap();
         // Without a handler the actor only runs what it owns (a region in
-        // `tick(regions)`); it takes no messages.
+        // `:tick()`); it takes no messages.
         let handler = it.next().unwrap_or(Value::Nil);
         let has_handler = !matches!(handler, Value::Nil);
         let policy = policy_of(it.next())?;
@@ -1016,6 +1019,7 @@ impl Vm {
             pulled: Mutex::new(Vec::new()),
             idle: policy.idle,
             last_active: Mutex::new(Instant::now()),
+            region: AtomicBool::new(!graph.is_empty()),
         });
         // The worker builds the actor's session on its own thread.
         sched.workers[worker].push(Job::Start(Box::new(Start {
@@ -1468,6 +1472,9 @@ impl Slot {
             return self.fail_with("the handler returned nil; it must return the actor's next state".into(), reply);
         }
         self.state = adopt(next, &mut self.vm.session);
+        // Made objects of its own: a region from the next `:tick()` on (set
+        // before the answer goes back, so a program that awaited it knows).
+        if !self.vm.session.object_store.is_empty() { self.shared.region.store(true, Ordering::SeqCst); }
         let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
         if reply.is_some() || !pulled.is_empty() {
             let current = deref(self.state.clone(), &self.vm.session);
@@ -1800,6 +1807,7 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
         Handle::Actor(a) => {
             a.takes_messages()?;
             let p = ToPortable::new(session).value(msg)?;
+            if p.holds_object() { a.region.store(true, Ordering::SeqCst); }
             // From one region to another during a world tick: delivered at
             // the start of the next tick, in a fixed order.
             if let Some(c) = session.region.as_mut() {
@@ -1849,7 +1857,16 @@ impl ActorShared {
 
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
 
-/// Sends a region its part of one world tick (`tick(regions)`).
+/// From now on `:tick()` runs this actor as a region.
+pub(crate) fn mark_region(a: &ActorShared) { a.region.store(true, Ordering::SeqCst); }
+
+/// The actors `:tick()` runs as regions: those this session started that
+/// hold DES objects and have not ended, in the order they were started.
+pub(crate) fn region_actors(session: &Session) -> Vec<Arc<ActorShared>> {
+    session.owned_actors.iter().filter(|a| a.region.load(Ordering::SeqCst) && !a.ended()).cloned().collect()
+}
+
+/// Sends a region its part of one world tick (`:tick()`).
 pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
     let reply = Arc::new(Reply {
         id: next_id(),

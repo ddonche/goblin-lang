@@ -26,5 +26,5 @@ act day(st, msg)
 xx
 r | :actor(make_region(), day)
 repeat 3
-    tick([r])
+    tick()
 xx

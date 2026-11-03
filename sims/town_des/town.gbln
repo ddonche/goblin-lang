@@ -1,6 +1,6 @@
 /// Town on DES: the town sim written with DES classes, decisions,
 /// `every N ticks` blocks and transitions. Each district is a region, and
-/// tick(districts) runs one day in all of them at once.
+/// `:tick()` runs one day in all of them at once.
 ///
 /// What runs where:
 ///   Resident  ages every day, pays rent every 30 days to its district's
@@ -308,7 +308,7 @@ xx
 say("town on DES: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days")
 say("money at the start: {start_money}")
 repeat :range(1, days + 1) as t
-    tick(districts)
+    tick()
     if t % 30 == 0 or t == days
         pop | :len(:objects(it >> age > -1))
         adults | :len(:objects(it >> age >= adult))

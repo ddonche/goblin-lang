@@ -1,6 +1,9 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// tick(regions) takes a list of region actors (C0123); a region that fails
-/// during the tick makes the tick fail (C0123) instead of waiting forever.
+/// :tick() takes no arguments; a region that fails during the tick makes
+/// the tick fail (C0123) instead of waiting forever.
+<>Thing |
+    n: 0
+xx
 act bad(st, msg)
     if :has(msg, "tick")
         x | 1 / 0
@@ -10,11 +13,15 @@ xx
 attempt
     tick([1, 2])
 rescue e
-    say(:has("{e}", "C0123"))
+    say(:has("{e}", "tick"))
 xx
-r | :actor({"a": 1}, bad)
+act make_region()
+    t <> Thing | n: 1
+    return {"things": [t]}
+xx
+r | :actor(make_region(), bad)
 attempt
-    tick([r])
+    tick()
 rescue e
     say(:has("{e}", "C0123: tick-regions: a region failed"))
 xx

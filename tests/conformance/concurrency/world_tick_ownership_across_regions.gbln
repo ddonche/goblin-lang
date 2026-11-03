@@ -51,12 +51,12 @@ north | :actor(make("Nord", ["Dun"], nil), day)
 regions | [west, east, north]
 /// The north becomes the Empire's vassal from the main program: an owner in
 /// another region, nothing moves.
-tick(regions)
+:tick()
 empire | :objects("Realm", it >> name == "Empire")[0]
 nord | :objects("Realm", it >> name == "Nord")[0]
 nord >> owner |= empire
 repeat :range(2, 5) as t
-    tick(regions)
+    :tick()
     rows | []
     repeat :objects() as o
         if :is_type(o, "Land")

@@ -19,6 +19,6 @@ act day(st, msg)
     return st
 xx
 regions | [:actor(make("Ash"), day), :actor(make("Birch"), day)]
-tick(regions)
+:tick()
 say("tick 1 done")
-tick(regions)
+:tick()

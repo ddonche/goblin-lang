@@ -1,6 +1,7 @@
-//! `tick(regions)`: one tick of a world split into regions.
+//! `:tick()` with regions: one tick of a world split into regions.
 //!
-//! A region is an actor whose state holds DES objects. `tick(regions)` runs
+//! A region is an actor that holds DES objects (`crate::actor::region_actors`).
+//! `:tick()` in the program that started them runs
 //! one DES tick in every region at the same time and returns when all have
 //! finished. During a tick a region's rules see the other regions' objects
 //! as they were at the end of the previous tick. What a region does to an
@@ -200,6 +201,8 @@ pub struct RegionCtx {
 /// snapshots, and what each gets at the start of the next tick.
 #[derive(Default)]
 pub struct World {
+    /// The regions, in the order they joined.
+    actors: Vec<Arc<crate::actor::ActorShared>>,
     ids: Vec<u64>,
     tick: i64,
     snaps: Vec<Arc<Snapshot>>,
@@ -239,72 +242,105 @@ fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into())
 
 // ── Main program ─────────────────────────────────────────────────────────────
 
-/// `tick(regions)`.
-pub(crate) fn tick_regions(vm: &mut Vm, list: Value) -> Result<Value, GoblinError> {
-    let items: Vec<Value> = match &list {
-        Value::Array(a) => a.clone(),
-        Value::Seq(s) => s.to_vec(),
-        Value::Collection(c) => crate::collections::to_vec(c),
-        other => return Err(err(format!(
-            "C0123: tick-regions: tick(regions) takes a list of region actors, got {}", other.type_name()))),
+/// `:tick()` in a program that runs regions: one tick of every region
+/// (`crate::actor::region_actors`), together. None when it runs none.
+///
+/// The regions keep their order from tick to tick: one that starts holding
+/// DES objects joins at the end (before a tick, or during one when a region
+/// moves or posts an object to it), one that ended leaves.
+pub(crate) fn tick_world(vm: &mut Vm) -> Result<Option<Value>, GoblinError> {
+    let live = crate::actor::region_actors(&vm.session);
+    if live.is_empty() && vm.session.world.is_none() { return Ok(None); }
+    let kept: Vec<Arc<crate::actor::ActorShared>> = match vm.session.world.as_ref() {
+        Some(w) => w.actors.iter().filter(|a| live.iter().any(|b| Arc::ptr_eq(a, b))).cloned().collect(),
+        None => Vec::new(),
     };
-    let mut actors = Vec::with_capacity(items.len());
-    for v in &items {
-        match crate::actor::actor_of(v) {
-            Some(a) => actors.push(a),
-            None => return Err(err(format!(
-                "C0123: tick-regions: tick(regions) takes a list of region actors; one of them is {}", v.type_name()))),
-        }
-    }
-    let ids: Vec<u64> = actors.iter().map(|a| crate::actor::actor_id(a)).collect();
-    if ids.iter().collect::<HashSet<_>>().len() != ids.len() {
-        return Err(err("C0123: tick-regions: the same region is in the list twice"));
-    }
-    let fresh = vm.session.world.as_ref().is_none_or(|w| w.ids != ids);
-    if fresh {
-        // A new list (other regions, or the same in another order): what is
-        // on its way to a region still in it goes there. An object on its
-        // way to a region left out would be lost, so that is an error.
-        let at = |id: &u64| ids.iter().position(|x| x == id);
-        if let Some(old) = vm.session.world.as_ref() {
-            for (k, id) in old.ids.iter().enumerate() {
-                if at(id).is_none() && (old.inbox[k].iter().any(|it| matches!(it, Item::Arrive(_))) || old.moving.iter().any(|(_, j)| *j == k)) {
-                    return Err(err("C0123: tick-regions: an object is on its way to a region that is not in this list; tick the list it was moved in once more first"));
-                }
-                if at(id).is_none() && !old.inbox[k].is_empty() {
-                    return Err(err("C0123: tick-regions: a change is on its way to a region that is not in this list; tick the list it was made in once more first"));
-                }
-            }
-        }
-        let mut inbox = vec![Vec::new(); ids.len()];
-        let mut flying = vec![Arc::new(Snapshot::default()); ids.len()];
-        let (mut in_flight, mut in_flight_overlays, mut moving) = (Vec::new(), Vec::new(), Vec::new());
-        if let Some(old) = vm.session.world.take() {
-            for (u, k) in old.moving {
-                if let Some(j) = at(&old.ids[k]) { moving.push((u, j)); }
-            }
-            vm.session.object_store.retain(|k, _| !old.view.contains(k));
-            for (k, items) in old.inbox.into_iter().enumerate() {
-                if let Some(j) = at(&old.ids[k]) { inbox[j] = items; }
-            }
-            for (k, f) in old.flying.into_iter().enumerate() {
-                if let Some(j) = at(&old.ids[k]) { flying[j] = f; }
-            }
-            for (u, p, k) in old.in_flight {
-                if let Some(j) = at(&old.ids[k]) { in_flight.push((u, p, j)); }
-            }
-            in_flight_overlays = old.in_flight_overlays;
-        }
-        vm.session.world = Some(World { ids: ids.clone(), tick: 0, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new() });
-        // Before the first tick, every region reports its objects, so the
-        // first tick already sees the whole world.
-        let outs = round(vm, &actors, &ids, true)?;
+    let newcomers: Vec<_> = live.iter().filter(|a| !kept.iter().any(|b| Arc::ptr_eq(a, b))).cloned().collect();
+    let ended = vm.session.world.as_ref().is_none_or(|w| w.actors.len() != kept.len());
+    if ended {
+        let actors: Vec<_> = kept.into_iter().chain(newcomers).collect();
+        rebuild(vm, actors)?;
+    } else if !newcomers.is_empty() {
+        let outs = join(vm, newcomers)?;
         let w = vm.session.world.as_mut().unwrap();
-        w.counts = outs.iter().map(|o| o.counts.clone()).collect();
-        w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
+        w.counts.extend(outs.iter().map(|o| o.counts.clone()));
+        w.snaps.extend(outs.into_iter().map(|o| o.snapshot));
     }
+    tick_regions(vm).map(Some)
+}
+
+/// Regions that hold objects now and are not in the world yet join it at
+/// the end; each reports its objects first. Their reports are returned.
+fn join(vm: &mut Vm, newcomers: Vec<Arc<crate::actor::ActorShared>>) -> Result<Vec<WorldOut>, GoblinError> {
+    let ids: Vec<u64> = newcomers.iter().map(|a| crate::actor::actor_id(a)).collect();
+    let outs = round(vm, &newcomers, &ids, true)?;
+    let w = vm.session.world.as_mut().unwrap();
+    for (a, id) in newcomers.into_iter().zip(ids) {
+        w.actors.push(a);
+        w.ids.push(id);
+        w.inbox.push(Vec::new());
+        w.flying.push(Arc::new(Snapshot::default()));
+    }
+    Ok(outs)
+}
+
+/// A new world of these regions (the first tick, or one ended): what is on
+/// its way to a region still running goes there. An object on its way to a
+/// region that ended would be lost, so that is an error.
+fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(), GoblinError> {
+    let ids: Vec<u64> = actors.iter().map(|a| crate::actor::actor_id(a)).collect();
+    let at = |id: &u64| ids.iter().position(|x| x == id);
+    if let Some(old) = vm.session.world.as_ref() {
+        for (k, id) in old.ids.iter().enumerate() {
+            if at(id).is_none() && (old.inbox[k].iter().any(|it| matches!(it, Item::Arrive(_))) || old.moving.iter().any(|(_, j)| *j == k)) {
+                return Err(err("C0123: tick-regions: an object is on its way to a region that has ended"));
+            }
+            if at(id).is_none() && !old.inbox[k].is_empty() {
+                return Err(err("C0123: tick-regions: a change is on its way to a region that has ended"));
+            }
+        }
+    }
+    let mut inbox = vec![Vec::new(); ids.len()];
+    let mut flying = vec![Arc::new(Snapshot::default()); ids.len()];
+    let (mut in_flight, mut in_flight_overlays, mut moving, mut tick) = (Vec::new(), Vec::new(), Vec::new(), 0);
+    if let Some(old) = vm.session.world.take() {
+        tick = old.tick;
+        for (u, k) in old.moving {
+            if let Some(j) = at(&old.ids[k]) { moving.push((u, j)); }
+        }
+        vm.session.object_store.retain(|k, _| !old.view.contains(k));
+        for (k, items) in old.inbox.into_iter().enumerate() {
+            if let Some(j) = at(&old.ids[k]) { inbox[j] = items; }
+        }
+        for (k, f) in old.flying.into_iter().enumerate() {
+            if let Some(j) = at(&old.ids[k]) { flying[j] = f; }
+        }
+        for (u, p, k) in old.in_flight {
+            if let Some(j) = at(&old.ids[k]) { in_flight.push((u, p, j)); }
+        }
+        in_flight_overlays = old.in_flight_overlays;
+    }
+    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new() });
+    // Before the first tick, every region reports its objects, so the
+    // first tick already sees the whole world.
+    let outs = round(vm, &actors, &ids, true)?;
+    let w = vm.session.world.as_mut().unwrap();
+    w.counts = outs.iter().map(|o| o.counts.clone()).collect();
+    w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
+    Ok(())
+}
+
+fn tick_regions(vm: &mut Vm) -> Result<Value, GoblinError> {
+    let (actors, ids) = { let w = vm.session.world.as_ref().unwrap(); (w.actors.clone(), w.ids.clone()) };
     send_moving(vm)?;
-    let outs = round(vm, &actors, &ids, false)?;
+    let mut outs = round(vm, &actors, &ids, false)?;
+    // Moved or posted an object during the tick: it joins now, so what is
+    // sent to it gets there.
+    let late: Vec<_> = crate::actor::region_actors(&vm.session).into_iter().filter(|a| !actors.iter().any(|b| Arc::ptr_eq(a, b))).collect();
+    let ids = if late.is_empty() { ids } else {
+        outs.extend(join(vm, late)?);
+        vm.session.world.as_ref().unwrap().ids.clone()
+    };
     let w = vm.session.world.as_mut().unwrap();
     w.tick += 1;
     // Who owns what, after this tick.
@@ -1190,9 +1226,11 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
     }
     if let Some(c) = vm.session.region.as_ref() {
         let dest = match (&to_actor, &to_obj) {
+            // Not a region yet: it is one now, and joins the world at the
+            // end of this tick, in time for the object to arrive.
             (Some(a), _) => {
                 if !c.regions.contains(a) {
-                    return Err(err("C0125: move-object: that actor is not one of the regions in this tick(regions)"));
+                    if let Some(x) = crate::actor::actor_of(to) { crate::actor::mark_region(&x); }
                 }
                 *a
             }
@@ -1219,13 +1257,24 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
         if dest == c.me { return Ok(()); }
         return send_one(&mut vm.session, &uuid, dest);
     }
-    let Some(w) = vm.session.world.as_ref() else {
-        return Err(err("C0125: move-object: :move!(obj, to) moves an object into the regions of tick(regions); there are none here"));
-    };
+    if vm.session.world.is_none() {
+        return Err(err("C0125: move-object: :move!(obj, to) moves an object into a region; no :tick() has run regions here yet"));
+    }
+    // An actor that is not a region yet becomes one now and joins the world.
+    if let Some(a) = crate::actor::actor_of(to) {
+        if !vm.session.world.as_ref().unwrap().ids.contains(&crate::actor::actor_id(&a)) {
+            crate::actor::mark_region(&a);
+            let outs = join(vm, vec![a])?;
+            let w = vm.session.world.as_mut().unwrap();
+            w.counts.extend(outs.iter().map(|o| o.counts.clone()));
+            w.snaps.extend(outs.into_iter().map(|o| o.snapshot));
+        }
+    }
+    let w = vm.session.world.as_ref().unwrap();
     let j = match (&to_actor, &to_obj) {
         (Some(a), _) => match w.ids.iter().position(|id| id == a) {
             Some(j) => j,
-            None => return Err(err("C0125: move-object: that actor is not one of the regions in the last tick(regions)")),
+            None => return Err(err("C0125: move-object: that actor is not a region of the last :tick() (it holds no DES objects)")),
         },
         (None, Some(t)) => match owner_index(w, t).or_else(|| w.moving.iter().find(|(u, _)| u == t).map(|(_, j)| *j)) {
             Some(j) => j,

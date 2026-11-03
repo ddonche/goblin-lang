@@ -1,7 +1,7 @@
 # Feudal kingdoms on DES: what got in the way
 
 `kingdom.gbln` is three kingdoms, each a region, run a year at a time with
-`tick(realms)`. Everything is held by someone, through the `owner` field:
+`:tick()`. Everything is held by someone, through the `owner` field:
 a realm holds its king, a king his lords and estates, a lord his knights,
 estates and children. Each year estates pay their holder, vassals pay a
 tenth to their liege, and every noble does at most one deed (`one of`):

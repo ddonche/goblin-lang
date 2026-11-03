@@ -1,5 +1,5 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// :move!(obj, region) moves an object to another region of tick(regions).
+/// :move!(obj, region) moves an object to another region of :tick().
 /// In a region it leaves at once (reading it there afterwards is C0125) and
 /// arrives at the start of the next tick with its overlays, so its rules
 /// keep running there. The main program sees it the whole time. The main
@@ -48,7 +48,7 @@ east | :actor(make_region("east", 2), region_day)
 :post(west, {"peer": east})
 :post(east, {"peer": west})
 repeat :range(1, 7) as d
-    tick([west, east])
+    tick()
     w | :await(:request(west, {"ask": 1}))
     e | :await(:request(east, {"ask": 1}))
     wh | w{"have"}

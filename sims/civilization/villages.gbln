@@ -1,6 +1,6 @@
 /// A small civilization on DES: villages of people who farm, cut wood,
 /// build huts, have children, grow old, and leave for the next village
-/// when there is no room. Each village is a region; tick(villages) runs
+/// when there is no room. Each village is a region; `:tick()` runs
 /// one month in all of them at once.
 ///
 ///   Village  one per region: its food, wood, huts and land. Counts its
@@ -195,7 +195,7 @@ xx
 
 say("civilization: {n_villages} villages, {months} months")
 repeat :range(1, months + 1) as m
-    tick(villages)
+    tick()
     if m % 60 == 0 or m == months
         line | "year {:floor(m / 12)}:"
         total | 0

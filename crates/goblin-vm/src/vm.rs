@@ -2105,14 +2105,15 @@ impl Vm {
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
-                    BuiltinId::Tick if arg_vals.len() == 1 => {
-                        // tick(regions): one tick of every region together.
-                        let list = arg_vals.into_iter().next().unwrap();
-                        let n = crate::world::tick_regions(self, list)?;
-                        self.stack.push(Operand::Val(n));
-                        return Ok(());
-                    }
                     BuiltinId::Tick => {
+                        if !arg_vals.is_empty() {
+                            return Err(GoblinError::ArityMismatch { expected: 0, got: arg_vals.len(), name: "tick".into() });
+                        }
+                        // Regions running: one tick of every region together.
+                        if let Some(n) = crate::world::tick_world(self)? {
+                            self.stack.push(Operand::Val(n));
+                            return Ok(());
+                        }
                         self.vm_tick()?;
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());

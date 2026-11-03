@@ -1,0 +1,41 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// :tick() runs every actor the program started that holds DES objects.
+/// An actor that holds none is not a region: its handler never gets a
+/// tick. It becomes one once it is posted an object (a copy: the
+/// program keeps its own, which the regions' tick does not run).
+<>Thing |
+    n: 0
+    every 1 tick
+        @n |= @n + 1
+    xx
+xx
+act count(st, msg)
+    if :is_map(msg) == false
+        :put_last!(st{"things"}, msg)
+    elif :has(msg, "tick")
+        :update!(st{"ticks"}, st{"ticks"} + 1)
+    xx
+    return st
+xx
+act make_region()
+    t <> Thing | n: 0
+    return {"things": [t], "ticks": 0}
+xx
+region | :actor(make_region(), count)
+helper | :actor({"things": [], "ticks": 0}, count)
+repeat 3
+    tick()
+xx
+say(:await(:request(region, {"ask": 1})){"ticks"})
+say(:await(:request(helper, {"ask": 1})){"ticks"})
+u <> Thing | n: 100
+:post(helper, u)
+repeat 2
+    tick()
+xx
+say(:await(:request(helper, {"ask": 1})){"ticks"})
+ns | []
+repeat :objects(Thing)
+    :put_last!(ns, it >> n)
+xx
+say(:sort(ns))
