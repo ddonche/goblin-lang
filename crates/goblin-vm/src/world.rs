@@ -61,7 +61,9 @@ pub enum Change {
 #[derive(Debug, Clone)]
 pub enum Item {
     Change { uuid: String, field: String, change: Change },
-    Overlay(POverlay),
+    /// An overlay to put on; for the event log, the overlay it spread
+    /// from (`flu on Town a`), or None when put on.
+    Overlay(POverlay, Option<String>),
     /// Spread onto an overlay another region's object already has: the
     /// strength it adds there.
     Reinforce { host: String, overlay: String, amount: f64 },
@@ -679,7 +681,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             Item::Change { uuid, .. } | Item::Erase { uuid } | Item::Retire { uuid, .. } => Some(uuid.as_str()),
             Item::Take { claim, .. } => Some(claim.by.as_str()),
             Item::Links { to, .. } => Some(to.as_str()),
-            Item::Overlay(o) => Some(o.host()),
+            Item::Overlay(o, _) => Some(o.host()),
             Item::Reinforce { host, .. } | Item::ClearOverlays { host } | Item::Detach { host, .. } => Some(host.as_str()),
             _ => None,
         };
@@ -724,13 +726,20 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
                 crate::tick::settle_films(&mut vm.session);
             }
             Item::Detach { host, overlay } => {
+                if crate::events::on(vm) {
+                    let gone: Vec<String> = vm.session.overlay_instances.iter()
+                        .filter(|i| i.host_uuid == *host && i.overlay_name == *overlay)
+                        .map(|i| crate::events::overlay(vm, i)).collect();
+                    for who in gone { crate::events::log(vm, who, "taken off", &[])?; }
+                }
                 vm.session.overlay_instances.retain(|i| !(i.host_uuid == *host && i.overlay_name == *overlay));
                 crate::tick::settle_films(&mut vm.session);
             }
-            Item::Overlay(o) => {
+            Item::Overlay(o, from) => {
                 if vm.session.object_store.contains_key(o.host()) {
                     let inst = overlay_from_p(o, &mut fp, &mut vm.session);
-                    crate::tick::overlay_push(vm, inst)?;
+                    let how = match from { Some(f) => crate::tick::Put::Spread(f.clone()), None => crate::tick::Put::On };
+                    crate::tick::overlay_put_as(vm, inst, true, how)?;
                 }
             }
             Item::Reinforce { host, overlay, amount } => {
@@ -982,12 +991,12 @@ fn unchanged(b: &Sent, o: &crate::value::ObjectVal, s: &crate::session::Session)
 
 /// An overlay that lands on another region's object: sent to its owner
 /// instead of applied here. Returns true when it was sent.
-pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance) -> bool {
+pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance, from: Option<String>) -> bool {
     // The program that runs the world, on a region's object: the region
     // applies it next tick; the program sees it until then.
     if vm.session.region.is_none() && in_view(&vm.session, &inst.host_uuid) {
         let Ok(p) = overlay_to_p(inst, &mut ToPortable::new(&vm.session)) else { return false };
-        if send_to_owner(&mut vm.session, &inst.host_uuid, Item::Overlay(p.clone())) {
+        if send_to_owner(&mut vm.session, &inst.host_uuid, Item::Overlay(p.clone(), from)) {
             if let Some(w) = vm.session.world.as_mut() { w.pending_overlays.push(p); }
             return true;
         }
@@ -997,7 +1006,7 @@ pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance) 
     if !remote { return false; }
     let p = { let mut tp = ToPortable::new(&vm.session); overlay_to_p(inst, &mut tp) };
     if let (Ok(p), Some(c)) = (p, vm.session.region.as_mut()) {
-        c.sent.push((Dest::Object(inst.host_uuid.clone()), Item::Overlay(p)));
+        c.sent.push((Dest::Object(inst.host_uuid.clone()), Item::Overlay(p, from)));
     }
     true
 }

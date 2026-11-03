@@ -2,7 +2,8 @@
 /// `:event_log(path)` writes a line for each thing the DES does, as it
 /// happens: `tick N | who | what | to whom`. Who is the class and the
 /// object's `name` (else its variable, else its id). It records the
-/// actions a class judge's deed calls (not those its conditions read),
+/// actions a class judge's deed calls (not those its conditions read;
+/// a judge inside the deed doesn't end it),
 /// the transitions of objects and overlays, and overlays going on,
 /// spreading, pushing others off, running out and being taken off.
 /// `:event_log(nil)` stops it.
@@ -10,12 +11,25 @@
     name: ..
     gold: 0
     people: 10
+    boasts: 0
+    trades: 0
     decision trade
         targets: Town where target >> gold < self >> gold
         score => (self >> gold) - (target >> gold)
     xx
     judge
-        self.rich() and trade: self.give(trade >> target)
+        self.rich() and trade:
+            self.give(trade >> target)
+            judge
+                @gold > 7: self.boast()
+            xx
+            self.count()
+    xx
+    act boast()
+        @boasts |= @boasts + 1
+    xx
+    act count()
+        @trades |= @trades + 1
     xx
     act rich()
         return @gold > 3

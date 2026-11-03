@@ -1987,7 +1987,10 @@ impl Vm {
                 // A decision read in its class's judge (the decision's place,
                 // or nothing for "a deed starts"): no argument list.
                 if id == BuiltinId::DeedDone {
-                    if let Some(d) = self.deciding.as_mut() { d.deed_depth = None; }
+                    if let Some(d) = self.deciding.as_mut() {
+                        d.deeds = d.deeds.saturating_sub(1);
+                        if d.deeds == 0 { d.deed_depth = None; }
+                    }
                     self.stack.push(Operand::Val(Value::Nil));
                     return Ok(());
                 }

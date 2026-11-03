@@ -635,7 +635,10 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let host_var = host_name(vm, &host);
         let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
         vm.session.des_overlay_id_counter += 1;
-        let how = match &from { Some(f) => Put::Spread(f), None => Put::On };
+        let how = match from {
+            Some(f) => Put::Spread(format!("{name} on {}", crate::events::who(vm, &f))),
+            None => Put::On,
+        };
         overlay_put_as(vm, OverlayInstance {
             overlay_name: name,
             host_var,
@@ -825,6 +828,7 @@ fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value:
                 picks: vec![None; class.decisions.len()],
                 targets: std::mem::take(targets),
                 deed_depth: None,
+                deeds: 0,
             }));
             if !judge_fn.as_ref().is_some_and(|(c, _)| *c == class_name) {
                 let f = vm.session.compiled_methods.get(&(class_name.clone(), action.clone())).cloned();
@@ -1354,6 +1358,8 @@ pub(crate) struct Deciding {
     /// While the event log is on and a judge arm's deed runs: the depth of
     /// the judge's frame, whose action calls the log records.
     pub(crate) deed_depth: Option<usize>,
+    /// Deeds running now: a judge inside a deed's arm has its own.
+    pub(crate) deeds: u32,
 }
 
 impl Deciding {
@@ -1369,7 +1375,7 @@ pub(crate) fn decision_pick(vm: &mut Vm, at: Option<usize>) -> Result<Value, Gob
         vm.memo_kept = None;
         if crate::events::on(vm) {
             let depth = vm.call_stack.len();
-            if let Some(d) = vm.deciding.as_mut() { d.deed_depth = Some(depth); }
+            if let Some(d) = vm.deciding.as_mut() { d.deed_depth = Some(depth); d.deeds += 1; }
         }
         return Ok(Value::Nil)
     };
@@ -1717,13 +1723,13 @@ pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), Gob
 }
 
 /// What the event log says when an overlay goes on.
-pub(crate) enum Put<'a> {
+pub(crate) enum Put {
     /// Nothing: a transition's successor (the transition's line says it).
     Quiet,
     /// `put on`.
     On,
-    /// `spreads to`, from the overlay on this host.
-    Spread(&'a str),
+    /// `spreads to`, from this overlay (`flu on Town a`).
+    Spread(String),
 }
 
 /// `overlay_push`; `start`: whether its `on start` runs (not for a copy a
@@ -1735,7 +1741,8 @@ pub(crate) fn overlay_put(vm: &mut Vm, inst: OverlayInstance, start: bool) -> Re
 /// `overlay_put`, with what the event log says when it goes on.
 pub(crate) fn overlay_put_as(vm: &mut Vm, inst: OverlayInstance, start: bool, how: Put) -> Result<(), GoblinError> {
     // On another region's object: its owner applies it, next tick.
-    if crate::world::send_overlay(vm, &inst) { return Ok(()); }
+    let from = match &how { Put::Spread(f) => Some(f.clone()), _ => None };
+    if crate::world::send_overlay(vm, &inst, from) { return Ok(()); }
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else {
         return Err(GoblinError::Runtime(format!("unknown overlay '{}'", inst.overlay_name)));
     };
@@ -1782,10 +1789,7 @@ pub(crate) fn overlay_put_as(vm: &mut Vm, inst: OverlayInstance, start: bool, ho
         match how {
             Put::Quiet => {}
             Put::On => crate::events::log(vm, who.clone(), "put on", &[])?,
-            Put::Spread(from) => {
-                let from = format!("{} on {}", inst.overlay_name, crate::events::who(vm, from));
-                crate::events::log(vm, from, "spreads to", &[crate::events::who(vm, &host)])?;
-            }
+            Put::Spread(from) => crate::events::log(vm, from, "spreads to", &[crate::events::who(vm, &host)])?,
         }
         let gone: Vec<String> = off.iter().map(|&p| vm.session.overlay_instances[p].overlay_name.clone()).collect();
         if !gone.is_empty() { crate::events::log(vm, who, "pushes off", &gone)?; }
