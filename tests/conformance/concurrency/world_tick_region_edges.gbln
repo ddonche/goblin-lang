@@ -1,0 +1,54 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Edges of which actors :tick() runs as regions. An actor that was sent
+/// no object is no region. Moving an
+/// object to an actor that has ended is C0125, and the object stays. Once
+/// the last region has ended, :tick() runs the program's own objects again.
+<>Thing |
+    n: 0
+    every 1 tick
+        @n |= @n + 1
+    xx
+xx
+act count(st, msg)
+    if :is_map(msg) and :has(msg, "tick")
+        :update!(st{"ticks"}, st{"ticks"} + 1)
+    elif :is_map(msg) and :has(msg, "to")
+        :update!(st{"to"}, msg{"to"})
+    xx
+    return st
+xx
+act mover(st, msg)
+    if :is_map(msg) and :has(msg, "to")
+        :update!(st{"to"}, msg{"to"})
+    elif :is_map(msg) and :has(msg, "tick") and st{"to"} != nil
+        attempt
+            :move!(st{"things"}[0], st{"to"})
+        rescue e
+            :update!(st{"err"}, :has("{e}", "C0125"))
+        xx
+    xx
+    return st
+xx
+act make_region()
+    t <> Thing | n: 0
+    return {"things": [t], "to": nil, "err": false}
+xx
+f <> Thing | n: 0
+helper | :actor({"ticks": 0, "to": nil}, count)
+:post(helper, {"to": nil})
+gone | :actor({"ticks": 0, "to": nil}, count)
+:halt(gone)
+:await(gone)
+r | :actor(make_region(), mover)
+:post(r, {"to": gone})
+tick()
+tick()
+say(:await(:request(helper, {"ask": 1})){"ticks"})
+st | :await(:request(r, {"ask": 1}))
+n | :len(:objects(Thing))
+say("{st{"err"}} {n}")
+:halt(r)
+:await(r)
+tick()
+tick()
+say(f >> n)

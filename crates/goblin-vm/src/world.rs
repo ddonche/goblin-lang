@@ -255,7 +255,12 @@ fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into())
 /// tick goes on (its count moves when it ends).
 pub(crate) fn tick_world(vm: &mut Vm, phase: Option<&str>) -> Result<Option<Value>, GoblinError> {
     let live = crate::actor::region_actors(&vm.session);
-    if live.is_empty() && vm.session.world.is_none() { return Ok(None); }
+    if live.is_empty() {
+        // No region left: the world is over, and the program ticks its own
+        // objects again.
+        if vm.session.world.is_some() { leave_world(vm)?; }
+        return Ok(None);
+    }
     let kept: Vec<Arc<crate::actor::ActorShared>> = match vm.session.world.as_ref() {
         Some(w) => w.actors.iter().filter(|a| live.iter().any(|b| Arc::ptr_eq(a, b))).cloned().collect(),
         None => Vec::new(),
@@ -289,11 +294,18 @@ fn join(vm: &mut Vm, newcomers: Vec<Arc<crate::actor::ActorShared>>) -> Result<V
     Ok(outs)
 }
 
-/// A new world of these regions (the first tick, or one ended): what is on
-/// its way to a region still running goes there. An object on its way to a
-/// region that ended would be lost, so that is an error.
-fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(), GoblinError> {
-    let ids: Vec<u64> = actors.iter().map(|a| crate::actor::actor_id(a)).collect();
+/// The last region ended: nothing may be on its way to one, and the
+/// program's copies of the regions' objects go.
+fn leave_world(vm: &mut Vm) -> Result<(), GoblinError> {
+    rebuild_check(vm, &[])?;
+    if let Some(old) = vm.session.world.take() {
+        vm.session.object_store.retain(|k, _| !old.view.contains(k));
+    }
+    Ok(())
+}
+
+/// What is on its way to a region not in `ids` would be lost: an error.
+fn rebuild_check(vm: &Vm, ids: &[u64]) -> Result<(), GoblinError> {
     let at = |id: &u64| ids.iter().position(|x| x == id);
     if let Some(old) = vm.session.world.as_ref() {
         for (k, id) in old.ids.iter().enumerate() {
@@ -305,6 +317,16 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
             }
         }
     }
+    Ok(())
+}
+
+/// A new world of these regions (the first tick, or one ended): what is on
+/// its way to a region still running goes there. An object on its way to a
+/// region that ended would be lost, so that is an error.
+fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(), GoblinError> {
+    let ids: Vec<u64> = actors.iter().map(|a| crate::actor::actor_id(a)).collect();
+    rebuild_check(vm, &ids)?;
+    let at = |id: &u64| ids.iter().position(|x| x == id);
     let mut inbox = vec![Vec::new(); ids.len()];
     let mut flying = vec![Arc::new(Snapshot::default()); ids.len()];
     let (mut in_flight, mut in_flight_overlays, mut moving, mut tick) = (Vec::new(), Vec::new(), Vec::new(), 0);
@@ -1240,7 +1262,11 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
             // end of this tick, in time for the object to arrive.
             (Some(a), _) => {
                 if !c.regions.contains(a) {
-                    if let Some(x) = crate::actor::actor_of(to) { crate::actor::mark_region(&x); }
+                    let Some(x) = crate::actor::actor_of(to) else { unreachable!() };
+                    if crate::actor::has_ended(&x) {
+                        return Err(err("C0125: move-object: that actor has ended, so it cannot be a region"));
+                    }
+                    crate::actor::mark_region(&x);
                 }
                 *a
             }
@@ -1273,6 +1299,9 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
     // An actor that is not a region yet becomes one now and joins the world.
     if let Some(a) = crate::actor::actor_of(to) {
         if !vm.session.world.as_ref().unwrap().ids.contains(&crate::actor::actor_id(&a)) {
+            if crate::actor::has_ended(&a) {
+                return Err(err("C0125: move-object: that actor has ended, so it cannot be a region"));
+            }
             crate::actor::mark_region(&a);
             let outs = join(vm, vec![a])?;
             let w = vm.session.world.as_mut().unwrap();
