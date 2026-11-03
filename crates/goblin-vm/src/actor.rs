@@ -1860,6 +1860,9 @@ pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
 /// From now on `:tick()` runs this actor as a region.
 pub(crate) fn mark_region(a: &ActorShared) { a.region.store(true, Ordering::SeqCst); }
 
+/// The actor has ended (halted, stopped, failed or cancelled).
+pub(crate) fn has_ended(a: &ActorShared) -> bool { a.ended() }
+
 /// The actors `:tick()` runs as regions: those this session started that
 /// hold DES objects and have not ended, in the order they were started.
 pub(crate) fn region_actors(session: &Session) -> Vec<Arc<ActorShared>> {
