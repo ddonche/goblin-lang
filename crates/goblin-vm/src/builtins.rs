@@ -2755,7 +2755,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick | BuiltinId::DeedDone
         | BuiltinId::OverlayBang | BuiltinId::DetachBang | BuiltinId::LinkBang | BuiltinId::UnlinkBang => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
@@ -3734,6 +3734,15 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
+        BuiltinId::EventLog => {
+            match args.as_slice() {
+                [Value::Nil] => crate::events::start(session, None)?,
+                [Value::Str(p)] => crate::events::start(session, Some(p))?,
+                [other] => return Err(GoblinError::Runtime(format!("R1251: event-log: `:event_log` takes a file path, or nil to stop, not {}", other.type_name()))),
+                _ => return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "event_log".into() }),
+            }
+            Ok(Value::Nil)
+        }
         BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()

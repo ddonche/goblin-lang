@@ -14,6 +14,7 @@ pub mod debug;
 pub mod exec;
 pub mod render;
 pub mod tick;
+pub mod events;
 pub mod metrics;
 pub(crate) mod transition;
 pub(crate) mod formula_tree;

@@ -1144,6 +1144,10 @@ impl Compiler {
                 for s in stmts { self.compile_stmt(s)?; }
             }
         }
+        if !self.lazy_picks.is_empty() {
+            self.emit(Opcode::CallBuiltin(BuiltinId::DeedDone, 0));
+            self.emit(Opcode::Pop);
+        }
         Ok(())
     }
 
@@ -4114,6 +4118,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
 
         // DES tick
         "tick" | "tick_db"               => BuiltinId::Tick,
+        "event_log"                      => BuiltinId::EventLog,
 
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,

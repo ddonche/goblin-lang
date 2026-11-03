@@ -1677,6 +1677,9 @@ impl Vm {
                 }
 
                 let func_rc = func_rc.unwrap();
+                if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
+                    self.log_deed(&method_name, recv_idx)?;
+                }
 
                 if self.call_stack.len() >= MAX_CALL_DEPTH {
                     return Err(GoblinError::StackOverflow);
@@ -1785,6 +1788,10 @@ impl Vm {
                         got: arg_count,
                         name: func_rc.name.clone(),
                     });
+                }
+                if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
+                    let what = func_rc.name.clone();
+                    self.log_deed(&what, func_idx + 1)?;
                 }
 
                 // While a decision is worked out, an action that only reads
@@ -1979,6 +1986,11 @@ impl Vm {
                 }
                 // A decision read in its class's judge (the decision's place,
                 // or nothing for "a deed starts"): no argument list.
+                if id == BuiltinId::DeedDone {
+                    if let Some(d) = self.deciding.as_mut() { d.deed_depth = None; }
+                    self.stack.push(Operand::Val(Value::Nil));
+                    return Ok(());
+                }
                 if id == BuiltinId::DecisionPick {
                     let at = match arg_count { 0 => None, _ => match self.pop_value()? { Value::Int(i) => Some(i as usize), _ => Some(usize::MAX) } };
                     let result = crate::tick::decision_pick(self, at)?;
@@ -2121,10 +2133,12 @@ impl Vm {
                         }
                         // Regions running: one tick of every region together.
                         if let Some(n) = crate::world::tick_world(self, None)? {
+                            crate::events::flush(&mut self.session)?;
                             self.stack.push(Operand::Val(n));
                             return Ok(());
                         }
                         self.vm_tick()?;
+                        crate::events::flush(&mut self.session)?;
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
@@ -6359,6 +6373,26 @@ impl Vm {
         self.session.read_value(&t).ok()
     }
 
+    /// The event log's line for an action a class judge's deed calls: the
+    /// deciding object did `what` to the objects among the call's
+    /// receiver and arguments (`stack[from..]`).
+    fn log_deed(&mut self, what: &str, from: usize) -> Result<(), GoblinError> {
+        let me = self.deciding.as_deref().map(|d| d.self_uuid().to_string()).unwrap_or_default();
+        let mut ids: Vec<String> = Vec::new();
+        for i in from..self.stack.len() {
+            let v = self.resolve_op(self.stack[i].clone())?;
+            let u = match &v {
+                Value::Ref(u) => u.to_string(),
+                Value::Object(o) => o.uuid.to_string(),
+                _ => continue,
+            };
+            if u != me && !ids.contains(&u) && self.session.object_store.contains_key(u.as_str()) { ids.push(u); }
+        }
+        let whom: Vec<String> = ids.iter().map(|u| crate::events::who(self, u)).collect();
+        let who = crate::events::who(self, &me);
+        crate::events::log(self, who, what, &whom)
+    }
+
     /// `:link_score(a, b, "trade")`: a's link to b (one way), as
     /// `crate::tick::link_value` works it out. The older form names the
     /// class and the two variables: `:link_score("Nation", "trade", "a", "b")`.
@@ -6445,6 +6479,10 @@ impl Vm {
         let places: Vec<usize> = self.session.overlay_instances.on_host(&host).iter().copied()
             .filter(|&p| self.session.overlay_instances[p].overlay_name == name).collect();
         for gone in self.session.overlay_instances.take_at(&places) {
+            if crate::events::on(self) {
+                let who = crate::events::overlay(self, &gone);
+                crate::events::log(self, who, "taken off", &[])?;
+            }
             if let Some(hh) = self.session.des_store.handle_for_name(&gone.host_var) {
                 self.session.des_index.remove_overlay(hh, &gone.overlay_name, gone.des_id);
             }

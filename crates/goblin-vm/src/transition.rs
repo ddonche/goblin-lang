@@ -547,6 +547,11 @@ fn remove_object(vm: &mut Vm, uuid: &str, heir: &str) -> Value {
 /// Runs the class's `on split => ...` (or the hook for `kind`): `self`
 /// first, then the transition's other names.
 fn hook(vm: &mut Vm, class: &str, kind: K, me: Value, args: Vec<Value>) -> Result<(), GoblinError> {
+    if crate::events::on(vm) {
+        let who = crate::events::who_value(vm, &me).unwrap_or_default();
+        let whom: Vec<String> = args.iter().filter_map(|a| crate::events::who_value(vm, a)).collect();
+        crate::events::log(vm, who, word(&kind), &whom)?;
+    }
     let key = (class.to_string(), format!("on {}", word(&kind)));
     let Some(f) = vm.session.compiled_methods.get(&key).cloned() else { return Ok(()) };
     let mut a = Vec::with_capacity(1 + args.len());
@@ -770,18 +775,19 @@ fn change_overlay(vm: &mut Vm, p: usize, intensity: Option<f64>, fields: Vec<(St
 fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &OverlayInstance, me: &Value, target: Option<&OverlayInstance>) -> Result<(), GoblinError> {
     let name = inst.overlay_name.clone();
     match t.kind {
-        K::Erase => { take_overlay(vm, inst); Ok(()) }
+        K::Erase => { olog(vm, inst, K::Erase, Vec::new())?; take_overlay(vm, inst); Ok(()) }
         K::Mutate => {
             let (kind, made) = successor_kind(vm, t, 0, &name)?;
             let (intensity, fields) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) else { return Ok(()) };
             if kind != name {
-                vm.session.overlay_instances.rename(p, kind);
+                vm.session.overlay_instances.rename(p, kind.clone());
                 vm.session.overlay_instances[p].age = 0;
             }
             change_overlay(vm, p, intensity, fields)?;
             let now = vm.session.overlay_instances[p].clone();
             seed_kind(vm, made, &now);
+            olog(vm, inst, K::Mutate, if kind != name { vec![kind] } else { Vec::new() })?;
             overlay_hook(vm, def, K::Mutate, inst, Vec::new())
         }
         K::Split => {
@@ -795,6 +801,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             take_overlay(vm, inst);
             crate::tick::overlay_put(vm, a.clone(), false)?;
             crate::tick::overlay_put(vm, b.clone(), false)?;
+            olog(vm, inst, K::Split, vec![a.overlay_name.clone(), b.overlay_name.clone()])?;
             let recs = vec![vm.overlay_record(&a), vm.overlay_record(&b)];
             overlay_hook(vm, def, K::Split, inst, recs)
         }
@@ -806,6 +813,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             seed_kind(vm, mf, &frag);
             if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             crate::tick::overlay_put(vm, frag.clone(), false)?;
+            olog(vm, inst, K::Fracture, vec![frag.overlay_name.clone()])?;
             let recs = vec![vm.overlay_record(&frag)];
             overlay_hook(vm, def, K::Fracture, inst, recs)
         }
@@ -827,7 +835,8 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
                 extra_fields: extra,
                 des_id: next_overlay_id(vm),
             };
-            crate::tick::overlay_put(vm, child.clone(), true)?;
+            olog(vm, inst, K::Spawn, vec![child.overlay_name.clone()])?;
+            crate::tick::overlay_put_as(vm, child.clone(), true, crate::tick::Put::Quiet)?;
             let recs = vec![vm.overlay_record(&child)];
             overlay_hook(vm, def, K::Spawn, inst, recs)
         }
@@ -838,6 +847,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let merged = successor(vm, inst, km, im, fm);
             seed_kind(vm, mm, &merged);
             let old_target = vm.overlay_record(other);
+            olog(vm, inst, K::Merge, vec![other.overlay_name.clone(), merged.overlay_name.clone()])?;
             take_overlay(vm, inst);
             take_overlay(vm, other);
             crate::tick::overlay_put(vm, merged.clone(), false)?;
@@ -848,12 +858,21 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let Some(other) = target else { return Err(err("absorb without a target")) };
             let (ic, fc) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let old_target = vm.overlay_record(other);
+            olog(vm, inst, K::Absorb, vec![other.overlay_name.clone()])?;
             take_overlay(vm, other);
             if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             overlay_hook(vm, def, K::Absorb, inst, vec![old_target])
         }
         K::Subjugate => Err(err("R1245: overlay-subjugate: an overlay can't subjugate")),
     }
+}
+
+/// The event log's line for an overlay's transition: the overlays it
+/// made or took (on the same host).
+fn olog(vm: &mut Vm, inst: &OverlayInstance, kind: K, whom: Vec<String>) -> Result<(), GoblinError> {
+    if !crate::events::on(vm) { return Ok(()); }
+    let who = crate::events::overlay(vm, inst);
+    crate::events::log(vm, who, word(&kind), &whom)
 }
 
 /// Runs an overlay's `on split => ...` (or the hook for `kind`) as its other

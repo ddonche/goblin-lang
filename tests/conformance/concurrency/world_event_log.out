@@ -1,0 +1,6 @@
+tick 1 | Land north | raid | Land south
+tick 2 | Land north | raid | Land south
+tick 3 | Land south | raid | Land north
+tick 3 | Land north | fracture | Land north march
+tick 3 | Land south | fracture | Land south march
+

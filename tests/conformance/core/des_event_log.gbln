@@ -1,0 +1,83 @@
+/// known-gap: interp has no event log (the interpreter is being retired)
+/// `:event_log(path)` writes a line for each thing the DES does, as it
+/// happens: `tick N | who | what | to whom`. Who is the class and the
+/// object's `name` (else its variable, else its id). It records the
+/// actions a class judge's deed calls (not those its conditions read),
+/// the transitions of objects and overlays, and overlays going on,
+/// spreading, pushing others off, running out and being taken off.
+/// `:event_log(nil)` stops it.
+<>Town |
+    name: ..
+    gold: 0
+    people: 10
+    decision trade
+        targets: Town where target >> gold < self >> gold
+        score => (self >> gold) - (target >> gold)
+    xx
+    judge
+        self.rich() and trade: self.give(trade >> target)
+    xx
+    act rich()
+        return @gold > 3
+    xx
+    act give(to)
+        @gold |= @gold - 1
+        to >> gold |= to >> gold + 1
+    xx
+    every 1 tick
+        @people |= @people + 1
+    xx
+    transition fracture where @people > 12 and @gold > 4
+        fragment:
+            people: 5
+            gold: 0
+            name: "{@name} colony"
+        xx
+        carries:
+            people: @people - 5
+        xx
+    xx
+    transition erase where @people > 12 and @gold == 3
+xx
+overlay flu
+    hosts: Town
+    lasts: 2
+    spread: 1 where (target >> gold) == 0
+    transition split where intensity > .5
+        first:
+            intensity: intensity * .5
+        xx
+        second:
+            intensity: intensity * .5
+        xx
+    xx
+xx
+overlay calm
+    hosts: Town
+    conflicts: unrest
+xx
+overlay unrest
+    hosts: Town
+    ~intensity: .9
+xx
+d | :env("GOBLIN_CONF_TMP")
+log | "{d}/events.log"
+a <> Town | name: "Ashford", gold: 9
+b <> Town | name: "Brook", gold: 0
+c <> Town | gold: 2
+:event_log(log)
+:overlay!(a, flu, .8)
+:overlay!(b, calm, .3)
+:overlay!(b, unrest)
+tick()
+:detach!(b, unrest)
+tick()
+tick()
+:event_log(nil)
+tick()
+say(:read_text(log))
+attempt
+    :event_log(3)
+rescue e
+    say(e)
+xx

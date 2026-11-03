@@ -1,0 +1,19 @@
+tick 0 | flu on Town Ashford | put on
+tick 0 | calm on Town Brook | put on
+tick 0 | unrest on Town Brook | put on
+tick 0 | unrest on Town Brook | pushes off | calm
+tick 1 | flu on Town Ashford | spreads to | Town Brook
+tick 1 | flu on Town Ashford | split | flu_1, flu_2
+tick 1 | flu on Town Brook | split | flu_3, flu_4
+tick 1 | Town Ashford | give | Town Brook
+tick 1 | unrest on Town Brook | taken off
+tick 2 | flu_1 on Town Ashford | ends
+tick 2 | flu_2 on Town Ashford | ends
+tick 2 | flu_3 on Town Brook | ends
+tick 2 | flu_4 on Town Brook | ends
+tick 2 | Town Ashford | give | Town Brook
+tick 3 | Town Ashford | give | Town c
+tick 3 | Town c | erase
+tick 3 | Town Ashford | fracture | Town Ashford colony
+
+runtime error: R1251: event-log: `:event_log` takes a file path, or nil to stop, not int

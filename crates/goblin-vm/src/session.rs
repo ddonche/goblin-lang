@@ -310,6 +310,8 @@ pub struct Session {
     pub des_ticks: i64,
     /// The phase of a `tick()` block running now (None: the tick's end).
     pub phase: Option<std::rc::Rc<str>>,
+    /// Where the event log goes (`:event_log(path)`), None when it is off.
+    pub event_log: Option<crate::events::Sink>,
     /// Each phase's view of the classes (`crate::tick::run_phase`), with
     /// the classes it was made from.
     pub phase_views: HashMap<String, (Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>, Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>)>,
@@ -505,6 +507,7 @@ impl Session {
             des_ticks: 0,
             phase_views: Default::default(),
             phase: None,
+            event_log: None,
             des_metrics: Default::default(),
             transitioned: Vec::new(),
             enums: Default::default(),

@@ -1174,6 +1174,11 @@ pub enum BuiltinId {
     Provoke,
     /// A decision's pick, worked out the first time the class judge reads it.
     DecisionPick,
+    /// A class judge's deed ends (the event log stops counting the
+    /// actions called as the judge's).
+    DeedDone,
+    /// `:event_log(path)` / `:event_log(nil)`.
+    EventLog,
     Need,
     YallParse,
     YallParseFile,

@@ -145,6 +145,8 @@ pub struct WorldIn {
     pub(crate) prime: bool,
     /// One phase of the tick (a line of a `tick()` block), not its end.
     pub(crate) phase: Option<Arc<str>>,
+    /// The event log is on: the region hands back its lines.
+    log: bool,
     inbox: Vec<Item>,
     remote: Vec<Arc<Snapshot>>,
     /// The region each of `remote` belongs to.
@@ -183,6 +185,8 @@ pub struct WorldOut {
     counts: crate::metrics::Counts,
     /// Its objects that transitioned this tick: no claim can take them.
     transitioned: Vec<String>,
+    /// Its event log lines.
+    events: Vec<String>,
 }
 
 /// While a region runs a world tick: who else is in the world, which of
@@ -525,6 +529,8 @@ fn refresh_view(vm: &mut Vm) {
 fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], prime: bool, phase: Option<Arc<str>>) -> Result<Vec<WorldOut>, GoblinError> {
     let w = vm.session.world.as_mut().unwrap();
     let tick = w.tick + 1;
+    let log = vm.session.event_log.is_some();
+    let w = vm.session.world.as_mut().unwrap();
     let mut sent = Vec::with_capacity(actors.len());
     for (i, a) in actors.iter().enumerate() {
         // The other regions' objects, and those on their way to them.
@@ -535,7 +541,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), inbox, remote, remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -553,7 +559,14 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
     }
     match failed {
         Some(e) => Err(e),
-        None => Ok(outs),
+        None => {
+            // The regions' event lines, in region order.
+            for o in outs.iter_mut() {
+                let lines = std::mem::take(&mut o.events);
+                crate::events::put_lines(&mut vm.session, lines)?;
+            }
+            Ok(outs)
+        }
     }
 }
 
@@ -592,7 +605,16 @@ pub(crate) fn view_overlays_in(s: &mut crate::session::Session) -> Vec<crate::se
 /// with `{"tick": n}`. Returns its snapshot and what it sends.
 pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
     vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect() });
+    // The region's own event log, if one was started in it, stays its own.
+    let own_log = if job.log { vm.session.event_log.replace(crate::events::Sink::Lines(Vec::new())) } else { None };
     let r = region_steps(vm, state, handler, job);
+    let events = match job.log {
+        true => match std::mem::replace(&mut vm.session.event_log, own_log) {
+            Some(crate::events::Sink::Lines(v)) => v,
+            _ => Vec::new(),
+        },
+        false => Vec::new(),
+    };
     let ctx = vm.session.region.take();
     // Whatever happened, no other region's object stays here.
     if let Some(c) = &ctx {
@@ -606,7 +628,7 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     let snapshot = snapshot_of(vm)?;
     let counts = crate::metrics::own_counts(&vm.session, false);
     let transitioned = std::mem::take(&mut vm.session.transitioned);
-    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts, transitioned });
+    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts, transitioned, events });
     Ok(())
 }
 

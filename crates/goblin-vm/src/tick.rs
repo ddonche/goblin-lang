@@ -243,6 +243,12 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
             .map(|(p, _)| p)
             .collect();
         let taken = vm.session.overlay_instances.take_at(&gone);
+        if crate::events::on(vm) {
+            for inst in &taken {
+                let who = crate::events::overlay(vm, inst);
+                crate::events::log(vm, who, "ends", &[])?;
+            }
+        }
         for inst in &taken { forget_overlay(vm, inst); }
         settle_films(&mut vm.session);
         // In the order the overlays were put on. An error stops the tick.
@@ -543,7 +549,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.spreads_in(phase).is_empty()))
         .cloned()
         .collect();
-    let mut caught: Vec<(String, String)> = Vec::new(); // (overlay, host)
+    let mut caught: Vec<(String, String, Option<String>)> = Vec::new(); // (overlay, host, from: for the event log)
+    let log = crate::events::on(vm);
     let mut candidate_lists: HashMap<Vec<String>, std::rc::Rc<Vec<(Value, usize)>>> = HashMap::default();
     let mut field_groups: HashMap<(Vec<String>, String), FieldGroups> = HashMap::default();
 
@@ -615,20 +622,21 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                     _ => 0.0,
                 };
                 if catches(vm, chance) {
-                    caught.push((inst.overlay_name.clone(), target_uuid.to_string()));
+                    caught.push((inst.overlay_name.clone(), target_uuid.to_string(), log.then(|| inst.host_uuid.clone())));
                 }
             }
         }
     }
 
     // The new copies go on once every carrier has spread.
-    for (name, host) in caught {
+    for (name, host, from) in caught {
         let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
         clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&name));
         let host_var = host_name(vm, &host);
         let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
         vm.session.des_overlay_id_counter += 1;
-        overlay_push(vm, OverlayInstance {
+        let how = match &from { Some(f) => Put::Spread(f), None => Put::On };
+        overlay_put_as(vm, OverlayInstance {
             overlay_name: name,
             host_var,
             host_uuid: host,
@@ -639,7 +647,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             applied: Vec::new(),
             extra_fields: def.extra_fields.clone(),
             des_id,
-        })?;
+        }, true, how)?;
     }
     clock.stop(&mut vm.session.des_metrics);
     Ok(())
@@ -816,6 +824,7 @@ fn decide_all(vm: &mut Vm, targets: &mut Targets, candidates: Vec<(crate::value:
                 class_name: class_name.clone(),
                 picks: vec![None; class.decisions.len()],
                 targets: std::mem::take(targets),
+                deed_depth: None,
             }));
             if !judge_fn.as_ref().is_some_and(|(c, _)| *c == class_name) {
                 let f = vm.session.compiled_methods.get(&(class_name.clone(), action.clone())).cloned();
@@ -1342,6 +1351,13 @@ pub(crate) struct Deciding {
     class_name: String,
     picks: Vec<Option<Value>>,
     targets: Targets,
+    /// While the event log is on and a judge arm's deed runs: the depth of
+    /// the judge's frame, whose action calls the log records.
+    pub(crate) deed_depth: Option<usize>,
+}
+
+impl Deciding {
+    pub(crate) fn self_uuid(&self) -> &str { &self.self_uuid }
 }
 
 /// A decision's name read in its class's judge: its pick (`{target,
@@ -1349,7 +1365,14 @@ pub(crate) struct Deciding {
 pub(crate) fn decision_pick(vm: &mut Vm, at: Option<usize>) -> Result<Value, GoblinError> {
     // No place: a judge arm's deed starts; nothing kept for the decisions
     // stays good.
-    let Some(i) = at else { vm.memo_kept = None; return Ok(Value::Nil) };
+    let Some(i) = at else {
+        vm.memo_kept = None;
+        if crate::events::on(vm) {
+            let depth = vm.call_stack.len();
+            if let Some(d) = vm.deciding.as_mut() { d.deed_depth = Some(depth); }
+        }
+        return Ok(Value::Nil)
+    };
     let Some(mut d) = vm.deciding.take() else {
         return Err(GoblinError::Runtime("R1223: decision-outside-judge: a decision's pick is read in its class's judge".into()));
     };
@@ -1552,6 +1575,10 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
         // An action that returns false didn't act: in a `one of` group the
         // next decision gets its turn.
         vm.memo_kept = None;
+        if crate::events::on(vm) {
+            let (who, whom) = (crate::events::who(vm, &self_uuid), crate::events::who(vm, &best_target_uuid));
+            crate::events::log(vm, who, &action_name, &[whom])?;
+        }
         let out = action_result(vm, &self_uuid, &action_name, args)?;
         return Ok(!matches!(out, Value::Bool(false)));
     }
@@ -1686,12 +1713,27 @@ pub(crate) fn dup_rule(d: &goblin_ast::OverlayDup) -> crate::session::OverlayApp
 /// off, and on a tie the one already there stays. Then the copy's `modify`
 /// film goes on and its `on start` runs.
 pub(crate) fn overlay_push(vm: &mut Vm, inst: OverlayInstance) -> Result<(), GoblinError> {
-    overlay_put(vm, inst, true)
+    overlay_put_as(vm, inst, true, Put::On)
+}
+
+/// What the event log says when an overlay goes on.
+pub(crate) enum Put<'a> {
+    /// Nothing: a transition's successor (the transition's line says it).
+    Quiet,
+    /// `put on`.
+    On,
+    /// `spreads to`, from the overlay on this host.
+    Spread(&'a str),
 }
 
 /// `overlay_push`; `start`: whether its `on start` runs (not for a copy a
 /// transition makes of an overlay already on).
 pub(crate) fn overlay_put(vm: &mut Vm, inst: OverlayInstance, start: bool) -> Result<(), GoblinError> {
+    overlay_put_as(vm, inst, start, Put::Quiet)
+}
+
+/// `overlay_put`, with what the event log says when it goes on.
+pub(crate) fn overlay_put_as(vm: &mut Vm, inst: OverlayInstance, start: bool, how: Put) -> Result<(), GoblinError> {
     // On another region's object: its owner applies it, next tick.
     if crate::world::send_overlay(vm, &inst) { return Ok(()); }
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else {
@@ -1734,6 +1776,20 @@ pub(crate) fn overlay_put(vm: &mut Vm, inst: OverlayInstance, start: bool) -> Re
     }
     off.sort_unstable();
     off.dedup();
+    let log = crate::events::on(vm);
+    if log {
+        let who = crate::events::overlay(vm, &inst);
+        match how {
+            Put::Quiet => {}
+            Put::On => crate::events::log(vm, who.clone(), "put on", &[])?,
+            Put::Spread(from) => {
+                let from = format!("{} on {}", inst.overlay_name, crate::events::who(vm, from));
+                crate::events::log(vm, from, "spreads to", &[crate::events::who(vm, &host)])?;
+            }
+        }
+        let gone: Vec<String> = off.iter().map(|&p| vm.session.overlay_instances[p].overlay_name.clone()).collect();
+        if !gone.is_empty() { crate::events::log(vm, who, "pushes off", &gone)?; }
+    }
     for gone in vm.session.overlay_instances.take_at(&off) { forget_overlay(vm, &gone); }
     let at = vm.session.overlay_instances.len();
     vm.session.overlay_instances.push(inst);
@@ -1881,6 +1937,10 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
 /// Erases an object for its erase transition, after its `on erase:`
 /// action (which sees the object and its fields; an error in it stops the tick).
 pub(crate) fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> Result<(), GoblinError> {
+    if crate::events::on(vm) {
+        let who = crate::events::who(vm, uuid);
+        crate::events::log(vm, who, "erase", &[])?;
+    }
     if let Some(action) = on_erase {
         vm.session.des_erasing.push(uuid.to_string());
         let r = call_object_action(vm, uuid, action, Vec::new());
