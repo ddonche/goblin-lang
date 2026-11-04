@@ -766,6 +766,26 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
     Ok(name)
 }
 
+/// The kind a merge with no `into:` makes: named after both, as merged
+/// companies are (`language_1A` and `language_1B` make `language_1A-1B`;
+/// kinds of different families, `latin-greek`), with both as parents. Two
+/// overlays of one kind merge into that kind. The same two kinds merging
+/// again (anywhere) make the same kind (false: it was there).
+fn merged_kind(vm: &mut Vm, a: &str, b: &str) -> Result<(String, bool), GoblinError> {
+    if a == b { return Ok((a.to_string(), false)); }
+    let def = vm.session.overlay_defs.get(a).cloned()
+        .ok_or_else(|| err(format!("R1243: unknown-overlay: no overlay named '{a}'")))?;
+    let prefix = format!("{}_", def.family);
+    let name = match (a.strip_prefix(&prefix), b.strip_prefix(&prefix)) {
+        (Some(x), Some(y)) => format!("{prefix}{x}-{y}"),
+        _ => format!("{a}-{b}"),
+    };
+    if vm.session.overlay_defs.contains_key(&name) { return Ok((name, false)); }
+    let made = OverlayDef { name: name.clone(), generated: true, parents: vec![a.to_string(), b.to_string()], ..(*def).clone() };
+    vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
+    Ok((name, true))
+}
+
 /// 1 → A, 26 → Z, 27 → AA.
 fn letters(mut n: u64) -> String {
     let mut out = Vec::new();
@@ -867,13 +887,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
         }
         K::Merge => {
             let Some(other) = target else { return Err(err("merge without a target")) };
-            let (km, mm) = successor_kind(vm, t, 0, &name)?;
-            // A kind made by the merge comes from both.
-            if mm && other.overlay_name != name {
-                if let Some(d) = vm.session.overlay_defs.get_mut(&km) {
-                    Rc::make_mut(d).parents.push(other.overlay_name.clone());
-                }
-            }
+            let (km, mm) = if t.into_classes.is_empty() { merged_kind(vm, &name, &other.overlay_name)? } else { successor_kind(vm, t, 0, &name)? };
             let (im, fm) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let merged = successor(vm, inst, km, im, fm);
             seed_kind(vm, mm, &merged);

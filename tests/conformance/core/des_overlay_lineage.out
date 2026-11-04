@@ -7,10 +7,10 @@ tick 1 | flu on Land Oss | spawn | flu
 tick 2 | language_1 on Land Varn | split | language_1A, language_1B
 tick 3 | language_1A on Land Varn | fracture | language_1A.1
 tick 3 | language_1B on Land Varn | fracture | language_1B.1
-tick 4 | language_1A on Land Varn | merge | language_1B, language_1A.2
+tick 4 | language_1A on Land Varn | merge | language_1B, language_1A-1B
 
 flu on a from []
 flu on b from []
 language_1A.1 on a from [language_1A]
 language_1B.1 on a from [language_1B]
-language_1A.2 on a from [language_1A, language_1B]
+language_1A-1B on a from [language_1A, language_1B]

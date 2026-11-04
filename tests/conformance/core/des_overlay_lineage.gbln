@@ -3,9 +3,10 @@
 /// is a child of the one it came from. A declared overlay's children are
 /// numbered after its family (language_1, language_2); a made kind's
 /// children add a letter after a number and a number after a letter
-/// (language_1 → language_1A → language_1A.1). Each record's `parents`
-/// lists the kinds it was made from: none for a declared overlay, one
-/// for mutate, split and fracture, both for a merge. Spawn and spread keep
+/// (language_1 → language_1A → language_1A.1). A merge's kind carries
+/// both names, as merged companies do (language_1A-1B). Each record's
+/// `parents` lists the kinds it was made from: none for a declared
+/// overlay, one for mutate, split and fracture, both for a merge. Spawn and spread keep
 /// the kind: a copy is the same overlay.
 <>Land |
     name: ..
