@@ -78,7 +78,7 @@ d | :env("GOBLIN_CONF_TMP")
 log | "{d}/events.log"
 a <> Town | name: "Ashford", gold: 9
 b <> Town | name: "Brook", gold: 0
-c <> Town | gold: 2
+c <> Town | gold: 3
 :event_log(log)
 :overlay!(a, flu, .8)
 :overlay!(b, calm, .3)

@@ -15,6 +15,7 @@ tick 2 | flu_3 on Town Brook | ends
 tick 2 | flu_4 on Town Brook | ends
 tick 2 | Town Ashford | give | Town Brook
 tick 2 | Town Ashford | count
+tick 3 | Town c | erase
 tick 3 | Town Ashford | give | Town Brook
 tick 3 | Town Ashford | count
 tick 3 | Town Brook | erase
