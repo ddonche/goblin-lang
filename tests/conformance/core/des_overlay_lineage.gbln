@@ -1,0 +1,68 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// Overlay parentage: a transition with no `into:` makes a new kind that
+/// is a child of the one it came from. A declared overlay's children are
+/// numbered after its family (language_1, language_2); a made kind's
+/// children add a letter after a number and a number after a letter
+/// (language_1 → language_1A → language_1A.1). Each record's `parents`
+/// lists the kinds it was made from: none for a declared overlay, one
+/// for mutate, split and fracture, both for a merge. Spawn and spread keep
+/// the kind: a copy is the same overlay.
+<>Land |
+    name: ..
+xx
+<^>Language |
+    hosts: Land
+    step: 0
+    transition mutate where (self >> step) == 0
+        carries:
+            step: 1
+        xx
+    xx
+    transition split where (self >> step) == 1
+        first:
+            intensity: intensity
+            step: 2
+        xx
+        second:
+            intensity: intensity
+            step: 2
+        xx
+    xx
+    transition fracture where (self >> step) == 2
+        fragment:
+            intensity: intensity
+            step: 4
+        xx
+        carries:
+            step: 3
+        xx
+    xx
+    transition merge
+        targets: Language where (target >> step) == 3 and (self >> step) == 3
+        carries:
+            intensity: intensity
+            step: 5
+        xx
+    xx
+xx
+overlay old_tongue <^> Language
+xx
+overlay flu
+    hosts: Land
+    spread: 1 where (target >> name) == "Oss"
+    transition spawn where age == 1
+xx
+a <> Land | name: "Varn"
+b <> Land | name: "Oss"
+log | "{:env("GOBLIN_CONF_TMP")}/lineage.log"
+:event_log(log)
+:overlay!(a, old_tongue)
+:overlay!(a, flu)
+repeat 5
+    tick()
+xx
+:event_log(nil)
+say(:read_text(log))
+repeat :overlays() as o
+    say("{o >> overlay_name} on {o >> host_var} from {o >> parents}")
+xx

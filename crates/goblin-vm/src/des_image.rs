@@ -38,6 +38,7 @@ pub(crate) struct POverlayDef {
     phases: Vec<goblin_ast::OverlayPhase>,
     family: String,
     generated: bool,
+    parents: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +100,7 @@ pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDe
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        parents: d.parents.clone(),
     })
 }
 
@@ -132,6 +134,7 @@ pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        parents: d.parents.clone(),
     }
 }
 

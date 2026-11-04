@@ -732,8 +732,14 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
 }
 
 /// A new overlay kind, a copy of `parent` (every line, its overlay
-/// class), named after its family with a number no other region uses:
-/// region k of n hands out k+1, k+1+n, k+1+2n, ... (the main program is 0).
+/// class), named as the parent's next child. A declared overlay's
+/// children are numbered after its family (`language_1`, `language_2`);
+/// a made kind's children add a letter after a number and a number after
+/// a letter (`language_1` → `language_1A` → `language_1A.1` →
+/// `language_1A.1A`). The parent is recorded. Each count is shared out so
+/// no other region gives the same name: region k of n hands out k+1,
+/// k+1+n, k+1+2n, ... (the main program is 0), so a region's names may
+/// skip some.
 fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
     let def = vm.session.overlay_defs.get(parent).cloned()
         .ok_or_else(|| err(format!("R1243: unknown-overlay: no overlay named '{parent}'")))?;
@@ -741,16 +747,35 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
         Some(c) => (c.regions.iter().position(|r| *r == c.me).map_or(0, |p| p + 1) as u64, c.regions.len() as u64 + 1),
         None => (0, crate::world::world_size(&vm.session).map_or(1, |r| r as u64 + 1)),
     };
+    let key = if def.generated { def.name.clone() } else { def.family.clone() };
     let name = loop {
-        let c = vm.session.kind_counts.entry(def.family.clone()).or_insert(0);
+        let c = vm.session.kind_counts.entry(key.clone()).or_insert(0);
         let num = *c * n + k + 1;
         *c += 1;
-        let name = format!("{}_{}", def.family, num);
+        let name = if !def.generated {
+            format!("{}_{}", def.family, num)
+        } else if def.name.ends_with(|c: char| c.is_ascii_digit()) {
+            format!("{}{}", def.name, letters(num))
+        } else {
+            format!("{}.{}", def.name, num)
+        };
         if !vm.session.overlay_defs.contains_key(&name) { break name; }
     };
-    let made = OverlayDef { name: name.clone(), generated: true, ..(*def).clone() };
+    let made = OverlayDef { name: name.clone(), generated: true, parents: vec![parent.to_string()], ..(*def).clone() };
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok(name)
+}
+
+/// 1 → A, 26 → Z, 27 → AA.
+fn letters(mut n: u64) -> String {
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn take_overlay(vm: &mut Vm, inst: &OverlayInstance) {
@@ -843,6 +868,12 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
         K::Merge => {
             let Some(other) = target else { return Err(err("merge without a target")) };
             let (km, mm) = successor_kind(vm, t, 0, &name)?;
+            // A kind made by the merge comes from both.
+            if mm && other.overlay_name != name {
+                if let Some(d) = vm.session.overlay_defs.get_mut(&km) {
+                    Rc::make_mut(d).parents.push(other.overlay_name.clone());
+                }
+            }
             let (im, fm) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let merged = successor(vm, inst, km, im, fm);
             seed_kind(vm, mm, &merged);

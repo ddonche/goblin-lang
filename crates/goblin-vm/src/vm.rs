@@ -2791,6 +2791,7 @@ impl Vm {
                     phases: def.phases.clone(),
                     family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
                     generated: false,
+                    parents: Vec::new(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
@@ -6281,7 +6282,7 @@ impl Vm {
         thread_local! {
             static RECORD_LAYOUT: std::cell::RefCell<Option<std::rc::Rc<crate::fields::Layout>>> = const { std::cell::RefCell::new(None) };
         }
-        const BASE: [&str; 6] = ["overlay_name", "host_uuid", "host_var", "intensity", "age", "ticks_remaining"];
+        const BASE: [&str; 7] = ["overlay_name", "host_uuid", "host_var", "intensity", "age", "ticks_remaining", "parents"];
         let mut vals = Vec::with_capacity(BASE.len() + inst.extra_fields.len());
         vals.push(Value::Str(inst.overlay_name.as_str().into()));
         vals.push(Value::Str(inst.host_uuid.as_str().into()));
@@ -6289,6 +6290,9 @@ impl Vm {
         vals.push(Value::Float(inst.strength));
         vals.push(Value::Int(inst.age as i64));
         vals.push(match inst.ticks_remaining { Some(t) => Value::Int(t as i64), None => Value::Nil });
+        // The kinds this one was made from (none for a declared overlay).
+        let parents = self.session.overlay_defs.get(&inst.overlay_name).map(|d| d.parents.as_slice()).unwrap_or(&[]);
+        vals.push(Value::Array(parents.iter().map(|p| Value::Str(p.as_str().into())).collect()));
         vals.extend(inst.extra_fields.values().cloned());
         let names = BASE.iter().copied().chain(inst.extra_fields.keys().map(|k| k.as_str()));
         let fields = if inst.extra_fields.keys().any(|k| BASE.contains(&k.as_str())) {
