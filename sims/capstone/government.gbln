@@ -1,0 +1,377 @@
+/// Capstone step 3: forms of government. A polity's form is one member of
+/// the Government overlay class; putting on another replaces it. A form
+/// bends some traits (a `+` is .1, a `++` .2) and leans some decisions
+/// (their weight is multiplied by its `lean_` field, 1 unless a form
+/// raises it by .5 or lowers it). A bend moves the trait and its baseline
+/// together, so the yearly pull back toward the baseline keeps the bend
+/// while the form lasts. The forms change in the settle phase, by chance
+/// from the state (`regime`); a form a polity can't have is replaced by
+/// rule (`choose`).
+
+<^>Government |
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    dup: replace
+xx
+
+/// The heads of families.
+overlay elders_council <^> Government
+    modify
+        @cohesion + .1
+        @base_cohesion + .1
+        @tradition + .1
+        @base_tradition + .1
+        @ambition - .1
+        @base_ambition - .1
+        @lean_envoy + .5
+        @lean_treaty + .5
+    xx
+xx
+/// One chief by strength or kin.
+overlay chieftainship <^> Government
+    modify
+        @aggression + .1
+        @base_aggression + .1
+        @stability - .1
+        @base_stability - .1
+        @lean_raid + .5
+        @lean_strike + .5
+        @lean_ally + .5
+    xx
+xx
+/// A dynasty: steadier while the line is secure, shakier when it is not.
+overlay hereditary_monarchy <^> Government
+    modify
+        @stability + .2 * (@succession - .5)
+        @base_stability + .2 * (@succession - .5)
+        @lean_war + .5
+    xx
+xx
+/// A ruler chosen by the great families.
+overlay elective_monarchy <^> Government
+    modify
+        @legitimacy + .1
+        @base_legitimacy + .1
+        @centralization - .1
+        @base_centralization - .1
+    xx
+xx
+/// Priests, or a ruler who is the faith.
+overlay theocracy <^> Government
+    modify
+        @spirituality + .1
+        @base_spirituality + .1
+        @openness - .1
+        @base_openness - .1
+        @tolerance - .1
+        @base_tolerance - .1
+    xx
+xx
+/// Rich families and guilds.
+overlay merchant_oligarchy <^> Government
+    modify
+        @openness + .1
+        @base_openness + .1
+        @honor - .1
+        @base_honor - .1
+        @aggression - .1
+        @base_aggression - .1
+        @lean_trade + .5
+        @lean_embargo + .5
+    xx
+xx
+/// A council of nobles.
+overlay aristocratic_republic <^> Government
+    modify
+        @stability + .1
+        @base_stability + .1
+        @centralization - .1
+        @base_centralization - .1
+        @lean_treaty + .5
+        @lean_league + .5
+    xx
+xx
+/// An assembly of citizens.
+overlay citizen_republic <^> Government
+    modify
+        @cooperation + .1
+        @base_cooperation + .1
+        @discipline - .1
+        @base_discipline - .1
+        @openness + .1
+        @base_openness + .1
+        @lean_treaty + .5
+        @lean_league + .5
+        @lean_settle + .5
+    xx
+xx
+/// A usurper ruling without law.
+overlay tyranny <^> Government
+    modify
+        @fear + .1
+        @base_fear + .1
+        @legitimacy - .1
+        @base_legitimacy - .1
+        @stability - .1
+        @base_stability - .1
+        @lean_war + .5
+    xx
+xx
+/// The army's officers.
+overlay military_junta <^> Government
+    modify
+        @discipline + .1
+        @base_discipline + .1
+        @aggression + .1
+        @base_aggression + .1
+        @legitimacy - .1
+        @base_legitimacy - .1
+        @lean_strike + .5
+        @lean_levy + .5
+    xx
+xx
+/// An emperor over a bureaucracy.
+overlay imperial_autocracy <^> Government
+    modify
+        @centralization + .1
+        @base_centralization + .1
+        @ambition + .1
+        @base_ambition + .1
+        @lean_demand + .5
+    xx
+xx
+/// Members keep their own rule and share defence: a league's form.
+overlay confederation <^> Government
+    modify
+        @cooperation + .1
+        @base_cooperation + .1
+        @centralization - .2
+        @base_centralization - .2
+        @lean_ally + .5
+        @lean_trade + .5
+    xx
+xx
+/// A crown bound by law and an assembly.
+overlay constitutional_monarchy <^> Government
+    modify
+        @stability + .1
+        @base_stability + .1
+        @legitimacy + .1
+        @base_legitimacy + .1
+        @lean_treaty + .5
+        @lean_ally + .5
+    xx
+xx
+/// Rulers placed or kept by an overlord.
+overlay client_regime <^> Government
+    modify
+        @legitimacy - .1
+        @base_legitimacy - .1
+        @lean_revolt - .5
+    xx
+xx
+/// No accepted ruler; rivals contend.
+overlay interregnum <^> Government
+    modify
+        @stability - .2
+        @base_stability - .2
+        @fear + .1
+        @base_fear + .1
+    xx
+xx
+
+forms | ["elders_council", "chieftainship", "hereditary_monarchy", "elective_monarchy", "theocracy",
+    "merchant_oligarchy", "aristocratic_republic", "citizen_republic", "tyranny", "military_junta",
+    "imperial_autocracy", "confederation", "constitutional_monarchy", "client_regime", "interregnum"]
+monarchies | ["hereditary_monarchy", "elective_monarchy", "imperial_autocracy", "constitutional_monarchy"]
+republics  | ["aristocratic_republic", "citizen_republic"]
+
+/// The form of government on `p`, or nil.
+act form_of(p)
+    repeat :overlays_of(p) as o
+        if :has(forms, o) => send o
+    xx
+    return nil
+xx
+
+/// How far `v` is past `at` toward 1: 0 at `at` or below, 1 at 1.
+act past(v, at)
+    return :clamp((v - at) / (1.0 - at), 0.0, 1.0)
+xx
+
+/// How far `v` is under `at` toward 0: 0 at `at` or above, 1 at 0.
+act under(v, at)
+    return :clamp((at - v) / at, 0.0, 1.0)
+xx
+
+/// Whether `p` can have form `f` (the plan's "Allowed at").
+act allowed(p, f)
+    r | p >> rank
+    league | :is_type(p, "League")
+    if league => send f == "confederation" or f == "interregnum"
+    judge
+        f == "elders_council" or f == "chieftainship": send r <= 2
+        f == "theocracy": send r >= 2
+        f == "hereditary_monarchy" or f == "elective_monarchy" or f == "aristocratic_republic" or f == "military_junta": send r >= 3
+        f == "merchant_oligarchy" or f == "tyranny": send p >> cities >= 1
+        f == "citizen_republic": send r == 3 or r == 6
+        f == "imperial_autocracy": send r == 5
+        f == "constitutional_monarchy": send r == 6
+        f == "client_regime": send !(p >> owner).nix?
+        f == "confederation": send false
+    xx
+    return true
+xx
+
+/// How well form `f` suits `p`'s traits, for a polity that takes a new
+/// form by rule.
+act fit(p, f)
+    judge
+        f == "elders_council": send (p >> cohesion) * (p >> tradition)
+        f == "chieftainship": send (p >> aggression) * (1.0 - p >> cooperation)
+        f == "hereditary_monarchy": send (p >> tradition) * (p >> legitimacy)
+        f == "elective_monarchy": send (p >> cooperation) * (1.0 - p >> centralization)
+        f == "theocracy": send (p >> spirituality) * (p >> spirituality)
+        f == "merchant_oligarchy": send (p >> openness) * (1.0 - p >> honor)
+        f == "aristocratic_republic": send (p >> tradition) * (1.0 - p >> centralization)
+        f == "citizen_republic": send (p >> cooperation) * (p >> openness)
+        f == "tyranny": send (p >> fear) * (1.0 - p >> legitimacy)
+        f == "military_junta": send (p >> discipline) * (p >> aggression) * (1.0 - p >> legitimacy)
+        f == "imperial_autocracy": send (p >> centralization) * (p >> ambition)
+        f == "confederation": send p >> cooperation
+        f == "constitutional_monarchy": send (p >> legitimacy) * (p >> cooperation)
+    xx
+    return 0.0
+xx
+
+/// A form drawn by fit among those `p` can have (never a client regime or
+/// an interregnum: those come from what happens to it).
+act choose(p)
+    names   | []
+    weights | []
+    repeat forms as f
+        if f == "client_regime" or f == "interregnum" => skip
+        if !allowed(p, f) => skip
+        w | fit(p, f)
+        if w <= 0.0 => skip
+        :put_last!(names, f)
+        :put_last!(weights, w)
+    xx
+    if :len(names) == 0 => send nil
+    return :sample_weighted({"src": names, "weights": weights})[0]
+xx
+
+/// Puts form `f` on `p` (it replaces the form before).
+act rule(p, f)
+    if f.nix? => send nil
+    :overlay!(p, f)
+xx
+
+/// One of `fs` that `p` can have, drawn by fit, or nil.
+act one_of(p, fs)
+    names   | []
+    weights | []
+    repeat fs as f
+        if !allowed(p, f) => skip
+        :put_last!(names, f)
+        :put_last!(weights, fit(p, f) + .01)
+    xx
+    if :len(names) == 0 => send nil
+    return :sample_weighted({"src": names, "weights": weights})[0]
+xx
+
+/// The year's change of form, if any. Each change the state makes
+/// possible has a chance this year (how far past its conditions the
+/// polity is); one draw takes at most one of them, and nothing changes
+/// with the chance left over. A form `p` can't have is replaced by rule.
+/// `lost`, `won`: whether it lost or won a war lately; `armed`: its army
+/// against its people; `unpaid`: an army it can't pay.
+act regime(p, lost, won, armed, unpaid)
+    f | form_of(p)
+    if f.nix? or !allowed(p, f)
+        rule(p, choose(p))
+        send nil
+    xx
+    mon  | :has(monarchies, f)
+    rep  | :has(republics, f)
+    into | []
+    odds | []
+    if mon and f != "imperial_autocracy" or f == "imperial_autocracy"
+        /// The line dies out or rival heirs contend.
+        :put_last!(into, "interregnum")
+        :put_last!(odds, under(p >> succession, .4) * under(p >> stability, .6))
+    xx
+    if f == "interregnum"
+        /// A claimant wins.
+        :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy"]))
+        :put_last!(odds, (p >> cohesion) * past(p >> legitimacy, .2))
+    xx
+    if f != "military_junta" and p >> rank >= 3
+        /// A coup.
+        :put_last!(into, "military_junta")
+        :put_last!(odds, past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(lost, unpaid)))
+    xx
+    if f != "tyranny" and p >> cities >= 1
+        /// A usurper.
+        :put_last!(into, "tyranny")
+        :put_last!(odds, under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5))
+    xx
+    if mon or f == "tyranny" or f == "military_junta"
+        /// A revolution.
+        :put_last!(into, one_of(p, republics))
+        :put_last!(odds, past(p >> learning, .3) * past(p >> openness, .5) * :min(2.0 * (p >> cities) / :max(p >> lands, 1), 1.0) * under(p >> legitimacy, .6))
+    xx
+    if rep
+        /// The republic falls.
+        :put_last!(into, one_of(p, ["tyranny", "military_junta"]))
+        :put_last!(odds, (:overlay_strength("war_weariness", p) ?? 0.0) * under(p >> stability, .5) * (.5 + .5 * won))
+    xx
+    if f != "theocracy" and p >> rank >= 2
+        /// A religious takeover.
+        :put_last!(into, "theocracy")
+        :put_last!(odds, past(p >> spirituality, .7) * under(p >> tolerance, .5))
+    xx
+    if f == "theocracy"
+        /// Secularization.
+        :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy", "aristocratic_republic", "citizen_republic", "elders_council"]))
+        :put_last!(odds, past(p >> learning, .3) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * under(p >> spirituality, .7))
+    xx
+    if f == "hereditary_monarchy" or f == "elective_monarchy"
+        /// Reform or concession.
+        :put_last!(into, "constitutional_monarchy")
+        :put_last!(odds, past(p >> cooperation, .5) * past(p >> learning, .4))
+        /// An empire's crown over a bureaucracy (not in the plan's table).
+        :put_last!(into, "imperial_autocracy")
+        :put_last!(odds, past(p >> centralization, .6) * past(p >> ambition, .5))
+    xx
+    if rep or f == "elders_council"
+        /// Trade makes the rich families rule (not in the plan's table).
+        :put_last!(into, "merchant_oligarchy")
+        :put_last!(odds, past(:min((p >> commerce) / 3.0, 1.0), .3) * past(p >> openness, .5))
+    xx
+    if f == "elders_council"
+        /// A strong leader rises.
+        :put_last!(into, "chieftainship")
+        :put_last!(odds, past(p >> aggression, .5) * (.2 + .8 * :min(p >> wars, 1)))
+    xx
+    if f == "chieftainship"
+        /// The chief dies and the families take back the rule.
+        :put_last!(into, "elders_council")
+        :put_last!(odds, (1.0 - :min(p >> wars, 1)) * under(p >> aggression, .6) * (p >> cohesion))
+    xx
+    names   | []
+    weights | []
+    left    | 1.0
+    repeat :range(0, :len(into)) as i
+        g | into[i]
+        c | :min(odds[i], .9)
+        if g.nix? or g == f or c <= 0.0 or !allowed(p, g) => skip
+        :put_last!(names, g)
+        :put_last!(weights, c)
+        left |= left - c
+    xx
+    if :len(names) == 0 => send nil
+    :put_last!(names, "")
+    :put_last!(weights, :max(left, 0.0))
+    g | :sample_weighted({"src": names, "weights": weights})[0]
+    if g != "" => rule(p, g)
+xx

@@ -21,18 +21,6 @@ act text(v)
     return :str(v)
 xx
 
-/// A name from a number: two or three syllables.
-act name_of(i)
-    s | ["ar", "bel", "cor", "dun", "esk", "fal", "gor", "hal", "isk", "jor", "kel", "lor", "mar", "nor", "or", "pel", "quar", "ros", "sar", "tor", "ul", "var", "wen", "yr", "zan"]
-    n | :len(s)
-    a | i % n
-    b | (a + 1 + (i * 3) % (n - 1)) % n
-    w | s[a] + s[b]
-    if i % 3 == 0 => w |= w + s[(b + 1 + (i * 5) % (n - 1)) % n]
-    if i >= n * 3 => w |= w + s[(i // n) % n]
-    return :title(w)
-xx
-
 /// Whether p borders (or is) one of `homes`.
 act beside_any(p, homes)
     repeat homes as h
@@ -129,7 +117,7 @@ repeat homes as h
         if :len(held) > cfg{"kingdom_lands"} => stop
         :put_last!(held, q)
     xx
-    polity::found("Kingdom", name_of(made), held, 0)
+    polity::found("Kingdom", polity::next_name(), held, 0)
     made |= made + 1
 xx
 repeat :reverse(:sort_by(lands, "people_of")) as l
@@ -142,7 +130,7 @@ repeat :reverse(:sort_by(lands, "people_of")) as l
     xx
     class | "Tribe"
     if l >> settlement == "town" or l >> settlement == "city" or l >> settlement == "great city" => class |= "Village"
-    polity::found(class, name_of(made), held, 0)
+    polity::found(class, polity::next_name(), held, 0)
     made |= made + 1
 xx
 nk | :len(:objects(Kingdom))
@@ -175,6 +163,7 @@ repeat :range(0, years + 1) as year
             polity::account(lands, pairs)
             inside
             between
+            settle
         xx
         repeat :objects(uses dealings) as p
             lived |= lived + 1
