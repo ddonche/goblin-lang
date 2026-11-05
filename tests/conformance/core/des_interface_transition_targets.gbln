@@ -1,0 +1,32 @@
+/// known-gap: interp has no interfaces (`uses`); the interpreter is being retired
+/// A transition's `targets: uses NAME` takes the objects of every class
+/// that uses that interface, as a decision's does.
+act greet(p) as dealings
+    say("{p >> name}")
+xx
+<>Kingdom |
+    name: ..
+    owner: nil
+    power: 0
+    uses dealings
+    transition subjugate
+        targets: uses dealings where (target >> power) < @power and (target >> owner).nix?
+    xx
+    on subjugate => say("{self >> name} holds {target >> name}")
+xx
+<>Tribe |
+    name: ..
+    owner: nil
+    power: 0
+    uses dealings
+xx
+<>Wolf |
+    name: ..
+    owner: nil
+    power: 0
+xx
+k <> Kingdom | name: "Varn", power: 9
+t <> Tribe | name: "Oss", power: 2
+w <> Wolf | name: "Grey", power: 1
+tick()
+say("{t >> owner >> name} {(w >> owner).nix?}")
