@@ -6779,7 +6779,7 @@ impl<'t> Parser<'t> {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
             let known = self.aspects.iter().any(|(n, _)| n == a);
             let (msg, help) = if known {
-                (format!("Class {class} is inside a block, above its aspect {a}"), format!("Declare aspect {a} above class {class}."))
+                (format!("Class {class} is inside a block and uses an aspect declared below it"), format!("Declare the aspects it uses above class {class}."))
             } else {
                 (format!("No aspect named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
             };
@@ -7984,10 +7984,15 @@ impl<'t> Parser<'t> {
                     uses,
                     span: sp,
                 };
-                // Aspects declared above are filled in now; the others once
-                // the file is read.
-                let waiting = fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
-                for a in waiting { self.uses_waiting.push((class.name.clone(), a)); }
+                // All in one go, so one aspect's fields are never taken for
+                // the class's own lines: now when every aspect it uses is
+                // declared above (it may sit inside an action or block),
+                // else once the file is read.
+                if class.uses.iter().all(|n| self.aspects.iter().any(|(a, _)| a == n)) {
+                    fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
+                } else {
+                    for n in &class.uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                }
                 Ok(ast::Stmt::Class(class))
             }
             _ => Err(s_help_site!(
