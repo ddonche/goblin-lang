@@ -1,0 +1,46 @@
+/// known-gap: interp has no interfaces; the interpreter is being retired
+/// An interface can hold transitions and their hooks:
+/// `transition absorb as conquest` ... `xx` and `on absorb as conquest => ...`.
+/// A class takes them with `uses conquest`. The transitions run where the
+/// class writes `uses`: in a `phase:` in that phase, in the order written
+/// among the class's own transitions. The hooks are the class's wherever it
+/// uses the interface.
+transition absorb as conquest
+    targets: uses conquest where (target >> power) < @power and (target >> beaten_by) == self
+xx
+on absorb as conquest => say("{self >> name} takes {target >> name}")
+transition erase as conquest where @power <= 0
+on erase as conquest => say("{self >> name} falls")
+<>Kingdom |
+    name: ..
+    power: 0
+    beaten_by: nil
+    phase: settle
+        transition mutate where @power > 50
+            into: Empire
+        xx
+        uses conquest
+    xx
+xx
+<>Empire |
+    name: ..
+    power: 0
+    beaten_by: nil
+    uses conquest
+xx
+<>Tribe |
+    name: ..
+    power: 0
+    beaten_by: nil
+    uses conquest
+xx
+k <> Kingdom | name: "Varn", power: 9
+t <> Tribe | name: "Oss", power: 2
+d <> Tribe | name: "Dust", power: 0
+t >> beaten_by |= k
+tick()
+    settle
+xx
+say(:len(:objects(Tribe)))
+tick()
+say(:len(:objects(Tribe)))

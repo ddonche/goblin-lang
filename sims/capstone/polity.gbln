@@ -125,8 +125,60 @@ aspect Polity |
     debt: 0.0
 xx
 
+/// What every class but League shares when it changes shape. Each
+/// interface holds the transitions one cause brings and the code run right
+/// after them; a class takes them with `uses`, and they run where it writes
+/// it. Transitions that turn a polity into a given class (mutate into
+/// Kingdom) stay in that class.
+///
+/// founding: a colony settled (realm `settle`) and a league formed.
+transition spawn as founding where !(@colony_at.nix?)
+    into: Village
+    child:
+        name: next_name()
+    xx
+xx
+transition spawn as founding where chance(league_odds(self))
+    into: League
+    child:
+        name: next_name()
+    xx
+xx
+on spawn as founding => founded_child(self, child)
+/// conquest: what a war won brings (dealings `war`).
+transition absorb as conquest
+    targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
+    overlays: drop
+    links: reset
+xx
+transition subjugate as conquest
+    targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
+xx
+on absorb as conquest => annexed(self, target)
+on subjugate as conquest => vassal_made(self, target)
+/// unification: two realms made one (realm `union`).
+transition merge as unification
+    targets: uses govern where (target >> union_with) == self and @union_with == target
+    overlays: drop
+    carries:
+        name: "{@name}-{target >> name}"
+        wars: 0
+    xx
+xx
+on merge as unification => united(self, target, merged)
+/// downfall: a polity with no land left is gone.
+transition erase as downfall where @lands == 0
+on erase as downfall => fallen(self)
+/// breakup: the land shared out after a split or a breakaway; the split
+/// and fracture transitions themselves are each class's own.
+on split as breakup => divided(self, first, second)
+on fracture as breakup => broke_away(self, fragment)
+/// regime: a new form of government when the class changes.
+on mutate as regime => mutated(self)
+
 <>Tribe |
     uses Polity
+    uses downfall, breakup, regime
     rank: 1
     ~aggression: .6
     ~cohesion: .7
@@ -153,47 +205,14 @@ xx
                 rank: 2
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 <>Village |
     uses Polity
+    uses downfall, breakup, regime
     rank: 2
     ~aggression: .35
     ~cooperation: .6
@@ -227,47 +246,14 @@ xx
                 rank: 1
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 <>CityState |
     uses Polity
+    uses downfall, breakup, regime
     rank: 3
     ~cooperation: .55
     ~openness: .6
@@ -299,47 +285,14 @@ xx
                 rank: 2
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 <>Kingdom |
     uses Polity
+    uses downfall, breakup, regime
     rank: 4
     ~ambition: .55
     ~legitimacy: .6
@@ -481,47 +434,14 @@ xx
                 food: @food * (1.0 - (@rebel >> people) / (@people + 1.0))
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 <>Empire |
     uses Polity
+    uses downfall, breakup, regime
     rank: 5
     ~ambition: .7
     ~cohesion: .4
@@ -632,47 +552,14 @@ xx
                 food: @food * (1.0 - (@rebel >> people) / (@people + 1.0))
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 <>NationState |
     uses Polity
+    uses downfall, breakup, regime
     rank: 6
     ~cohesion: .75
     ~legitimacy: .65
@@ -776,44 +663,10 @@ xx
                 food: @food * (1.0 - (@rebel >> people) / (@people + 1.0))
             xx
         xx
-        transition spawn where !(@colony_at.nix?)
-            into: Village
-            child:
-                name: next_name()
-            xx
-        xx
-        transition absorb
-            targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-            overlays: drop
-            links: reset
-        xx
-        transition subjugate
-            targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-        xx
-        transition merge
-            targets: uses govern where (target >> union_with) == self and @union_with == target
-            overlays: drop
-            carries:
-                name: "{@name}-{target >> name}"
-                wars: 0
-            xx
-        xx
-        transition spawn where chance(league_odds(self))
-            into: League
-            child:
-                name: next_name()
-            xx
-        xx
+        uses founding
+        uses conquest
+        uses unification
     xx
-    transition erase where @lands == 0
-    on erase => fallen(self)
-    on mutate => mutated(self)
-    on absorb => annexed(self, target)
-    on subjugate => vassal_made(self, target)
-    on merge => united(self, target, merged)
-    on spawn => founded_child(self, child)
-    on fracture => broke_away(self, fragment)
-    on split => divided(self, first, second)
 xx
 /// A league holds its members (their owner is the league); its own land
 /// comes only as it takes its members in.

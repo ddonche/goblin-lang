@@ -1,0 +1,12 @@
+/// A class that writes a transition hook itself and also gets the same
+/// hook from an interface it uses is an error (P1517): it keeps one.
+transition absorb as conquest
+    targets: Kingdom where (target >> power) < @power
+xx
+on absorb as conquest => say("taken")
+<>Kingdom |
+    power: 0
+    uses conquest
+    on absorb => say("mine")
+xx
+say("never printed")

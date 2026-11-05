@@ -158,8 +158,8 @@ default; `YEARS=n`, `PREHISTORY=n`). Each year is a `tick()` block:
   leaves it at .5: the lasting part is clamped on its own (0 - .3 = 0).
   Only `-.3` for some years gives .2. So envoy, aid and treaty ease
   grievance for 40 years. Is that the intended meaning?
-- **Aspects and interfaces don't carry `transition` or `on erase`**: the
-  same two lines are in all seven classes (see step 3).
+- **Aspects and interfaces don't carry `transition` or `on erase`**:
+  fixed, interfaces now hold transitions and hooks (see step 3).
 - **No sea lanes** yet (from step 1): coastal polities trade and fight
   only across land borders.
 
@@ -311,11 +311,11 @@ that every kind of transition happens in 500 years.
   leave with the object. Lists of objects can't be cleaned when a
   transition takes one, because the hook's copy of the old object never
   equals a reference to it.
-- **Interfaces carry decisions and judges, but not transitions, `every`
-  blocks or `on` hooks.** So the five shared transitions, the settle-year
-  block and seven hook lines are copied into six classes. Letting an
-  interface hold them would remove the copies. That is new syntax, so I
-  did not add it.
+- **Interfaces carry decisions, judges, transitions and `on` hooks, but
+  not `every` blocks.** The six classes now take the shared transitions
+  and hooks from six interfaces (`founding`, `conquest`, `unification`,
+  `downfall`, `breakup`, `regime`); the settle-year `every` block is still
+  copied into all seven classes.
 - **An object fires at most one transition a tick**, and a successor
   can't fire in the tick it is made. So an empire's collapse ("split,
   then fractures in the same ticks") takes several years.
