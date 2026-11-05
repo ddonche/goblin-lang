@@ -95,7 +95,12 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
 
 fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Option<String> {
     let class = t.target_class.as_deref()?;
-    let ids: Vec<ObjId> = vm.session.object_store.of_class_ids(class).cloned().collect();
+    let ids: Vec<ObjId> = if class.starts_with("uses ") {
+        let store = &vm.session.object_store;
+        vm.session.places_of_class(class).into_iter().filter_map(|i| store.get_index(i).map(|(u, _)| u.clone())).collect()
+    } else {
+        vm.session.object_store.of_class_ids(class).cloned().collect()
+    };
     // A target with a partner may run in another region: subjugate's change
     // goes there; an absorb or merge of it is a claim the world settles
     // (see `claim`).

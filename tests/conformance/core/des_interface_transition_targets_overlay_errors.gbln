@@ -1,0 +1,11 @@
+/// An overlay's transition acts on another overlay on its host, so
+/// `targets: uses NAME` is an error there.
+<>Town |
+    name: ..
+xx
+overlay fever
+    hosts: Town
+    transition absorb
+        targets: uses dealings where intensity > .5
+    xx
+xx

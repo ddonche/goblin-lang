@@ -462,6 +462,10 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
         return Err(s_help_site!("P1512", &format!("`transition {word}` needs the object it acts on"),
             &format!("Write: transition {word}\n    targets: Kingdom where (target >> power) < @power\nxx")));
     }
+    if overlay && t.target_class.as_deref().is_some_and(|c| c.starts_with("uses ")) {
+        return Err(s_help_site!("P1512", "An overlay's transition targets another overlay on its host, not the classes that use an interface",
+            "Write: targets: fever (an overlay, or an overlay class)"));
+    }
     if !binary && t.target_class.is_some() {
         return Err(s_help_site!("P1512", &format!("`transition {word}` acts on one object alone and takes no `targets:`"),
             "Only merge, absorb and subjugate take `targets:`"));
@@ -10111,9 +10115,16 @@ impl<'t> Parser<'t> {
                         self.skip_layout_inline();
                     },
                     "targets" => {
-                        let Some(cls) = self.eat_ident() else {
+                        let Some(mut cls) = self.eat_ident() else {
                             return Err(s_help_site!("P1505", "Expected a class name after 'targets:'", "Write: targets: Kingdom where (target >> power) < @power"));
                         };
+                        // `targets: uses diplomacy`: the objects of every class that uses it.
+                        if cls == "uses" {
+                            let Some(iface) = self.eat_ident() else {
+                                return Err(s_help_site!("P1344", "Expected an interface after 'targets: uses'", "Write: targets: uses diplomacy where (target >> power) < @power"));
+                            };
+                            cls = format!("uses {iface}");
+                        }
                         target_class = Some(cls);
                         self.skip_layout_inline();
                         if self.peek_ident() == Some("where") {
