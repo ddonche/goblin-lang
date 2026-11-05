@@ -589,12 +589,15 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
             decisions.push(d.clone());
         }
         if let Some(j) = &iface.judge {
-            // Several interfaces with a judge in one place: their judges run
-            // one after the other, in the order the class names them, each
-            // over its own decisions.
+            // Each interface's judge is a method of its own (its locals
+            // stay its own); the judge where they run calls them one after
+            // the other, in the order the class names the interfaces.
+            let own = format!("{judge_name} {}", iface.name);
+            actions.push(judge_action(&own, j));
+            let call = ast::Stmt::Expr(ast::Expr::Call(Box::new(ast::Expr::Ident("self".to_string(), span.clone())), own, Vec::new(), span.clone()));
             if decide.as_deref() == Some(judge_name.as_str()) {
                 if let Some(ast::ActionDecl { body: ast::ActionBody::Block(b), .. }) = actions.iter_mut().find(|a| a.name == judge_name) {
-                    b.push(j.clone());
+                    b.push(call);
                     return Ok(());
                 }
             }
@@ -602,7 +605,7 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
                 return Err(("P1346", format!("Class {cname} already has a judge where it uses {}", iface.name),
                     format!("A class has one judge where its decisions run: drop its own judge, or the judge of {}.", iface.name)));
             }
-            actions.push(judge_action(&judge_name, j));
+            actions.push(judge_action(&judge_name, &call));
             *decide = Some(judge_name);
         }
         Ok(())

@@ -116,9 +116,12 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         };
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
-        if class.decide.as_deref() == Some(action.name.as_str()) {
+        // A judge, or the judge of one interface it calls (`judge #interfaces
+        // @inside govern`): its decisions' names read their picks.
+        let judges = |d: &Option<String>| d.as_deref().is_some_and(|d| action.name == d || action.name.strip_prefix(d).is_some_and(|r| r.starts_with(' ')));
+        if judges(&class.decide) {
             compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect();
-        } else if let Some(p) = class.phases.iter().find(|p| p.decide.as_deref() == Some(action.name.as_str())) {
+        } else if let Some(p) = class.phases.iter().find(|p| judges(&p.decide)) {
             compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect();
         }
         let compiled = compiler.compile_action(&pseudo).or_else(|e| {
