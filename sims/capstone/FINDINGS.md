@@ -232,6 +232,11 @@ that every kind of transition happens in 500 years.
 - 26% of polity-years at war (step 2: 22%).
 - Speed: 1,000 years in 116 s (step 2: 70 s). The added time is the realm
   decisions and the transitions' targets (below).
+- These numbers were taken before the last change (settle is only chosen
+  when free land borders the polity). The 500-year check after it: 261
+  mutate, 92 fracture, 8 split, 17 merge, 208 absorb, 33 subjugate, 59
+  spawn; 51 polities at year 500, the largest 32 provinces; 19% of
+  polity-years at war; every one of the 28 decisions is taken.
 
 ## Choices to confirm
 
