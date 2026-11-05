@@ -200,7 +200,9 @@ link alliance
     range: 0...1
 xx
 /// What one holds against the other, one way. It fades over a generation
-/// or two.
+/// or two. Easing it (envoy, aid, treaty) lasts 40 years too: a change
+/// with no end only moves the part of a link that has no end, so it
+/// could not lower a grievance that will fade.
 link grievance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
@@ -583,8 +585,8 @@ act envoy(p, t) as dealings
     p >> gold |= p >> gold - 2.0
     :link!(p, t, "trade", .05, 10)
     :link!(t, p, "trade", .05, 10)
-    :link!(p, t, "grievance", -.1)
-    :link!(t, p, "grievance", -.1)
+    :link!(p, t, "grievance", -.1, 40)
+    :link!(t, p, "grievance", -.1, 40)
 xx
 act aid(p, t) as dealings
     food | p >> food * .2
@@ -597,7 +599,7 @@ act aid(p, t) as dealings
     p >> prestige |= p >> prestige + 2.0
     :link!(p, t, "alliance", .1, 20)
     :link!(t, p, "alliance", .1, 20)
-    :link!(t, p, "grievance", -.2)
+    :link!(t, p, "grievance", -.2, 40)
 xx
 act ally(p, t) as dealings
     if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p)))
@@ -621,8 +623,8 @@ act treaty(p, t) as dealings
     t >> fear |= t >> fear - .03
     p >> stability |= p >> stability + .02
     t >> stability |= t >> stability + .02
-    :link!(p, t, "grievance", -.3)
-    :link!(t, p, "grievance", -.3)
+    :link!(p, t, "grievance", -.3, 40)
+    :link!(t, p, "grievance", -.3, 40)
 xx
 act spy(p, t) as dealings
     p >> learning |= p >> learning + .005
@@ -701,16 +703,18 @@ act war(p, t) as dealings
     xx
     w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
     if !(aim.nix?) => w >> aim |= aim
-    w >> with_attacker |= call_allies(p, t)
-    w >> with_defender |= call_allies(t, p)
+    w >> with_defender |= call_allies(t, p, [])
+    w >> with_attacker |= call_allies(p, t, w >> with_defender)
     p >> wars |= p >> wars + 1
     t >> wars |= t >> wars + 1
     :link!(t, p, "grievance", .3, 60)
 xx
-act call_allies(side, foe)
+/// An ally already called to the other side (`taken`) stays there: the
+/// defender's allies are called first.
+act call_allies(side, foe, taken)
     came | []
     repeat :objects(uses dealings, :link_score(side, it, "alliance") >= .5) as x
-        if x == foe => skip
+        if x == foe or :has(taken, x) => skip
         if chance(x >> honor)
             :put_last!(came, x)
         else

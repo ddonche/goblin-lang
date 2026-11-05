@@ -1,8 +1,8 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 78 polities, largest Corjor with 13 provinces, 12 wars
-year 200: 54 polities, largest Jornorkel with 14 provinces, 7 wars
-year 300: 35 polities, largest Zanjorardun with 23 provinces, 4 wars
-year 400: 27 polities, largest Halesk with 29 provinces, 3 wars
-year 500: 26 polities, largest Halesk with 30 provinces, 3 wars
-check: share of polity-years at war: 22.2%
+year 100: 83 polities, largest Halesk with 11 provinces, 16 wars
+year 200: 57 polities, largest Kelros with 14 provinces, 7 wars
+year 300: 43 polities, largest Rosvar with 20 provinces, 7 wars
+year 400: 33 polities, largest Rosvar with 24 provinces, 2 wars
+year 500: 27 polities, largest Rosvar with 25 provinces, 3 wars
+check: share of polity-years at war: 19.7%

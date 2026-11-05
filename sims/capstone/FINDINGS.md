@@ -98,13 +98,12 @@ default; `YEARS=n`, `PREHISTORY=n`). Each year is a `tick()` block:
 - Year 0: 20 kingdoms, 63 village communities, 65 tribes (148).
 - Tribes and village communities are taken one by one; nothing makes a
   new polity yet (spawn and fracture are step 3), so the count only falls:
-  78 at year 100, 35 at 300, 22 at 600, 14 at 1,000.
-- The largest holds 44 provinces at year 1,000 (12% of the held land);
-  the distance halving keeps the largest from running away so far.
-- About 800 wars in 1,000 years; 22% of polity-years are spent at war in
-  the first 500 years.
-- Speed: about 65 ms a year with 148 polities at the start, falling as
-  they merge (1,000 years in 66 s; the prehistory 7 s).
+  83 at year 100, 43 at 300, 25 at 600, 21 at 1,000.
+- The largest holds 39 provinces at year 1,000 (about 11% of the held
+  land); the distance halving keeps the largest from running away so far.
+- About 1,200 wars in 1,000 years; 22% of polity-years are spent at war.
+- Speed: about 70 ms a year with 148 polities at the start, falling as
+  they merge (1,000 years in 70 s; the prehistory 7 s).
 
 ## Choices to confirm
 
@@ -154,6 +153,11 @@ default; `YEARS=n`, `PREHISTORY=n`). Each year is a `tick()` block:
 - **`aim?: nil` doesn't parse** (P0904), though the error's own example
   is `email?: ""`. A field whose default is nil can't be given nil when
   the object is made (T0207), so `war` sets `aim` after making the War.
+- **A lasting `:link!` change can't lower a timed one.** With a
+  grievance of .5 added for 40 years, `:link!(a, b, "grievance", -.3)`
+  leaves it at .5: the lasting part is clamped on its own (0 - .3 = 0).
+  Only `-.3` for some years gives .2. So envoy, aid and treaty ease
+  grievance for 40 years. Is that the intended meaning?
 - **Aspects and interfaces don't carry `transition` or `on erase`**: the
   same two lines are in all seven classes. Fine for now, since step 3's
   transitions differ by class.
