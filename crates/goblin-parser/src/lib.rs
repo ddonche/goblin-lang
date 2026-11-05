@@ -6877,7 +6877,11 @@ impl<'t> Parser<'t> {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
             let known = self.aspects.iter().any(|(n, _)| n == a) || self.interfaces.iter().any(|i| i.name == *a);
             let (msg, help) = if known {
-                (format!("Class {class} is inside a block and uses {a}"), format!("Declare class {class} at the top level of the file."))
+                if self.interfaces.iter().any(|i| i.name == *a) {
+                    (format!("Class {class} is inside a block and uses interface {a}"), format!("Declare class {class} at the top level of the file."))
+                } else {
+                    (format!("Class {class} is inside a block and uses an aspect declared below it"), format!("Declare the aspects it uses above class {class}."))
+                }
             } else {
                 (format!("No aspect or interface named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
             };
@@ -8109,9 +8113,18 @@ impl<'t> Parser<'t> {
                     uses,
                     span: sp,
                 };
-                // What it uses is filled in once the file is read.
-                for (_, n) in &phase_uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
-                for n in &class.uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                // All in one go, so one aspect's fields are never taken for
+                // the class's own lines. A class that uses only aspects
+                // declared above it is filled now (it may sit inside an
+                // action or block); one that uses an interface, or an aspect
+                // declared below, once the file is read, since an
+                // interface's decisions may come later in the file.
+                if phase_uses.is_empty() && class.uses.iter().all(|n| self.aspects.iter().any(|(a, _)| a == n)) {
+                    fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
+                } else {
+                    for (_, n) in &phase_uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                    for n in &class.uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                }
                 Ok(ast::Stmt::Class(class))
             }
             _ => Err(s_help_site!(
