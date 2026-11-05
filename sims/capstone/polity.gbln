@@ -172,6 +172,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -245,6 +246,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -316,6 +318,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -376,6 +379,7 @@ xx
             into: Kingdom, CityState
             first:
                 rank: 4
+                wars: 0
                 gold: @gold * .5
                 army: @army * .5
                 food: @food * .5
@@ -401,6 +405,7 @@ xx
             into: Kingdom, Kingdom
             first:
                 rank: 4
+                wars: 0
                 gold: @gold * .5
                 army: @army * .5
                 food: @food * .5
@@ -495,6 +500,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -550,6 +556,7 @@ xx
             into: Kingdom, Kingdom
             first:
                 rank: 4
+                wars: 0
                 gold: @gold * .5
                 army: @army * .5
                 food: @food * .5
@@ -644,6 +651,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -692,6 +700,7 @@ xx
             into: NationState, Kingdom
             first:
                 rank: 6
+                wars: 0
                 gold: @gold * .5
                 army: @army * .5
                 food: @food * .5
@@ -786,6 +795,7 @@ xx
             overlays: drop
             carries:
                 name: "{@name}-{target >> name}"
+                wars: 0
             xx
         xx
         transition spawn where chance(league_odds(self))
@@ -1579,6 +1589,9 @@ act account(lands, pairs)
         o >> power |= o >> power + p >> power
     xx
     repeat :objects(League) as g
+        /// A league with no land of its own has no accounts, but its
+        /// traits still drift toward its culture.
+        if g >> lands == 0 => drift_traits(g)
         top   | 0
         total | 0
         repeat :objects(uses govern, it >> owner == g) as m
@@ -1645,6 +1658,11 @@ act settle_accounts(p)
         :link!(p, o, "grievance", .02, 40)
     xx
     p >> prestige |= p >> prestige * .98
+    drift_traits(p)
+xx
+
+/// Pulls each trait 2% of the way back toward its baseline.
+act drift_traits(p)
     p >> aggression |= drift(p >> aggression, p >> base_aggression)
     p >> cooperation |= drift(p >> cooperation, p >> base_cooperation)
     p >> fear |= drift(p >> fear, p >> base_fear)

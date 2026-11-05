@@ -10,6 +10,7 @@
 import map as map
 import land as land
 import polity as polity
+import government as government
 
 act food_of(p)
     return p >> food
@@ -217,7 +218,9 @@ if lived > 0 => share |= :round(:float(fought) * 100.0 / lived, 1)
 /// The forms of government at the end, most common first.
 forms | {}
 repeat :objects(uses govern) as p
-    f | p >> form
+    /// Read from its overlays: `form` is only set in the settle phase, so
+    /// one founded this year has none yet.
+    f | government::form_of(p) ?? "none"
     :update!(forms{f}, (forms{f} ?? 0) + 1)
 xx
 held | []

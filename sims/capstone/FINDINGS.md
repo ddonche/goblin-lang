@@ -232,11 +232,13 @@ that every kind of transition happens in 500 years.
 - 26% of polity-years at war (step 2: 22%).
 - Speed: 1,000 years in 116 s (step 2: 70 s). The added time is the realm
   decisions and the transitions' targets (below).
-- These numbers were taken before the last change (settle is only chosen
-  when free land borders the polity). The 500-year check after it: 261
-  mutate, 92 fracture, 8 split, 17 merge, 208 absorb, 33 subjugate, 59
-  spawn; 51 polities at year 500, the largest 32 provinces; 19% of
-  polity-years at war; every one of the 28 decisions is taken.
+- These numbers were taken before the last changes (settle is only
+  chosen when free land borders the polity; a split or merge successor
+  starts with no wars; a landless league's traits drift). The 500-year
+  check after them: 282 mutate, 91 fracture, 11 split, 13 merge, 220
+  absorb, 39 subjugate, 65 spawn; 48 polities at year 500, the largest
+  29 provinces; 17% of polity-years at war; every one of the 28
+  decisions is taken.
 
 ## Choices to confirm
 
@@ -296,6 +298,10 @@ that every kind of transition happens in 500 years.
   is why each form bends the baseline as well. To fix it at the root,
   either the drift reads the stored value, or the language offers a way
   to read it. Your call.
+  The same gap reaches colonies and leagues: they take their founder's
+  traits and baselines as read, so the founder's form of government is
+  copied in as culture, and a child that takes up the same form gets its
+  bend twice. That compounds over generations of colonies.
 - **A reference to an object a transition took in** (absorbed, merged,
   split) is inconsistent:
   - read from a field, it gives nil;
