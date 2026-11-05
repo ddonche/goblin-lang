@@ -1,5 +1,6 @@
 /// A class that uses an interface with a judge, where it already has a
-/// judge of its own, is an error (P1346): a phase has one judge.
+/// judge of its own, is an error (P1346): a phase has one judge of its own
+/// making.
 decision partner as diplomacy
     targets: Kingdom
     score => 1
