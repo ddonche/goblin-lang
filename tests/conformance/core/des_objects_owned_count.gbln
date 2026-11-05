@@ -1,8 +1,9 @@
 /// known-gap: interp has no contents list (owner is a plain field there)
 /// `:len(:objects("Item", it >> owner == x))` counts what x holds of that
 /// class, the same as counting the list: other classes x holds don't count,
-/// a holder that isn't an object or was erased holds nothing, and a class
-/// with a field named like x reads that field instead.
+/// a holder that isn't an object holds nothing, an erased holder reads as
+/// nil (so it matches the items that have no holder), and a class with a
+/// field named like x reads that field instead.
 <>Bag |
     name: ""
     owner: nil

@@ -638,7 +638,7 @@ impl Session {
     pub fn check_readable(&self, t: &Tether) -> Result<(), GoblinError> {
         match &self.get_stash(t)?.value {
             Value::Ref(uuid) if !self.object_store.contains_key(uuid) =>
-                Err(crate::actor::missing_object(self, uuid)),
+                crate::actor::gone_object(self, uuid).map(|_| ()),
             _ => Ok(()),
         }
     }
@@ -646,9 +646,10 @@ impl Session {
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
         match &self.get_stash(t)?.value {
-            Value::Ref(uuid) => self.object_store.get(uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(self, uuid)),
+            Value::Ref(uuid) => match self.object_store.get(uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(self, uuid),
+            },
             Value::Frozen(f) => Ok(f.value.clone()),
             other => Ok(other.clone_fast()),
         }
