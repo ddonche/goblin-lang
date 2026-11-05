@@ -1,0 +1,17 @@
+/// known-gap: interp has no interfaces; the interpreter is being retired
+/// A class that names an interface twice in one place gets its
+/// transitions once: the condition below is checked once a tick.
+checks | 0
+act look(m)
+    checks |= checks + 1
+    return false
+xx
+transition erase as mortal where look(self)
+<>Mob |
+    name: ..
+    uses mortal
+    uses mortal, mortal
+xx
+a <> Mob | name: "a"
+tick()
+say(checks)

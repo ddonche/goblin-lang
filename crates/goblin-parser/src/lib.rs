@@ -385,13 +385,19 @@ fn marker_name(t: &ast::TransitionDef) -> Option<&str> {
     t.target_class.as_deref().and_then(|c| c.strip_prefix("#uses "))
 }
 
-/// Puts each interface's transitions where the `uses` marker stands, and
-/// drops markers of names that are not interfaces (aspects, missing ones).
+/// Puts each interface's transitions where its first `uses` marker
+/// stands, and drops markers of names that are not interfaces (aspects, missing ones).
 fn fill_transitions(ts: &mut Vec<ast::TransitionDef>, ifaces: &[Interface]) {
     let mut out = Vec::with_capacity(ts.len());
+    let mut seen: Vec<String> = Vec::new();
     for t in std::mem::take(ts) {
         match marker_name(&t) {
-            Some(n) => if let Some(i) = ifaces.iter().find(|i| i.name == n) { out.extend(i.transitions.iter().cloned()); },
+            // An interface named twice in one place gives its transitions once.
+            Some(n) if seen.iter().any(|m| m == n) => {}
+            Some(n) => {
+                seen.push(n.to_string());
+                if let Some(i) = ifaces.iter().find(|i| i.name == n) { out.extend(i.transitions.iter().cloned()); }
+            }
             None => out.push(t),
         }
     }
