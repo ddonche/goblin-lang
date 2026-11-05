@@ -1,0 +1,35 @@
+/// known-gap: interp has no aspects; the interpreter is being retired
+/// `aspect Name |` ... `xx` names a set of fields; a class takes them with
+/// `uses Name`. A field written without a value starts at 0.0 when it is a
+/// `~` trait and at nil otherwise. A value in the aspect is the starting
+/// value; a line the class writes wins over it, and an object's own value
+/// wins over both. The aspect may come after the classes that use it. An
+/// object that mutates keeps its values; its new class has the fields of
+/// the aspects it uses.
+<>Tribe |
+    uses Political, Wealth
+    ~tradition: .7
+    transition mutate where @gold >= 10
+        into: Village
+    xx
+xx
+<>Village |
+    uses Political, Wealth
+    granary: 0
+xx
+aspect Political |
+    ~aggression
+    ~stability: .5
+    ~tradition: .2
+xx
+aspect Wealth |
+    gold: 1
+    army
+xx
+t <> Tribe | aggression: .25
+v <> Village | gold: 3
+say("{t >> aggression} {t >> stability} {t >> tradition} {t >> gold} {t >> army}")
+say("{v >> aggression} {v >> stability} {v >> tradition} {v >> gold} {v >> granary}")
+t >> gold |= 12
+tick()
+say(:len(:objects(Village)))

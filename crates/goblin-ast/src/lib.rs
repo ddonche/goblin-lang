@@ -374,6 +374,10 @@ pub struct ClassDecl {
     /// `tick()` block runs that phase. The members above are the class's
     /// unphased ones, run when the tick ends.
     pub phases: Vec<ClassPhase>,
+    /// `uses Name` lines naming what the class takes but does not write.
+    /// The parser fills in an aspect's fields and drops its name; what is
+    /// left names something else.
+    pub uses: Vec<String>,
     pub span: Span,
 }
 

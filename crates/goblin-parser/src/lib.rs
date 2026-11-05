@@ -337,6 +337,12 @@ pub struct Parser<'t> {
     /// Members read before their class was declared (member, class): filled
     /// in once the file is read; only top-level ones can be.
     overlay_members_waiting: Vec<(String, String)>,
+    /// The aspects this file declares (`aspect Political |` ... `xx`):
+    /// named sets of fields that classes take with `uses Political`.
+    aspects: Vec<(String, Vec<ast::FieldDecl>)>,
+    /// Classes that name an aspect not declared above them (class, aspect):
+    /// filled in once the file is read; only top-level ones can be.
+    uses_waiting: Vec<(String, String)>,
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -487,6 +493,47 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
     Ok(())
 }
 
+/// Gives a class the fields of the aspects it `uses` that are in
+/// `aspects`, and drops their names from `uses`; returns the names it did
+/// not find. A line the class writes itself wins over the aspect's, and
+/// stays where the class wrote it. The aspects' fields come first, in the
+/// order the class names them, then the class's own. Two aspects may name
+/// the same field only if at most one of them gives it a starting value
+/// (or both give the same one).
+/// A clash (P1343) comes back as its message and help.
+fn fill_from_aspects(class: &mut ast::ClassDecl, aspects: &[(String, Vec<ast::FieldDecl>)]) -> Result<Vec<String>, (String, String)> {
+    let mut missing = Vec::new();
+    let mut taken: Vec<(ast::FieldDecl, String)> = Vec::new();
+    for name in std::mem::take(&mut class.uses) {
+        let Some((_, fields)) = aspects.iter().find(|(n, _)| *n == name) else {
+            missing.push(name.clone());
+            class.uses.push(name);
+            continue;
+        };
+        for f in fields {
+            if class.fields.iter().any(|g| g.name == f.name) { continue; }
+            match taken.iter_mut().find(|(g, _)| g.name == f.name) {
+                None => taken.push((f.clone(), name.clone())),
+                Some((g, from)) => {
+                    let given = |d: &Option<ast::Expr>| d.as_ref().is_some_and(|e| !matches!(e, ast::Expr::Nil(_)));
+                    if given(&f.default) && given(&g.default) && format!("{:?}", f.default) != format!("{:?}", g.default) {
+                        return Err((
+                            format!("Aspects {from} and {name} both give `{}` a starting value in class {}", f.name, class.name),
+                            format!("Give `{}` its starting value in one aspect, or in the class itself.", f.name)));
+                    }
+                    if !given(&g.default) { *g = f.clone(); *from = name.clone(); }
+                }
+            }
+        }
+    }
+    if !taken.is_empty() {
+        let mut fields: Vec<ast::FieldDecl> = taken.into_iter().map(|(f, _)| f).collect();
+        fields.append(&mut class.fields);
+        class.fields = fields;
+    }
+    Ok(missing)
+}
+
 fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
     let writes = |m: &ast::OverlayDefStmt, k: &str| m.written.iter().any(|w| w == k);
     if !writes(m, "hosts") { m.host_types = c.host_types.clone(); }
@@ -573,6 +620,8 @@ impl<'t> Parser<'t> {
             self_scope: 0,
             overlay_classes: Vec::new(),
             overlay_members_waiting: Vec::new(),
+            aspects: Vec::new(),
+            uses_waiting: Vec::new(),
         }
     } 
 
@@ -4455,7 +4504,24 @@ impl<'t> Parser<'t> {
 
             // Check if this is a relation keyword first (BEFORE eating ident)
             let first_ident = self.peek_ident();
-            
+
+            // `uses Political, Wealth`: aspects whose fields the class takes.
+            // Each name rides as a `#uses` entry until the class is lowered.
+            if first_ident == Some("uses")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            {
+                self.i += 1;
+                loop {
+                    let Some(n) = self.eat_ident() else {
+                        return Err(s_help_site!("P1340", "Expected a name after 'uses'", "Write: uses Political"));
+                    };
+                    fields.push(("#uses".to_string(), PExpr::Str(n), false, false, false, None));
+                    if !self.eat_op(",") { break; }
+                    self.skip_layout_inline();
+                }
+                continue;
+            }
+
             if first_ident == Some("with") || first_ident == Some("of") || first_ident == Some("re") {
                 // This is a relation declaration, not a regular field
                 let rel_keyword = self.eat_ident().unwrap();
@@ -6683,6 +6749,28 @@ impl<'t> Parser<'t> {
             };
             fill_from_overlay_class(def, c);
         }
+        for item in items.iter_mut() {
+            let ast::Stmt::Class(class) = item else { continue };
+            if !self.uses_waiting.iter().any(|(c, _)| *c == class.name) { continue };
+            let missing = fill_from_aspects(class, &self.aspects).map_err(|(m, h)| derr_help("P1343", &m, &h, class.span.clone()))?;
+            if let Some(a) = missing.first() {
+                return Err(derr_help("P1340", &format!("No aspect named {a} (class {} uses it)", class.name),
+                    &format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"), class.span.clone()));
+            }
+            let name = class.name.clone();
+            self.uses_waiting.retain(|(c, _)| *c != name);
+        }
+        // A class inside an action or block needs its aspects declared above it.
+        if let Some((class, a)) = self.uses_waiting.first() {
+            let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+            let known = self.aspects.iter().any(|(n, _)| n == a);
+            let (msg, help) = if known {
+                (format!("Class {class} is inside a block, above its aspect {a}"), format!("Declare aspect {a} above class {class}."))
+            } else {
+                (format!("No aspect named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
+            };
+            return Err(derr_help("P1340", &msg, &help, sp));
+        }
         // A member inside an action or block needs its class declared above it.
         if let Some((m, class)) = self.overlay_members_waiting.first() {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
@@ -7132,6 +7220,12 @@ impl<'t> Parser<'t> {
         }
         if self.peek_ident() == Some("overlay") && !bang_call {
             return self.parse_overlay_stmt();
+        }
+        // `aspect Political |` ... `xx`: a named set of fields for classes.
+        if self.peek_ident() == Some("aspect")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+        {
+            return self.parse_aspect();
         }
 
         // -------- detach overlay from host --------
@@ -7611,6 +7705,7 @@ impl<'t> Parser<'t> {
             order_by: None,
             decide: None,
             phases: Vec::new(),
+            uses: Vec::new(),
             span: sp.clone(),
         }));
 
@@ -7762,6 +7857,13 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
+                // `uses` names ride as `#uses` entries among the fields.
+                let mut uses: Vec<String> = Vec::new();
+                let fields: Vec<_> = fields.into_iter().filter(|f| {
+                    if f.0 != "#uses" { return true; }
+                    if let PExpr::Str(n) = &f.1 { if !uses.contains(n) { uses.push(n.clone()); } }
+                    false
+                }).collect();
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -7850,7 +7952,7 @@ impl<'t> Parser<'t> {
                     }
                 }).collect();
 
-                Ok(ast::Stmt::Class(ast::ClassDecl {
+                let mut class = ast::ClassDecl {
                     name,
                     fields: fields_ast,
                     actions: actions_ast,
@@ -7865,8 +7967,14 @@ impl<'t> Parser<'t> {
                     order_by,
                     decide,
                     phases: phases_ast,
+                    uses,
                     span: sp,
-                }))
+                };
+                // Aspects declared above are filled in now; the others once
+                // the file is read.
+                let waiting = fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
+                for a in waiting { self.uses_waiting.push((class.name.clone(), a)); }
+                Ok(ast::Stmt::Class(class))
             }
             _ => Err(s_help_site!(
                 "P0905",
@@ -7947,6 +8055,79 @@ impl<'t> Parser<'t> {
     /// `<^>Mood |` ... `xx`: an overlay class. Its lines are an overlay's
     /// lines; each member (`overlay calm <^> Mood`) gets the ones it doesn't
     /// write itself, and its `dup:` says what a second member does.
+    /// `aspect Political |` then one field a line (`~aggression`,
+    /// `~stability: .5`, `gold: 100`, `army`), closed with `xx`. A field
+    /// written without a value starts at 0.0 when it is a `~` trait and at
+    /// nil otherwise. Classes take the fields with `uses Political`.
+    fn parse_aspect(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        let _ = self.eat_ident(); // `aspect`
+        let name = match self.eat_ident() {
+            Some(n) if n.starts_with(|ch: char| ch.is_ascii_uppercase()) => n,
+            _ => return Err(s_help_site!("P1341", "An aspect's name starts with a capital letter", "Write: aspect Political |")),
+        };
+        self.skip_layout_inline();
+        if !self.eat_op("|") || !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            return Err(s_help_site!("P1341", &format!("Expected '|' and then the aspect's fields under aspect {name}"),
+                &format!("Write:\n  aspect {name} |\n      ~aggression\n      gold: 100\n  xx")));
+        }
+        if self.aspects.iter().any(|(n, _)| *n == name) {
+            return Err(s_help_site!("P1342", &format!("The aspect {name} is declared twice"), "Keep one declaration per aspect."));
+        }
+        let mut fields: Vec<ast::FieldDecl> = Vec::new();
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P0909", &format!("I reached the end of the file, but the aspect '{name}' is still open (missing 'xx')"),
+                    "Close the aspect with 'xx' (crossbones) on its own line"));
+            }
+            if self.peek_block_close() {
+                let at = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if at != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {col}, found column {at}"),
+                        "Align the closer with its header: put 'xx' directly under 'aspect'."));
+                }
+                self.expect_block_close("aspect")?;
+                break;
+            }
+            let line_i = self.i;
+            let raw = self.eat_op("~");
+            let Some(fname) = self.eat_ident() else {
+                return Err(s_help_site!("P1341", &format!("Expected a field in aspect {name}"),
+                    "An aspect holds only fields, one a line: ~aggression or gold: 100"));
+            };
+            if fields.iter().any(|f| f.name == fname) {
+                return Err(s_help_site!("P1342", &format!("Aspect {name} names `{fname}` twice"), "Write each field once."));
+            }
+            let default = if self.eat_op(":") {
+                self.skip_layout_inline();
+                let e = self.parse_assign()?;
+                if raw && not_a_number(&e) { return Err(tilde_error(&fname)); }
+                e
+            } else if raw {
+                PExpr::Float("0.0".into())
+            } else {
+                PExpr::Nil
+            };
+            if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline) | Some(TokenKind::Dedent) | Some(TokenKind::Eof) | None) {
+                return Err(s_help_site!("P1341", &format!("Expected one field a line in aspect {name}"),
+                    "Write: ~aggression  or  gold: 100"));
+            }
+            let sp = Self::span_from_tokens(self.toks, line_i, self.i.saturating_sub(1));
+            fields.push(ast::FieldDecl {
+                name: fname, private: false, nullable: false, readonly: false, raw, relation: None,
+                default: Some(self.lower_expr(default)), span: sp,
+            });
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        self.aspects.push((name, fields));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+    }
+
     fn parse_overlay_class(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let col = self.toks[start_i].span.col_start;
