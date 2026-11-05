@@ -493,6 +493,20 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
     Ok(())
 }
 
+/// An expression's shape with its source places left out, so the same
+/// value written on two lines compares equal.
+fn without_spans(e: &Option<ast::Expr>) -> String {
+    let text = format!("{e:?}");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("Span {") {
+        out.push_str(&rest[..at]);
+        rest = rest[at..].find('}').map_or("", |end| &rest[at + end + 1..]);
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Gives a class the fields of the aspects it `uses` that are in
 /// `aspects`, and drops their names from `uses`; returns the names it did
 /// not find. A line the class writes itself wins over the aspect's, and
@@ -516,7 +530,7 @@ fn fill_from_aspects(class: &mut ast::ClassDecl, aspects: &[(String, Vec<ast::Fi
                 None => taken.push((f.clone(), name.clone())),
                 Some((g, from)) => {
                     let given = |d: &Option<ast::Expr>| d.as_ref().is_some_and(|e| !matches!(e, ast::Expr::Nil(_)));
-                    if given(&f.default) && given(&g.default) && format!("{:?}", f.default) != format!("{:?}", g.default) {
+                    if given(&f.default) && given(&g.default) && without_spans(&f.default) != without_spans(&g.default) {
                         return Err((
                             format!("Aspects {from} and {name} both give `{}` a starting value in class {}", f.name, class.name),
                             format!("Give `{}` its starting value in one aspect, or in the class itself.", f.name)));
