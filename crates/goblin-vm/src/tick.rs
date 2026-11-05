@@ -1021,8 +1021,8 @@ impl Targets {
             self.seen = Some(now);
         }
         self.by_class.entry(class.to_string()).or_insert_with(|| std::rc::Rc::new(
-            store.of_class_ids(class)
-                .filter_map(|u| store.get_index_of(u).map(|i| (Value::Ref(u.clone()), i)))
+            vm.session.places_of_class(class).into_iter()
+                .filter_map(|i| store.get_index(i).map(|(u, _)| (Value::Ref(u.clone()), i)))
                 .collect()
         )).clone()
     }

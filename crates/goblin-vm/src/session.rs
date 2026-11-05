@@ -403,6 +403,25 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether an object of `class` is one of `wanted`: that class, or,
+    /// for `uses diplomacy`, any class that uses the interface.
+    pub fn class_matches(&self, wanted: &str, class: &str) -> bool {
+        match wanted.strip_prefix("uses ") {
+            Some(iface) => self.classes.get(class).is_some_and(|c| c.uses.iter().any(|u| u == iface)),
+            None => wanted == class,
+        }
+    }
+
+    /// Where the objects of `wanted` (a class, or `uses diplomacy`) sit in
+    /// the store, in creation order.
+    pub fn places_of_class(&self, wanted: &str) -> Vec<usize> {
+        let store = &self.object_store;
+        if wanted.starts_with("uses ") {
+            return store.places_of(|c| self.class_matches(wanted, c));
+        }
+        store.of_class_ids(wanted).filter_map(|u| store.get_index_of(u)).collect()
+    }
+
     /// Notes that the object `uuid` changed, when a DES action is running.
     #[inline]
     pub(crate) fn touch(&mut self, uuid: &(impl crate::value::IdKey + ?Sized)) {

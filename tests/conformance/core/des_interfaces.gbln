@@ -1,0 +1,53 @@
+/// known-gap: interp has no interfaces; the interpreter is being retired
+/// An interface is a named group of behavior. `act x(..) as name`,
+/// `decision d as name` and `judge as name` belong to it, written once; a
+/// class takes them with `uses name`. Where the class writes `uses` says
+/// when its decisions and judge run: inside `phase: between` in that
+/// phase, at the top of the class when the tick ends. `targets: uses name`
+/// and `:objects(uses name)` cover every class that uses it, across
+/// classes that share nothing else.
+aspect Polity |
+    name: ..
+    gold: 0
+    ~openness: .5
+xx
+act trade(p, t) as diplomacy
+    p >> gold |= p >> gold + 2
+    t >> gold |= t >> gold + 1
+    say("{p >> name} trades with {t >> name}")
+xx
+act rest(p) as diplomacy
+    say("{p >> name} rests")
+xx
+decision partner as diplomacy
+    targets: uses diplomacy where (target >> name) != @name
+    score => target >> openness
+xx
+judge as diplomacy
+    partner and (partner >> score) >= .5: trade(self, partner >> target)
+    else: rest(self)
+xx
+<>Tribe |
+    uses Polity
+    phase: between
+        uses diplomacy
+    xx
+xx
+<>Kingdom |
+    uses Polity
+    uses diplomacy
+xx
+<>Rock |
+    name: "rock"
+    ~openness: 1
+xx
+a <> Tribe | name: "tribe", openness: .9
+b <> Kingdom | name: "kingdom", openness: .2
+r <> Rock | name: "rock"
+say(:len(:objects(uses diplomacy)))
+tick()
+    between
+xx
+say("{a >> gold} {b >> gold}")
+tick()
+say("{a >> gold} {b >> gold}")

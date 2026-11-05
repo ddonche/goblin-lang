@@ -343,6 +343,22 @@ pub struct Parser<'t> {
     /// Classes that name an aspect not declared above them (class, aspect):
     /// filled in once the file is read; only top-level ones can be.
     uses_waiting: Vec<(String, String)>,
+    /// Interfaces: the actions (`act tax(x) as taxation`), decisions
+    /// (`decision trade as diplomacy`) and judges (`judge as diplomacy`)
+    /// that belong to each, by interface name.
+    interfaces: Vec<Interface>,
+    /// The `as` names a `judge as diplomacy` header gave, for its caller.
+    judge_as: Vec<String>,
+}
+
+/// An interface: a named group of behavior that classes `uses`.
+#[derive(Debug, Clone, Default)]
+struct Interface {
+    name: String,
+    acts: Vec<String>,
+    decisions: Vec<ast::NamedDecision>,
+    /// The judge over its decisions, and whether it is a `judge_all`.
+    judge: Option<ast::Stmt>,
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -534,6 +550,59 @@ fn fill_from_aspects(class: &mut ast::ClassDecl, aspects: &[(String, Vec<ast::Fi
     Ok(missing)
 }
 
+/// Gives a class the decisions and judge of each interface it `uses`, in
+/// the place it names it: at the top of the class they run when the tick
+/// ends, in a `phase:` block in that phase. Actions need nothing: an
+/// interface's actions are free actions the class's code can call. Returns
+/// the names that are neither an interface nor an aspect. An error comes
+/// back as its code, message and help.
+fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspects: &[(String, Vec<ast::FieldDecl>)]) -> Result<Vec<String>, (&'static str, String, String)> {
+    let mut missing = Vec::new();
+    let span = class.span.clone();
+    let judge_action = |name: &str, stmt: &ast::Stmt| ast::ActionDecl {
+        name: name.to_string(), params: Vec::new(), body: ast::ActionBody::Block(vec![stmt.clone()]), span: span.clone(), ret: None,
+    };
+    let add = |iface: &Interface, decisions: &mut Vec<ast::NamedDecision>, decide: &mut Option<String>, actions: &mut Vec<ast::ActionDecl>, judge_name: String, cname: &str| -> Result<(), (&'static str, String, String)> {
+        for d in &iface.decisions {
+            if decisions.iter().any(|x| x.name == d.name) {
+                return Err(("P1345", format!("Class {cname} gets the decision '{}' twice (interface {})", d.name, iface.name),
+                    "Give each decision its own name, or use the interface once.".to_string()));
+            }
+            decisions.push(d.clone());
+        }
+        if let Some(j) = &iface.judge {
+            if decide.is_some() {
+                return Err(("P1346", format!("Class {cname} already has a judge where it uses {}", iface.name),
+                    format!("A class has one judge where its decisions run: drop its own judge, or the judge of {}.", iface.name)));
+            }
+            actions.push(judge_action(&judge_name, j));
+            *decide = Some(judge_name);
+        }
+        Ok(())
+    };
+    let cname = class.name.clone();
+    for name in class.uses.clone() {
+        let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
+        add(iface, &mut class.decisions, &mut class.decide, &mut class.actions, "judge #decisions".to_string(), &cname)?;
+        if class.decision.is_none() { class.decision = class.decisions.first().map(|d| d.decision.clone()); }
+    }
+    for ph in class.phases.iter_mut() {
+        for name in ph.uses.clone() {
+            if aspects.iter().any(|(n, _)| *n == name) {
+                return Err(("P1340", format!("Aspect {name} is used inside phase {} of class {cname}", ph.name),
+                    format!("An aspect gives fields: write `uses {name}` at the top of the class.")));
+            }
+            let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
+            add(iface, &mut ph.decisions, &mut ph.decide, &mut class.actions, format!("judge #decisions @{}", ph.name), &cname)?;
+        }
+    }
+    // The class keeps every interface it uses, for `targets: uses x`.
+    for ph in &class.phases {
+        for n in &ph.uses { if !class.uses.contains(n) && !missing.contains(n) { class.uses.push(n.clone()); } }
+    }
+    Ok(missing)
+}
+
 fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
     let writes = |m: &ast::OverlayDefStmt, k: &str| m.written.iter().any(|w| w == k);
     if !writes(m, "hosts") { m.host_types = c.host_types.clone(); }
@@ -622,6 +691,8 @@ impl<'t> Parser<'t> {
             overlay_members_waiting: Vec::new(),
             aspects: Vec::new(),
             uses_waiting: Vec::new(),
+            interfaces: Vec::new(),
+            judge_as: Vec::new(),
         }
     } 
 
@@ -1421,9 +1492,16 @@ impl<'t> Parser<'t> {
                 "targets" => {
                     let data = self.eat_op(":");
                     self.skip_layout_inline();
-                    let Some(cls) = self.eat_ident() else {
+                    let Some(mut cls) = self.eat_ident() else {
                         return Err(s_help_site!("P1403", "Expected a class name after 'targets:'", "Write: targets: Noble where (target >> gold) > 60"));
                     };
+                    // `targets: uses diplomacy`: the objects of every class that uses it.
+                    if cls == "uses" {
+                        let Some(iface) = self.eat_ident() else {
+                            return Err(s_help_site!("P1344", "Expected an interface after 'targets: uses'", "Write: targets: uses diplomacy where (target >> gold) > 60"));
+                        };
+                        cls = format!("uses {iface}");
+                    }
                     target_class = Some(cls);
                     self.skip_layout_inline();
                     if self.peek_ident() == Some("where") {
@@ -2919,6 +2997,14 @@ impl<'t> Parser<'t> {
                     "Expected ')' to close the parameter list",
                     "Add the closing ')': action Save(username, level)",
                 ));
+            }
+        }
+
+        // `as taxation, governance`: the interfaces the action belongs to.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            for iface in self.eat_name_list("P1344", "Write: act calculate_tax(target) as taxation")? {
+                self.interface_mut(&iface).acts.push(name.clone());
             }
         }
 
@@ -4723,7 +4809,7 @@ impl<'t> Parser<'t> {
             if in_phase.is_some() {
                 if let Some(tok) = self.peek() {
                     let ok = matches!(tok.kind, TokenKind::Ident)
-                        && (matches!(tok.value.as_deref(), Some("judge") | Some("judge_all") | Some("every") | Some("transition"))
+                        && (matches!(tok.value.as_deref(), Some("judge") | Some("judge_all") | Some("every") | Some("transition") | Some("uses"))
                             || (tok.value.as_deref() == Some("decision") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)))
                             || (tok.value.as_deref() == Some("one") && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("of"))));
                     if !ok {
@@ -4731,6 +4817,17 @@ impl<'t> Parser<'t> {
                             "A phase holds decision blocks, a judge, 'every N ticks' blocks, transitions and 'one of'. Put fields and actions in the class itself."));
                     }
                 }
+            }
+
+            // `uses diplomacy` among the class's members, or in a phase: the
+            // interface's decisions and judge run there.
+            if self.peek_ident() == Some("uses") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+                self.i += 1;
+                let key = match &in_phase { Some((p, _, _)) => format!("#uses@{p}"), None => "#uses".to_string() };
+                for n in self.eat_name_list("P1340", "Write: uses diplomacy")? {
+                    fields.push((key.clone(), PExpr::Str(n), false, false, false, None));
+                }
+                continue;
             }
 
             // Allow inline closer on the same line as header (optional)
@@ -6752,10 +6849,11 @@ impl<'t> Parser<'t> {
         for item in items.iter_mut() {
             let ast::Stmt::Class(class) = item else { continue };
             if !self.uses_waiting.iter().any(|(c, _)| *c == class.name) { continue };
-            let missing = fill_from_aspects(class, &self.aspects).map_err(|(m, h)| derr_help("P1343", &m, &h, class.span.clone()))?;
+            fill_from_aspects(class, &self.aspects).map_err(|(m, h)| derr_help("P1343", &m, &h, class.span.clone()))?;
+            let missing = fill_from_interfaces(class, &self.interfaces, &self.aspects).map_err(|(c, m, h)| derr_help(c, &m, &h, class.span.clone()))?;
             if let Some(a) = missing.first() {
-                return Err(derr_help("P1340", &format!("No aspect named {a} (class {} uses it)", class.name),
-                    &format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"), class.span.clone()));
+                return Err(derr_help("P1340", &format!("No aspect or interface named {a} (class {} uses it)", class.name),
+                    &format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx\nor give it behavior:\n  act tax(x) as {a}"), class.span.clone()));
             }
             let name = class.name.clone();
             self.uses_waiting.retain(|(c, _)| *c != name);
@@ -6763,11 +6861,11 @@ impl<'t> Parser<'t> {
         // A class inside an action or block needs its aspects declared above it.
         if let Some((class, a)) = self.uses_waiting.first() {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
-            let known = self.aspects.iter().any(|(n, _)| n == a);
+            let known = self.aspects.iter().any(|(n, _)| n == a) || self.interfaces.iter().any(|i| i.name == *a);
             let (msg, help) = if known {
-                (format!("Class {class} is inside a block, above its aspect {a}"), format!("Declare aspect {a} above class {class}."))
+                (format!("Class {class} is inside a block and uses {a}"), format!("Declare class {class} at the top level of the file."))
             } else {
-                (format!("No aspect named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
+                (format!("No aspect or interface named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
             };
             return Err(derr_help("P1340", &msg, &help, sp));
         }
@@ -7167,6 +7265,12 @@ impl<'t> Parser<'t> {
             return self.parse_provoke_stmt();
         }
 
+        if matches!(self.peek_ident(), Some("judge") | Some("judge_all"))
+            && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_judge();
+        }
+
         if self.peek_ident() == Some("judge") {
             return self.parse_judge_stmt();
         }
@@ -7220,6 +7324,19 @@ impl<'t> Parser<'t> {
         }
         if self.peek_ident() == Some("overlay") && !bang_call {
             return self.parse_overlay_stmt();
+        }
+        // `decision trade as diplomacy` ... `xx` and `judge as diplomacy`
+        // ... `xx`: behavior that belongs to an interface.
+        if self.peek_ident() == Some("decision")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_decision();
+        }
+        if matches!(self.peek_ident(), Some("judge") | Some("judge_all"))
+            && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_judge();
         }
         // `aspect Political |` ... `xx`: a named set of fields for classes.
         if self.peek_ident() == Some("aspect")
@@ -7859,9 +7976,16 @@ impl<'t> Parser<'t> {
                 }
                 // `uses` names ride as `#uses` entries among the fields.
                 let mut uses: Vec<String> = Vec::new();
+                let mut phase_uses: Vec<(String, String)> = Vec::new();
                 let fields: Vec<_> = fields.into_iter().filter(|f| {
-                    if f.0 != "#uses" { return true; }
-                    if let PExpr::Str(n) = &f.1 { if !uses.contains(n) { uses.push(n.clone()); } }
+                    let PExpr::Str(n) = &f.1 else { return true };
+                    if f.0 == "#uses" {
+                        if !uses.contains(n) { uses.push(n.clone()); }
+                    } else if let Some(p) = f.0.strip_prefix("#uses@") {
+                        if !phase_uses.iter().any(|(q, m)| q == p && m == n) { phase_uses.push((p.to_string(), n.clone())); }
+                    } else {
+                        return true;
+                    }
                     false
                 }).collect();
                 // Fields
@@ -7925,6 +8049,7 @@ impl<'t> Parser<'t> {
                     }
                 }
                 let phases_ast: Vec<ast::ClassPhase> = phases.into_iter().map(|ph| ast::ClassPhase {
+                    uses: phase_uses.iter().filter(|(p, _)| *p == ph.name).map(|(_, n)| n.clone()).collect(),
                     name: ph.name,
                     transitions: ph.transitions,
                     every: ph.every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
@@ -7970,10 +8095,9 @@ impl<'t> Parser<'t> {
                     uses,
                     span: sp,
                 };
-                // Aspects declared above are filled in now; the others once
-                // the file is read.
-                let waiting = fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
-                for a in waiting { self.uses_waiting.push((class.name.clone(), a)); }
+                // What it uses is filled in once the file is read.
+                for (_, n) in &phase_uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                for n in &class.uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
                 Ok(ast::Stmt::Class(class))
             }
             _ => Err(s_help_site!(
@@ -8055,6 +8179,72 @@ impl<'t> Parser<'t> {
     /// `<^>Mood |` ... `xx`: an overlay class. Its lines are an overlay's
     /// lines; each member (`overlay calm <^> Mood`) gets the ones it doesn't
     /// write itself, and its `dup:` says what a second member does.
+    /// `a, b, c`: one or more names.
+    fn eat_name_list(&mut self, code: &'static str, help: &str) -> Result<Vec<String>, String> {
+        let mut out = Vec::new();
+        loop {
+            let Some(n) = self.eat_ident() else {
+                return Err(s_help_site!(code, "Expected a name after 'as'", help));
+            };
+            out.push(n);
+            if !self.eat_op(",") { break; }
+            self.skip_layout_inline();
+        }
+        Ok(out)
+    }
+
+    fn interface_mut(&mut self, name: &str) -> &mut Interface {
+        if let Some(at) = self.interfaces.iter().position(|i| i.name == name) { return &mut self.interfaces[at]; }
+        self.interfaces.push(Interface { name: name.to_string(), ..Default::default() });
+        self.interfaces.last_mut().unwrap()
+    }
+
+    /// `decision trade as diplomacy` ... `xx`: a decision written once for
+    /// every class that uses the interface.
+    fn parse_interface_decision(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        self.i += 1; // `decision`
+        let name = self.eat_ident().unwrap_or_default();
+        self.i += 1; // `as`
+        let ifaces = self.eat_name_list("P1344", "Write: decision trade as diplomacy")?;
+        let d = self.with_self(|p| p.parse_decision_block(col, &name))?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let formula = self.lower_expr(*d.formula);
+        let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+        let filter = d.filter.map(|f| self.lower_expr(*f));
+        let nd = ast::NamedDecision {
+            name: name.clone(),
+            decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
+            judge: None,
+        };
+        for iface in ifaces {
+            let i = self.interface_mut(&iface);
+            if i.decisions.iter().any(|x| x.name == name) {
+                return Err(s_help_site!("P1345", &format!("Interface {iface} already has a decision named '{name}'"), "Give each decision its own name."));
+            }
+            i.decisions.push(nd.clone());
+        }
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
+    /// `judge as diplomacy` ... `xx`: the judge over an interface's
+    /// decisions, for every class that uses it.
+    fn parse_interface_judge(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let all = self.peek_ident() == Some("judge_all");
+        let stmt = self.with_self(|p| if all { p.parse_judge_all_stmt() } else { p.parse_judge_stmt() })?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        for iface in std::mem::take(&mut self.judge_as) {
+            let i = self.interface_mut(&iface);
+            if i.judge.is_some() {
+                return Err(s_help_site!("P1345", &format!("Interface {iface} already has a judge"), "Write one judge for the interface."));
+            }
+            i.judge = Some(stmt.clone());
+        }
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
     /// `aspect Political |` then one field a line (`~aggression`,
     /// `~stability: .5`, `gold: 100`, `army`), closed with `xx`. A field
     /// written without a value starts at 0.0 when it is a `~` trait and at
@@ -10672,6 +10862,17 @@ impl<'t> Parser<'t> {
                 let name = tok0.value.clone().unwrap_or_default();
                 self.i += 1; // eat the ident
 
+                // `uses taxation` (as in `:objects(uses taxation)`): every
+                // class that uses the interface, named as `targets:` names it.
+                if name == "uses" {
+                    if let Some(t) = self.peek().cloned() {
+                        if matches!(t.kind, TokenKind::Ident) && t.span.line_start == tok0.span.line_start {
+                            self.i += 1;
+                            return Ok(PExpr::Str(format!("uses {}", t.value.unwrap_or_default())));
+                        }
+                    }
+                }
+
                 // DEPRECATE old `Type: ...`
                 if self.peek_op(":") && self.suspend_colon_call == 0 && !self.in_object_construction {
                     return Err(s_help_site!(
@@ -11589,6 +11790,11 @@ impl<'t> Parser<'t> {
 
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge"));
         let _ = self.eat_ident();
+        // `judge as diplomacy`: an interface's judge; the caller files it.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            self.judge_as = self.eat_name_list("P1344", "Write: judge as diplomacy")?;
+        }
 
         self.suspend_colon_call += 1;
 
@@ -11740,6 +11946,11 @@ impl<'t> Parser<'t> {
 
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge_all"));
         let _ = self.eat_ident();
+        // `judge_all as diplomacy`: an interface's judge; the caller files it.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            self.judge_as = self.eat_name_list("P1344", "Write: judge as diplomacy")?;
+        }
 
         self.suspend_colon_call += 1;
 

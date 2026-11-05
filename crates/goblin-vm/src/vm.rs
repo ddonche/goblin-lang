@@ -6047,6 +6047,8 @@ impl Vm {
     fn vm_objects_query(&mut self, class: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
         let ids: Option<Vec<usize>> = match class {
             None => None,
+            // `:objects(uses taxation)`: every class that uses it.
+            Some(c) if c.starts_with("uses ") => Some(self.session.places_of_class(c)),
             Some(c) => {
                 if !self.session.classes.contains_key(c) {
                     return Err(GoblinError::Runtime(format!(
@@ -6168,7 +6170,7 @@ impl Vm {
     pub(crate) fn link_targets_in(&self, from: &str, name: &str, class: &str) -> Vec<usize> {
         let store = &self.session.object_store;
         let mut at: Vec<usize> = self.session.link_offsets.targets(from, name).iter()
-            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if &*o.class_name == class))
+            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if self.session.class_matches(class, &o.class_name)))
             .filter_map(|u| store.get_index_of(u.as_str()))
             .collect();
         at.sort_unstable();

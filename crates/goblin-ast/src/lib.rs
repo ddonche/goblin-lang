@@ -391,6 +391,8 @@ pub struct ClassPhase {
     pub decisions: Vec<NamedDecision>,
     pub one_of: Vec<Vec<String>>,
     pub decide: Option<String>,
+    /// The interfaces whose decisions and judge run in this phase.
+    pub uses: Vec<String>,
 }
 
 /// One of a class's decisions, with the judge that acts on its score.
