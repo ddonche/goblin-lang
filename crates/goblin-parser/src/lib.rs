@@ -589,6 +589,15 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
             decisions.push(d.clone());
         }
         if let Some(j) = &iface.judge {
+            // Several interfaces with a judge in one place: their judges run
+            // one after the other, in the order the class names them, each
+            // over its own decisions.
+            if decide.as_deref() == Some(judge_name.as_str()) {
+                if let Some(ast::ActionDecl { body: ast::ActionBody::Block(b), .. }) = actions.iter_mut().find(|a| a.name == judge_name) {
+                    b.push(j.clone());
+                    return Ok(());
+                }
+            }
             if decide.is_some() {
                 return Err(("P1346", format!("Class {cname} already has a judge where it uses {}", iface.name),
                     format!("A class has one judge where its decisions run: drop its own judge, or the judge of {}.", iface.name)));
@@ -601,7 +610,7 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
     let cname = class.name.clone();
     for name in class.uses.clone() {
         let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
-        add(iface, &mut class.decisions, &mut class.decide, &mut class.actions, "judge #decisions".to_string(), &cname)?;
+        add(iface, &mut class.decisions, &mut class.decide, &mut class.actions, "judge #interfaces".to_string(), &cname)?;
         if class.decision.is_none() { class.decision = class.decisions.first().map(|d| d.decision.clone()); }
     }
     for ph in class.phases.iter_mut() {
@@ -611,7 +620,7 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
                     format!("An aspect gives fields: write `uses {name}` at the top of the class.")));
             }
             let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
-            add(iface, &mut ph.decisions, &mut ph.decide, &mut class.actions, format!("judge #decisions @{}", ph.name), &cname)?;
+            add(iface, &mut ph.decisions, &mut ph.decide, &mut class.actions, format!("judge #interfaces @{}", ph.name), &cname)?;
         }
     }
     // The class keeps every interface it uses, for `targets: uses x`.
