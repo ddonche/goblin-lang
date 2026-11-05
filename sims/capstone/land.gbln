@@ -1,6 +1,9 @@
 /// A province: a piece of the map that never moves. People grow toward
-/// what the land can feed and move to bordering land with more room.
+/// what the land can feed and move to bordering land with more room. Its
+/// settlement (hamlet up to great city) grows and shrinks with its people,
+/// its buildings and its trade. `owner` is the polity that holds it.
 <>Land |
+    name: ..
     x: 0
     y: 0
     terrain: "plain"
@@ -14,15 +17,28 @@
     /// The share of people who leave in a year, times how much more room
     /// the new land has.
     leaving: 0.05
-    every 1 tick
-        @people |= @people + @growth * @people * (1.0 - @people / @food)
-    xx
-    decision settle
-        targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food
-        score => room(target) - room(self)
-    xx
-    judge
-        settle and (settle >> score) > 0: self.move_people(settle >> target, settle >> score)
+    owner: nil
+    settlement: "none"
+    /// The holder's trade, 0 to 1 (set each year from its trade links).
+    trade: 0.0
+    granary: 0
+    walls: 0
+    roads: 0
+    temple: 0
+    harbour: 0
+    library: 0
+    phase: land
+        every 1 tick
+            @people |= @people + @growth * @people * (1.0 - @people / @food)
+            @settlement |= settlement_of(self)
+        xx
+        decision settle
+            targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food
+            score => room(target) - room(self)
+        xx
+        judge
+            settle and (settle >> score) > 0: self.move_people(settle >> target, settle >> score)
+        xx
     xx
     act move_people(to, gain)
         n | @people * @leaving * gain
@@ -31,12 +47,34 @@
     xx
 xx
 
+/// Shared frontier, from the map: between provinces, and between the
+/// polities that hold bordering provinces (set again every year).
 link border
-    hosts: Land
+    hosts: Land, Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: bool
 xx
 
 /// The share of the land's food not yet eaten.
 act room(l)
     return 1.0 - (l >> people) / (l >> food)
+xx
+
+act buildings(l)
+    return l >> granary + l >> walls + l >> roads + l >> temple + l >> harbour + l >> library
+xx
+
+/// People, raised a tenth for each building and up to half again by trade.
+act settlement_of(l)
+    size | (l >> people) * (1.0 + buildings(l) * 0.1) * (1.0 + (l >> trade) * 0.5)
+    if size >= 1000.0 => send "great city"
+    if size >= 500.0 => send "city"
+    if size >= 200.0 => send "town"
+    if size >= 50.0 => send "village"
+    if size >= 1.0 => send "hamlet"
+    return "none"
+xx
+
+act is_city(l)
+    s | l >> settlement
+    return s == "city" or s == "great city"
 xx

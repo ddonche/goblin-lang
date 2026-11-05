@@ -1,0 +1,225 @@
+/// Capstone steps 1 and 2: land, people and polities. The land fills for
+/// a prehistory (step 1), then year 0 places the kingdoms at the
+/// homelands and tribes and village communities on the settled land they
+/// do not hold, and the history runs: each year the land phase, the
+/// accounts, the inside phase (each polity's govern decision) and the
+/// between phase (its dealings with the others, and the wars).
+/// Run from this folder: goblin run history.gbln
+import map as map
+import land as land
+import polity as polity
+
+act food_of(p)
+    return p >> food
+xx
+
+act people_of(p)
+    return p >> people
+xx
+
+act text(v)
+    return :str(v)
+xx
+
+/// A name from a number: two or three syllables.
+act name_of(i)
+    s | ["ar", "bel", "cor", "dun", "esk", "fal", "gor", "hal", "isk", "jor", "kel", "lor", "mar", "nor", "or", "pel", "quar", "ros", "sar", "tor", "ul", "var", "wen", "yr", "zan"]
+    n | :len(s)
+    a | i % n
+    b | (a + 1 + (i * 3) % (n - 1)) % n
+    w | s[a] + s[b]
+    if i % 3 == 0 => w |= w + s[(b + 1 + (i * 5) % (n - 1)) % n]
+    if i >= n * 3 => w |= w + s[(i // n) % n]
+    return :title(w)
+xx
+
+/// Whether p borders (or is) one of `homes`.
+act beside_any(p, homes)
+    repeat homes as h
+        if h == p or :link_score(p, h, "border") => send true
+    xx
+    return false
+xx
+
+/// The settled provinces bordering `p` that no one holds, most people first.
+act free_beside(p, min_people)
+    out | []
+    repeat :objects(Land, :link_score(p, it, "border") and it >> owner == nil and it >> people >= min_people) as q
+        :put_last!(out, q)
+    xx
+    return :reverse(:sort_by(out, "people_of"))
+xx
+
+cfg | {
+    "seed": 42,
+    "provinces": 400,
+    "kingdoms": 20,
+    "prehistory": 1200,
+    "years": 1000,
+    "sample_every": 100,
+    "land_share": 0.55,
+    "edge_drop": 0.6,
+    "steppe_dryness": 0.6,
+    "coast_rain": 0.15,
+    "river_flow": 8,
+    "terrain_shares": {"mountains": 0.08, "hills": 0.14, "desert": 0.06, "steppe": 0.14, "forest": 0.25},
+    "food": {"river": 1000.0, "plain": 500.0, "coast": 400.0, "forest": 250.0, "hills": 200.0,
+        "steppe": 120.0, "mountains": 60.0, "desert": 40.0},
+    "homeland_fill": 0.3,
+    /// A kingdom takes its homeland and up to this many settled
+    /// provinces beside it; a tribe or village community up to two.
+    "kingdom_lands": 4,
+    /// The fewest people a province needs for a polity to form on it.
+    "settled": 20.0,
+    "csv": "history_metrics.csv",
+    "events": "history_events.txt"
+}
+years      | :int(:env("YEARS") ?? cfg{"years"})
+prehistory | :int(:env("PREHISTORY") ?? cfg{"prehistory"})
+
+t_start | :epoch_ms()
+m       | map::generate(cfg)
+kinds   | map::terrain(m, cfg)
+width   | m{"width"}
+height  | m{"height"}
+
+at    | {}
+lands | []
+repeat kinds as k
+    if k == "sea" => skip
+    x | idx % width
+    y | idx // width
+    p <> Land | name: "{x},{y}", x: x, y: y, terrain: k, food: cfg{"food"}{k}
+    :update!(at{:str(idx)}, p)
+    :put_last!(lands, p)
+xx
+/// Every pair of bordering provinces, once.
+pairs | []
+repeat lands as p
+    i | p >> y * width + p >> x
+    repeat map::around(i, width, height) as j
+        q | at{:str(j)} ?? => skip
+        :link!(p, q, border, 1)
+        if j > i => :put_last!(pairs, [p, q])
+    xx
+xx
+
+homes | []
+repeat :reverse(:sort_by(lands, "food_of")) as p
+    if :len(homes) >= cfg{"kingdoms"} => stop
+    if beside_any(p, homes) => skip
+    :put_last!(homes, p)
+    p >> people |= cfg{"homeland_fill"} * p >> food
+xx
+
+/// Prehistory: only the land.
+repeat prehistory
+    tick()
+        land
+    xx
+xx
+t_pre | :epoch_ms() - t_start
+
+/// Year 0: the kingdoms at the homelands, then tribes and village
+/// communities on the settled land left, the most peopled first.
+made | 0
+repeat homes as h
+    held | [h]
+    repeat free_beside(h, cfg{"settled"}) as q
+        if :len(held) > cfg{"kingdom_lands"} => stop
+        :put_last!(held, q)
+    xx
+    polity::found("Kingdom", name_of(made), held, 0)
+    made |= made + 1
+xx
+repeat :reverse(:sort_by(lands, "people_of")) as l
+    if l >> people < cfg{"settled"} => stop
+    if !(l >> owner).nix? => skip
+    held | [l]
+    repeat free_beside(l, cfg{"settled"}) as q
+        if :len(held) >= 3 => stop
+        :put_last!(held, q)
+    xx
+    class | "Tribe"
+    if l >> settlement == "town" or l >> settlement == "city" or l >> settlement == "great city" => class |= "Village"
+    polity::found(class, name_of(made), held, 0)
+    made |= made + 1
+xx
+nk | :len(:objects(Kingdom))
+nv | :len(:objects(Village))
+nt | :len(:objects(Tribe))
+:say("year 0: {nk} kingdoms, {nv} village communities, {nt} tribes")
+
+/// Every `sample_every` years: speed, polities of each class, the largest
+/// polity's share of the held land, wars under way, and the share of
+/// polity-years spent at war so far.
+classes | ["Tribe", "Village", "CityState", "Kingdom", "Empire", "NationState", "League"]
+head    | ["year", "wall_ms", "years_per_s", "rss_mb", "objects", "people", "polities"]
+repeat classes as c
+    :put_last!(head, c)
+xx
+:put_last!(head, "largest_lands")
+:put_last!(head, "largest_share")
+:put_last!(head, "wars_now")
+:put_last!(head, "at_war_share")
+:write_text!(cfg{"csv"}, "{:join(head, ",")}\n")
+:event_log(cfg{"events"})
+t_run   | :epoch_ms()
+/// Polity-years, and how many of them a war was under way.
+lived  | 0
+fought | 0
+repeat :range(0, years + 1) as year
+    if year > 0
+        tick()
+            land
+            polity::account(lands, pairs)
+            inside
+            between
+        xx
+        repeat :objects(uses dealings) as p
+            lived |= lived + 1
+            if p >> wars > 0 => fought |= fought + 1
+        xx
+    xx
+    if year % cfg{"sample_every"} != 0 => skip
+    now  | :epoch_ms() - t_run
+    rate | 0.0
+    if now > 0 => rate |= year * 1000.0 / now
+    stats  | :metrics()
+    ps     | :objects(uses dealings)
+    big    | nil
+    held   | 0
+    people | 0.0
+    repeat ps as p
+        held |= held + p >> lands
+        if big.nix? or p >> lands > big >> lands => big |= p
+    xx
+    repeat lands as l
+        people |= people + l >> people
+    xx
+    row | [year, now, :round(rate, 1), stats{"rss_mb"}, stats{"objects"}, :round(people), :len(ps)]
+    repeat classes as c
+        n | 0
+        repeat ps as p
+            if :is_type(p, c) => n |= n + 1
+        xx
+        :put_last!(row, n)
+    xx
+    share | 0.0
+    if held > 0 => share |= :float(big >> lands) / held
+    :put_last!(row, big >> lands)
+    :put_last!(row, :round(share, 3))
+    :put_last!(row, :len(:objects(War)))
+    ws | 0.0
+    if lived > 0 => ws |= :float(fought) / lived
+    :put_last!(row, :round(ws, 3))
+    :append_file!(cfg{"csv"}, "{:join(:map(row, "text"), ",")}\n")
+    np  | :len(ps)
+    now_at_war | :len(:objects(War))
+    :say("year {year}: {np} polities, largest {big >> name} with {big >> lands} provinces, {now_at_war} wars")
+xx
+:event_log(nil)
+:say("time: prehistory {prehistory} years {t_pre} ms, history {years} years {:epoch_ms() - t_run} ms")
+share | 0.0
+if lived > 0 => share |= :round(:float(fought) * 100.0 / lived, 1)
+:say("check: share of polity-years at war: {share}%")
