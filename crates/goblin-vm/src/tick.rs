@@ -1324,7 +1324,19 @@ fn judge_reads_only(vm: &mut Vm, class: &goblin_ast::ClassDecl, action: &str) ->
             let Some(a) = class.actions.iter().find(|a| a.name == action) else { return false };
             let mut calls = Some(Vec::new());
             let body: &[goblin_ast::Stmt] = match &a.body { goblin_ast::ActionBody::Block(b) => b, _ => &[] };
+            // The judges of the interfaces it calls (`self.judge... govern()`)
+            // count as its own.
+            let mut stmts: Vec<&goblin_ast::Stmt> = Vec::new();
             for st in body {
+                if let goblin_ast::Stmt::Expr(goblin_ast::Expr::Call(_, m, _, _)) = st {
+                    if let Some(b) = class.actions.iter().find(|x| x.name == *m && m.strip_prefix(action).is_some_and(|r| r.starts_with(' '))) {
+                        if let goblin_ast::ActionBody::Block(b) = &b.body { stmts.extend(b.iter()); }
+                        continue;
+                    }
+                }
+                stmts.push(st);
+            }
+            for st in stmts {
                 let arms = match st {
                     goblin_ast::Stmt::Judge(j) => &j.arms,
                     goblin_ast::Stmt::JudgeAll(j) => &j.arms,
