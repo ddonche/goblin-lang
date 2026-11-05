@@ -333,7 +333,7 @@ act regime(p, lost, won, armed, unpaid)
     if f == "theocracy"
         /// Secularization.
         :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy", "aristocratic_republic", "citizen_republic", "elders_council"]))
-        :put_last!(odds, past(p >> learning, .3) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * under(p >> spirituality, .7))
+        :put_last!(odds, past(p >> learning, .2) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * (1.0 - p >> spirituality))
     xx
     if f == "hereditary_monarchy" or f == "elective_monarchy"
         /// Reform or concession.

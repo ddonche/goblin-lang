@@ -159,7 +159,158 @@ default; `YEARS=n`, `PREHISTORY=n`). Each year is a `tick()` block:
   Only `-.3` for some years gives .2. So envoy, aid and treaty ease
   grievance for 40 years. Is that the intended meaning?
 - **Aspects and interfaces don't carry `transition` or `on erase`**: the
-  same two lines are in all seven classes. Fine for now, since step 3's
-  transitions differ by class.
+  same two lines are in all seven classes (see step 3).
 - **No sea lanes** yet (from step 1): coastal polities trade and fight
   only across land borders.
+
+# Capstone step 3: forms of government and transitions
+
+Each year now ends with a `settle` phase: a polity's form of government
+may change, and then its class's transitions may fire. `check.sh` checks
+that every kind of transition happens in 500 years.
+
+## What is built
+
+- **Forms of government** (`government.gbln`). The 15 forms in the plan
+  are members of one overlay class, `<^>Government` with `dup: replace`,
+  so putting on a new form takes off the old one. Each form:
+  - is allowed only where the plan's "Allowed at" column says;
+  - bends the traits in its "Bends" column;
+  - leans the decisions in its "Weights toward" column.
+  A form's lean multiplies that decision's weight: each existing
+  decision has a `lean_` field, 1 by default and 1.5 under a form that
+  favours it. The form is drawn by fit at founding.
+- **Changes of form**, in the settle phase, from the plan's Government
+  table:
+  - a monarchy falls into interregnum, and a claimant ends it;
+  - coup, usurper, revolution, the fall of a republic;
+  - religious takeover and secularization;
+  - reform into a constitutional monarchy;
+  - elders and chiefs, each way;
+  - a client regime is put in on subjugation.
+  Each possible change has a chance a year (how far past its conditions
+  the polity is). One draw takes at most one of them, and the chance left
+  over means nothing changes. A form the class no longer allows is
+  replaced by rule.
+- **The realm group**, a third interface (`realm`) in the inside phase:
+  - reform, settle (a colony), migrate (tribes), union, cede and release;
+  - revolt, for a vassal or league member breaking free.
+  Settle and union only choose; the colony (spawn) and the union (merge)
+  are transitions in the settle phase.
+- **Transitions with all eight kinds**, in each class's `phase: settle`:
+  - tribe → village community → city-state → kingdom → empire, and back
+    down (mutate);
+  - kingdom or empire → nation-state, and back (mutate);
+  - a far province breaks away: a city as a city-state, a stretch of land
+    as a kingdom (fracture);
+  - a civil war, or an interregnum that drags on, splits a realm (split);
+  - a broken loser is taken in (absorb) or made a vassal (subjugate), as
+    is a polity that offered to serve when it met a demand;
+  - an agreed union (merge);
+  - a colony, or a league of allies who share an enemy (spawn);
+  - a league takes in its members once one of them has dominated it for
+    generations, then becomes a kingdom (absorb, then mutate), or breaks
+    up when the shared enemy is gone (erase).
+  A transition is possible when its conditions hold, and its chance a
+  year rises the further past them the polity is, never above 0.9.
+- **Vassals and colonies** pay a tenth of their gold to their overlord
+  each year, and their grievance against it grows. They are called into
+  its wars as allies are.
+
+## Result (seed 42, 1,000 years)
+
+- Transitions: 343 mutate, 212 fracture, 7 split, 28 merge, 349 absorb,
+  43 subjugate, 73 spawn (colonies and leagues), and the erasures.
+- The count falls more slowly than in step 2, since new polities now
+  break away and are founded: 74 at year 100, 57 at 300, 43 at 500,
+  19 at 1,000 (step 2: 83, 43, 27, 21).
+- The largest holds 57 provinces at year 1,000 (14% of the held land;
+  step 2: 39).
+- At year 1,000 the classes are 1 tribe, 6 city-states, 4 kingdoms and
+  8 empires. No nation-state forms: that needs learning above .3, and
+  little raises learning yet.
+- 26% of polity-years at war (step 2: 22%).
+- Speed: 1,000 years in 116 s (step 2: 70 s). The added time is the realm
+  decisions and the transitions' targets (below).
+
+## Choices to confirm
+
+1. **I built the realm group in this step.** The transitions need its
+   decisions: settle makes colonies, union makes merges, release and
+   revolt free vassals.
+2. **Revolt is a seventh realm decision.** The plan says breaking free is
+   "chosen by a decision (revolt, refusing tribute)", but none of the
+   seven groups of six lists it.
+3. **The realm draw can choose nothing** (asked on a card). The weight
+   for "nothing" is (stability + tradition) / 2. Without it, a polity
+   with a city reforms most years and one at war cedes land most years.
+4. **A form bends a trait and its baseline together.** The yearly pull
+   back toward the baseline reads the trait through its overlays. So a
+   lasting bend on the trait alone would fade over about 50 years; with
+   the baseline bent too, it holds for as long as the form lasts. See
+   the runtime gaps below.
+5. **I added two changes of form the plan's table doesn't have:**
+   - a monarchy in an empire becomes an imperial autocracy
+     (centralization and ambition high);
+   - a republic or elders' council becomes a merchant oligarchy (trade
+     and openness high).
+   No row in the table leads into either form, so without these they
+   would never appear.
+6. **Stand-ins until later steps:**
+   - `succession` is still only a trait. Heirs come in step 4, and only
+     then does it drive interregnums.
+   - `peoples` counts the polities of a far-off culture taken in. It
+     stands in for tongues and faiths (step 6), and decides empires and
+     nation-states.
+   - Factions (step 5) are left out of every condition that names one.
+   - Union has no kinship or faith term yet.
+   - Resettlement (an empire moving a people) waits for tongues.
+7. **Sizes are mine:** a `+` in Bends is .1 and a `++` is .2; a form's
+   lean is +.5; tribute is a tenth. Every chance is a product of
+   0-to-1 terms, written out in `polity.gbln` and `government.gbln`.
+8. **A league becomes a kingdom by rule** once it has taken in all its
+   members and holds land; the chance was in taking the members in.
+9. **Colonies start as village communities** (the plan allows "village
+   community or city-state"). They only look for free land that borders
+   their founder; sea colonies need sea lanes.
+
+## Fixed in the runtime on the way
+
+- A class's own code (methods, `every` blocks, `on` hooks) could not call
+  `module::action`: it read as nil (#177).
+- A transition's `targets:` now takes `uses NAME` as a decision's does
+  (added to #175).
+- Two interfaces with a judge can share a phase: each judge runs in turn,
+  with locals of its own (added to #175). Before, it was P1346, and once
+  that was allowed, a duplicate-local error.
+
+## Missing or wrong in the runtime (named, not worked around)
+
+- **Goblin code can only read a field through its overlays.** A pull
+  toward a baseline undoes a lasting `modify` on the trait itself, which
+  is why each form bends the baseline as well. To fix it at the root,
+  either the drift reads the stored value, or the language offers a way
+  to read it. Your call.
+- **A reference to an object a transition took in** (absorbed, merged,
+  split) is inconsistent:
+  - read from a field, it gives nil;
+  - held in a list or a local, `.nix?` on it is an error ("dangling
+    ref").
+  So War allies are now links from the War (`attacks`, `defends`), which
+  leave with the object. Lists of objects can't be cleaned when a
+  transition takes one, because the hook's copy of the old object never
+  equals a reference to it.
+- **Interfaces carry decisions and judges, but not transitions, `every`
+  blocks or `on` hooks.** So the five shared transitions, the settle-year
+  block and seven hook lines are copied into six classes. Letting an
+  interface hold them would remove the copies. That is new syntax, so I
+  did not add it.
+- **An object fires at most one transition a tick**, and a successor
+  can't fire in the tick it is made. So an empire's collapse ("split,
+  then fractures in the same ticks") takes several years.
+- **Binary transitions test every pair.** Absorb, subjugate and merge
+  evaluate `where` for every polity against every other each year (about
+  70,000 checks), unlike decisions, whose targets are narrowed by links.
+  That is about 10% of the year's time.
+- **`ns::action(...)` doesn't work inside `{...}` in a string** (known):
+  bind it first.

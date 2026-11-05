@@ -1,10 +1,15 @@
-/// Capstone step 2: polities. Seven classes share one aspect (`Polity`,
-/// every trait and resource) and two interfaces: `govern` (decisions
-/// toward its own provinces, in the inside phase) and `dealings`
-/// (decisions toward other polities, in the between phase). Each judge
-/// draws one decision a year by weight among the possible ones: a
-/// decision is possible when its `where` holds, and its score is its
-/// weight. A War is an object that fights each year in the between phase.
+/// Capstone steps 2 and 3: polities. Seven classes share one aspect
+/// (`Polity`, every trait and resource) and three interfaces: `govern`
+/// (decisions toward its own provinces) and `realm` (toward its own shape:
+/// reform, settle, migrate, union, cede, release, revolt), both in the
+/// inside phase, and `dealings` (toward other polities, in the between
+/// phase). Each judge draws one decision a year by weight among the
+/// possible ones: a decision is possible when its `where` holds, and its
+/// score is its weight. A War is an object that fights each year in the
+/// between phase. In the settle phase each polity's form of government
+/// may change (`government.gbln`) and its class's transitions may fire,
+/// each with a chance a year that rises the further past its conditions
+/// the polity is.
 import land as land
 import government as government
 
@@ -843,6 +848,16 @@ link trade
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
 xx
+/// The allies a War's attacker and defender called in, from the War to
+/// each ally (a polity taken in by a transition leaves with its links).
+link attacks
+    hosts: War, Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: bool
+xx
+link defends
+    hosts: War, Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: bool
+xx
 /// A sworn pact to fight together; it fades unless renewed.
 link alliance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
@@ -890,7 +905,8 @@ xx
 
 /// A war: the attacker, the defender, the province it is fought over (nil
 /// once the aim is gone: it goes on for revenge until one side breaks or
-/// makes peace) and the allies each side called in. `standing` runs from -1
+/// makes peace); the allies each side called in are its `attacks` and
+/// `defends` links. `standing` runs from -1
 /// (the attacker is beaten) to 1 (it has won).
 <>War |
     name: ..
@@ -900,8 +916,6 @@ xx
     started: 0
     years: 0
     standing: 0.0
-    with_attacker: []
-    with_defender: []
     over: false
     phase: between
         every 1 tick
@@ -971,8 +985,9 @@ act edge(p, t)
     return (p >> power) / ((p >> power) + (t >> power) + 0.001)
 xx
 
-/// A polity that is gone ends its wars (the other side keeps what it
-/// holds) and leaves the allies' lists.
+/// A polity that is erased ends its wars (the other side keeps what it
+/// holds), stops fighting in others' wars, and no one is left beaten by
+/// it, serving it or uniting with it.
 act fallen(p)
     repeat :objects(uses govern, it >> beaten_by == p or it >> submits_to == p or it >> union_with == p) as q
         if q >> beaten_by == p => q >> beaten_by |= nil
@@ -983,19 +998,12 @@ act fallen(p)
         if w >> attacker == p or w >> defender == p
             end_war(w, nil)
         else
-            w >> with_attacker |= without(w >> with_attacker, p)
-            w >> with_defender |= without(w >> with_defender, p)
+            :unlink!(w, p, "attacks")
+            :unlink!(w, p, "defends")
         xx
     xx
 xx
 
-act without(xs, p)
-    out | []
-    repeat xs as x
-        if x != p => :put_last!(out, x)
-    xx
-    return out
-xx
 
 /// The War between `p` and `t`, either way round, or nil.
 act war_between(p, t)
@@ -1359,8 +1367,13 @@ act war(p, t) as dealings
     xx
     w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
     if !(aim.nix?) => w >> aim |= aim
-    w >> with_defender |= call_allies(t, p, [])
-    w >> with_attacker |= call_allies(p, t, w >> with_defender)
+    defenders | call_allies(t, p, [])
+    repeat defenders as x
+        :link!(w, x, "defends", 1)
+    xx
+    repeat call_allies(p, t, defenders) as x
+        :link!(w, x, "attacks", 1)
+    xx
     p >> wars |= p >> wars + 1
     t >> wars |= t >> wars + 1
     :link!(t, p, "grievance", .3, 60)
@@ -1369,8 +1382,9 @@ xx
 /// defender's allies are called first.
 act call_allies(side, foe, taken)
     came | []
-    league | side >> owner
-    if !league.nix? and !:is_type(league, "League") => league |= nil
+    league | nil
+    o | side >> owner
+    if !o.nix? and :is_type(o, "League") => league |= o
     repeat :objects(uses dealings, :link_score(side, it, "alliance") >= .5 or it >> owner == side or (!league.nix? and it >> owner == league)) as x
         if x == foe or x == side or :has(taken, x) => skip
         if chance(x >> honor)
@@ -1414,17 +1428,15 @@ act fight(w)
         end_war(w, nil)
         send nil
     xx
-    w >> with_attacker |= present(w >> with_attacker)
-    w >> with_defender |= present(w >> with_defender)
     aim | w >> aim
     if !(aim.nix?) and aim >> owner != d => w >> aim |= nil
     at | w >> aim ?? d >> capital ?? a >> capital
     pa | might(a, at)
     pd | might(d, at) * (1.0 + (at >> walls) * .25)
-    repeat w >> with_attacker as x
+    repeat :objects(uses dealings, :link_score(w, it, "attacks") > 0) as x
         pa |= pa + (x >> army) * .5
     xx
-    repeat w >> with_defender as x
+    repeat :objects(uses dealings, :link_score(w, it, "defends") > 0) as x
         pd |= pd + (x >> army) * .5
     xx
     luck  | (pick 1 from 80...120) / 100.0
@@ -1749,7 +1761,7 @@ decision reform as realm
     score => (@learning + :min(@lost_years, 1) * .5 + (1.0 - @legitimacy) * .5) / 2 * (1.0 - @tradition)
 xx
 decision settle as realm
-    targets: Land where target == @capital and @colony_at.nix? and @people >= 200.0 and (@frontier > 0 or (@ships >= 1.0 and @coast >= 1))
+    targets: Land where target == @capital and @colony_at.nix? and @people >= 200.0 and @frontier > 0
     score => (@ambition + :min(@people / (@lands * 400.0), 1.0) + :min(@ships / 10.0, 1.0)) / 3 * (1.0 - @fear * .5) * @lean_settle
 xx
 decision migrate as realm
@@ -1773,16 +1785,18 @@ decision revolt as realm
     score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
 xx
 
+/// One decision a year about its shape, or none: keeping things as they
+/// are weighs as much as its stability and tradition do.
 judge as realm
     true:
-        names   | []
-        weights | []
+        names   | [""]
+        weights | [(@stability + @tradition) / 2]
         repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt} as k, d
             if d.nix? or (d >> score) <= 0 => skip
             :put_last!(names, k)
             :put_last!(weights, d >> score)
         xx
-        if :len(names) > 0
+        if :len(names) > 1
             name | :sample_weighted({"src": names, "weights": weights})[0]
             judge
                 name == "reform": reform(self, reform >> target)
@@ -1796,28 +1810,23 @@ judge as realm
         xx
 xx
 
-/// Tradition gives way; the weakest of discipline, centralization and
-/// legitimacy gains (the baselines move: a reform lasts).
+/// Tradition gives way and the weakest of discipline, centralization and
+/// legitimacy gains. The traits move, not the baselines: the pull back
+/// toward its culture undoes a reform that is not kept up.
 act reform(p, l) as realm
-    p >> base_tradition |= :max(p >> base_tradition - .02, 0.0)
-    p >> tradition |= p >> tradition - .02
-    d | p >> base_discipline
-    c | p >> base_centralization
-    g | p >> base_legitimacy
+    p >> tradition |= p >> tradition - .05
+    d | p >> discipline
+    c | p >> centralization
+    g | p >> legitimacy
     judge
-        d <= c and d <= g:
-            p >> base_discipline |= d + .02
-            p >> discipline |= p >> discipline + .02
-        c <= g:
-            p >> base_centralization |= c + .02
-            p >> centralization |= p >> centralization + .02
-        true:
-            p >> base_legitimacy |= g + .02
-            p >> legitimacy |= p >> legitimacy + .02
+        d <= c and d <= g: p >> discipline |= d + .05
+        c <= g: p >> centralization |= c + .05
+        true: p >> legitimacy |= g + .05
     xx
 xx
-/// Picks the free province with the most room beside its land, or by sea
-/// within twice its reach; the colony is founded in the settle phase.
+/// Picks the free province with the most room beside its land, or across
+/// the sea within twice its reach; the colony is founded in the settle
+/// phase.
 act settle(p, l) as realm
     best | nil
     room | 0.0
@@ -1993,11 +2002,12 @@ act rise_city(p)
     if p >> cities < 1 => send 0.0
     return odds(:min((p >> lands - 1) / 3.0, 1.0) * (.5 + .5 * p >> centralization))
 xx
-/// City-state to village community: its city shrank.
+/// City-state to village community: its city shrank well below a city
+/// (under 250 people), so a city near the line does not go back and forth.
 act fall_city(p)
     if p >> cities >= 1 => send 0.0
     c | p >> capital ?? => send 0.0
-    return odds(under(c >> people / 500.0, 1.0))
+    return odds(under(c >> people / 500.0, .5))
 xx
 /// City-state to kingdom: it rules other cities, centralization and
 /// legitimacy high.
@@ -2039,7 +2049,7 @@ act civil_war(p)
     if p >> lands < 4 => send 0.0
     gap | .3
     if p >> form == "interregnum" => gap |= 1.0
-    return odds(under(p >> cohesion, .4) * under(p >> succession, .4) * gap)
+    return odds(under(p >> cohesion, .5) * under(p >> succession, .45) * gap)
 xx
 /// A kingdom breaks into city-states: an interregnum that drags on,
 /// centralization collapsed, cities strong.
@@ -2047,14 +2057,16 @@ act shatter(p)
     if p >> cities < 2 or p >> form != "interregnum" => send 0.0
     return odds(:min(p >> form_years / 20.0, 1.0) * under(p >> centralization, .3) * :min((p >> cities - 1) / 2.0, 1.0))
 xx
-/// Its far province breaks away: far from the capital, a weak hold, and
-/// for a city, rich and walled.
+/// Its far province breaks away: far from the capital and a loose hold;
+/// a city also by being rich and walled, a stretch of land by a realm
+/// that does not hold together.
 act breakaway(p, city)
     r | p >> rebel ?? => send 0.0
     if p >> lands < 3 or land::is_city(r) != city => send 0.0
-    far | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
-    if city => send odds(far * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * under(p >> legitimacy, .6) * under(p >> centralization, .6))
-    return odds(far * under(p >> centralization, .4) * under(p >> cohesion, .5))
+    far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
+    loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
+    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0))
+    return odds(far * loose * (1.0 - p >> cohesion))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)

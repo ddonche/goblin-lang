@@ -1,9 +1,11 @@
-/// Capstone steps 1 and 2: land, people and polities. The land fills for
-/// a prehistory (step 1), then year 0 places the kingdoms at the
-/// homelands and tribes and village communities on the settled land they
-/// do not hold, and the history runs: each year the land phase, the
-/// accounts, the inside phase (each polity's govern decision) and the
-/// between phase (its dealings with the others, and the wars).
+/// Capstone steps 1 to 3: land, people, polities, their forms of
+/// government and their transitions. The land fills for a prehistory
+/// (step 1), then year 0 places the kingdoms at the homelands and tribes
+/// and village communities on the settled land they do not hold, and the
+/// history runs: each year the land phase, the accounts, the inside phase
+/// (each polity's govern and realm decisions), the between phase (its
+/// dealings with the others, and the wars) and the settle phase (changes
+/// of form and the transitions).
 /// Run from this folder: goblin run history.gbln
 import map as map
 import land as land
@@ -212,3 +214,14 @@ xx
 share | 0.0
 if lived > 0 => share |= :round(:float(fought) * 100.0 / lived, 1)
 :say("check: share of polity-years at war: {share}%")
+/// The forms of government at the end, most common first.
+forms | {}
+repeat :objects(uses govern) as p
+    f | p >> form
+    :update!(forms{f}, (forms{f} ?? 0) + 1)
+xx
+held | []
+repeat forms as f, n
+    :put_last!(held, "{f} {n}")
+xx
+:say("check: forms at the end: {:join(:sort(held), ", ")}")
