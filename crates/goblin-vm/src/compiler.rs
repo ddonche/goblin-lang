@@ -1812,7 +1812,13 @@ impl Compiler {
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
                     let full_name = format!("{}::{}", ns, name);
-                    match self.resolve_load(&full_name) {
+                    // In a class method an unknown bare name is the program's
+                    // variable; a namespaced one never is: it is the module's
+                    // action, looked up by name when it runs.
+                    let in_method = std::mem::replace(&mut self.is_class_method, false);
+                    let load = self.resolve_load(&full_name);
+                    self.is_class_method = in_method;
+                    match load {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
                             // Not known at compile time — emit a runtime named lookup.

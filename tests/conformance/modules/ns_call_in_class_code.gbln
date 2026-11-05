@@ -1,0 +1,24 @@
+/// known-gap: interp runs a tick without the every block here (the interpreter is retired; the VM defines it)
+/// A class's own code (an action, an `every` block, an `on` hook) calls
+/// an imported module's action by its alias, as top-level code does.
+import _support/modules/mathy as m
+<>Pot |
+    name: ..
+    n: 1
+    act grow()
+        @n |= m::double(@n)
+    xx
+    every 1 tick
+        @n |= m::add(@n, 1)
+    xx
+    on erase
+        v | m::scaled(self >> n)
+        say("gone at {v}")
+    xx
+xx
+p <> Pot | name: "p"
+p.grow()
+say(p >> n)
+tick()
+say(p >> n)
+:delete_object!(p)
