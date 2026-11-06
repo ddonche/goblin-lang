@@ -359,11 +359,14 @@ struct Interface {
     decisions: Vec<ast::NamedDecision>,
     /// The judge over its decisions, and whether it is a `judge_all`.
     judge: Option<ast::Stmt>,
-    /// `transition absorb as conquest` ... `xx`: transitions every class
-    /// that uses it gets, where it writes `uses conquest`.
+    /// The transitions in its `interface conquest` ... `xx` block: every
+    /// class that uses it gets them, where it writes `uses conquest`.
     transitions: Vec<ast::TransitionDef>,
-    /// `on absorb as conquest => ...`: hooks every class that uses it gets.
+    /// The `on absorb => ...` hooks in that block: every class that uses
+    /// it gets them.
     hooks: Vec<ast::ActionDecl>,
+    /// It has had its `interface` block.
+    block: bool,
 }
 
 /// The stand-in a class keeps among its transitions where it writes
@@ -7452,19 +7455,23 @@ impl<'t> Parser<'t> {
         {
             return self.parse_interface_judge();
         }
-        // `transition absorb as conquest` ... `xx` and `on absorb as
-        // conquest => ...`: transitions and hooks that belong to an interface.
-        if self.peek_ident() == Some("transition")
+        // `interface conquest` ... `xx`: the transitions and hooks that
+        // belong to an interface.
+        if self.peek_ident() == Some("interface")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && self.toks.get(self.i + 2).is_none_or(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
+        {
+            return self.parse_interface_block();
+        }
+        // Transitions and hooks are not joined to an interface with `as`.
+        if matches!(self.peek_ident(), Some("transition") | Some("on"))
             && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
             && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("as"))
         {
-            return self.parse_interface_transition();
-        }
-        if self.peek_ident() == Some("on")
-            && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref().is_some_and(|w| w == "erase" || hook_params(w).is_some()))
-            && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("as"))
-        {
-            return self.parse_interface_hook();
+            let kw = self.peek_ident().unwrap_or_default().to_string();
+            let word = self.toks[self.i + 1].value.clone().unwrap_or_default();
+            return Err(s_help_site!("P1519", &format!("`{kw} {word}` is not joined to an interface with `as`"),
+                &format!("Write it inside the interface's block:\n  interface conquest\n      {kw} {word} ...\n  xx")));
         }
         // `aspect Political |` ... `xx`: a named set of fields for classes.
         if self.peek_ident() == Some("aspect")
@@ -8366,11 +8373,56 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
     }
 
-    /// `transition absorb as conquest` ... `xx`: a transition written once
-    /// for every class that uses the interface. It runs where the class
-    /// writes `uses conquest`: at the top of the class when the tick ends,
-    /// in a `phase:` in that phase.
-    fn parse_interface_transition(&mut self) -> Result<ast::Stmt, String> {
+    /// `interface conquest` then its transitions and `on` hooks, one after
+    /// the other, closed with `xx`: written once for every class that uses
+    /// the interface.
+    fn parse_interface_block(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        self.i += 1; // `interface`
+        let name = self.eat_ident().unwrap_or_default();
+        if self.interfaces.iter().any(|i| i.name == name && i.block) {
+            return Err(s_help_site!("P1518", &format!("The interface {name} has two `interface` blocks"), "Keep one block per interface."));
+        }
+        self.interface_mut(&name).block = true;
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P0909", &format!("I reached the end of the file, but the interface '{name}' is still open (missing 'xx')"),
+                    "Close the interface with 'xx' (crossbones) on its own line"));
+            }
+            if self.peek_block_close() {
+                let at = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if at != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {col}, found column {at}"),
+                        "Align the closer with its header: put 'xx' directly under 'interface'."));
+                }
+                self.expect_block_close("interface")?;
+                break;
+            }
+            let hook = self.peek_ident() == Some("on")
+                && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref().is_some_and(|w| w == "erase" || hook_params(w).is_some()));
+            if self.peek_ident() == Some("transition") {
+                self.parse_interface_transition(&name)?;
+            } else if hook {
+                self.parse_interface_hook(&name)?;
+            } else {
+                return Err(s_help_site!("P1519", &format!("Expected a transition or an `on` hook in interface {name}"),
+                    "An interface block holds transitions and their hooks:\n  interface conquest\n      transition absorb\n          targets: uses conquest where ...\n      xx\n      on absorb => annexed(self, target)\n  xx\nActions, decisions and judges join an interface with `as`."));
+            }
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+    }
+
+    /// `transition absorb` ... `xx` in an `interface` block: a transition
+    /// written once for every class that uses the interface. It runs where
+    /// the class writes `uses conquest`: at the top of the class when the
+    /// tick ends, in a `phase:` in that phase.
+    fn parse_interface_transition(&mut self, iface: &str) -> Result<(), String> {
         let start_i = self.i;
         self.i += 1; // `transition`
         let word = self.eat_ident().unwrap_or_default();
@@ -8381,29 +8433,23 @@ impl<'t> Parser<'t> {
             "subjugate" => ast::TransitionKind::Subjugate, "mutate" => ast::TransitionKind::Mutate,
             other => return Err(s_help_site!("P1501",
                 &format!("Unknown transition kind '{}'. Valid kinds: spawn erase split fracture merge absorb subjugate mutate", other),
-                "Write: transition absorb as conquest")),
+                "Write: transition absorb")),
         };
-        self.i += 1; // `as`
-        let ifaces = self.eat_name_list("P1344", "Write: transition absorb as conquest")?;
         self.skip_layout_inline();
         let td = self.with_self(|p| p.parse_transition_block(start_i, kind, None))?;
         check_transition(&td, false)?;
-        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        for iface in ifaces {
-            self.interface_mut(&iface).transitions.push(td.clone());
-        }
-        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+        self.interface_mut(iface).transitions.push(td);
+        Ok(())
     }
 
-    /// `on absorb as conquest => annexed(self, target)` (or a block under
-    /// it): a transition hook for every class that uses the interface.
-    fn parse_interface_hook(&mut self) -> Result<ast::Stmt, String> {
+    /// `on absorb => annexed(self, target)` (or a block under it) in an
+    /// `interface` block: a transition hook for every class that uses the
+    /// interface.
+    fn parse_interface_hook(&mut self, iface: &str) -> Result<(), String> {
         let start_i = self.i;
         let col = self.toks[start_i].span.col_start;
         self.i += 1; // `on`
         let word = self.eat_ident().unwrap_or_default();
-        self.i += 1; // `as`
-        let ifaces = self.eat_name_list("P1344", &format!("Write: on {word} as conquest => record(self)"))?;
         self.skip_layout_inline();
         let body = if self.eat_op("=>") {
             self.skip_layout_inline();
@@ -8411,23 +8457,21 @@ impl<'t> Parser<'t> {
         } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
             self.with_self(|p| p.parse_head_block(col, &format!("on {word}")))?
         } else {
-            return Err(s_help_site!("P1516", &format!("Expected '=>' or a block after 'on {word} as ...'"),
-                &format!("Write: on {word} as conquest => record(self)")));
+            return Err(s_help_site!("P1516", &format!("Expected '=>' or a block after 'on {word}'"),
+                &format!("Write: on {word} => record(self)")));
         };
         let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         let name = format!("on {word}");
         let params = if word == "erase" { Vec::new() } else {
             hook_params(&word).unwrap_or(&[]).iter().map(|p| ast::Param { name: p.to_string(), type_name: None, default: None, span: sp.clone() }).collect()
         };
-        let act = ast::ActionDecl { name: name.clone(), params, body: ast::ActionBody::Block(body), span: sp.clone(), ret: None };
-        for iface in ifaces {
-            let i = self.interface_mut(&iface);
-            if i.hooks.iter().any(|h| h.name == name) {
-                return Err(s_help_site!("P1517", &format!("`{name}` is written twice for interface {iface}"), "Keep one."));
-            }
-            i.hooks.push(act.clone());
+        let act = ast::ActionDecl { name: name.clone(), params, body: ast::ActionBody::Block(body), span: sp, ret: None };
+        let i = self.interface_mut(iface);
+        if i.hooks.iter().any(|h| h.name == name) {
+            return Err(s_help_site!("P1517", &format!("`{name}` is written twice in interface {iface}"), "Keep one."));
         }
-        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+        i.hooks.push(act);
+        Ok(())
     }
 
     /// `judge as diplomacy` ... `xx`: the judge over an interface's

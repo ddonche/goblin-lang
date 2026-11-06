@@ -1,16 +1,19 @@
 /// known-gap: interp has no interfaces; the interpreter is being retired
 /// An interface can hold transitions and their hooks:
-/// `transition absorb as conquest` ... `xx` and `on absorb as conquest => ...`.
+/// `interface conquest` holding `transition absorb` ... `xx` and
+/// `on absorb => ...`, closed with `xx`.
 /// A class takes them with `uses conquest`. The transitions run where the
 /// class writes `uses`: in a `phase:` in that phase, in the order written
 /// among the class's own transitions. The hooks are the class's wherever it
 /// uses the interface.
-transition absorb as conquest
-    targets: uses conquest where (target >> power) < @power and (target >> beaten_by) == self
+interface conquest
+    transition absorb
+        targets: uses conquest where (target >> power) < @power and (target >> beaten_by) == self
+    xx
+    on absorb => say("{self >> name} takes {target >> name}")
+    transition erase where @power <= 0
+    on erase => say("{self >> name} falls")
 xx
-on absorb as conquest => say("{self >> name} takes {target >> name}")
-transition erase as conquest where @power <= 0
-on erase as conquest => say("{self >> name} falls")
 <>Kingdom |
     name: ..
     power: 0

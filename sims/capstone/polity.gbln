@@ -132,49 +132,61 @@ xx
 /// Kingdom) stay in that class.
 ///
 /// founding: a colony settled (realm `settle`) and a league formed.
-transition spawn as founding where !(@colony_at.nix?)
-    into: Village
-    child:
-        name: next_name()
+interface founding
+    transition spawn where !(@colony_at.nix?)
+        into: Village
+        child:
+            name: next_name()
+        xx
     xx
-xx
-transition spawn as founding where chance(league_odds(self))
-    into: League
-    child:
-        name: next_name()
+    transition spawn where chance(league_odds(self))
+        into: League
+        child:
+            name: next_name()
+        xx
     xx
+    on spawn => founded_child(self, child)
 xx
-on spawn as founding => founded_child(self, child)
 /// conquest: what a war won brings (dealings `war`).
-transition absorb as conquest
-    targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
-    overlays: drop
-    links: reset
-xx
-transition subjugate as conquest
-    targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
-xx
-on absorb as conquest => annexed(self, target)
-on subjugate as conquest => vassal_made(self, target)
-/// unification: two realms made one (realm `union`).
-transition merge as unification
-    targets: uses govern where (target >> union_with) == self and @union_with == target
-    overlays: drop
-    carries:
-        name: "{@name}-{target >> name}"
-        wars: 0
+interface conquest
+    transition absorb
+        targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
+        overlays: drop
+        links: reset
     xx
+    transition subjugate
+        targets: uses govern where ((target >> submits_to) == self or (target >> beaten_by) == self) and (target >> owner).nix? and top(self) != target and chance(vassal_odds(self, target))
+    xx
+    on absorb => annexed(self, target)
+    on subjugate => vassal_made(self, target)
 xx
-on merge as unification => united(self, target, merged)
+/// unification: two realms made one (realm `union`).
+interface unification
+    transition merge
+        targets: uses govern where (target >> union_with) == self and @union_with == target
+        overlays: drop
+        carries:
+            name: "{@name}-{target >> name}"
+            wars: 0
+        xx
+    xx
+    on merge => united(self, target, merged)
+xx
 /// downfall: a polity with no land left is gone.
-transition erase as downfall where @lands == 0
-on erase as downfall => fallen(self)
+interface downfall
+    transition erase where @lands == 0
+    on erase => fallen(self)
+xx
 /// breakup: the land shared out after a split or a breakaway; the split
 /// and fracture transitions themselves are each class's own.
-on split as breakup => divided(self, first, second)
-on fracture as breakup => broke_away(self, fragment)
+interface breakup
+    on split => divided(self, first, second)
+    on fracture => broke_away(self, fragment)
+xx
 /// regime: a new form of government when the class changes.
-on mutate as regime => mutated(self)
+interface regime
+    on mutate => mutated(self)
+xx
 
 <>Tribe |
     uses Polity
