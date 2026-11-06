@@ -1077,6 +1077,16 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
     Value::Ref(uuid.into())
 }
 
+/// What reading an object that is not here gives: nil when it left the
+/// world (erased, or taken in by a transition), as a field or a list item
+/// does; an error when it went to an actor or another region.
+pub fn gone_object(session: &Session, uuid: &str) -> Result<Value, GoblinError> {
+    if session.kept_home.contains_key(uuid) || session.moved_away.contains_key(uuid) || session.handed_off.contains_key(uuid) {
+        return Err(missing_object(session, uuid));
+    }
+    Ok(Value::Nil)
+}
+
 /// The error for reading an object that is gone.
 pub fn missing_object(session: &Session, uuid: &str) -> GoblinError {
     if let Some(var) = session.kept_home.get(uuid) {

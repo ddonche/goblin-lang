@@ -1,0 +1,20 @@
+/// known-gap: interp a variable holding an erased object is an error (the interpreter is being retired)
+/// An object that has left the world reads as nil wherever it is held: a
+/// field, a list item, a loop variable or a plain variable.
+<>Land |
+    people: 0
+    next: nil
+xx
+a <> Land | people: 1
+b <> Land | people: 2
+a >> next |= b
+lst | [a, b]
+keep | b
+:delete_object!(b)
+say(a >> next)
+say(lst[1].nix?)
+repeat lst as x
+    say(x.nix?)
+xx
+say(keep.nix?)
+say(keep ?? "gone")

@@ -3656,9 +3656,10 @@ impl Vm {
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
+            Value::Ref(uuid) => match self.session.object_store.get(&uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(&self.session, &uuid),
+            },
             other => Ok(other),
         }
     }
@@ -4210,9 +4211,10 @@ impl Vm {
     fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         let v = self.session.read_value(t)?;
         match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
+            Value::Ref(uuid) => match self.session.object_store.get(&uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(&self.session, &uuid),
+            },
             other => Ok(other),
         }
     }

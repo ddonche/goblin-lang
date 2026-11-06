@@ -256,7 +256,7 @@ impl<'s> ToPortable<'s> {
                     Some(var) => PValue::HandedOff { uuid: uuid.to_string(), var: var.clone() },
                     None => match self.session.moved_away.get(uuid.as_str()) {
                         Some(var) => PValue::Moved { uuid: uuid.to_string(), var: var.clone() },
-                        None => return Err(crate::actor::missing_object(self.session, uuid)),
+                        None => { crate::actor::gone_object(self.session, uuid)?; PValue::Nil }
                     },
                 },
             },
