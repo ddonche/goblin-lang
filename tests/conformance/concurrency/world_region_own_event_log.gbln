@@ -1,0 +1,37 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region that starts its own event log writes it out at the end of each
+/// tick, as a tick outside regions does, so its file can be read as soon
+/// as `:tick()` returns.
+<>Land |
+    name: ..
+    food: 0
+    decision feed
+        targets: Land where target >> food > @food
+        score => target >> food
+    xx
+    judge
+        feed: self.take(feed >> target)
+    xx
+    act take(t)
+        t >> food |= t >> food - 1
+        @food |= @food + 1
+    xx
+xx
+act h(st, msg)
+    if :has(msg, "start")
+        :event_log(msg{"start"})
+    xx
+    return st
+xx
+act make()
+    n <> Land | name: "north", food: 0
+    s <> Land | name: "south", food: 4
+    return {"things": [n, s]}
+xx
+d | :env("GOBLIN_CONF_TMP")
+log | "{d}/world_region_own.log"
+a | :actor(make(), h)
+:await(:request(a, {"start": log}))
+tick()
+tick()
+say(:read_text(log))

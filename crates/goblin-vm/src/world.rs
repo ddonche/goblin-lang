@@ -609,7 +609,10 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect() });
     // The region's own event log, if one was started in it, stays its own.
     let own_log = if job.log { vm.session.event_log.replace(crate::events::Sink::Lines(Vec::new())) } else { None };
-    let r = region_steps(vm, state, handler, job);
+    let mut r = region_steps(vm, state, handler, job);
+    // A log the region started itself is written out before the tick
+    // returns, as a tick outside regions does.
+    if !job.log && r.is_ok() { r = crate::events::flush(&mut vm.session); }
     let events = match job.log {
         true => match std::mem::replace(&mut vm.session.event_log, own_log) {
             Some(crate::events::Sink::Lines(v)) => v,

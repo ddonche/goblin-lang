@@ -284,6 +284,9 @@ impl<T> Queue<T> {
         true
     }
 
+    /// Takes nothing more (it may still hold items).
+    fn is_closed(&self) -> bool { lock(&self.state).closed }
+
     /// Accept nothing more. Items already queued stay until taken.
     pub fn close(&self) {
         let mut st = lock(&self.state);
@@ -1388,13 +1391,16 @@ impl Slot {
                         let reply = reply.expect("a world tick is a request");
                         match r {
                             Ok(()) => {
-                                reply.set(Ok(Arc::new(PValue::Nil)));
                                 // The tick was a message: stop_when applies after it
-                                // (after the whole tick, not each of its phases).
-                                if !job.prime && job.phase.is_none() {
+                                // (after the whole tick, not each of its phases),
+                                // before the answer goes back, so the next
+                                // `:tick()` already sees a region that stopped.
+                                let goes_on = if !job.prime && job.phase.is_none() {
                                     let next = std::mem::replace(&mut self.state, Value::Nil);
-                                    if !self.finish_message(next, None) { return false; }
-                                }
+                                    self.finish_message(next, None)
+                                } else { true };
+                                reply.set(Ok(Arc::new(PValue::Nil)));
+                                if !goes_on { return false; }
                             }
                             Err(e) => {
                                 // The region failed: the tick fails, and so does the actor.
@@ -1875,9 +1881,9 @@ pub(crate) fn mark_region(a: &ActorShared) { a.region.store(true, Ordering::SeqC
 pub(crate) fn has_ended(a: &ActorShared) -> bool { a.ended() }
 
 /// The actors `:tick()` runs as regions: those this session started that
-/// hold DES objects and have not ended, in the order they were started.
+/// hold DES objects and still take messages, in the order they were started.
 pub(crate) fn region_actors(session: &Session) -> Vec<Arc<ActorShared>> {
-    session.owned_actors.iter().filter(|a| a.region.load(Ordering::SeqCst) && !a.ended()).cloned().collect()
+    session.owned_actors.iter().filter(|a| a.region.load(Ordering::SeqCst) && !a.ended() && !a.mailbox.is_closed()).cloned().collect()
 }
 
 /// Sends a region its part of one world tick (`:tick()`).
