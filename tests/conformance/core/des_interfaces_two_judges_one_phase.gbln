@@ -2,7 +2,8 @@
 /// Two interfaces with a judge in one place: both judges run, one after
 /// the other in the order the class names them, each over its own
 /// decisions, with locals of its own. The second sees what the first
-/// one's deed changed, and the event log names each deed.
+/// one's deed changed, and the event log names each deed. Written with
+/// `as`, the form for members declared outside the interface's block.
 decision levy as govern
     targets: Town where (target >> owner) == self
     score => 1

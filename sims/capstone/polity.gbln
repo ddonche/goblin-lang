@@ -132,7 +132,7 @@ xx
 /// Kingdom) stay in that class.
 ///
 /// founding: a colony settled (realm `settle`) and a league formed.
-interface founding
+interface founding |
     transition spawn where !(@colony_at.nix?)
         into: Village
         child:
@@ -147,8 +147,9 @@ interface founding
     xx
     on spawn => founded_child(self, child)
 xx
+
 /// conquest: what a war won brings (dealings `war`).
-interface conquest
+interface conquest |
     transition absorb
         targets: uses govern where (target >> beaten_by) == self and chance(annex_odds(self, target))
         overlays: drop
@@ -160,8 +161,9 @@ interface conquest
     on absorb => annexed(self, target)
     on subjugate => vassal_made(self, target)
 xx
+
 /// unification: two realms made one (realm `union`).
-interface unification
+interface unification |
     transition merge
         targets: uses govern where (target >> union_with) == self and @union_with == target
         overlays: drop
@@ -172,19 +174,22 @@ interface unification
     xx
     on merge => united(self, target, merged)
 xx
+
 /// downfall: a polity with no land left is gone.
-interface downfall
+interface downfall |
     transition erase where @lands == 0
     on erase => fallen(self)
 xx
+
 /// breakup: the land shared out after a split or a breakaway; the split
 /// and fracture transitions themselves are each class's own.
-interface breakup
+interface breakup |
     on split => divided(self, first, second)
     on fracture => broke_away(self, fragment)
 xx
+
 /// regime: a new form of government when the class changes.
-interface regime
+interface regime |
     on mutate => mutated(self)
 xx
 
@@ -879,7 +884,6 @@ act fallen(p)
     xx
 xx
 
-
 /// The War between `p` and `t`, either way round, or nil.
 act war_between(p, t)
     repeat :objects(War, !(it >> over)) as w
@@ -892,367 +896,396 @@ xx
 
 /// govern: toward its own provinces (the inside phase)
 
-decision tax as govern
-    targets: Land where (target >> owner) == self and @rank >= 2 and (target >> people) >= 10.0
-    score => (short(@gold, @people * .05) + @ambition + @centralization + :min(@wars, 1)) / 4 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
-xx
-decision relieve as govern
-    targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= .9 * (target >> food)
-    score => @cooperation * (1.0 - @legitimacy) * (1.0 - short(@gold, @people * .05)) * (1.0 - :min(@wars, 1) * .5)
-xx
-decision build as govern
-    targets: Land where (target >> owner) == self and @rank >= 2 and @gold >= 20.0 and (@stone >= 5.0 or @wood >= 5.0) and land::buildings(target) < 12
-    score => (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
-xx
-decision levy as govern
-    targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= 50.0
-    score => (@fear + @ambition + :min(@wars, 1)) / 3 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
-xx
-decision disband as govern
-    targets: Land where @army >= 1.0 and target == @capital
-    score => (weariness(self) + (1.0 - :min(@wars, 1)) + short(@gold, @army * .5)) / 3 * (1.0 - @fear) * (1.0 - @ambition)
-xx
-decision borrow as govern
-    targets: Land where (target >> owner) == self and @cities >= 1 and target == @capital and @debt < @people * .5
-    score => short(@gold, @people * .05) * (@ambition + :min(@wars, 1)) / 2 * (1.0 - @debt / (@people * .5 + 1.0))
-xx
-
-/// One decision a year, drawn by weight among the possible ones.
-judge as govern
-    true:
-        names   | []
-        weights | []
-        repeat {"tax": tax, "relieve": relieve, "build": build, "levy": levy, "disband": disband, "borrow": borrow} as k, d
-            if d.nix? or (d >> score) <= 0 => skip
-            :put_last!(names, k)
-            :put_last!(weights, d >> score)
-        xx
-        if :len(names) > 0
-            name | :sample_weighted({"src": names, "weights": weights})[0]
-            judge
-                name == "tax": tax(self, tax >> target)
-                name == "relieve": relieve(self, relieve >> target)
-                name == "build": build(self, build >> target)
-                name == "levy": levy(self, levy >> target)
-                name == "disband": disband(self, disband >> target)
-                name == "borrow": borrow(self, borrow >> target)
-            xx
-        xx
-xx
-
-act tax(p, l) as govern
-    take | (l >> people) * .05 * (.5 + (p >> centralization) * .5) * (.5 + (p >> discipline) * .5)
-    p >> gold |= p >> gold + take
-    p >> legitimacy |= p >> legitimacy - .01
-xx
-act relieve(p, l) as govern
-    cost | :min(p >> gold * .2, (l >> people) * .05)
-    p >> gold |= p >> gold - cost
-    p >> legitimacy |= p >> legitimacy + .02
-    p >> stability |= p >> stability + .01
-xx
-/// What it builds is drawn by need: a granary where people are near what
-/// the land feeds, walls when afraid, roads far from the capital, a temple
-/// when pious, a harbour on the coast, a library when learned.
-act build(p, l) as govern
-    hungry | (l >> people) / (l >> food)
-    far    | :min(distance(p, l) / (p >> reach), 1.0)
-    kinds  | ["granary", "walls", "roads", "temple", "library"]
-    need   | [hungry / (1.0 + l >> granary), (p >> fear) / (1.0 + l >> walls), far / (1.0 + l >> roads),
-        (p >> spirituality) / (1.0 + l >> temple), (p >> learning) / (1.0 + l >> library)]
-    if l >> terrain == "coast"
-        :put_last!(kinds, "harbour")
-        :put_last!(need, (p >> openness) / (1.0 + l >> harbour))
+interface govern |
+    decision tax
+        targets: Land where (target >> owner) == self and @rank >= 2 and (target >> people) >= 10.0
+        score => (short(@gold, @people * .05) + @ambition + @centralization + :min(@wars, 1)) / 4 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
     xx
-    kind | :sample_weighted({"src": kinds, "weights": need})[0]
-    p >> gold |= p >> gold - 20.0
-    if p >> stone >= 5.0
-        p >> stone |= p >> stone - 5.0
-    else
-        p >> wood |= p >> wood - 5.0
+    decision relieve
+        targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= .9 * (target >> food)
+        score => @cooperation * (1.0 - @legitimacy) * (1.0 - short(@gold, @people * .05)) * (1.0 - :min(@wars, 1) * .5)
     xx
+    decision build
+        targets: Land where (target >> owner) == self and @rank >= 2 and @gold >= 20.0 and (@stone >= 5.0 or @wood >= 5.0) and land::buildings(target) < 12
+        score => (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
+    xx
+    decision levy
+        targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= 50.0
+        score => (@fear + @ambition + :min(@wars, 1)) / 3 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
+    xx
+    decision disband
+        targets: Land where @army >= 1.0 and target == @capital
+        score => (weariness(self) + (1.0 - :min(@wars, 1)) + short(@gold, @army * .5)) / 3 * (1.0 - @fear) * (1.0 - @ambition)
+    xx
+    decision borrow
+        targets: Land where (target >> owner) == self and @cities >= 1 and target == @capital and @debt < @people * .5
+        score => short(@gold, @people * .05) * (@ambition + :min(@wars, 1)) / 2 * (1.0 - @debt / (@people * .5 + 1.0))
+    xx
+
+    /// One decision a year, drawn by weight among the possible ones.
     judge
-        kind == "granary":
-            l >> granary |= l >> granary + 1
-            l >> food |= l >> food * 1.1
-        kind == "walls": l >> walls |= l >> walls + 1
-        kind == "roads": l >> roads |= l >> roads + 1
-        kind == "temple":
-            l >> temple |= l >> temple + 1
-            p >> legitimacy |= p >> legitimacy + .02
-        kind == "library":
-            l >> library |= l >> library + 1
-            p >> learning |= p >> learning + .01
-        kind == "harbour": l >> harbour |= l >> harbour + 1
+        true:
+            names   | []
+            weights | []
+            repeat {"tax": tax, "relieve": relieve, "build": build, "levy": levy, "disband": disband, "borrow": borrow} as k, d
+                if d.nix? or (d >> score) <= 0 => skip
+                :put_last!(names, k)
+                :put_last!(weights, d >> score)
+            xx
+            if :len(names) > 0
+                name | :sample_weighted({"src": names, "weights": weights})[0]
+                judge
+                    name == "tax": tax(self, tax >> target)
+                    name == "relieve": relieve(self, relieve >> target)
+                    name == "build": build(self, build >> target)
+                    name == "levy": levy(self, levy >> target)
+                    name == "disband": disband(self, disband >> target)
+                    name == "borrow": borrow(self, borrow >> target)
+                xx
+            xx
     xx
-    p >> prestige |= p >> prestige + 1.0
-xx
-act levy(p, l) as govern
-    n | (l >> people) * .05
-    l >> people |= l >> people - n
-    p >> army |= p >> army + n
-    p >> gold |= p >> gold - :min(p >> gold, n * .2)
-xx
-act disband(p, l) as govern
-    n | (p >> army) * .5
-    p >> army |= p >> army - n
-    l >> people |= l >> people + n
-xx
-act borrow(p, l) as govern
-    n | (p >> people) * .05
-    p >> gold |= p >> gold + n
-    p >> debt |= p >> debt + n * 1.1
+    act tax(p, l)
+        take | (l >> people) * .05 * (.5 + (p >> centralization) * .5) * (.5 + (p >> discipline) * .5)
+        p >> gold |= p >> gold + take
+        p >> legitimacy |= p >> legitimacy - .01
+    xx
+    act relieve(p, l)
+        cost | :min(p >> gold * .2, (l >> people) * .05)
+        p >> gold |= p >> gold - cost
+        p >> legitimacy |= p >> legitimacy + .02
+        p >> stability |= p >> stability + .01
+    xx
+
+    /// What it builds is drawn by need: a granary where people are near what
+    /// the land feeds, walls when afraid, roads far from the capital, a temple
+    /// when pious, a harbour on the coast, a library when learned.
+    act build(p, l)
+        hungry | (l >> people) / (l >> food)
+        far    | :min(distance(p, l) / (p >> reach), 1.0)
+        kinds  | ["granary", "walls", "roads", "temple", "library"]
+        need   | [hungry / (1.0 + l >> granary), (p >> fear) / (1.0 + l >> walls), far / (1.0 + l >> roads),
+            (p >> spirituality) / (1.0 + l >> temple), (p >> learning) / (1.0 + l >> library)]
+        if l >> terrain == "coast"
+            :put_last!(kinds, "harbour")
+            :put_last!(need, (p >> openness) / (1.0 + l >> harbour))
+        xx
+        kind | :sample_weighted({"src": kinds, "weights": need})[0]
+        p >> gold |= p >> gold - 20.0
+        if p >> stone >= 5.0
+            p >> stone |= p >> stone - 5.0
+        else
+            p >> wood |= p >> wood - 5.0
+        xx
+        judge
+            kind == "granary":
+                l >> granary |= l >> granary + 1
+                l >> food |= l >> food * 1.1
+            kind == "walls": l >> walls |= l >> walls + 1
+            kind == "roads": l >> roads |= l >> roads + 1
+            kind == "temple":
+                l >> temple |= l >> temple + 1
+                p >> legitimacy |= p >> legitimacy + .02
+            kind == "library":
+                l >> library |= l >> library + 1
+                p >> learning |= p >> learning + .01
+            kind == "harbour": l >> harbour |= l >> harbour + 1
+        xx
+        p >> prestige |= p >> prestige + 1.0
+    xx
+    act levy(p, l)
+        n | (l >> people) * .05
+        l >> people |= l >> people - n
+        p >> army |= p >> army + n
+        p >> gold |= p >> gold - :min(p >> gold, n * .2)
+    xx
+    act disband(p, l)
+        n | (p >> army) * .5
+        p >> army |= p >> army - n
+        l >> people |= l >> people + n
+    xx
+    act borrow(p, l)
+        n | (p >> people) * .05
+        p >> gold |= p >> gold + n
+        p >> debt |= p >> debt + n * 1.1
+    xx
 xx
 
 /// dealings: toward other polities (the between phase)
 /// Befriend: trade, envoy, aid, ally, treaty.
 
-decision trade as dealings
-    targets: uses dealings where :link_score(self, target, "border")
-    score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * @lean_trade
-xx
-decision envoy as dealings
-    targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
-    score => (@honor + @cooperation) / 2 * (.3 + :max(grudge(self, target), grudge(target, self))) * (.5 + @fear * .5) * (1.0 - grudge(self, target) * .5) * @lean_envoy
-xx
-decision aid as dealings
-    targets: uses dealings where :link_score(self, target, "border") and (@food >= @people * .1 or @gold >= @people * .1) and ((target >> food) < (target >> people) * .02 or (target >> wars) > 0)
-    score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * @lean_aid
-xx
-decision ally as dealings
-    targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
-    score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * @lean_ally
-xx
-decision treaty as dealings
-    targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
-    score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * @lean_treaty
-xx
+interface dealings |
+    decision trade
+        targets: uses dealings where :link_score(self, target, "border")
+        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * @lean_trade
+    xx
+    decision envoy
+        targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
+        score => (@honor + @cooperation) / 2 * (.3 + :max(grudge(self, target), grudge(target, self))) * (.5 + @fear * .5) * (1.0 - grudge(self, target) * .5) * @lean_envoy
+    xx
+    decision aid
+        targets: uses dealings where :link_score(self, target, "border") and (@food >= @people * .1 or @gold >= @people * .1) and ((target >> food) < (target >> people) * .02 or (target >> wars) > 0)
+        score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * @lean_aid
+    xx
+    decision ally
+        targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
+        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * @lean_ally
+    xx
+    decision treaty
+        targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
+        score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * @lean_treaty
+    xx
 
-/// Pressure: spy, denounce, embargo, demand.
+    /// Pressure: spy, denounce, embargo, demand.
 
-decision spy as dealings
-    targets: uses dealings where @cities >= 1 and :link_score(self, target, "border")
-    score => (@fear + @ambition + @discipline) / 3 * (1.0 - @honor) * .5
-xx
-decision denounce as dealings
-    targets: uses dealings where :link_score(self, target, "border")
-    score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade"))
-xx
-decision embargo as dealings
-    targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
-    score => grudge(self, target) * (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
-xx
-decision demand as dealings
-    targets: uses dealings where :link_score(self, target, "border") and (self >> power) > 1.5 * (target >> power)
-    score => (@ambition + @aggression) / 2 * (1.0 - @honor * .5) * (edge(self, target) - .5) * 2 * (1.0 - :link_score(target, self, "alliance")) * @lean_demand
-xx
+    decision spy
+        targets: uses dealings where @cities >= 1 and :link_score(self, target, "border")
+        score => (@fear + @ambition + @discipline) / 3 * (1.0 - @honor) * .5
+    xx
+    decision denounce
+        targets: uses dealings where :link_score(self, target, "border")
+        score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade"))
+    xx
+    decision embargo
+        targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
+        score => grudge(self, target) * (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
+    xx
+    decision demand
+        targets: uses dealings where :link_score(self, target, "border") and (self >> power) > 1.5 * (target >> power)
+        score => (@ambition + @aggression) / 2 * (1.0 - @honor * .5) * (edge(self, target) - .5) * 2 * (1.0 - :link_score(target, self, "alliance")) * @lean_demand
+    xx
 
-/// Force: show of force, raid, strike, war, break a treaty, sue for peace.
+    /// Force: show of force, raid, strike, war, break a treaty, sue for peace.
 
-decision show_of_force as dealings
-    targets: uses dealings where @army >= 10.0 and :link_score(self, target, "border")
-    score => (@fear + @ambition) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
-xx
-decision raid as dealings
-    targets: uses dealings where (@horses >= 1.0 or @ships >= 1.0) and @army >= 5.0 and :link_score(self, target, "border")
-    score => @aggression * (.4 + short(@food, @people * .05) * .3 + short(@gold, @people * .05) * .3) * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - @honor * .5) * @lean_raid
-xx
-decision strike as dealings
-    targets: uses dealings where @rank >= 2 and @army >= 10.0 and :link_score(self, target, "border")
-    score => @aggression * (.3 + grudge(self, target)) * (1.0 - weariness(self)) * edge(self, target) * @lean_strike
-xx
-decision war as dealings
-    targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-    score => (@aggression + @ambition + grudge(self, target)) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * .6 * @lean_war
-xx
-decision break_treaty as dealings
-    targets: uses dealings where :link_score(self, target, "alliance") > 0
-    score => @ambition * (1.0 - @honor) * edge(self, target) * .5
-xx
-decision sue_for_peace as dealings
-    targets: uses dealings where @wars > 0 and !(war_between(self, target).nix?)
-    score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5)
-xx
+    decision show_of_force
+        targets: uses dealings where @army >= 10.0 and :link_score(self, target, "border")
+        score => (@fear + @ambition) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
+    xx
+    decision raid
+        targets: uses dealings where (@horses >= 1.0 or @ships >= 1.0) and @army >= 5.0 and :link_score(self, target, "border")
+        score => @aggression * (.4 + short(@food, @people * .05) * .3 + short(@gold, @people * .05) * .3) * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - @honor * .5) * @lean_raid
+    xx
+    decision strike
+        targets: uses dealings where @rank >= 2 and @army >= 10.0 and :link_score(self, target, "border")
+        score => @aggression * (.3 + grudge(self, target)) * (1.0 - weariness(self)) * edge(self, target) * @lean_strike
+    xx
+    decision war
+        targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
+        score => (@aggression + @ambition + grudge(self, target)) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * .6 * @lean_war
+    xx
+    decision break_treaty
+        targets: uses dealings where :link_score(self, target, "alliance") > 0
+        score => @ambition * (1.0 - @honor) * edge(self, target) * .5
+    xx
+    decision sue_for_peace
+        targets: uses dealings where @wars > 0 and !(war_between(self, target).nix?)
+        score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5)
+    xx
 
-/// One decision a year toward another polity, drawn by weight among the
-/// possible ones.
-judge as dealings
-    true:
-        names   | []
-        weights | []
-        repeat {"trade": trade, "envoy": envoy, "aid": aid, "ally": ally, "treaty": treaty, "spy": spy,
-            "denounce": denounce, "embargo": embargo, "demand": demand, "show_of_force": show_of_force,
-            "raid": raid, "strike": strike, "war": war, "break_treaty": break_treaty, "sue_for_peace": sue_for_peace} as k, d
-            if d.nix? or (d >> score) <= 0 => skip
-            :put_last!(names, k)
-            :put_last!(weights, d >> score)
+    /// One decision a year toward another polity, drawn by weight among the
+    /// possible ones.
+    judge
+        true:
+            names   | []
+            weights | []
+            repeat {"trade": trade, "envoy": envoy, "aid": aid, "ally": ally, "treaty": treaty, "spy": spy,
+                "denounce": denounce, "embargo": embargo, "demand": demand, "show_of_force": show_of_force,
+                "raid": raid, "strike": strike, "war": war, "break_treaty": break_treaty, "sue_for_peace": sue_for_peace} as k, d
+                if d.nix? or (d >> score) <= 0 => skip
+                :put_last!(names, k)
+                :put_last!(weights, d >> score)
+            xx
+            if :len(names) > 0
+                name | :sample_weighted({"src": names, "weights": weights})[0]
+                judge
+                    name == "trade": trade(self, trade >> target)
+                    name == "envoy": envoy(self, envoy >> target)
+                    name == "aid": aid(self, aid >> target)
+                    name == "ally": ally(self, ally >> target)
+                    name == "treaty": treaty(self, treaty >> target)
+                    name == "spy": spy(self, spy >> target)
+                    name == "denounce": denounce(self, denounce >> target)
+                    name == "embargo": embargo(self, embargo >> target)
+                    name == "demand": demand(self, demand >> target)
+                    name == "show_of_force": show_of_force(self, show_of_force >> target)
+                    name == "raid": raid(self, raid >> target)
+                    name == "strike": strike(self, strike >> target)
+                    name == "war": war(self, war >> target)
+                    name == "break_treaty": break_treaty(self, break_treaty >> target)
+                    name == "sue_for_peace": sue_for_peace(self, sue_for_peace >> target)
+                xx
+            xx
+    xx
+    act trade(p, t)
+        gain | :min(p >> people, t >> people) * .01 * (.5 + (p >> openness) * .5)
+        p >> gold |= p >> gold + gain
+        t >> gold |= t >> gold + gain
+        p >> openness |= p >> openness + .005
+        t >> openness |= t >> openness + .005
+        :link!(p, t, "trade", .1, 10)
+        :link!(t, p, "trade", .1, 10)
+    xx
+    act envoy(p, t)
+        p >> gold |= p >> gold - 2.0
+        :link!(p, t, "trade", .05, 10)
+        :link!(t, p, "trade", .05, 10)
+        :link!(p, t, "grievance", -.1, 40)
+        :link!(t, p, "grievance", -.1, 40)
+    xx
+    act aid(p, t)
+        food | p >> food * .2
+        gold | p >> gold * .1
+        p >> food |= p >> food - food
+        p >> gold |= p >> gold - gold
+        t >> food |= t >> food + food
+        t >> gold |= t >> gold + gold
+        t >> stability |= t >> stability + .03
+        p >> prestige |= p >> prestige + 2.0
+        :link!(p, t, "alliance", .1, 20)
+        :link!(t, p, "alliance", .1, 20)
+        :link!(t, p, "grievance", -.2, 40)
+    xx
+    act ally(p, t)
+        if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p)))
+            :link!(p, t, "grievance", .02, 20)
+            send nil
         xx
-        if :len(names) > 0
-            name | :sample_weighted({"src": names, "weights": weights})[0]
-            judge
-                name == "trade": trade(self, trade >> target)
-                name == "envoy": envoy(self, envoy >> target)
-                name == "aid": aid(self, aid >> target)
-                name == "ally": ally(self, ally >> target)
-                name == "treaty": treaty(self, treaty >> target)
-                name == "spy": spy(self, spy >> target)
-                name == "denounce": denounce(self, denounce >> target)
-                name == "embargo": embargo(self, embargo >> target)
-                name == "demand": demand(self, demand >> target)
-                name == "show_of_force": show_of_force(self, show_of_force >> target)
-                name == "raid": raid(self, raid >> target)
-                name == "strike": strike(self, strike >> target)
-                name == "war": war(self, war >> target)
-                name == "break_treaty": break_treaty(self, break_treaty >> target)
-                name == "sue_for_peace": sue_for_peace(self, sue_for_peace >> target)
+        p >> fear |= p >> fear - .05
+        t >> fear |= t >> fear - .05
+        :link!(p, t, "alliance", .5, 30)
+        :link!(t, p, "alliance", .5, 30)
+    xx
+
+    /// A treaty eases a grievance; between two at war it is a peace that
+    /// changes nothing, if the other side takes it.
+    act treaty(p, t)
+        w | war_between(p, t)
+        if !(w.nix?)
+            if !chance((weariness(t) + t >> fear + t >> cooperation) / 3) => send nil
+            end_war(w, nil)
+        xx
+        p >> fear |= p >> fear - .03
+        t >> fear |= t >> fear - .03
+        p >> stability |= p >> stability + .02
+        t >> stability |= t >> stability + .02
+        :link!(p, t, "grievance", -.3, 40)
+        :link!(t, p, "grievance", -.3, 40)
+    xx
+    act spy(p, t)
+        p >> learning |= p >> learning + .005
+        if chance((1.0 - p >> discipline) * .3) => :link!(t, p, "grievance", .1, 40)
+    xx
+    act denounce(p, t)
+        p >> cohesion |= p >> cohesion + .01
+        :link!(t, p, "grievance", .1, 40)
+        :link!(p, t, "trade", -.1, 10)
+        :link!(t, p, "trade", -.1, 10)
+    xx
+    act embargo(p, t)
+        loss | :min(t >> gold, :link_score(p, t, "trade") * (t >> people) * .02)
+        t >> gold |= t >> gold - loss
+        p >> gold |= p >> gold - :min(p >> gold, loss * .5)
+        :link!(p, t, "trade", -.5, 20)
+        :link!(t, p, "trade", -.5, 20)
+        :link!(t, p, "grievance", .1, 40)
+    xx
+
+    /// The target pays a fifth of its gold when afraid enough, else refuses.
+    act demand(p, t)
+        if chance((t >> fear) * (1.0 - t >> aggression) * (2.0 * edge(p, t) - 1.0))
+            paid | (t >> gold) * .2
+            t >> gold |= t >> gold - paid
+            p >> gold |= p >> gold + paid
+            t >> legitimacy |= t >> legitimacy - .03
+            p >> prestige |= p >> prestige + 2.0
+            :link!(t, p, "grievance", .1, 40)
+            /// A weak, afraid polity may offer to serve (a subjugate follows).
+            if (t >> owner).nix? and chance((t >> fear) * (2.0 * edge(p, t) - 1.0) * (1.0 - t >> ambition)) => t >> submits_to |= p
+        else
+            p >> prestige |= p >> prestige - 1.0
+            :link!(t, p, "grievance", .2, 40)
+        xx
+    xx
+    act show_of_force(p, t)
+        t >> fear |= t >> fear + .05
+        :link!(t, p, "grievance", .05, 40)
+    xx
+
+    /// Takes food and gold from the target, more the stronger the raider is.
+    act raid(p, t)
+        share | edge(p, t) * .2
+        food  | (t >> food) * share
+        gold  | (t >> gold) * share
+        t >> food |= t >> food - food
+        t >> gold |= t >> gold - gold
+        p >> food |= p >> food + food
+        p >> gold |= p >> gold + gold
+        t >> fear |= t >> fear + .03
+        p >> army |= p >> army * .98
+        :link!(t, p, "grievance", .15, 40)
+    xx
+
+    /// A border battle: both armies bleed, the weaker more.
+    act strike(p, t)
+        e | edge(p, t)
+        p >> army |= p >> army * (1.0 - .1 * (1.0 - e))
+        t >> army |= t >> army * (1.0 - .1 * e)
+        if e > .5
+            p >> prestige |= p >> prestige + 2.0
+        else
+            p >> prestige |= p >> prestige - 2.0
+        xx
+        :link!(t, p, "grievance", .3, 40)
+    xx
+
+    /// Starts a War over the target's province that borders `p` nearest its
+    /// capital; each side's allies come if their honor holds, and an ally
+    /// that does not come breaks the alliance.
+    act war(p, t)
+        aim  | nil
+        near | 0.0
+        repeat :objects(Land, it >> owner == t) as l
+            if :len(:objects(Land, it >> owner == p and :link_score(l, it, "border"))) == 0 => skip
+            d | distance(p, l)
+            if aim.nix? or d < near
+                aim  |= l
+                near |= d
             xx
         xx
-xx
+        w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
+        if !(aim.nix?) => w >> aim |= aim
+        defenders | call_allies(t, p, [])
+        repeat defenders as x
+            :link!(w, x, "defends", 1)
+        xx
+        repeat call_allies(p, t, defenders) as x
+            :link!(w, x, "attacks", 1)
+        xx
+        p >> wars |= p >> wars + 1
+        t >> wars |= t >> wars + 1
+        :link!(t, p, "grievance", .3, 60)
+    xx
+    act break_treaty(p, t)
+        :unlink!(p, t, "alliance")
+        :unlink!(t, p, "alliance")
+        p >> prestige |= p >> prestige - 5.0
+        :link!(t, p, "grievance", .5, 60)
+    xx
 
-act trade(p, t) as dealings
-    gain | :min(p >> people, t >> people) * .01 * (.5 + (p >> openness) * .5)
-    p >> gold |= p >> gold + gain
-    t >> gold |= t >> gold + gain
-    p >> openness |= p >> openness + .005
-    t >> openness |= t >> openness + .005
-    :link!(p, t, "trade", .1, 10)
-    :link!(t, p, "trade", .1, 10)
-xx
-act envoy(p, t) as dealings
-    p >> gold |= p >> gold - 2.0
-    :link!(p, t, "trade", .05, 10)
-    :link!(t, p, "trade", .05, 10)
-    :link!(p, t, "grievance", -.1, 40)
-    :link!(t, p, "grievance", -.1, 40)
-xx
-act aid(p, t) as dealings
-    food | p >> food * .2
-    gold | p >> gold * .1
-    p >> food |= p >> food - food
-    p >> gold |= p >> gold - gold
-    t >> food |= t >> food + food
-    t >> gold |= t >> gold + gold
-    t >> stability |= t >> stability + .03
-    p >> prestige |= p >> prestige + 2.0
-    :link!(p, t, "alliance", .1, 20)
-    :link!(t, p, "alliance", .1, 20)
-    :link!(t, p, "grievance", -.2, 40)
-xx
-act ally(p, t) as dealings
-    if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p)))
-        :link!(p, t, "grievance", .02, 20)
-        send nil
-    xx
-    p >> fear |= p >> fear - .05
-    t >> fear |= t >> fear - .05
-    :link!(p, t, "alliance", .5, 30)
-    :link!(t, p, "alliance", .5, 30)
-xx
-/// A treaty eases a grievance; between two at war it is a peace that
-/// changes nothing, if the other side takes it.
-act treaty(p, t) as dealings
-    w | war_between(p, t)
-    if !(w.nix?)
-        if !chance((weariness(t) + t >> fear + t >> cooperation) / 3) => send nil
-        end_war(w, nil)
-    xx
-    p >> fear |= p >> fear - .03
-    t >> fear |= t >> fear - .03
-    p >> stability |= p >> stability + .02
-    t >> stability |= t >> stability + .02
-    :link!(p, t, "grievance", -.3, 40)
-    :link!(t, p, "grievance", -.3, 40)
-xx
-act spy(p, t) as dealings
-    p >> learning |= p >> learning + .005
-    if chance((1.0 - p >> discipline) * .3) => :link!(t, p, "grievance", .1, 40)
-xx
-act denounce(p, t) as dealings
-    p >> cohesion |= p >> cohesion + .01
-    :link!(t, p, "grievance", .1, 40)
-    :link!(p, t, "trade", -.1, 10)
-    :link!(t, p, "trade", -.1, 10)
-xx
-act embargo(p, t) as dealings
-    loss | :min(t >> gold, :link_score(p, t, "trade") * (t >> people) * .02)
-    t >> gold |= t >> gold - loss
-    p >> gold |= p >> gold - :min(p >> gold, loss * .5)
-    :link!(p, t, "trade", -.5, 20)
-    :link!(t, p, "trade", -.5, 20)
-    :link!(t, p, "grievance", .1, 40)
-xx
-/// The target pays a fifth of its gold when afraid enough, else refuses.
-act demand(p, t) as dealings
-    if chance((t >> fear) * (1.0 - t >> aggression) * (2.0 * edge(p, t) - 1.0))
-        paid | (t >> gold) * .2
-        t >> gold |= t >> gold - paid
-        p >> gold |= p >> gold + paid
-        t >> legitimacy |= t >> legitimacy - .03
-        p >> prestige |= p >> prestige + 2.0
-        :link!(t, p, "grievance", .1, 40)
-        /// A weak, afraid polity may offer to serve (a subjugate follows).
-        if (t >> owner).nix? and chance((t >> fear) * (2.0 * edge(p, t) - 1.0) * (1.0 - t >> ambition)) => t >> submits_to |= p
-    else
-        p >> prestige |= p >> prestige - 1.0
-        :link!(t, p, "grievance", .2, 40)
-    xx
-xx
-act show_of_force(p, t) as dealings
-    t >> fear |= t >> fear + .05
-    :link!(t, p, "grievance", .05, 40)
-xx
-/// Takes food and gold from the target, more the stronger the raider is.
-act raid(p, t) as dealings
-    share | edge(p, t) * .2
-    food  | (t >> food) * share
-    gold  | (t >> gold) * share
-    t >> food |= t >> food - food
-    t >> gold |= t >> gold - gold
-    p >> food |= p >> food + food
-    p >> gold |= p >> gold + gold
-    t >> fear |= t >> fear + .03
-    p >> army |= p >> army * .98
-    :link!(t, p, "grievance", .15, 40)
-xx
-/// A border battle: both armies bleed, the weaker more.
-act strike(p, t) as dealings
-    e | edge(p, t)
-    p >> army |= p >> army * (1.0 - .1 * (1.0 - e))
-    t >> army |= t >> army * (1.0 - .1 * e)
-    if e > .5
-        p >> prestige |= p >> prestige + 2.0
-    else
-        p >> prestige |= p >> prestige - 2.0
-    xx
-    :link!(t, p, "grievance", .3, 40)
-xx
-/// Starts a War over the target's province that borders `p` nearest its
-/// capital; each side's allies come if their honor holds, and an ally
-/// that does not come breaks the alliance.
-act war(p, t) as dealings
-    aim  | nil
-    near | 0.0
-    repeat :objects(Land, it >> owner == t) as l
-        if :len(:objects(Land, it >> owner == p and :link_score(l, it, "border"))) == 0 => skip
-        d | distance(p, l)
-        if aim.nix? or d < near
-            aim  |= l
-            near |= d
+    /// Offers peace on terms from how the war stands: if the other side
+    /// takes it, the winning side keeps what it was fighting for.
+    act sue_for_peace(p, t)
+        w | war_between(p, t) ?? => send nil
+        if !chance((weariness(t) + (1.0 - edge(t, p)) + t >> cooperation) / 3) => send nil
+        ahead | w >> standing
+        if w >> defender == p => ahead |= -ahead
+        if ahead < 0.0
+            end_war(w, t)
+        else
+            end_war(w, nil)
         xx
     xx
-    w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
-    if !(aim.nix?) => w >> aim |= aim
-    defenders | call_allies(t, p, [])
-    repeat defenders as x
-        :link!(w, x, "defends", 1)
-    xx
-    repeat call_allies(p, t, defenders) as x
-        :link!(w, x, "attacks", 1)
-    xx
-    p >> wars |= p >> wars + 1
-    t >> wars |= t >> wars + 1
-    :link!(t, p, "grievance", .3, 60)
 xx
+
 /// An ally already called to the other side (`taken`) stays there: the
 /// defender's allies are called first.
 act call_allies(side, foe, taken)
@@ -1271,25 +1304,6 @@ act call_allies(side, foe, taken)
         xx
     xx
     return came
-xx
-act break_treaty(p, t) as dealings
-    :unlink!(p, t, "alliance")
-    :unlink!(t, p, "alliance")
-    p >> prestige |= p >> prestige - 5.0
-    :link!(t, p, "grievance", .5, 60)
-xx
-/// Offers peace on terms from how the war stands: if the other side
-/// takes it, the winning side keeps what it was fighting for.
-act sue_for_peace(p, t) as dealings
-    w | war_between(p, t) ?? => send nil
-    if !chance((weariness(t) + (1.0 - edge(t, p)) + t >> cooperation) / 3) => send nil
-    ahead | w >> standing
-    if w >> defender == p => ahead |= -ahead
-    if ahead < 0.0
-        end_war(w, t)
-    else
-        end_war(w, nil)
-    xx
 xx
 
 /// a war's year
@@ -1639,151 +1653,157 @@ xx
 /// revolt. Settle and union only choose: the colony (spawn) and the union
 /// (merge) are the settle phase's transitions.
 
-decision reform as realm
-    targets: Land where target == @capital and @cities >= 1
-    score => (@learning + :min(@lost_years, 1) * .5 + (1.0 - @legitimacy) * .5) / 2 * (1.0 - @tradition)
-xx
-decision settle as realm
-    targets: Land where target == @capital and @colony_at.nix? and @people >= 200.0 and @frontier > 0
-    score => (@ambition + :min(@people / (@lands * 400.0), 1.0) + :min(@ships / 10.0, 1.0)) / 3 * (1.0 - @fear * .5) * @lean_settle
-xx
-decision migrate as realm
-    targets: Land where target == @capital and @rank == 1 and @frontier > 0
-    score => (short(@food, @people * .05) + :min(@horses / (@people * .01 + 1.0), 1.0) + @fear) / 3 * (1.0 - @tradition)
-xx
-decision union as realm
-    targets: uses govern where :link_score(self, target, "border") and @rank >= 3 and (target >> rank) >= 3 and :link_score(self, target, "alliance") >= .5 and @union_with.nix? and (target >> union_with).nix? and (target >> owner) == @owner
-    score => past(closeness(self, target), .8) * shared_enemy(self, target) * (@cooperation + target >> cooperation) / 2 * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
-xx
-decision cede as realm
-    targets: uses govern where :link_score(self, target, "border") and @wars > 0 and @lands >= 2 and !(war_between(self, target).nix?)
-    score => (weariness(self) + (1.0 - edge(self, target))) / 2 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
-xx
-decision release as realm
-    targets: uses govern where (target >> owner) == self
-    score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
-xx
-decision revolt as realm
-    targets: uses govern where target == @owner
-    score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
-xx
+interface realm |
+    decision reform
+        targets: Land where target == @capital and @cities >= 1
+        score => (@learning + :min(@lost_years, 1) * .5 + (1.0 - @legitimacy) * .5) / 2 * (1.0 - @tradition)
+    xx
+    decision settle
+        targets: Land where target == @capital and @colony_at.nix? and @people >= 200.0 and @frontier > 0
+        score => (@ambition + :min(@people / (@lands * 400.0), 1.0) + :min(@ships / 10.0, 1.0)) / 3 * (1.0 - @fear * .5) * @lean_settle
+    xx
+    decision migrate
+        targets: Land where target == @capital and @rank == 1 and @frontier > 0
+        score => (short(@food, @people * .05) + :min(@horses / (@people * .01 + 1.0), 1.0) + @fear) / 3 * (1.0 - @tradition)
+    xx
+    decision union
+        targets: uses govern where :link_score(self, target, "border") and @rank >= 3 and (target >> rank) >= 3 and :link_score(self, target, "alliance") >= .5 and @union_with.nix? and (target >> union_with).nix? and (target >> owner) == @owner
+        score => past(closeness(self, target), .8) * shared_enemy(self, target) * (@cooperation + target >> cooperation) / 2 * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+    xx
+    decision cede
+        targets: uses govern where :link_score(self, target, "border") and @wars > 0 and @lands >= 2 and !(war_between(self, target).nix?)
+        score => (weariness(self) + (1.0 - edge(self, target))) / 2 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+    xx
+    decision release
+        targets: uses govern where (target >> owner) == self
+        score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+    xx
+    decision revolt
+        targets: uses govern where target == @owner
+        score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
+    xx
 
-/// One decision a year about its shape, or none: keeping things as they
-/// are weighs as much as its stability and tradition do.
-judge as realm
-    true:
-        names   | [""]
-        weights | [(@stability + @tradition) / 2]
-        repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt} as k, d
-            if d.nix? or (d >> score) <= 0 => skip
-            :put_last!(names, k)
-            :put_last!(weights, d >> score)
+    /// One decision a year about its shape, or none: keeping things as they
+    /// are weighs as much as its stability and tradition do.
+    judge
+        true:
+            names   | [""]
+            weights | [(@stability + @tradition) / 2]
+            repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt} as k, d
+                if d.nix? or (d >> score) <= 0 => skip
+                :put_last!(names, k)
+                :put_last!(weights, d >> score)
+            xx
+            if :len(names) > 1
+                name | :sample_weighted({"src": names, "weights": weights})[0]
+                judge
+                    name == "reform": reform(self, reform >> target)
+                    name == "settle": settle(self, settle >> target)
+                    name == "migrate": migrate(self, migrate >> target)
+                    name == "union": union(self, union >> target)
+                    name == "cede": cede(self, cede >> target)
+                    name == "release": release(self, release >> target)
+                    name == "revolt": revolt(self, revolt >> target)
+                xx
+            xx
+    xx
+
+    /// Tradition gives way and the weakest of discipline, centralization and
+    /// legitimacy gains. The traits move, not the baselines: the pull back
+    /// toward its culture undoes a reform that is not kept up.
+    act reform(p, l)
+        p >> tradition |= p >> tradition - .05
+        d | p >> discipline
+        c | p >> centralization
+        g | p >> legitimacy
+        judge
+            d <= c and d <= g: p >> discipline |= d + .05
+            c <= g: p >> centralization |= c + .05
+            true: p >> legitimacy |= g + .05
         xx
-        if :len(names) > 1
-            name | :sample_weighted({"src": names, "weights": weights})[0]
-            judge
-                name == "reform": reform(self, reform >> target)
-                name == "settle": settle(self, settle >> target)
-                name == "migrate": migrate(self, migrate >> target)
-                name == "union": union(self, union >> target)
-                name == "cede": cede(self, cede >> target)
-                name == "release": release(self, release >> target)
-                name == "revolt": revolt(self, revolt >> target)
+    xx
+
+    /// Picks the free province with the most room beside its land, or across
+    /// the sea within twice its reach; the colony is founded in the settle
+    /// phase.
+    act settle(p, l)
+        best | nil
+        room | 0.0
+        repeat :objects(Land, (it >> owner).nix? and it >> people >= 5.0) as q
+            near | false
+            if p >> ships >= 1.0 and q >> terrain == "coast" and distance(p, q) <= 2.0 * (p >> reach) => near |= true
+            if !near and :len(:objects(Land, it >> owner == p and :link_score(q, it, "border"))) > 0 => near |= true
+            if !near => skip
+            r | land::room(q) * (q >> food)
+            if best.nix? or r > room
+                best |= q
+                room |= r
             xx
         xx
-xx
+        p >> colony_at |= best
+    xx
 
-/// Tradition gives way and the weakest of discipline, centralization and
-/// legitimacy gains. The traits move, not the baselines: the pull back
-/// toward its culture undoes a reform that is not kept up.
-act reform(p, l) as realm
-    p >> tradition |= p >> tradition - .05
-    d | p >> discipline
-    c | p >> centralization
-    g | p >> legitimacy
-    judge
-        d <= c and d <= g: p >> discipline |= d + .05
-        c <= g: p >> centralization |= c + .05
-        true: p >> legitimacy |= g + .05
-    xx
-xx
-/// Picks the free province with the most room beside its land, or across
-/// the sea within twice its reach; the colony is founded in the settle
-/// phase.
-act settle(p, l) as realm
-    best | nil
-    room | 0.0
-    repeat :objects(Land, (it >> owner).nix? and it >> people >= 5.0) as q
-        near | false
-        if p >> ships >= 1.0 and q >> terrain == "coast" and distance(p, q) <= 2.0 * (p >> reach) => near |= true
-        if !near and :len(:objects(Land, it >> owner == p and :link_score(q, it, "border"))) > 0 => near |= true
-        if !near => skip
-        r | land::room(q) * (q >> food)
-        if best.nix? or r > room
-            best |= q
-            room |= r
+    /// A tribe moves: it takes the free province beside it with the most food
+    /// and leaves its poorest one, half its people going along.
+    act migrate(p, l)
+        to   | nil
+        from | nil
+        repeat :objects(Land, (it >> owner).nix? and it >> people >= 5.0) as q
+            if :len(:objects(Land, it >> owner == p and :link_score(q, it, "border"))) == 0 => skip
+            if to.nix? or q >> food > to >> food => to |= q
+        xx
+        if to.nix? => send nil
+        repeat :objects(Land, it >> owner == p) as q
+            if from.nix? or q >> food < from >> food => from |= q
+        xx
+        to >> owner |= p
+        if p >> lands >= 2 and from != p >> capital
+            n | (from >> people) * .5
+            from >> people |= from >> people - n
+            to >> people |= to >> people + n
+            from >> owner |= nil
         xx
     xx
-    p >> colony_at |= best
-xx
-/// A tribe moves: it takes the free province beside it with the most food
-/// and leaves its poorest one, half its people going along.
-act migrate(p, l) as realm
-    to   | nil
-    from | nil
-    repeat :objects(Land, (it >> owner).nix? and it >> people >= 5.0) as q
-        if :len(:objects(Land, it >> owner == p and :link_score(q, it, "border"))) == 0 => skip
-        if to.nix? or q >> food > to >> food => to |= q
+
+    /// Offers a union; the other side takes it by its cooperation and how
+    /// close their cultures are. The merge follows in the settle phase.
+    act union(p, t)
+        if !chance((t >> cooperation + t >> fear) / 2 * closeness(p, t)) => send nil
+        p >> union_with |= t
+        t >> union_with |= p
     xx
-    if to.nix? => send nil
-    repeat :objects(Land, it >> owner == p) as q
-        if from.nix? or q >> food < from >> food => from |= q
-    xx
-    to >> owner |= p
-    if p >> lands >= 2 and from != p >> capital
-        n | (from >> people) * .5
-        from >> people |= from >> people - n
-        to >> people |= to >> people + n
-        from >> owner |= nil
-    xx
-xx
-/// Offers a union; the other side takes it by its cooperation and how
-/// close their cultures are. The merge follows in the settle phase.
-act union(p, t) as realm
-    if !chance((t >> cooperation + t >> fear) / 2 * closeness(p, t)) => send nil
-    p >> union_with |= t
-    t >> union_with |= p
-xx
-/// Gives the enemy its province nearest the enemy's capital; a war fought
-/// for that province ends.
-act cede(p, t) as realm
-    give | nil
-    near | 0.0
-    repeat :objects(Land, it >> owner == p and it != p >> capital) as l
-        if :len(:objects(Land, it >> owner == t and :link_score(l, it, "border"))) == 0 => skip
-        d | distance(t, l)
-        if give.nix? or d < near
-            give |= l
-            near |= d
+
+    /// Gives the enemy its province nearest the enemy's capital; a war fought
+    /// for that province ends.
+    act cede(p, t)
+        give | nil
+        near | 0.0
+        repeat :objects(Land, it >> owner == p and it != p >> capital) as l
+            if :len(:objects(Land, it >> owner == t and :link_score(l, it, "border"))) == 0 => skip
+            d | distance(t, l)
+            if give.nix? or d < near
+                give |= l
+                near |= d
+            xx
         xx
+        if give.nix? => send nil
+        give >> owner |= t
+        :link!(t, p, "grievance", -.2, 40)
+        w | war_between(p, t) ?? => send nil
+        if w >> aim == give => end_war(w, nil)
     xx
-    if give.nix? => send nil
-    give >> owner |= t
-    :link!(t, p, "grievance", -.2, 40)
-    w | war_between(p, t) ?? => send nil
-    if w >> aim == give => end_war(w, nil)
-xx
-act release(p, t) as realm
-    t >> owner |= nil
-    p >> prestige |= p >> prestige - 2.0
-    :link!(t, p, "grievance", -.3, 40)
-    if t >> form == "client_regime" => government::rule(t, government::choose(t))
-xx
-act revolt(p, t) as realm
-    p >> owner |= nil
-    p >> prestige |= p >> prestige + 2.0
-    :link!(t, p, "grievance", .3, 60)
-    if p >> form == "client_regime" => government::rule(p, government::choose(p))
+    act release(p, t)
+        t >> owner |= nil
+        p >> prestige |= p >> prestige - 2.0
+        :link!(t, p, "grievance", -.3, 40)
+        if t >> form == "client_regime" => government::rule(t, government::choose(t))
+    xx
+    act revolt(p, t)
+        p >> owner |= nil
+        p >> prestige |= p >> prestige + 2.0
+        :link!(t, p, "grievance", .3, 60)
+        if p >> form == "client_regime" => government::rule(p, government::choose(p))
+    xx
 xx
 
 /// the settle phase: the year's change of form and the transitions

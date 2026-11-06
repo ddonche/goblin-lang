@@ -1,0 +1,35 @@
+/// known-gap: interp has no interfaces; the interpreter is being retired
+/// An action declared outside an interface's block joins it with `as`,
+/// beside the block's own members; `as` can name several interfaces.
+/// Actions in the block are free actions like any other.
+interface govern |
+    act tax(p)
+        p >> gold |= p >> gold + 3
+    xx
+    decision town
+        targets: Town where (target >> owner) == self
+        score => 1
+    xx
+    judge
+        town:
+            tax(self)
+            boast(self)
+    xx
+xx
+act boast(p) as govern, court
+    say("{p >> name} has {p >> gold} gold")
+xx
+<>Town |
+    owner: nil
+xx
+<>Kingdom |
+    name: ..
+    gold: 0
+    uses govern
+xx
+k <> Kingdom | name: "Varn"
+t <> Town | owner: k
+tick()
+tick()
+tax(k)
+say(k >> gold)

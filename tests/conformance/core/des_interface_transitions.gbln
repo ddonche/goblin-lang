@@ -6,7 +6,7 @@
 /// class writes `uses`: in a `phase:` in that phase, in the order written
 /// among the class's own transitions. The hooks are the class's wherever it
 /// uses the interface.
-interface conquest
+interface conquest |
     transition absorb
         targets: uses conquest where (target >> power) < @power and (target >> beaten_by) == self
     xx

@@ -1,12 +1,14 @@
 /// A class that uses an interface with a judge, where it already has a
 /// judge of its own, is an error (P1346): a phase has one judge of its own
 /// making.
-decision partner as diplomacy
-    targets: Kingdom
-    score => 1
-xx
-judge as diplomacy
-    partner: say("deal")
+interface diplomacy |
+    decision partner
+        targets: Kingdom
+        score => 1
+    xx
+    judge
+        partner: say("deal")
+    xx
 xx
 <>Kingdom |
     uses diplomacy

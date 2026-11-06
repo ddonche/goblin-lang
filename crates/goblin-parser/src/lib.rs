@@ -349,6 +349,9 @@ pub struct Parser<'t> {
     interfaces: Vec<Interface>,
     /// The `as` names a `judge as diplomacy` header gave, for its caller.
     judge_as: Vec<String>,
+    /// Actions an `interface` block declared: they are top-level actions,
+    /// put in the file where the block stands.
+    hoisted: Vec<ast::Stmt>,
 }
 
 /// An interface: a named group of behavior that classes `uses`.
@@ -798,6 +801,7 @@ impl<'t> Parser<'t> {
             uses_waiting: Vec::new(),
             interfaces: Vec::new(),
             judge_as: Vec::new(),
+            hoisted: Vec::new(),
         }
     } 
 
@@ -6913,6 +6917,8 @@ impl<'t> Parser<'t> {
                             sp,
                         ));
                     }
+                    // An interface block's actions.
+                    items.append(&mut self.hoisted);
                     // Flatten matrix blocks into top-level stmts so class decl and binds aren't scoped away
                     match stmt {
                         ast::Stmt::Block { stmts: block_stmts, .. }
@@ -7455,11 +7461,11 @@ impl<'t> Parser<'t> {
         {
             return self.parse_interface_judge();
         }
-        // `interface conquest` ... `xx`: the transitions and hooks that
-        // belong to an interface.
+        // `interface conquest |` ... `xx`: what belongs to an interface.
         if self.peek_ident() == Some("interface")
             && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
-            && self.toks.get(self.i + 2).is_none_or(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof))
+            && self.toks.get(self.i + 2).is_none_or(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof)
+                || matches!(&t.kind, TokenKind::Op(o) if o == "|"))
         {
             return self.parse_interface_block();
         }
@@ -7471,7 +7477,7 @@ impl<'t> Parser<'t> {
             let kw = self.peek_ident().unwrap_or_default().to_string();
             let word = self.toks[self.i + 1].value.clone().unwrap_or_default();
             return Err(s_help_site!("P1519", &format!("`{kw} {word}` is not joined to an interface with `as`"),
-                &format!("Write it inside the interface's block:\n  interface conquest\n      {kw} {word} ...\n  xx")));
+                &format!("Write it inside the interface's block:\n  interface conquest |\n      {kw} {word} ...\n  xx")));
         }
         // `aspect Political |` ... `xx`: a named set of fields for classes.
         if self.peek_ident() == Some("aspect")
@@ -8353,6 +8359,13 @@ impl<'t> Parser<'t> {
         let name = self.eat_ident().unwrap_or_default();
         self.i += 1; // `as`
         let ifaces = self.eat_name_list("P1344", "Write: decision trade as diplomacy")?;
+        self.parse_interface_decision_in(start_i, col, name, ifaces)?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
+    /// A decision's block, filed under each of `ifaces`.
+    fn parse_interface_decision_in(&mut self, start_i: usize, col: u32, name: String, ifaces: Vec<String>) -> Result<(), String> {
         let d = self.with_self(|p| p.parse_decision_block(col, &name))?;
         let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
         let formula = self.lower_expr(*d.formula);
@@ -8370,18 +8383,24 @@ impl<'t> Parser<'t> {
             }
             i.decisions.push(nd.clone());
         }
-        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+        Ok(())
     }
 
-    /// `interface conquest` then its transitions and `on` hooks, one after
-    /// the other, closed with `xx`: written once for every class that uses
-    /// the interface.
+    /// `interface conquest |` then its actions, decisions, judge,
+    /// transitions and `on` hooks, closed with `xx`: written once for every
+    /// class that uses the interface. Actions, decisions and judges can
+    /// also join it from outside with `as`.
     fn parse_interface_block(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
         let start_i = self.i;
         let col = self.toks[start_i].span.col_start;
         self.i += 1; // `interface`
         let name = self.eat_ident().unwrap_or_default();
+        self.skip_layout_inline();
+        if !self.eat_op("|") || !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            return Err(s_help_site!("P1519", &format!("Expected '|' and then the interface's members under interface {name}"),
+                &format!("Write:\n  interface {name} |\n      act ...\n  xx")));
+        }
         if self.interfaces.iter().any(|i| i.name == name && i.block) {
             return Err(s_help_site!("P1518", &format!("The interface {name} has two `interface` blocks"), "Keep one block per interface."));
         }
@@ -8405,13 +8424,34 @@ impl<'t> Parser<'t> {
             }
             let hook = self.peek_ident() == Some("on")
                 && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref().is_some_and(|w| w == "erase" || hook_params(w).is_some()));
-            if self.peek_ident() == Some("transition") {
+            let kw = self.peek_ident().map(str::to_string);
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Act) | Some(TokenKind::Action)) {
+                let act = self.parse_stmt()?;
+                if let ast::Stmt::Action(a) = &act {
+                    let n = a.name.clone();
+                    let i = self.interface_mut(&name);
+                    if !i.acts.contains(&n) { i.acts.push(n); }
+                }
+                self.hoisted.push(act);
+            } else if kw.as_deref() == Some("decision") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+                let d_i = self.i;
+                let d_col = self.toks[d_i].span.col_start;
+                self.i += 1;
+                let dname = self.eat_ident().unwrap_or_default();
+                self.parse_interface_decision_in(d_i, d_col, dname, vec![name.clone()])?;
+            } else if matches!(kw.as_deref(), Some("judge") | Some("judge_all")) {
+                let all = kw.as_deref() == Some("judge_all");
+                let stmt = self.with_self(|p| if all { p.parse_judge_all_stmt() } else { p.parse_judge_stmt() })?;
+                let mut ifaces = std::mem::take(&mut self.judge_as);
+                if !ifaces.contains(&name) { ifaces.insert(0, name.clone()); }
+                self.file_interface_judge(stmt, ifaces)?;
+            } else if self.peek_ident() == Some("transition") {
                 self.parse_interface_transition(&name)?;
             } else if hook {
                 self.parse_interface_hook(&name)?;
             } else {
-                return Err(s_help_site!("P1519", &format!("Expected a transition or an `on` hook in interface {name}"),
-                    "An interface block holds transitions and their hooks:\n  interface conquest\n      transition absorb\n          targets: uses conquest where ...\n      xx\n      on absorb => annexed(self, target)\n  xx\nActions, decisions and judges join an interface with `as`."));
+                return Err(s_help_site!("P1519", &format!("Expected an act, decision, judge, transition or `on` hook in interface {name}"),
+                    "An interface block holds its actions, decisions, judge, transitions and hooks:\n  interface conquest |\n      act annexed(p, t)\n          ...\n      xx\n      transition absorb\n          targets: uses conquest where ...\n      xx\n      on absorb => annexed(self, target)\n  xx"));
             }
         }
         let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
@@ -8481,14 +8521,21 @@ impl<'t> Parser<'t> {
         let all = self.peek_ident() == Some("judge_all");
         let stmt = self.with_self(|p| if all { p.parse_judge_all_stmt() } else { p.parse_judge_stmt() })?;
         let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-        for iface in std::mem::take(&mut self.judge_as) {
+        let ifaces = std::mem::take(&mut self.judge_as);
+        self.file_interface_judge(stmt, ifaces)?;
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
+    /// Files a judge under each of `ifaces`.
+    fn file_interface_judge(&mut self, stmt: ast::Stmt, ifaces: Vec<String>) -> Result<(), String> {
+        for iface in ifaces {
             let i = self.interface_mut(&iface);
             if i.judge.is_some() {
                 return Err(s_help_site!("P1345", &format!("Interface {iface} already has a judge"), "Write one judge for the interface."));
             }
             i.judge = Some(stmt.clone());
         }
-        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+        Ok(())
     }
 
     /// `aspect Political |` then one field a line (`~aggression`,

@@ -1,8 +1,8 @@
 /// An interface has one `interface` block (P1518).
-interface conquest
+interface conquest |
     on absorb => say("taken")
 xx
-interface conquest
+interface conquest |
     on subjugate => say("held")
 xx
 say("never printed")

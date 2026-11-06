@@ -6,7 +6,7 @@ act look(m)
     checks |= checks + 1
     return false
 xx
-interface mortal
+interface mortal |
     transition erase where look(self)
 xx
 <>Mob |
