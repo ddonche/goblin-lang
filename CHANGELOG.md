@@ -3,7 +3,7 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
-## Unreleased
+## 0.50.0 — 2026-11-07
 
 - `:field(obj, "x")` reads what a field holds, without the overlays `obj >> x` reads it through (an overlay's `modify` is a calculation on top of the field); an unknown field is R0403. sims/capstone uses it: the forms of government bend only traits (before: traits and baselines, because the yearly pull read the bent trait), the pull works on the traits' own values, and a colony or league copies its founder's own values (before: its founder's form came along as culture, and bent the child twice when it took the same form). The history changes (year 500: 40 polities, the largest 38 provinces).
 - sims/capstone: a War keeps the allies each side called in as plain lists (`attackers`, `defenders`) instead of `attacks`/`defends` links. The links were `range: bool`, and the battle read them with `:link_score(w, it, "attacks") > 0`, a type error that `:objects` dropped as false, so allies never added their armies; now they do, and the history changes (year 500: 41 polities, the largest holding 69 provinces; before, 48 and 29).
