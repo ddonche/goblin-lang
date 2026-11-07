@@ -3138,6 +3138,7 @@ impl Vm {
                             let val = inner_trim.find("::").and_then(|pos| {
                                 let module = inner_trim[..pos].trim();
                                 let ident = inner_trim[pos + 2..].trim();
+                                if is_goblin_empty(module, ident) { return Some(Value::Str("".into())); }
                                 self.session.token_store.get(module)
                                     .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
                                     .and_then(|m| m.get(ident))
@@ -7790,3 +7791,9 @@ pub(crate) fn trait_fields_of(
 /// Where a variable lives, for [`Vm::note_object_name`].
 #[derive(Clone, Copy)]
 enum NameOf { Global(usize), Local(usize) }
+
+/// `GOBLIN::EMPTY`: the built-in token that stands for nothing, so a
+/// template slot can be left empty without a module filling it.
+pub(crate) fn is_goblin_empty(module: &str, ident: &str) -> bool {
+    module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY")
+}

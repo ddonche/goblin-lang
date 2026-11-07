@@ -3761,6 +3761,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
+            if crate::vm::is_goblin_empty(&ns, &key) { return Ok(Value::Str("".into())); }
             match session.token_store.get(ns.as_str()).and_then(|m| m.get(key.as_str())) {
                 Some(v) => Ok(v.clone()),
                 None => Ok(Value::Nil),
@@ -4489,6 +4490,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
+            if crate::vm::is_goblin_empty(&module, &ident) { return Ok(Value::Str("".into())); }
             match session.token_store.get(module.as_str())
                 .or_else(|| session.token_store.get(&module.to_ascii_uppercase()))
                 .and_then(|m| m.get(ident.as_str())) {
