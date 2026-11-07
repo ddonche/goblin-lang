@@ -728,16 +728,6 @@ link trade
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
 xx
-/// The allies a War's attacker and defender called in, from the War to
-/// each ally (a polity taken in by a transition leaves with its links).
-link attacks
-    hosts: War, Tribe, Village, CityState, Kingdom, Empire, NationState, League
-    range: bool
-xx
-link defends
-    hosts: War, Tribe, Village, CityState, Kingdom, Empire, NationState, League
-    range: bool
-xx
 /// A sworn pact to fight together; it fades unless renewed.
 link alliance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
@@ -785,8 +775,8 @@ xx
 
 /// A war: the attacker, the defender, the province it is fought over (nil
 /// once the aim is gone: it goes on for revenge until one side breaks or
-/// makes peace); the allies each side called in are its `attacks` and
-/// `defends` links. `standing` runs from -1
+/// makes peace); the allies each side called in are its `attackers` and
+/// `defenders`. `standing` runs from -1
 /// (the attacker is beaten) to 1 (it has won).
 <>War |
     name: ..
@@ -796,6 +786,8 @@ xx
     started: 0
     years: 0
     standing: 0.0
+    attackers: []
+    defenders: []
     over: false
     phase: between
         every 1 tick
@@ -875,12 +867,7 @@ act fallen(p)
         if q >> union_with == p => q >> union_with |= nil
     xx
     repeat :objects(War, !(it >> over)) as w
-        if w >> attacker == p or w >> defender == p
-            end_war(w, nil)
-        else
-            :unlink!(w, p, "attacks")
-            :unlink!(w, p, "defends")
-        xx
+        if w >> attacker == p or w >> defender == p => end_war(w, nil)
     xx
 xx
 
@@ -1253,13 +1240,8 @@ interface dealings |
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
         if !(aim.nix?) => w >> aim |= aim
-        defenders | call_allies(t, p, [])
-        repeat defenders as x
-            :link!(w, x, "defends", 1)
-        xx
-        repeat call_allies(p, t, defenders) as x
-            :link!(w, x, "attacks", 1)
-        xx
+        w >> defenders |= call_allies(t, p, [])
+        w >> attackers |= call_allies(p, t, w >> defenders)
         p >> wars |= p >> wars + 1
         t >> wars |= t >> wars + 1
         :link!(t, p, "grievance", .3, 60)
@@ -1322,11 +1304,11 @@ act fight(w)
     at | w >> aim ?? d >> capital ?? a >> capital
     pa | might(a, at)
     pd | might(d, at) * (1.0 + (at >> walls) * .25)
-    repeat :objects(uses dealings, :link_score(w, it, "attacks") > 0) as x
-        pa |= pa + (x >> army) * .5
+    repeat w >> attackers as x
+        if !(x.nix?) => pa |= pa + (x >> army) * .5
     xx
-    repeat :objects(uses dealings, :link_score(w, it, "defends") > 0) as x
-        pd |= pd + (x >> army) * .5
+    repeat w >> defenders as x
+        if !(x.nix?) => pd |= pd + (x >> army) * .5
     xx
     luck  | (pick 1 from 80...120) / 100.0
     share | pa * luck / (pa * luck + pd + .001)

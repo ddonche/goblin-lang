@@ -307,10 +307,16 @@ that every kind of transition happens in 500 years.
   - read from a field, it gives nil;
   - held in a list or a local, `.nix?` on it is an error ("dangling
     ref").
-  So War allies are now links from the War (`attacks`, `defends`), which
-  leave with the object. Lists of objects can't be cleaned when a
-  transition takes one, because the hook's copy of the old object never
-  equals a reference to it.
+  So War allies were links from the War (`attacks`, `defends`). Fixed in
+  the runtime (#179: a gone object reads as nil everywhere), so they are
+  plain lists on the War again (`attackers`, `defenders`).
+- **An `:objects` condition that fails reads as false.** The ally links
+  were `range: bool`, and `:link_score(w, it, "attacks") > 0` compares
+  `true` with 0, a type error; inside `:objects(...)` the error was
+  dropped and the condition read as false, so no ally's army ever counted
+  in a battle. With the lists, allies count, and the history changed
+  (year 500: 41 polities, the largest 69 provinces; before, 48 and 29).
+  The runtime still drops such errors: open.
 - **Interfaces carry decisions, judges, transitions and `on` hooks, but
   not `every` blocks.** The six classes now take the shared transitions
   and hooks from six interfaces (`founding`, `conquest`, `unification`,
