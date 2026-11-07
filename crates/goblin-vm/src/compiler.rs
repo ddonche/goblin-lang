@@ -4129,6 +4129,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,
         "overlays_of"                    => BuiltinId::OverlaysOf,
+        "field"                          => BuiltinId::Field,
         "overlay_strength"               => BuiltinId::OverlayStrength,
         "link_score"                     => BuiltinId::LinkScore,
         "overlay!"                       => BuiltinId::OverlayBang,

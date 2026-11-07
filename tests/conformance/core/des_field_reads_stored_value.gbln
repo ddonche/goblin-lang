@@ -1,0 +1,29 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An object's fields are its own values; an overlay's `modify` is a
+/// calculation on top of them. `obj >> x` reads the field with its
+/// overlays, `:field(obj, "x")` the field itself. A write goes to the field
+/// (the overlay stays on top), and copying a field from one object to
+/// another with `:field` copies what the first one holds.
+<>Town |
+    name: ..
+    ~calm: .5
+    gold: 10
+xx
+overlay festival
+    hosts: Town
+    modify
+        @calm + .2
+        @gold + 5
+    xx
+xx
+a <> Town | name: "a"
+b <> Town | name: "b"
+:overlay!(a, festival)
+say("{a >> calm} {:field(a, "calm")}")
+say("{a >> gold} {:field(a, "gold")}")
+a >> gold |= a >> gold + 1
+say("{a >> gold} {:field(a, "gold")}")
+b >> calm |= :field(a, "calm")
+say(b >> calm)
+:detach!(a, festival)
+say("{a >> calm} {a >> gold}")

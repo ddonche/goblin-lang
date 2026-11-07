@@ -293,15 +293,12 @@ that every kind of transition happens in 500 years.
 
 ## Missing or wrong in the runtime (named, not worked around)
 
-- **Goblin code can only read a field through its overlays.** A pull
-  toward a baseline undoes a lasting `modify` on the trait itself, which
-  is why each form bends the baseline as well. To fix it at the root,
-  either the drift reads the stored value, or the language offers a way
-  to read it. Your call.
-  The same gap reaches colonies and leagues: they take their founder's
-  traits and baselines as read, so the founder's form of government is
-  copied in as culture, and a child that takes up the same form gets its
-  bend twice. That compounds over generations of colonies.
+- **Goblin code could only read a field through its overlays.** Fixed
+  in the runtime: `:field(p, "x")` reads what the field holds, and
+  `p >> x` still reads it with its overlays. The forms of government bend
+  only traits now (not baselines), the yearly pull works on the traits'
+  own values, and a colony or league copies its founder's own values, so
+  the founder's form is no longer copied in as culture.
 - **A reference to an object a transition took in** (absorbed, merged,
   split) is inconsistent:
   - read from a field, it gives nil;

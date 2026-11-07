@@ -1,0 +1,7 @@
+/// `:field(obj, "x")` on a field the object doesn't have is an error
+/// (R0403), as `obj >> x` is.
+<>Town |
+    gold: 10
+xx
+a <> Town | gold: 1
+say(:field(a, "silver"))

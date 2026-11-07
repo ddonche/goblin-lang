@@ -2,9 +2,9 @@
 /// the Government overlay class; putting on another replaces it. A form
 /// bends some traits (a `+` is .1, a `++` .2) and leans some decisions
 /// (their weight is multiplied by its `lean_` field, 1 unless a form
-/// raises it by .5 or lowers it). A bend moves the trait and its baseline
-/// together, so the yearly pull back toward the baseline keeps the bend
-/// while the form lasts. The forms change in the settle phase, by chance
+/// raises it by .5 or lowers it). A bend is on top of the trait: the
+/// trait's own value is its culture, which the yearly pull works on, so
+/// the bend lasts while the form does and goes with it. The forms change in the settle phase, by chance
 /// from the state (`regime`); a form a polity can't have is replaced by
 /// rule (`choose`).
 
@@ -17,11 +17,8 @@ xx
 overlay elders_council <^> Government
     modify
         @cohesion + .1
-        @base_cohesion + .1
         @tradition + .1
-        @base_tradition + .1
         @ambition - .1
-        @base_ambition - .1
         @lean_envoy + .5
         @lean_treaty + .5
     xx
@@ -30,9 +27,7 @@ xx
 overlay chieftainship <^> Government
     modify
         @aggression + .1
-        @base_aggression + .1
         @stability - .1
-        @base_stability - .1
         @lean_raid + .5
         @lean_strike + .5
         @lean_ally + .5
@@ -42,7 +37,6 @@ xx
 overlay hereditary_monarchy <^> Government
     modify
         @stability + .2 * (@succession - .5)
-        @base_stability + .2 * (@succession - .5)
         @lean_war + .5
     xx
 xx
@@ -50,31 +44,23 @@ xx
 overlay elective_monarchy <^> Government
     modify
         @legitimacy + .1
-        @base_legitimacy + .1
         @centralization - .1
-        @base_centralization - .1
     xx
 xx
 /// Priests, or a ruler who is the faith.
 overlay theocracy <^> Government
     modify
         @spirituality + .1
-        @base_spirituality + .1
         @openness - .1
-        @base_openness - .1
         @tolerance - .1
-        @base_tolerance - .1
     xx
 xx
 /// Rich families and guilds.
 overlay merchant_oligarchy <^> Government
     modify
         @openness + .1
-        @base_openness + .1
         @honor - .1
-        @base_honor - .1
         @aggression - .1
-        @base_aggression - .1
         @lean_trade + .5
         @lean_embargo + .5
     xx
@@ -83,9 +69,7 @@ xx
 overlay aristocratic_republic <^> Government
     modify
         @stability + .1
-        @base_stability + .1
         @centralization - .1
-        @base_centralization - .1
         @lean_treaty + .5
         @lean_league + .5
     xx
@@ -94,11 +78,8 @@ xx
 overlay citizen_republic <^> Government
     modify
         @cooperation + .1
-        @base_cooperation + .1
         @discipline - .1
-        @base_discipline - .1
         @openness + .1
-        @base_openness + .1
         @lean_treaty + .5
         @lean_league + .5
         @lean_settle + .5
@@ -108,11 +89,8 @@ xx
 overlay tyranny <^> Government
     modify
         @fear + .1
-        @base_fear + .1
         @legitimacy - .1
-        @base_legitimacy - .1
         @stability - .1
-        @base_stability - .1
         @lean_war + .5
     xx
 xx
@@ -120,11 +98,8 @@ xx
 overlay military_junta <^> Government
     modify
         @discipline + .1
-        @base_discipline + .1
         @aggression + .1
-        @base_aggression + .1
         @legitimacy - .1
-        @base_legitimacy - .1
         @lean_strike + .5
         @lean_levy + .5
     xx
@@ -133,9 +108,7 @@ xx
 overlay imperial_autocracy <^> Government
     modify
         @centralization + .1
-        @base_centralization + .1
         @ambition + .1
-        @base_ambition + .1
         @lean_demand + .5
     xx
 xx
@@ -143,9 +116,7 @@ xx
 overlay confederation <^> Government
     modify
         @cooperation + .1
-        @base_cooperation + .1
         @centralization - .2
-        @base_centralization - .2
         @lean_ally + .5
         @lean_trade + .5
     xx
@@ -154,9 +125,7 @@ xx
 overlay constitutional_monarchy <^> Government
     modify
         @stability + .1
-        @base_stability + .1
         @legitimacy + .1
-        @base_legitimacy + .1
         @lean_treaty + .5
         @lean_ally + .5
     xx
@@ -165,7 +134,6 @@ xx
 overlay client_regime <^> Government
     modify
         @legitimacy - .1
-        @base_legitimacy - .1
         @lean_revolt - .5
     xx
 xx
@@ -173,9 +141,7 @@ xx
 overlay interregnum <^> Government
     modify
         @stability - .2
-        @base_stability - .2
         @fear + .1
-        @base_fear + .1
     xx
 xx
 

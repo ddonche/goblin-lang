@@ -3906,6 +3906,29 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::DecisionDebug => {
             Err(GoblinError::Runtime("decision_debug: must be called through VM dispatch".to_string()))
         }
+        // `:field(obj, "x")`: what the field holds, without the overlays
+        // that `obj >> x` reads it through.
+        BuiltinId::Field => {
+            expect_n(2)?;
+            let obj = read(0)?;
+            let name = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "field name")),
+            };
+            let uuid = match &obj {
+                Value::Ref(u) => u.to_string(),
+                Value::Object(o) => o.uuid.to_string(),
+                other => return Err(GoblinError::type_error("object", other.type_name(), "field")),
+            };
+            let held = session.object_store.get(&uuid).cloned().unwrap_or(obj);
+            let Value::Object(o) = &held else {
+                return Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; the object is gone")));
+            };
+            match o.fields.stored(&name, o.trait_fields.contains(name.as_ref() as &str)) {
+                Some(v) => Ok(v),
+                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))),
+            }
+        }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
             // The host: the object itself, or the name of its variable.

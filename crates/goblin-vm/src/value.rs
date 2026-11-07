@@ -1259,6 +1259,8 @@ pub enum BuiltinId {
     // DES / overlay builtins
     DecisionDebug,
     OverlaysOf,
+    /// `:field(obj, "name")`: a field's stored value, without overlays.
+    Field,
     OverlayStrength,
     LinkScore,
     OverlayBang,

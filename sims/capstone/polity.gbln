@@ -827,8 +827,11 @@ act vary(v)
 xx
 
 /// A trait pulled 2% of the way back toward its baseline.
-act drift(v, base)
-    return v + (base - v) * .02
+/// A trait read with its overlays (`v`), moved 2% of the way from what
+/// the trait itself holds (`own`) toward its baseline: the pull works on
+/// the traits, and the overlays stay on top.
+act drift(v, own, base)
+    return v + (base - own) * .02
 xx
 
 act distance(p, l)
@@ -1524,22 +1527,22 @@ xx
 
 /// Pulls each trait 2% of the way back toward its baseline.
 act drift_traits(p)
-    p >> aggression |= drift(p >> aggression, p >> base_aggression)
-    p >> cooperation |= drift(p >> cooperation, p >> base_cooperation)
-    p >> fear |= drift(p >> fear, p >> base_fear)
-    p >> ambition |= drift(p >> ambition, p >> base_ambition)
-    p >> cohesion |= drift(p >> cohesion, p >> base_cohesion)
-    p >> stability |= drift(p >> stability, p >> base_stability)
-    p >> succession |= drift(p >> succession, p >> base_succession)
-    p >> honor |= drift(p >> honor, p >> base_honor)
-    p >> spirituality |= drift(p >> spirituality, p >> base_spirituality)
-    p >> openness |= drift(p >> openness, p >> base_openness)
-    p >> discipline |= drift(p >> discipline, p >> base_discipline)
-    p >> legitimacy |= drift(p >> legitimacy, p >> base_legitimacy)
-    p >> centralization |= drift(p >> centralization, p >> base_centralization)
-    p >> tolerance |= drift(p >> tolerance, p >> base_tolerance)
-    p >> tradition |= drift(p >> tradition, p >> base_tradition)
-    p >> learning |= drift(p >> learning, p >> base_learning)
+    p >> aggression |= drift(p >> aggression, :field(p, "aggression"), :field(p, "base_aggression"))
+    p >> cooperation |= drift(p >> cooperation, :field(p, "cooperation"), :field(p, "base_cooperation"))
+    p >> fear |= drift(p >> fear, :field(p, "fear"), :field(p, "base_fear"))
+    p >> ambition |= drift(p >> ambition, :field(p, "ambition"), :field(p, "base_ambition"))
+    p >> cohesion |= drift(p >> cohesion, :field(p, "cohesion"), :field(p, "base_cohesion"))
+    p >> stability |= drift(p >> stability, :field(p, "stability"), :field(p, "base_stability"))
+    p >> succession |= drift(p >> succession, :field(p, "succession"), :field(p, "base_succession"))
+    p >> honor |= drift(p >> honor, :field(p, "honor"), :field(p, "base_honor"))
+    p >> spirituality |= drift(p >> spirituality, :field(p, "spirituality"), :field(p, "base_spirituality"))
+    p >> openness |= drift(p >> openness, :field(p, "openness"), :field(p, "base_openness"))
+    p >> discipline |= drift(p >> discipline, :field(p, "discipline"), :field(p, "base_discipline"))
+    p >> legitimacy |= drift(p >> legitimacy, :field(p, "legitimacy"), :field(p, "base_legitimacy"))
+    p >> centralization |= drift(p >> centralization, :field(p, "centralization"), :field(p, "base_centralization"))
+    p >> tolerance |= drift(p >> tolerance, :field(p, "tolerance"), :field(p, "base_tolerance"))
+    p >> tradition |= drift(p >> tradition, :field(p, "tradition"), :field(p, "base_tradition"))
+    p >> learning |= drift(p >> learning, :field(p, "learning"), :field(p, "base_learning"))
 xx
 
 /// Starts a polity of `class` holding `homes` (the first is its capital):
@@ -1998,40 +2001,41 @@ xx
 
 /// hooks
 
-/// Its traits and baselines from `p` (a colony's or a league's founder).
+/// Its traits and baselines from `p` (a colony's or a league's founder):
+/// what they hold, not as its form of government bends them.
 act take_culture(c, p)
-    c >> aggression |= p >> aggression
-    c >> cooperation |= p >> cooperation
-    c >> fear |= p >> fear
-    c >> ambition |= p >> ambition
-    c >> cohesion |= p >> cohesion
-    c >> stability |= p >> stability
-    c >> succession |= p >> succession
-    c >> honor |= p >> honor
-    c >> spirituality |= p >> spirituality
-    c >> openness |= p >> openness
-    c >> discipline |= p >> discipline
-    c >> legitimacy |= p >> legitimacy
-    c >> centralization |= p >> centralization
-    c >> tolerance |= p >> tolerance
-    c >> tradition |= p >> tradition
-    c >> learning |= p >> learning
-    c >> base_aggression |= p >> base_aggression
-    c >> base_cooperation |= p >> base_cooperation
-    c >> base_fear |= p >> base_fear
-    c >> base_ambition |= p >> base_ambition
-    c >> base_cohesion |= p >> base_cohesion
-    c >> base_stability |= p >> base_stability
-    c >> base_succession |= p >> base_succession
-    c >> base_honor |= p >> base_honor
-    c >> base_spirituality |= p >> base_spirituality
-    c >> base_openness |= p >> base_openness
-    c >> base_discipline |= p >> base_discipline
-    c >> base_legitimacy |= p >> base_legitimacy
-    c >> base_centralization |= p >> base_centralization
-    c >> base_tolerance |= p >> base_tolerance
-    c >> base_tradition |= p >> base_tradition
-    c >> base_learning |= p >> base_learning
+    c >> aggression |= :field(p, "aggression")
+    c >> cooperation |= :field(p, "cooperation")
+    c >> fear |= :field(p, "fear")
+    c >> ambition |= :field(p, "ambition")
+    c >> cohesion |= :field(p, "cohesion")
+    c >> stability |= :field(p, "stability")
+    c >> succession |= :field(p, "succession")
+    c >> honor |= :field(p, "honor")
+    c >> spirituality |= :field(p, "spirituality")
+    c >> openness |= :field(p, "openness")
+    c >> discipline |= :field(p, "discipline")
+    c >> legitimacy |= :field(p, "legitimacy")
+    c >> centralization |= :field(p, "centralization")
+    c >> tolerance |= :field(p, "tolerance")
+    c >> tradition |= :field(p, "tradition")
+    c >> learning |= :field(p, "learning")
+    c >> base_aggression |= :field(p, "base_aggression")
+    c >> base_cooperation |= :field(p, "base_cooperation")
+    c >> base_fear |= :field(p, "base_fear")
+    c >> base_ambition |= :field(p, "base_ambition")
+    c >> base_cohesion |= :field(p, "base_cohesion")
+    c >> base_stability |= :field(p, "base_stability")
+    c >> base_succession |= :field(p, "base_succession")
+    c >> base_honor |= :field(p, "base_honor")
+    c >> base_spirituality |= :field(p, "base_spirituality")
+    c >> base_openness |= :field(p, "base_openness")
+    c >> base_discipline |= :field(p, "base_discipline")
+    c >> base_legitimacy |= :field(p, "base_legitimacy")
+    c >> base_centralization |= :field(p, "base_centralization")
+    c >> base_tolerance |= :field(p, "base_tolerance")
+    c >> base_tradition |= :field(p, "base_tradition")
+    c >> base_learning |= :field(p, "base_learning")
 xx
 
 /// A new class: a form it can't have is replaced now.
