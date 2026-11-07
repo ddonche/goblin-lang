@@ -161,6 +161,10 @@ fn takes_strings(id: BuiltinId) -> bool {
         | BuiltinId::EscapeHtml | BuiltinId::UrlEncode | BuiltinId::UrlDecode)
 }
 
+fn fmt_ms(ms: u128) -> String {
+    format!("{}ms ({}.{:03}s)", ms, ms / 1000, ms % 1000)
+}
+
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
     let args: Vec<Value> = if takes_strings(id) && args.iter().any(|a| matches!(a, Value::Char(_))) {
         args.into_iter().map(|a| match a { Value::Char(c) => Value::Str(c.to_string().into()), other => other }).collect()
@@ -203,6 +207,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::MemHuman => {
             Ok(Value::Str(human_bytes(process_memory_bytes()).into()))
+        }
+        BuiltinId::TotalTime => {
+            expect_n(0)?;
+            Ok(Value::Str(fmt_ms(session.script_start.elapsed().as_millis()).into()))
+        }
+        BuiltinId::SplitTime => {
+            expect_n(0)?;
+            let now = std::time::Instant::now();
+            let ms = now.duration_since(session.last_split).as_millis();
+            session.last_split = now;
+            Ok(Value::Str(fmt_ms(ms).into()))
         }
         BuiltinId::Gc | BuiltinId::StashCount | BuiltinId::TetherCount => {
             // Handled in vm.rs where the full root set is accessible for mark-and-sweep.

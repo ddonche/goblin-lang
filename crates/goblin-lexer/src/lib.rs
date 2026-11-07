@@ -2020,6 +2020,12 @@ pub fn lex(source: &str, file: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
             }
 
             // Not family
+            b'!' if state.peek(1) == Some(b'|') => {
+                let start_i = state.i;
+                let start_col = state.col;
+                state.advance_by(2);
+                state.tokens.push(Token::simple_op("!|".to_string(), state.span(start_i, start_col)));
+            }
             b'!' if state.peek(1) == Some(b'=') && state.peek(2) == Some(b'=') => {
                 let start_i = state.i;
                 let start_col = state.col;

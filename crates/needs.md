@@ -48,8 +48,8 @@ local_name = "#namespace::name"
 When the glam loads, Goblin looks up the Box value and defines the local name for the glam:
 
 ```goblin
-:say(content_dir)
-:say(site_title)
+content_dir
+site_title
 ```
 
 The glam code can use `content_dir` without knowing which project namespace supplied it.
@@ -69,7 +69,7 @@ Inside the glam, call the need by its local name:
 
 ```goblin
 action save_post(post)
-    need("insert", "posts", post)
+    :need("insert", "posts", post)
 end
 ```
 
@@ -104,7 +104,7 @@ insert = "local_store::insert"
 The glam code does not change:
 
 ```goblin
-need("insert", "posts", post)
+:need("insert", "posts", post)
 ```
 
 ---
@@ -142,7 +142,7 @@ goblin_supabase::insert("posts", post)
 A need call lets the project choose the provider:
 
 ```goblin
-need("insert", "posts", post)
+:need("insert", "posts", post)
 ```
 
 That makes the glam easier to reuse, test, and swap between environments.
@@ -216,7 +216,7 @@ Action needs must use the `namespace::action` form.
 Calling `need` outside a glam action is an error:
 
 ```goblin
-need("insert", "posts", post)
+:need("insert", "posts", post)
 ```
 
 ```text
@@ -252,7 +252,7 @@ name = "namespace::action"
 In Goblin code:
 
 ```goblin
-need(name, ...args)
+:need(name, ...args)
 ```
 
 | Argument | Type | Description |

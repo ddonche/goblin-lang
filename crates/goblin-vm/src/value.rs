@@ -930,6 +930,8 @@ pub enum BuiltinId {
     MemAddr,
     MemTotal,
     MemHuman,
+    TotalTime,
+    SplitTime,
     Gc,
     GcMode,
     StashCount,

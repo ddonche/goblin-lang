@@ -1,0 +1,11 @@
+/// known-gap: interp lets attempt/rescue catch a failed provoke; the interpreter is being retired
+/// a failed provoke stops the program: attempt/rescue cannot catch it (A0502)
+act f()
+  :provoke(1 == 2, "boom")
+xx
+attempt
+  f()
+rescue e
+  say("caught")
+xx
+say("after")
