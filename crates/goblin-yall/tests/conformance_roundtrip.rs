@@ -5,7 +5,7 @@ use goblin_yall::{yall_parse, yall_write};
 
 fn roundtrip_suite_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../yall-spec/tests/roundtrip")
+        .join("tests/spec/roundtrip")
 }
 
 #[test]

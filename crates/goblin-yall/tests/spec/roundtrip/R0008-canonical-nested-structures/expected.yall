@@ -1,0 +1,8 @@
+site:
+  title: Goblin
+  authors:
+    - name: Dan
+      role: Creator
+    - name: Lisa
+      role: Editor
+  ports: [80, 443, 8080]

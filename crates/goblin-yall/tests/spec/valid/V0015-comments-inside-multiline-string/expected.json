@@ -1,0 +1,3 @@
+{
+  "text": "/// not a comment\n//// not a block comment\n<---- not an inline comment\n#site\n#need::output_dir"
+}

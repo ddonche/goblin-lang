@@ -5,7 +5,7 @@ use goblin_yall::yall_parse;
 
 fn invalid_suite_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../yall-spec/tests/invalid")
+        .join("tests/spec/invalid")
 }
 
 #[test]
