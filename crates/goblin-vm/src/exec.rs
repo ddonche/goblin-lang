@@ -118,11 +118,17 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         compiler.is_class_method = true;
         // A judge, or the judge of one interface it calls (`judge #interfaces
         // @inside govern`): its decisions' names read their picks.
-        let judges = |d: &Option<String>| d.as_deref().is_some_and(|d| action.name == d || action.name.strip_prefix(d).is_some_and(|r| r.starts_with(' ')));
-        if judges(&class.decide) {
-            compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect();
-        } else if let Some(p) = class.phases.iter().find(|p| judges(&p.decide)) {
-            compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect();
+        // The longest judge name that matches wins, so a phase judge
+        // (`judge #decisions @grow`) is never taken for the class's own
+        // (`judge #decisions`).
+        let judges = |d: &Option<String>| d.as_deref().filter(|d| action.name == *d || action.name.strip_prefix(d).is_some_and(|r| r.starts_with(' '))).map(str::len);
+        let class_len = judges(&class.decide);
+        let phase = class.phases.iter().filter_map(|p| judges(&p.decide).map(|n| (n, p))).max_by_key(|(n, _)| *n);
+        match (class_len, phase) {
+            (Some(c), Some((n, p))) if n > c => compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect(),
+            (Some(_), _) => compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect(),
+            (None, Some((_, p))) => compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect(),
+            (None, None) => {}
         }
         let compiled = compiler.compile_action(&pseudo).or_else(|e| {
             // A method that does not compile reports why when it is called,

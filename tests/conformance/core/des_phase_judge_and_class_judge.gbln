@@ -1,0 +1,30 @@
+/// known-gap: interp has no phase: blocks; the interpreter is being retired
+/// A class with its own judge and a judge in a phase: each judge reads its own decisions (a target other than self is needed).
+<>Cell |
+    n: 0
+    decision chosen
+        targets: Cell where target >> n >= 0
+        score => 1
+    xx
+    judge
+        chosen: self.add(1)
+    xx
+    phase: grow
+        decision boost
+            targets: Cell where target >> n >= 0
+            score => 1
+        xx
+        judge
+            boost: self.add(10)
+        xx
+    xx
+    act add(k)
+        @n |= @n + k
+    xx
+xx
+c <> Cell | n: 0
+d <> Cell | n: 0
+tick()
+    grow
+xx
+say(c >> n)

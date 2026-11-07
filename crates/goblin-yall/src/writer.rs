@@ -43,7 +43,9 @@ fn write_value(out: &mut String, v: &YallValue, indent: usize, top_level: bool) 
 /// as a `"""` block, the one place the parser reads one. Text that starts or
 /// ends with a newline stays escaped, since the block form would drop it.
 fn write_block_string(out: &mut String, s: &str) {
-    if s.contains('\n') && !s.starts_with('\n') && !s.ends_with('\n') {
+    if s.contains('\n') && !s.starts_with('\n') && !s.ends_with('\n')
+        && !s.lines().any(|l| l.trim() == "\"\"\"")
+    {
         out.push_str("\"\"\"\n");
         out.push_str(s);
         out.push_str("\n\"\"\"");
@@ -239,6 +241,12 @@ fn write_inline_or_block_map(
     }
 }
 
+/// A bare string with `:` (which ends a bare value inside `{ }` and `[ ]`) or
+/// a leading `#` (a comment) can't go inline; its collection stays a block.
+fn inline_safe(s: &str) -> bool {
+    !(is_bare_ok(s) && (s.contains(':') || s.starts_with('#')))
+}
+
 fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
     if map.is_empty() {
         return true;
@@ -252,7 +260,7 @@ fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
             return false;
         }
         if let YallValue::Str(s) = v {
-            if s.len() > 20 {
+            if s.len() > 20 || !inline_safe(s) {
                 return false;
             }
         }
@@ -303,7 +311,7 @@ fn try_inline_array(arr: &[YallValue]) -> bool {
             return false;
         }
         if let YallValue::Str(s) = v {
-            if s.len() > 20 {
+            if s.len() > 20 || !inline_safe(s) {
                 return false;
             }
         }
