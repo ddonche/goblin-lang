@@ -1,0 +1,3 @@
+Copied from https://github.com/ddonche/yall-spec (tests/, commit 1e9d7c8).
+Re-copy when the spec changes:
+  cp -r ../yall-spec/tests/. crates/goblin-yall/tests/spec/

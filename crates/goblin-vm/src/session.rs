@@ -199,6 +199,11 @@ pub struct Session {
     /// GC behaviour for this session.
     pub gc_mode: GcMode,
 
+    /// When the session started, for `:total_time()`.
+    pub script_start: std::time::Instant,
+    /// The last `:split_time()` call (or the start), for `:split_time()`.
+    pub last_split: std::time::Instant,
+
     /// Optional worker ID for cross-worker safety checks.
     pub worker_id: usize,
 
@@ -487,7 +492,10 @@ impl Session {
             .map(|d| d.subsec_nanos() as u128 | ((d.as_secs() as u128) << 32))
             .unwrap_or(0x123456789abcdef0u128)
             | 1; // MCG requires odd seed
+        let started = std::time::Instant::now();
         Session {
+            script_start: started,
+            last_split: started,
             arena: Slab::new(),
             globals: Vec::new(),
             global_names: Default::default(),

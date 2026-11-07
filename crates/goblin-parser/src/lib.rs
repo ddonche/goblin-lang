@@ -1887,6 +1887,7 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
+            if self.at_error_guard() { break; }
             if self.eat_op("!") {
                 // name!(args) for ANY ident (cast types, mutation builtins, etc.)
                 // e.g. str!(age), update_at!(meta, "id", val), delete_where!(xs, pred)
@@ -3203,13 +3204,20 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // Normal expression case
+                // Normal expression case; `act f() => a => b` chains statements.
                 let pexpr = self.parse_coalesce()?;
                 let expr  = self.lower_expr(pexpr);
+                let body = if self.peek_op("=>") {
+                    let mut stmts = vec![ast::Stmt::Expr(expr)];
+                    self.parse_arrow_chain_rest(&mut stmts)?;
+                    ast::ActionBody::Block(stmts)
+                } else {
+                    ast::ActionBody::Expr(expr)
+                };
                 let act = ast::ActionDecl {
                     name: pa.name,
                     params,
-                    body: ast::ActionBody::Expr(expr),
+                    body,
                     span: action_span,
                     ret: None,
                 };
@@ -3341,6 +3349,50 @@ impl<'t> Parser<'t> {
     }
 
     // === BEGIN: parse_bind_stmt (tuple targets + |= + fallback-to-expr for comma expressions) ===
+    /// True when the next tokens are `!!` followed (past layout) by `=>`: the
+    /// `name | expr !! => stmt` error guard, which postfix `!` must not consume.
+    fn at_error_guard(&self) -> bool {
+        use goblin_lexer::TokenKind;
+        let bang = |k: usize| matches!(self.toks.get(k), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "!"));
+        if !(bang(self.i) && bang(self.i + 1)) { return false; }
+        let mut k = self.i + 2;
+        while let Some(t) = self.toks.get(k) {
+            match &t.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { k += 1; }
+                TokenKind::Op(s) if s == ";" => { k += 1; }
+                _ => break,
+            }
+        }
+        matches!(self.toks.get(k), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "=>"))
+    }
+
+    /// One statement after `=>`, then `=> stmt` again for as long as the next token
+    /// is `=>`: `if c => a => b`. More than one statement comes back as a Stmt::Block.
+    fn parse_arrow_stmt_chain(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let first = self.parse_stmt()?;
+        if !self.peek_op("=>") {
+            return Ok(first);
+        }
+        let mut stmts = vec![first];
+        self.parse_arrow_chain_rest(&mut stmts)?;
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts, span })
+    }
+
+    /// The `=> stmt => stmt ...` tail of a chain, appended to `stmts`.
+    fn parse_arrow_chain_rest(&mut self, stmts: &mut Vec<ast::Stmt>) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
+        while self.peek_op("=>") {
+            self.i += 1;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(())
+    }
+
     fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -3703,12 +3755,26 @@ impl<'t> Parser<'t> {
                         }
                     }
 
-                    rhs_guard = Some(self.parse_stmt()?);
+                    rhs_guard = Some(self.parse_arrow_stmt_chain()?);
                 } else {
                     // Not a guard; rewind to before '??'
                     self.i = save_i;
                 }
             }
+        }
+
+        // Optional error guard: `!! => <stmt>` runs the guard when evaluating the
+        // right-hand side fails (as `?? =>` runs it when the value is nil).
+        let mut err_guard: Option<ast::Stmt> = None;
+        let err_guard_start_i = self.i;
+        if self.at_error_guard() {
+            self.i += 2;
+            while !self.peek_op("=>") { self.i += 1; }
+            self.i += 1;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+            err_guard = Some(self.parse_arrow_stmt_chain()?);
         }
 
         // 5) Build Stmt::Bind (single target)
@@ -3725,6 +3791,64 @@ impl<'t> Parser<'t> {
             class_name,
             lock_type: pending_lock_type,
         });
+
+        // With an error guard, `name | expr !! => g` becomes
+        //   __guard_name__ | nil
+        //   attempt
+        //       __guard_name__ |= expr
+        //   rescue
+        //       g
+        //   name | __guard_name__
+        // so `name` stays bound in the enclosing scope either way (`|=` keeps
+        // its old value instead: `attempt name |= expr rescue g`).
+        let bind_stmt = match err_guard {
+            None => bind_stmt,
+            Some(err_guard_stmt) => {
+                let guard_span = Self::span_from_tokens(
+                    self.toks,
+                    err_guard_start_i.min(self.toks.len().saturating_sub(1)),
+                    self.i.saturating_sub(1),
+                );
+                let mut stmts = Vec::new();
+                // A new binding evaluates into a hidden temporary, then binds the
+                // name from it after the attempt, so `imm` and a type lock still apply.
+                let mut after: Option<ast::Stmt> = None;
+                let inner = match bind_stmt {
+                    ast::Stmt::Bind(mut bs) if matches!(bs.mode, ast::BindMode::Tether) => {
+                        let tmp = format!("__guard_{}__", bs.name.0);
+                        let tmp_bind = |expr: ast::Expr, mode: ast::BindMode| ast::Stmt::Bind(ast::BindStmt {
+                            name: (tmp.clone(), guard_span.clone()),
+                            expr,
+                            is_imm: false,
+                            is_local: bs.is_local,
+                            mode,
+                            span: guard_span.clone(),
+                            class_name: None,
+                            lock_type: None,
+                        });
+                        stmts.push(tmp_bind(ast::Expr::Nil(guard_span.clone()), ast::BindMode::Tether));
+                        let rhs = std::mem::replace(&mut bs.expr, ast::Expr::Ident(tmp.clone(), guard_span.clone()));
+                        let inner = tmp_bind(rhs, ast::BindMode::Retether);
+                        after = Some(ast::Stmt::Bind(bs));
+                        inner
+                    }
+                    other => other,
+                };
+                let rescue_body = ast::Expr::Block { stmts: vec![err_guard_stmt], span: guard_span.clone() };
+                let rescues = ast::Expr::Array(
+                    vec![ast::Expr::Array(vec![ast::Expr::Ident("nil".into(), guard_span.clone()), rescue_body], guard_span.clone())],
+                    guard_span.clone(),
+                );
+                stmts.push(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "attempt".to_string(),
+                    vec![ast::Expr::Block { stmts: vec![inner], span: guard_span.clone() }, rescues],
+                    guard_span.clone(),
+                )));
+                stmts.extend(after);
+                let block_span = Self::span_from_tokens(self.toks, start_i_expr, self.i.saturating_sub(1));
+                ast::Stmt::Block { stmts, span: block_span }
+            }
+        };
 
         // If a guard was present, return a sequence equivalent to:
         //   <bind>
@@ -5890,16 +6014,16 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // Parse single statement
-                let stmt = self.parse_stmt()?;
-                
+                // One statement, or a chain: `if c => a => b`
+                let mut stmts = vec![self.parse_stmt()?];
+                self.parse_arrow_chain_rest(&mut stmts)?;
+
                 // Calculate span for the entire inline if
                 let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                
-                // Create single-statement block
-                let then_block = ast::Expr::Block { 
-                    stmts: vec![stmt], 
-                    span: span.clone() 
+
+                let then_block = ast::Expr::Block {
+                    stmts,
+                    span: span.clone()
                 };
                 
                 // Return inline if (no elif, no else)
@@ -7384,7 +7508,10 @@ impl<'t> Parser<'t> {
             return self.parse_attempt_stmt();
         }
 
-        if self.peek_ident() == Some("provoke") {
+        // `provoke(cond, msg)` is a call; only `provoke =>` / a provoke block is the statement form.
+        if self.peek_ident() == Some("provoke")
+            && !matches!(self.toks.get(self.i + 1), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "("))
+        {
             return self.parse_provoke_stmt();
         }
 
@@ -7706,7 +7833,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // ---- indexed |! update sugar: array[1] |! value ----
+        // ---- indexed |! update / !| delete sugar: array[1] |! value, array[1] !| ----
         {
             let save_i = self.i;
 
@@ -7728,7 +7855,7 @@ impl<'t> Parser<'t> {
                     let lhs = self.lower_expr(lhs_pe);
 
                     match lhs {
-                        ast::Expr::Index(base, index, _) => {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
                             let call = ast::Expr::FreeCall(
                                 "update_at!".to_string(),
                                 vec![*base, *index, rhs],
@@ -7760,6 +7887,42 @@ impl<'t> Parser<'t> {
                                 "P04U1",
                                 "Invalid target for '|!' update",
                                 "Use '|!' with a name or indexed collection target: array |! value or array[0] |! value."
+                            ));
+                        }
+                    }
+                }
+
+                // `names !|`, `names[1] !|`, `m{"key"} !|` delete in place.
+                if self.peek_op("!|") {
+                    let op_sp = self.peek().unwrap().span.clone();
+                    let _ = self.eat_op("!|");
+
+                    let lhs = self.lower_expr(lhs_pe);
+
+                    match lhs {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete_at!".to_string(),
+                                vec![*base, *index],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Ident(_, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete!".to_string(),
+                                vec![lhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        _ => {
+                            return Err(s_help_site!(
+                                "P04D1",
+                                "Invalid target for '!|' delete",
+                                "Use '!|' with a name or indexed collection target: names !| or names[0] !|."
                             ));
                         }
                     }
@@ -13798,6 +13961,7 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
+            if self.at_error_guard() { break; }
             if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
             if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
             if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }

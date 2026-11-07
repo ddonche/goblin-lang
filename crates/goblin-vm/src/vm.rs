@@ -5214,7 +5214,12 @@ impl Vm {
             } else {
                 "Provoked constraint violated".to_string()
             };
-            return Err(GoblinError::Runtime(msg));
+            // Fatal: `attempt`/`rescue` and `!! =>` cannot catch it. The program stops here.
+            if let Some(buf) = self.session.output_buf.take() { print!("{}", buf); }
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+            eprintln!("error: A0502: provoked-abort: {}\n\nThis constraint must be true to continue. The program cannot recover.", msg);
+            std::process::exit(1);
         }
         Ok(Value::Bool(true))
     }

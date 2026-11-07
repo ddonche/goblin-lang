@@ -1,0 +1,5 @@
+users:
+  - name: Dan
+    role: Admin
+  - name: Lisa
+    role: User

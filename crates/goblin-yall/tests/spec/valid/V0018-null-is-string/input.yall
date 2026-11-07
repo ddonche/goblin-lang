@@ -1,0 +1,8 @@
+value: null
+quoted: "nil"
+upper_true: TRUE
+upper_false: False
+yes_value: yes
+no_value: no
+on_value: on
+off_value: off

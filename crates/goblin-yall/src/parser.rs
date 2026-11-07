@@ -170,6 +170,10 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if raw.chars().take_while(|c| c.is_whitespace()).any(|c| c == '\t') {
+                return Err(YallError::new(label, line_no, "tabs are not permitted for indentation"));
+            }
+
             let indent = raw.chars().take_while(|c| *c == ' ').count();
 
             if trimmed.starts_with("- ") {
@@ -278,7 +282,7 @@ impl<'a> Parser<'a> {
 
             // If indentation increases → malformed
             if line.indent > expected_indent {
-                return self.error(line.line_no, "unexpected indentation");
+                return self.error(line.line_no, "invalid indentation");
             }
 
             // If we hit a list item here, that means this map key's value
@@ -383,7 +387,7 @@ impl<'a> Parser<'a> {
                 if next.indent > expected_indent + 2 {
                     return self.error(
                         next.line_no,
-                        "unexpected indentation under list item",
+                        "invalid indentation under list item",
                     );
                 }
                 if next.key == "-" {
@@ -432,7 +436,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             if line.indent > expected_indent {
-                return self.error(line.line_no, "unexpected indentation in list");
+                return self.error(line.line_no, "invalid indentation in list");
             }
 
             // no more list items at this level
@@ -640,7 +644,7 @@ impl<'a> Parser<'a> {
         let trimmed = text.trim();
 
         if trimmed.starts_with('"') && !trimmed.ends_with('"') {
-            return self.error(line_no, "unterminated string");
+            return self.error(line_no, "unterminated quoted string");
         }
 
         // ---------- DOUBLE-QUOTED STRING ----------

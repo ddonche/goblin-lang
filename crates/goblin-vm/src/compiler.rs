@@ -3868,6 +3868,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_map"                        => BuiltinId::IsMap,
         "mem_total"     | ":mem_total"  => BuiltinId::MemTotal,
         "mem_human"     | ":mem_human"  => BuiltinId::MemHuman,
+        "total_time"    | ":total_time" => BuiltinId::TotalTime,
+        "split_time"    | ":split_time" => BuiltinId::SplitTime,
         "run_cmd"                       => BuiltinId::RunCmd,
 
         // Request (HTTP context)

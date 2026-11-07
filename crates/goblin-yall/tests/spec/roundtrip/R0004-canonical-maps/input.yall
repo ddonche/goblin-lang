@@ -1,0 +1,5 @@
+author: { name: Dan, role: Creator, }
+
+site:
+  title: Goblin
+  base_url: /

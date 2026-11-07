@@ -1,0 +1,12 @@
+{
+  "array_no_trailing": ["one", "two", "three"],
+  "array_trailing": ["one", "two", "three"],
+  "map_no_trailing": {
+    "first": "one",
+    "second": "two"
+  },
+  "map_trailing": {
+    "first": "one",
+    "second": "two"
+  }
+}

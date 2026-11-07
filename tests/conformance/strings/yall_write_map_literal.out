@@ -1,10 +1,6 @@
 a: 1
-b:
-  - true
-  - x
+b: [true, x]
 
 a: 1
-b:
-  - true
-  - x
+b: [true, x]
 

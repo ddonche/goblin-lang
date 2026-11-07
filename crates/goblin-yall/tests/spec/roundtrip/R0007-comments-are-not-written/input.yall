@@ -1,0 +1,9 @@
+/// This comment is ignored
+
+name: Goblin <---- inline comment
+
+////
+Block comment ignored.
+////
+
+version: 1

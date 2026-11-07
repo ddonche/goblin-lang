@@ -1,0 +1,21 @@
+/// known-gap: interp drops a `send` made in a rescue when more statements follow the attempt; the interpreter is being retired
+/// `name | expr !! => stmt` runs stmt when expr fails; name stays bound (nil, or its old value with |=)
+c | :json_parse("\{bad") !! => say("err") => say("err2")
+say(c)
+d | :json_parse("[1]") !! => say("never")
+say(d)
+e | 5
+e |= :json_parse("\{bad") !! => say("err3")
+say(e)
+act h(v)
+  r | :json_parse(v) !! => send "bad"
+  return r
+xx
+say(h("\{bad"))
+say(h("[2]"))
+z | true
+say(!z)
+n.int | "5" !! => say("never")
+say(n + 1)
+imm k | 1 !! => say("never")
+k |= 2
