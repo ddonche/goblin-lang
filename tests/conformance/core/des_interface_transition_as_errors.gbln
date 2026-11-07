@@ -1,0 +1,6 @@
+/// A transition or hook is not joined to an interface with `as`: it goes
+/// in the interface's `interface conquest` ... `xx` block (P1519).
+transition absorb as conquest
+    targets: Kingdom where (target >> power) < @power
+xx
+say("never printed")

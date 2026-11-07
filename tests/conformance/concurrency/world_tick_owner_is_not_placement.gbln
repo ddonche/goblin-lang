@@ -54,7 +54,7 @@ act show(t)
     say("tick {t}: {names}")
 xx
 repeat :range(1, 5) as t
-    tick(meadows)
+    tick()
     show(t)
     if t == 3
         m2 | :objects("Meadow", it >> n == 2)[0]

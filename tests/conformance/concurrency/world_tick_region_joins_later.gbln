@@ -1,7 +1,8 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
-/// An object on its way between regions still arrives when the main
-/// program ticks the same regions in another order: west moves a walker on
-/// tick 2, and from tick 3 the list is [east, west]. Nothing is lost.
+/// An object on its way between regions still arrives when a new region
+/// joins the world: west moves a walker on tick 2, and before tick 3 the
+/// program starts a third region, which :tick() runs from then on. Nothing
+/// is lost.
 <>Walker |
     age: 0
     every 1 tick
@@ -31,11 +32,10 @@ west | :actor(make_region("west", 3), region_day)
 east | :actor(make_region("east", 2), region_day)
 :post(west, {"peer": east})
 repeat :range(1, 6) as d
-    if d < 3
-        tick([west, east])
-    else
-        tick([east, west])
+    if d == 3
+        :actor(make_region("north", 1), region_day)
     xx
+    tick()
     all | :len(:objects(it >> age >= 0))
     say("tick {d}: all {all}")
 xx

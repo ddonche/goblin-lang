@@ -1,0 +1,67 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// With regions, each region keeps its tick's event lines and the main
+/// program writes them to the log in region order (the order the regions
+/// were made), phase by phase. An overlay that spreads to another
+/// region's object, or that the program puts on or takes off one, is
+/// logged where it goes on or comes off, the next tick, still naming
+/// where it spread from.
+<>Land |
+    food: 0
+    name: ..
+    phase: grow
+        every 1 tick
+            @food |= @food + 3
+        xx
+    xx
+    phase: take
+        decision raid
+            targets: Land where target >> food > @food
+            score => target >> food
+        xx
+        judge
+            raid: self.raid(raid >> target)
+        xx
+    xx
+    act raid(t)
+        t >> food |= t >> food - 2
+        @food |= @food + 2
+    xx
+    transition fracture where @food > 10
+        fragment:
+            name: "{@name} march"
+            food: 1
+        xx
+        carries:
+            food: @food - 5
+        xx
+    xx
+xx
+overlay rumor
+    hosts: Land
+    spread: 1 where (target >> name) == "south"
+xx
+act make(n, f)
+    l <> Land | name: n, food: f
+    return {"things": [l]}
+xx
+d | :env("GOBLIN_CONF_TMP")
+log | "{d}/world_events.log"
+:event_log(log)
+north | :actor(make("north", 0))
+south | :actor(make("south", 5))
+tick()
+    grow
+    take
+xx
+:overlay!(:get_first(:objects(Land, it >> name == "north")), rumor)
+repeat 2
+    tick()
+        grow
+        take
+    xx
+xx
+s | :get_first(:objects(Land, it >> name == "south"))
+:detach!(s, rumor)
+tick()
+:event_log(nil)
+say(:read_text(log))

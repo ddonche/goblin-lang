@@ -1,0 +1,8 @@
+name: Goblin
+path: /docs/index.html
+need: #need::output_dir
+action: trailboss::build_routes_once
+keyword_string: "true"
+nil_string: "nil"
+spaced: "hello world"
+empty: ""

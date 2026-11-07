@@ -38,7 +38,7 @@ a | :actor(make_zone(1, 0), zone_day)
 b | :actor(make_zone(1, 0), zone_day)
 c | :actor(make_zone(0, 1), zone_day)
 repeat :range(1, 3) as d
-    tick([a, b, c])
+    tick()
     repeat :objects(it >> wool > -5)
         w | it >> wool
         say("tick {d}: wool {w}")

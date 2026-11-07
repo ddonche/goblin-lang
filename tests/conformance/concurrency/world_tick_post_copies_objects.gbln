@@ -31,7 +31,7 @@ a | :actor(make_sender(), send)
 b | :actor(make_receiver(), recv)
 :post(a, {"peer": b})
 repeat 3
-    tick([a, b])
+    tick()
 xx
 ns | []
 repeat :objects(it >> n > 0)

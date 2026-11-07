@@ -930,6 +930,8 @@ pub enum BuiltinId {
     MemAddr,
     MemTotal,
     MemHuman,
+    TotalTime,
+    SplitTime,
     Gc,
     GcMode,
     StashCount,
@@ -1174,6 +1176,11 @@ pub enum BuiltinId {
     Provoke,
     /// A decision's pick, worked out the first time the class judge reads it.
     DecisionPick,
+    /// A class judge's deed ends (the event log stops counting the
+    /// actions called as the judge's).
+    DeedDone,
+    /// `:event_log(path)` / `:event_log(nil)`.
+    EventLog,
     Need,
     YallParse,
     YallParseFile,
@@ -1254,6 +1261,8 @@ pub enum BuiltinId {
     // DES / overlay builtins
     DecisionDebug,
     OverlaysOf,
+    /// `:field(obj, "name")`: a field's stored value, without overlays.
+    Field,
     OverlayStrength,
     LinkScore,
     OverlayBang,
@@ -1312,6 +1321,8 @@ pub enum BuiltinId {
 
     // DES tick
     Tick,
+    /// One phase of a `tick()` block (the compiler's, not a name in code).
+    TickPhase,
 
     // Grid
     Grid,

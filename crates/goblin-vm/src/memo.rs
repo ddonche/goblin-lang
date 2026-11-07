@@ -79,7 +79,7 @@ pub(crate) fn builtin_reads(id: BuiltinId) -> bool {
     static IDS: OnceLock<Vec<BuiltinId>> = OnceLock::new();
     IDS.get_or_init(|| {
         let mut ids: Vec<BuiltinId> = crate::compiler::READ_ONLY_BUILTINS.iter()
-            .chain(["objects", "overlays", "overlays_of", "type_of", "typeof"].iter())
+            .chain(["objects", "overlays", "overlays_of", "field", "type_of", "typeof"].iter())
             .filter_map(|n| crate::compiler::builtin_by_name(n))
             .collect();
         ids.extend([BuiltinId::ObjectsIn, BuiltinId::Objects, BuiltinId::Overlays]);

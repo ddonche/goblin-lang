@@ -95,7 +95,12 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
 
 fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Option<String> {
     let class = t.target_class.as_deref()?;
-    let ids: Vec<ObjId> = vm.session.object_store.of_class_ids(class).cloned().collect();
+    let ids: Vec<ObjId> = if class.starts_with("uses ") {
+        let store = &vm.session.object_store;
+        vm.session.places_of_class(class).into_iter().filter_map(|i| store.get_index(i).map(|(u, _)| u.clone())).collect()
+    } else {
+        vm.session.object_store.of_class_ids(class).cloned().collect()
+    };
     // A target with a partner may run in another region: subjugate's change
     // goes there; an absorb or merge of it is a claim the world settles
     // (see `claim`).
@@ -547,6 +552,11 @@ fn remove_object(vm: &mut Vm, uuid: &str, heir: &str) -> Value {
 /// Runs the class's `on split => ...` (or the hook for `kind`): `self`
 /// first, then the transition's other names.
 fn hook(vm: &mut Vm, class: &str, kind: K, me: Value, args: Vec<Value>) -> Result<(), GoblinError> {
+    if crate::events::on(vm) {
+        let who = crate::events::who_value(vm, &me).unwrap_or_default();
+        let whom: Vec<String> = args.iter().filter_map(|a| crate::events::who_value(vm, a)).collect();
+        crate::events::log(vm, who, word(&kind), &whom)?;
+    }
     let key = (class.to_string(), format!("on {}", word(&kind)));
     let Some(f) = vm.session.compiled_methods.get(&key).cloned() else { return Ok(()) };
     let mut a = Vec::with_capacity(1 + args.len());
@@ -561,9 +571,11 @@ fn hook(vm: &mut Vm, class: &str, kind: K, me: Value, args: Vec<Value>) -> Resul
 /// were put on: at most one each, the ones on an overlay alone first, then
 /// the ones with a target (another overlay on the same host).
 pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
-    if vm.session.overlay_defs.values().all(|d| d.transitions.is_empty()) { return Ok(()); }
+    let phase = vm.session.phase.clone();
+    let phase = phase.as_deref();
+    if vm.session.overlay_defs.values().all(|d| d.transitions_in(phase).is_empty()) { return Ok(()); }
     let snap: Vec<(OverlayInstanceId, String)> = vm.session.overlay_instances.iter()
-        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.transitions.is_empty()))
+        .filter(|i| vm.session.overlay_defs.get(&i.overlay_name).is_some_and(|d| !d.transitions_in(phase).is_empty()))
         .filter(|i| !crate::world::is_remote(vm, &i.host_uuid))
         .map(|i| (i.des_id, i.host_uuid.clone()))
         .collect();
@@ -576,7 +588,7 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
             let inst = vm.session.overlay_instances[p].clone();
             let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { continue };
             clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&inst.overlay_name));
-            for t in &def.transitions {
+            for t in def.transitions_in(phase) {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
                 let target = if alone(&t.kind) {
@@ -725,8 +737,14 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
 }
 
 /// A new overlay kind, a copy of `parent` (every line, its overlay
-/// class), named after its family with a number no other region uses:
-/// region k of n hands out k+1, k+1+n, k+1+2n, ... (the main program is 0).
+/// class), named as the parent's next child. A declared overlay's
+/// children are numbered after its family (`language_1`, `language_2`);
+/// a made kind's children add a letter after a number and a number after
+/// a letter (`language_1` → `language_1A` → `language_1A.1` →
+/// `language_1A.1A`). The parent is recorded. Each count is shared out so
+/// no other region gives the same name: region k of n hands out k+1,
+/// k+1+n, k+1+2n, ... (the main program is 0), so a region's names may
+/// skip some.
 fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
     let def = vm.session.overlay_defs.get(parent).cloned()
         .ok_or_else(|| err(format!("R1243: unknown-overlay: no overlay named '{parent}'")))?;
@@ -734,16 +752,55 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
         Some(c) => (c.regions.iter().position(|r| *r == c.me).map_or(0, |p| p + 1) as u64, c.regions.len() as u64 + 1),
         None => (0, crate::world::world_size(&vm.session).map_or(1, |r| r as u64 + 1)),
     };
+    let key = if def.generated { def.name.clone() } else { def.family.clone() };
     let name = loop {
-        let c = vm.session.kind_counts.entry(def.family.clone()).or_insert(0);
+        let c = vm.session.kind_counts.entry(key.clone()).or_insert(0);
         let num = *c * n + k + 1;
         *c += 1;
-        let name = format!("{}_{}", def.family, num);
+        let name = if !def.generated {
+            format!("{}_{}", def.family, num)
+        } else if def.name.ends_with(|c: char| c.is_ascii_digit()) {
+            format!("{}{}", def.name, letters(num))
+        } else {
+            format!("{}.{}", def.name, num)
+        };
         if !vm.session.overlay_defs.contains_key(&name) { break name; }
     };
-    let made = OverlayDef { name: name.clone(), generated: true, ..(*def).clone() };
+    let made = OverlayDef { name: name.clone(), generated: true, parents: vec![parent.to_string()], ..(*def).clone() };
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok(name)
+}
+
+/// The kind a merge with no `into:` makes: named after both, as merged
+/// companies are (`language_1A` and `language_1B` make `language_1A-1B`;
+/// kinds of different families, `latin-greek`), with both as parents. Two
+/// overlays of one kind merge into that kind. The same two kinds merging
+/// again (anywhere) make the same kind (false: it was there).
+fn merged_kind(vm: &mut Vm, a: &str, b: &str) -> Result<(String, bool), GoblinError> {
+    if a == b { return Ok((a.to_string(), false)); }
+    let def = vm.session.overlay_defs.get(a).cloned()
+        .ok_or_else(|| err(format!("R1243: unknown-overlay: no overlay named '{a}'")))?;
+    let prefix = format!("{}_", def.family);
+    let name = match (a.strip_prefix(&prefix), b.strip_prefix(&prefix)) {
+        (Some(x), Some(y)) => format!("{prefix}{x}-{y}"),
+        _ => format!("{a}-{b}"),
+    };
+    if vm.session.overlay_defs.contains_key(&name) { return Ok((name, false)); }
+    let made = OverlayDef { name: name.clone(), generated: true, parents: vec![a.to_string(), b.to_string()], ..(*def).clone() };
+    vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
+    Ok((name, true))
+}
+
+/// 1 → A, 26 → Z, 27 → AA.
+fn letters(mut n: u64) -> String {
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn take_overlay(vm: &mut Vm, inst: &OverlayInstance) {
@@ -768,18 +825,19 @@ fn change_overlay(vm: &mut Vm, p: usize, intensity: Option<f64>, fields: Vec<(St
 fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &OverlayInstance, me: &Value, target: Option<&OverlayInstance>) -> Result<(), GoblinError> {
     let name = inst.overlay_name.clone();
     match t.kind {
-        K::Erase => { take_overlay(vm, inst); Ok(()) }
+        K::Erase => { olog(vm, inst, K::Erase, Vec::new())?; take_overlay(vm, inst); Ok(()) }
         K::Mutate => {
             let (kind, made) = successor_kind(vm, t, 0, &name)?;
             let (intensity, fields) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) else { return Ok(()) };
             if kind != name {
-                vm.session.overlay_instances.rename(p, kind);
+                vm.session.overlay_instances.rename(p, kind.clone());
                 vm.session.overlay_instances[p].age = 0;
             }
             change_overlay(vm, p, intensity, fields)?;
             let now = vm.session.overlay_instances[p].clone();
             seed_kind(vm, made, &now);
+            olog(vm, inst, K::Mutate, if kind != name { vec![kind] } else { Vec::new() })?;
             overlay_hook(vm, def, K::Mutate, inst, Vec::new())
         }
         K::Split => {
@@ -793,6 +851,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             take_overlay(vm, inst);
             crate::tick::overlay_put(vm, a.clone(), false)?;
             crate::tick::overlay_put(vm, b.clone(), false)?;
+            olog(vm, inst, K::Split, vec![a.overlay_name.clone(), b.overlay_name.clone()])?;
             let recs = vec![vm.overlay_record(&a), vm.overlay_record(&b)];
             overlay_hook(vm, def, K::Split, inst, recs)
         }
@@ -804,6 +863,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             seed_kind(vm, mf, &frag);
             if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             crate::tick::overlay_put(vm, frag.clone(), false)?;
+            olog(vm, inst, K::Fracture, vec![frag.overlay_name.clone()])?;
             let recs = vec![vm.overlay_record(&frag)];
             overlay_hook(vm, def, K::Fracture, inst, recs)
         }
@@ -825,17 +885,19 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
                 extra_fields: extra,
                 des_id: next_overlay_id(vm),
             };
-            crate::tick::overlay_put(vm, child.clone(), true)?;
+            olog(vm, inst, K::Spawn, vec![child.overlay_name.clone()])?;
+            crate::tick::overlay_put_as(vm, child.clone(), true, crate::tick::Put::Quiet)?;
             let recs = vec![vm.overlay_record(&child)];
             overlay_hook(vm, def, K::Spawn, inst, recs)
         }
         K::Merge => {
             let Some(other) = target else { return Err(err("merge without a target")) };
-            let (km, mm) = successor_kind(vm, t, 0, &name)?;
+            let (km, mm) = if t.into_classes.is_empty() { merged_kind(vm, &name, &other.overlay_name)? } else { successor_kind(vm, t, 0, &name)? };
             let (im, fm) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let merged = successor(vm, inst, km, im, fm);
             seed_kind(vm, mm, &merged);
             let old_target = vm.overlay_record(other);
+            olog(vm, inst, K::Merge, vec![other.overlay_name.clone(), merged.overlay_name.clone()])?;
             take_overlay(vm, inst);
             take_overlay(vm, other);
             crate::tick::overlay_put(vm, merged.clone(), false)?;
@@ -846,12 +908,21 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let Some(other) = target else { return Err(err("absorb without a target")) };
             let (ic, fc) = overlay_overrides(vm, fields_of(t, "carries"), me, inst, target)?;
             let old_target = vm.overlay_record(other);
+            olog(vm, inst, K::Absorb, vec![other.overlay_name.clone()])?;
             take_overlay(vm, other);
             if let Some(p) = find_overlay(vm, &inst.host_uuid, inst.des_id) { change_overlay(vm, p, ic, fc)?; }
             overlay_hook(vm, def, K::Absorb, inst, vec![old_target])
         }
         K::Subjugate => Err(err("R1245: overlay-subjugate: an overlay can't subjugate")),
     }
+}
+
+/// The event log's line for an overlay's transition: the overlays it
+/// made or took (on the same host).
+fn olog(vm: &mut Vm, inst: &OverlayInstance, kind: K, whom: Vec<String>) -> Result<(), GoblinError> {
+    if !crate::events::on(vm) { return Ok(()); }
+    let who = crate::events::overlay(vm, inst);
+    crate::events::log(vm, who, word(&kind), &whom)
 }
 
 /// Runs an overlay's `on split => ...` (or the hook for `kind`) as its other

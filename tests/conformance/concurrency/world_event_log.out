@@ -1,0 +1,10 @@
+tick 1 | Land north | raid | Land south
+tick 1 | rumor on Land north | put on
+tick 2 | Land north | raid | Land south
+tick 2 | rumor on Land north | spreads to | Land south
+tick 3 | Land south | raid | Land north
+tick 3 | Land north | fracture | Land north march
+tick 3 | Land south | fracture | Land south march
+tick 3 | rumor on Land south | taken off
+tick 4 | rumor on Land south march | spreads to | Land south
+

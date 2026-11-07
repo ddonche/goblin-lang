@@ -14,7 +14,7 @@ name: Goblin
 "#);
 
     assert!(
-        err.contains("unexpected indentation"),
+        err.contains("invalid indentation"),
         "unexpected error: {err}"
     );
 }

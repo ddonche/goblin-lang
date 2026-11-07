@@ -1,0 +1,7 @@
+text: """
+/// not a comment
+//// not a block comment
+<---- not an inline comment
+#site
+#need::output_dir
+"""

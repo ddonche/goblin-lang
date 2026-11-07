@@ -1,0 +1,20 @@
+/// known-gap: interp has no aspects; the interpreter is being retired
+/// Two aspects may name the same field. The same starting value in both
+/// is no clash, and neither is the same bare `~` trait. A field one aspect
+/// leaves bare takes the value the other gives, whether the aspects come
+/// before or after the class.
+aspect Rich |
+    gold: 1
+    ~pride
+    army
+xx
+<>Town |
+    uses Rich, Proud
+xx
+aspect Proud |
+    gold: 1
+    ~pride
+    army: 10
+xx
+t <> Town | name: "a"
+say("{t >> gold} {t >> pride} {t >> army}")

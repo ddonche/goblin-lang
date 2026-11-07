@@ -1,0 +1,16 @@
+/// known-gap: interp has no aspects; the interpreter is being retired
+/// A class inside an action may use aspects declared above it: they are
+/// filled in where the class is.
+aspect Stats |
+    ~might: .4
+    hp: 10
+xx
+act make()
+    <>Hero |
+        uses Stats
+        hp: 12
+    xx
+    h <> Hero | name: "h"
+    say("{h >> might} {h >> hp}")
+xx
+make()

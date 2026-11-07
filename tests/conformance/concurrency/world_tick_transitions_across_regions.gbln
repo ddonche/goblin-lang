@@ -67,7 +67,7 @@ east | :actor(make(.9, ["Kel"], true), day)
 big | :actor(make_realm("Big", 20), day)
 small | :actor(make_realm("Small", 3), day)
 repeat :range(1, 4) as d
-    tick([north, south, east, big, small])
+    tick()
     langs | []
     repeat :objects("Land") as x
         ns | []

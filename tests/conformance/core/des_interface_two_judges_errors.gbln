@@ -1,0 +1,23 @@
+/// A class that uses an interface with a judge, where it already has a
+/// judge of its own, is an error (P1346): a phase has one judge of its own
+/// making.
+interface diplomacy |
+    decision partner
+        targets: Kingdom
+        score => 1
+    xx
+    judge
+        partner: say("deal")
+    xx
+xx
+<>Kingdom |
+    uses diplomacy
+    decision rival
+        targets: Kingdom
+        score => 1
+    xx
+    judge
+        rival: say("feud")
+    xx
+xx
+say("never printed")

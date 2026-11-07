@@ -32,11 +32,11 @@ act day(st, msg)
 xx
 a | :actor(make(1), day)
 b | :actor(make(2), day)
-tick([a, b])
+tick()
 far | :objects("Field")[0]
 far >> owner |= :objects("Lord", it >> name == "doomed")[0]
 repeat :range(2, 5) as t
-    tick([a, b])
+    tick()
     f | :objects("Field")[0]
     o | f >> owner
     shown | "nil"

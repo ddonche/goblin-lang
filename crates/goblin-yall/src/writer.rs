@@ -39,11 +39,27 @@ fn write_value(out: &mut String, v: &YallValue, indent: usize, top_level: bool) 
 // STRING RULES
 // ----------------------------------------------------
 
+/// A string as the whole value of a block-map key: multiline text is written
+/// as a `"""` block, the one place the parser reads one. Text that starts or
+/// ends with a newline stays escaped, since the block form would drop it.
+fn write_block_string(out: &mut String, s: &str) {
+    if s.contains('\n') && !s.starts_with('\n') && !s.ends_with('\n')
+        && !s.lines().any(|l| l.trim() == "\"\"\"")
+    {
+        out.push_str("\"\"\"\n");
+        out.push_str(s);
+        out.push_str("\n\"\"\"");
+        return;
+    }
+    write_string(out, s);
+}
+
 fn write_string(out: &mut String, s: &str) {
     if is_bare_ok(s) {
         out.push_str(s);
     } else {
         out.push('"');
+
         for ch in s.chars() {
             match ch {
                 '\\' => out.push_str("\\\\"),
@@ -54,6 +70,7 @@ fn write_string(out: &mut String, s: &str) {
                 c => out.push(c),
             }
         }
+
         out.push('"');
     }
 }
@@ -67,6 +84,11 @@ fn write_string(out: &mut String, s: &str) {
 fn is_bare_ok(s: &str) -> bool {
     if s.is_empty() {
         return false;
+    }
+
+    match s {
+        "true" | "false" | "nil" => return false,
+        _ => {}
     }
 
     for ch in s.chars() {
@@ -101,12 +123,29 @@ fn write_block_map(
 
         match val {
             YallValue::Map(m) if !m.is_empty() => {
-                out.push('\n');
-                write_block_map(out, m, indent + 2);
+                if try_inline_map(m) {
+                    out.push(' ');
+                    write_inline_map(out, m);
+                    out.push('\n');
+                } else {
+                    out.push('\n');
+                    write_block_map(out, m, indent + 2);
+                }
             }
             YallValue::Array(a) if !a.is_empty() => {
+                if try_inline_array(a) {
+                    out.push(' ');
+                    write_inline_array(out, a);
+                    out.push('\n');
+                } else {
+                    out.push('\n');
+                    write_block_list(out, a, indent + 2);
+                }
+            }
+            YallValue::Str(text) => {
+                out.push(' ');
+                write_block_string(out, text);
                 out.push('\n');
-                write_block_list(out, a, indent + 2);
             }
             other => {
                 if is_simple_scalar(other) {
@@ -202,6 +241,12 @@ fn write_inline_or_block_map(
     }
 }
 
+/// A bare string with `:` (which ends a bare value inside `{ }` and `[ ]`) or
+/// a leading `#` (a comment) can't go inline; its collection stays a block.
+fn inline_safe(s: &str) -> bool {
+    !(is_bare_ok(s) && (s.contains(':') || s.starts_with('#')))
+}
+
 fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
     if map.is_empty() {
         return true;
@@ -215,7 +260,7 @@ fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
             return false;
         }
         if let YallValue::Str(s) = v {
-            if s.len() > 20 {
+            if s.len() > 20 || !inline_safe(s) {
                 return false;
             }
         }
@@ -224,7 +269,7 @@ fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
 }
 
 fn write_inline_map(out: &mut String, map: &IndexMap<String, YallValue>) {
-    out.push('{');
+    out.push_str("{ ");
     let mut first = true;
     for (k, v) in map {
         if !first {
@@ -235,7 +280,7 @@ fn write_inline_map(out: &mut String, map: &IndexMap<String, YallValue>) {
         out.push_str(": ");
         write_value(out, v, 0, false);
     }
-    out.push('}');
+    out.push_str(" }");
 }
 
 // ----------------------------------------------------
@@ -266,7 +311,7 @@ fn try_inline_array(arr: &[YallValue]) -> bool {
             return false;
         }
         if let YallValue::Str(s) = v {
-            if s.len() > 20 {
+            if s.len() > 20 || !inline_safe(s) {
                 return false;
             }
         }

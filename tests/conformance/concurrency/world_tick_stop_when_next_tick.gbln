@@ -1,0 +1,28 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A region whose stop_when holds after a tick is out of the very next
+/// `:tick()`, even one that comes straight after: that tick runs without it
+/// instead of failing because it stopped.
+<>Thing |
+    n: 0
+xx
+act count(st, msg)
+    if :has(msg, "tick")
+        :update!(st{"ticks"}, st{"ticks"} + 1)
+    xx
+    return st
+xx
+act enough(st)
+    return st{"ticks"} >= 1
+xx
+act make_region()
+    t <> Thing | n: 1
+    return {"things": [t], "ticks": 0}
+xx
+done | 0
+repeat 50
+    r | :actor(make_region(), count, {stop_when: enough})
+    tick()
+    tick()
+    done |= done + :await(r){"ticks"}
+xx
+say(done)

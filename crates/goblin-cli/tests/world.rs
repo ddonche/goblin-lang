@@ -1,4 +1,4 @@
-//! tick(regions): a world split into region actors gives the same result
+//! `:tick()` with regions: a world split into region actors gives the same result
 //! whatever the number of worker threads, and on every run.
 
 use std::path::PathBuf;
@@ -87,12 +87,11 @@ xx
 act town_day(st, msg)
     return st
 xx
-towns | []
 repeat :range(0, 4) as i
-    :put_last!(towns, :actor(make_town(i * .25, 60, i % 2), town_day))
+    :actor(make_town(i * .25, 60, i % 2), town_day)
 xx
 repeat :range(1, 13) as d
-    tick(towns)
+    tick()
     sick | :len(:overlays(flu))
     fat | 0
     repeat :objects(it >> fat > -1000)

@@ -1,6 +1,6 @@
 /// An epidemic on DES: a sickness spreads between people in the same town,
 /// lasts a while, and either kills or leaves its host immune. Each town is
-/// a region (an actor that runs the town and the people in it); tick(towns)
+/// a region (an actor that runs the town and the people in it); tick()
 /// runs one day in all of them at once. Now and then a person travels to
 /// the next town: `:move!` takes them there, sickness and all.
 ///
@@ -61,14 +61,13 @@ act make_town(n)
     return all
 xx
 
-towns | []
 repeat :range(0, n_towns) as n
-    :put_last!(towns, :actor(make_town(n)))
+    :actor(make_town(n))
 xx
 
 say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
 repeat :range(1, days + 1) as d
-    tick(towns)
+    tick()
     if d % 5 == 0 or d == days
         alive | :len(:objects(Person))
         ill | :len(:overlays(sick))

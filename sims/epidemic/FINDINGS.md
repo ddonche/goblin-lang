@@ -1,7 +1,7 @@
 # Epidemic on DES: what got in the way
 
 `plague.gbln` has four towns of 100 people. Each town is a region (an
-actor), and `tick(towns)` runs one day in all of them at once. One person
+actor), and `:tick()` runs one day in all of them at once. One person
 in town 0 starts sick. Being sick is an overlay, `Sick`: it costs 1 health
 a day for 8 days (`each tick:`), and when it runs out the host is immune
 (`on end:`). People die at 0 health (`transition erase`). People now and
@@ -82,7 +82,7 @@ first | :objects(it >> kind == "person")[0]
 ```
 
 That list is empty: objects made inside a region only reach the main
-program's view after the first `tick(towns)`. So patient zero is now made
+program's view after the first `:tick()`. So patient zero is now made
 sick inside `make_town`. This is how regions work today (the main view is
 refreshed each tick), but nothing says so when it happens; the program
 just finds no one.

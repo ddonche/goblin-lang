@@ -249,7 +249,7 @@ fn collect_action_names(stmts: &[Stmt], out: &mut Vec<String>) {
             Stmt::Action(a) => {
                 if !out.contains(&a.name) { out.push(a.name.clone()); }
             }
-            Stmt::Block { stmts, .. } => collect_action_names(stmts, out),
+            Stmt::Block { stmts, .. } | Stmt::TickBlock { body: stmts, .. } => collect_action_names(stmts, out),
             Stmt::Judge(j) => {
                 for arm in &j.arms {
                     if let JudgeArmBody::Stmts(stmts) = &arm.body {
@@ -302,7 +302,7 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
                     if !out.contains(name) { out.push(name.clone()); }
                 }
             }
-            Stmt::Block { stmts, .. } => collect_bind_names(stmts, out),
+            Stmt::Block { stmts, .. } | Stmt::TickBlock { body: stmts, .. } => collect_bind_names(stmts, out),
             Stmt::Judge(j) => {
                 for arm in &j.arms {
                     if let JudgeArmBody::Stmts(stmts) = &arm.body {
@@ -354,6 +354,8 @@ pub struct Compiler {
     pub is_class_method: bool,
     /// In a class judge: the decision names, each read as its pick.
     pub lazy_picks: Vec<String>,
+    /// Inside a `tick()` block: a line that is a bare name runs that phase.
+    in_tick_block: bool,
     /// An error the compiled action raises as soon as it is called (a method
     /// that did not compile reports why instead of going missing).
     pub start_error: Option<String>,
@@ -409,7 +411,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new() }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new(), in_tick_block: false }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -777,9 +779,26 @@ impl Compiler {
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), GoblinError> {
         match stmt {
+            Stmt::Expr(Expr::Ident(name, _)) if self.in_tick_block => {
+                let idx = self.add_constant(Value::Str(name.clone().into()));
+                self.emit(Opcode::LoadConst(idx as u16));
+                self.emit(Opcode::CallBuiltin(BuiltinId::TickPhase, 1));
+                self.emit(Opcode::Pop);
+            }
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
                 self.emit_discard();
+            }
+
+            // `tick()` and its block: the phases it names, then the end of
+            // the tick (what no phase holds, ageing, the count).
+            Stmt::TickBlock { body, .. } => {
+                let outer = std::mem::replace(&mut self.in_tick_block, true);
+                let r = (|| { for s in body { self.compile_stmt(s)?; } Ok::<_, GoblinError>(()) })();
+                self.in_tick_block = outer;
+                r?;
+                self.emit(Opcode::CallBuiltin(BuiltinId::Tick, 0));
+                self.emit(Opcode::Pop);
             }
 
             Stmt::Bind(bind) if self.compile_append_local(bind)? => {}
@@ -1124,6 +1143,10 @@ impl Compiler {
             goblin_ast::JudgeArmBody::Stmts(stmts) => {
                 for s in stmts { self.compile_stmt(s)?; }
             }
+        }
+        if !self.lazy_picks.is_empty() {
+            self.emit(Opcode::CallBuiltin(BuiltinId::DeedDone, 0));
+            self.emit(Opcode::Pop);
         }
         Ok(())
     }
@@ -1789,7 +1812,13 @@ impl Compiler {
                     // Do NOT fall back to bare name — a bare local named `foo` must not
                     // shadow a `ns::foo` GLAM action when the local is a pre-hoisted nil.
                     let full_name = format!("{}::{}", ns, name);
-                    match self.resolve_load(&full_name) {
+                    // In a class method an unknown bare name is the program's
+                    // variable; a namespaced one never is: it is the module's
+                    // action, looked up by name when it runs.
+                    let in_method = std::mem::replace(&mut self.is_class_method, false);
+                    let load = self.resolve_load(&full_name);
+                    self.is_class_method = in_method;
+                    match load {
                         Ok(load_op) => { self.emit(load_op); }
                         Err(_) => {
                             // Not known at compile time — emit a runtime named lookup.
@@ -1985,7 +2014,9 @@ impl Compiler {
                 for (i, s) in stmts.iter().enumerate() {
                     if i == last_idx {
                         // Last stmt: if it's an expression, leave its value on the stack.
-                        if let Stmt::Expr(e) = s {
+                        // (A phase line of a `tick()` block is a statement.)
+                        let phase_line = self.in_tick_block && matches!(s, Stmt::Expr(Expr::Ident(..)));
+                        if let (Stmt::Expr(e), false) = (s, phase_line) {
                             self.compile_expr(e)?;
                         } else {
                             self.compile_stmt(s)?;
@@ -3837,6 +3868,8 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "is_map"                        => BuiltinId::IsMap,
         "mem_total"     | ":mem_total"  => BuiltinId::MemTotal,
         "mem_human"     | ":mem_human"  => BuiltinId::MemHuman,
+        "total_time"    | ":total_time" => BuiltinId::TotalTime,
+        "split_time"    | ":split_time" => BuiltinId::SplitTime,
         "run_cmd"                       => BuiltinId::RunCmd,
 
         // Request (HTTP context)
@@ -4093,10 +4126,12 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
 
         // DES tick
         "tick" | "tick_db"               => BuiltinId::Tick,
+        "event_log"                      => BuiltinId::EventLog,
 
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,
         "overlays_of"                    => BuiltinId::OverlaysOf,
+        "field"                          => BuiltinId::Field,
         "overlay_strength"               => BuiltinId::OverlayStrength,
         "link_score"                     => BuiltinId::LinkScore,
         "overlay!"                       => BuiltinId::OverlayBang,

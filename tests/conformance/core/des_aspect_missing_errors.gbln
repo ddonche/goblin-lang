@@ -1,0 +1,5 @@
+/// A class that uses an aspect no one declared is an error (P1340).
+<>Tribe |
+    uses Political
+xx
+say("never printed")

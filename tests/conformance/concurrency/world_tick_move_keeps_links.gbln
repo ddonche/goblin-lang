@@ -46,5 +46,5 @@ west | :actor(make_west(), region_day)
 east | :actor(make_east(), region_day)
 :post(west, {"peer": east})
 repeat :range(1, 6)
-    tick([west, east])
+    tick()
 xx

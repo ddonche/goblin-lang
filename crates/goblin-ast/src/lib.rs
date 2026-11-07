@@ -74,6 +74,13 @@ pub enum Stmt {
         mode: BindMode,
         span: Span,
     },
+    /// `tick()` with a block below it: one tick. A line that is a bare name
+    /// runs that phase (`phase: NAME` in the classes and overlays); the rest
+    /// is ordinary code. The tick ends where the block does.
+    TickBlock {
+        body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 // ── Ownership AST nodes ──────────────────────────────────────────────────────
@@ -266,7 +273,21 @@ pub struct OverlayDefStmt {
     pub on_start: Option<String>,
     /// `every N ticks`: (N, action in `actions`).
     pub every: Vec<(u64, String)>,
+    /// `phase: NAME` blocks: what the overlay does when the program's
+    /// `tick()` block runs that phase. The lines above are its unphased
+    /// ones, run when the tick ends.
+    pub phases: Vec<OverlayPhase>,
     pub span: Span,
+}
+
+/// An overlay's `phase: NAME` block: its spreads, `every` blocks (actions
+/// in the overlay's `actions`) and transitions for that phase.
+#[derive(Debug, Clone, Default)]
+pub struct OverlayPhase {
+    pub name: String,
+    pub spreads: Vec<OverlaySpread>,
+    pub every: Vec<(u64, String)>,
+    pub transitions: Vec<TransitionDef>,
 }
 
 /// `spread: chance where condition`: each tick, each object the
@@ -349,7 +370,29 @@ pub struct ClassDecl {
     /// The class's `judge` over its block decisions: a method (named
     /// this) taking each decision's pick, in order, as an argument.
     pub decide: Option<String>,
+    /// `phase: NAME` blocks: what the class does when the program's
+    /// `tick()` block runs that phase. The members above are the class's
+    /// unphased ones, run when the tick ends.
+    pub phases: Vec<ClassPhase>,
+    /// `uses Name` lines naming what the class takes but does not write.
+    /// The parser fills in an aspect's fields and drops its name; what is
+    /// left names something else.
+    pub uses: Vec<String>,
     pub span: Span,
+}
+
+/// A class's `phase: NAME` block: its decisions, judge, `every` blocks and
+/// transitions for that phase.
+#[derive(Debug, Clone)]
+pub struct ClassPhase {
+    pub name: String,
+    pub transitions: Vec<TransitionDef>,
+    pub every: Vec<EveryDecl>,
+    pub decisions: Vec<NamedDecision>,
+    pub one_of: Vec<Vec<String>>,
+    pub decide: Option<String>,
+    /// The interfaces whose decisions and judge run in this phase.
+    pub uses: Vec<String>,
 }
 
 /// One of a class's decisions, with the judge that acts on its score.

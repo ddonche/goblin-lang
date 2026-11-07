@@ -284,6 +284,9 @@ impl<T> Queue<T> {
         true
     }
 
+    /// Takes nothing more (it may still hold items).
+    fn is_closed(&self) -> bool { lock(&self.state).closed }
+
     /// Accept nothing more. Items already queued stay until taken.
     pub fn close(&self) {
         let mut st = lock(&self.state);
@@ -419,6 +422,9 @@ pub struct ActorShared {
     /// waiting in `:receive()` counts as idle too.
     idle: Option<Duration>,
     last_active: Mutex<Instant>,
+    /// Holds DES objects, so `:tick()` runs it as a region: it was handed
+    /// objects, was posted one, or has made some. Never cleared.
+    region: AtomicBool,
 }
 
 impl ActorShared {
@@ -931,7 +937,7 @@ impl Vm {
         let mut it = args.into_iter();
         let state = it.next().unwrap();
         // Without a handler the actor only runs what it owns (a region in
-        // `tick(regions)`); it takes no messages.
+        // `:tick()`); it takes no messages.
         let handler = it.next().unwrap_or(Value::Nil);
         let has_handler = !matches!(handler, Value::Nil);
         let policy = policy_of(it.next())?;
@@ -1016,6 +1022,7 @@ impl Vm {
             pulled: Mutex::new(Vec::new()),
             idle: policy.idle,
             last_active: Mutex::new(Instant::now()),
+            region: AtomicBool::new(!graph.is_empty()),
         });
         // The worker builds the actor's session on its own thread.
         sched.workers[worker].push(Job::Start(Box::new(Start {
@@ -1071,6 +1078,16 @@ pub fn hand_off_marker(handle: &Value, var: &str, session: &mut Session) -> Valu
     };
     session.handed_off.insert(uuid.clone(), var.to_string());
     Value::Ref(uuid.into())
+}
+
+/// What reading an object that is not here gives: nil when it left the
+/// world (erased, or taken in by a transition), as a field or a list item
+/// does; an error when it went to an actor or another region.
+pub fn gone_object(session: &Session, uuid: &str) -> Result<Value, GoblinError> {
+    if session.kept_home.contains_key(uuid) || session.moved_away.contains_key(uuid) || session.handed_off.contains_key(uuid) {
+        return Err(missing_object(session, uuid));
+    }
+    Ok(Value::Nil)
 }
 
 /// The error for reading an object that is gone.
@@ -1374,12 +1391,16 @@ impl Slot {
                         let reply = reply.expect("a world tick is a request");
                         match r {
                             Ok(()) => {
-                                reply.set(Ok(Arc::new(PValue::Nil)));
-                                // The tick was a message: stop_when applies after it.
-                                if !job.prime {
+                                // The tick was a message: stop_when applies after it
+                                // (after the whole tick, not each of its phases),
+                                // before the answer goes back, so the next
+                                // `:tick()` already sees a region that stopped.
+                                let goes_on = if !job.prime && job.phase.is_none() {
                                     let next = std::mem::replace(&mut self.state, Value::Nil);
-                                    if !self.finish_message(next, None) { return false; }
-                                }
+                                    self.finish_message(next, None)
+                                } else { true };
+                                reply.set(Ok(Arc::new(PValue::Nil)));
+                                if !goes_on { return false; }
                             }
                             Err(e) => {
                                 // The region failed: the tick fails, and so does the actor.
@@ -1468,6 +1489,9 @@ impl Slot {
             return self.fail_with("the handler returned nil; it must return the actor's next state".into(), reply);
         }
         self.state = adopt(next, &mut self.vm.session);
+        // Made objects of its own: a region from the next `:tick()` on (set
+        // before the answer goes back, so a program that awaited it knows).
+        if !self.vm.session.object_store.is_empty() { self.shared.region.store(true, Ordering::SeqCst); }
         let pulled = std::mem::take(&mut *lock(&self.shared.pulled));
         if reply.is_some() || !pulled.is_empty() {
             let current = deref(self.state.clone(), &self.vm.session);
@@ -1800,6 +1824,7 @@ fn post_step(args: Vec<Value>, session: &mut Session) -> Result<PostStep, Goblin
         Handle::Actor(a) => {
             a.takes_messages()?;
             let p = ToPortable::new(session).value(msg)?;
+            if p.holds_object() { a.region.store(true, Ordering::SeqCst); }
             // From one region to another during a world tick: delivered at
             // the start of the next tick, in a fixed order.
             if let Some(c) = session.region.as_mut() {
@@ -1849,7 +1874,19 @@ impl ActorShared {
 
 pub(crate) fn actor_id(a: &ActorShared) -> u64 { a.id }
 
-/// Sends a region its part of one world tick (`tick(regions)`).
+/// From now on `:tick()` runs this actor as a region.
+pub(crate) fn mark_region(a: &ActorShared) { a.region.store(true, Ordering::SeqCst); }
+
+/// The actor has ended (halted, stopped, failed or cancelled).
+pub(crate) fn has_ended(a: &ActorShared) -> bool { a.ended() }
+
+/// The actors `:tick()` runs as regions: those this session started that
+/// hold DES objects and still take messages, in the order they were started.
+pub(crate) fn region_actors(session: &Session) -> Vec<Arc<ActorShared>> {
+    session.owned_actors.iter().filter(|a| a.region.load(Ordering::SeqCst) && !a.ended() && !a.mailbox.is_closed()).cloned().collect()
+}
+
+/// Sends a region its part of one world tick (`:tick()`).
 pub(crate) fn send_world(a: &Arc<ActorShared>, job: Arc<crate::world::WorldIn>) -> Result<Arc<Reply>, GoblinError> {
     let reply = Arc::new(Reply {
         id: next_id(),

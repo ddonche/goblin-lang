@@ -26,8 +26,7 @@ act h(st, msg)
 xx
 west | :actor(make("west"), h)
 east | :actor(make("east"), h)
-all | [west, east]
-tick(all)
+tick()
 wl | nil
 er | nil
 repeat :objects("Lord") as l
@@ -42,17 +41,17 @@ repeat :objects("Realm") as r
 xx
 wl >> owner |= er
 say(wl >> owner >> name)
-tick(all)
+tick()
 say(wl >> owner >> name)
 repeat :objects("Lord") as l
     say("{l >> name}: held by {l >> owner >> name}, sees {l >> sees}")
 xx
-tick(all)
+tick()
 repeat :objects("Lord") as l
     say("{l >> name}: held by {l >> owner >> name}, sees {l >> sees}")
 xx
 /// Once the object is erased, the field reads nil.
 delete_object!(er)
-tick(all)
-tick(all)
+tick()
+tick()
 say(wl >> owner == nil)

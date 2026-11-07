@@ -1,7 +1,10 @@
 [package]
 name = "goblin-yall"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 
 [dependencies]
 indexmap = "2"
+
+[dev-dependencies]
+serde_json = "1"

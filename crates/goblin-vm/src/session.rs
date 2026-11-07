@@ -48,6 +48,9 @@ pub struct OverlayDef {
     pub actions: Vec<goblin_ast::ActionDecl>,
     pub on_start: Option<String>,
     pub every: Vec<(u64, String)>,
+    /// `phase: NAME` blocks: spreads, `every` blocks and transitions run
+    /// only in that phase of a `tick()` block.
+    pub phases: Vec<goblin_ast::OverlayPhase>,
     /// What the kinds a transition makes from this one are named after:
     /// its overlay class in lower case, else its own declared name
     /// (`language_76`, `plague_3`).
@@ -55,6 +58,28 @@ pub struct OverlayDef {
     /// Made by a transition while the program ran, not declared: it goes
     /// along with its overlays to other regions, which don't know it.
     pub generated: bool,
+    /// The kinds a transition made this one from (two for a merge); none
+    /// for a declared overlay.
+    pub parents: Vec<String>,
+}
+
+impl OverlayDef {
+    /// Its phase's block, in a phase; None at the tick's end (its own lines).
+    fn phase_of(&self, phase: Option<&str>) -> Option<Option<&goblin_ast::OverlayPhase>> {
+        phase.map(|p| self.phases.iter().find(|x| x.name == p))
+    }
+    /// The spreads that run now: in a phase, that phase's.
+    pub fn spreads_in(&self, phase: Option<&str>) -> &[goblin_ast::OverlaySpread] {
+        match self.phase_of(phase) { None => &self.spreads, Some(p) => p.map(|p| &p.spreads[..]).unwrap_or(&[]) }
+    }
+    /// The `every N ticks` blocks that run now.
+    pub fn every_in(&self, phase: Option<&str>) -> &[(u64, String)] {
+        match self.phase_of(phase) { None => &self.every, Some(p) => p.map(|p| &p.every[..]).unwrap_or(&[]) }
+    }
+    /// The transitions that run now.
+    pub fn transitions_in(&self, phase: Option<&str>) -> &[goblin_ast::TransitionDef] {
+        match self.phase_of(phase) { None => &self.transitions, Some(p) => p.map(|p| &p.transitions[..]).unwrap_or(&[]) }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,6 +199,11 @@ pub struct Session {
     /// GC behaviour for this session.
     pub gc_mode: GcMode,
 
+    /// When the session started, for `:total_time()`.
+    pub script_start: std::time::Instant,
+    /// The last `:split_time()` call (or the start), for `:split_time()`.
+    pub last_split: std::time::Instant,
+
     /// Optional worker ID for cross-worker safety checks.
     pub worker_id: usize,
 
@@ -217,7 +247,7 @@ pub struct Session {
     pub(crate) des_touched: Option<Vec<crate::value::ObjId>>,
     /// Objects whose `on erase:` action is running: not erased again.
     pub(crate) des_erasing: Vec<String>,
-    /// The main program's world of regions (`tick(regions)`).
+    /// The main program's world of regions (`:tick()`).
     pub world: Option<crate::world::World>,
     /// In a region, while it runs a world tick.
     pub(crate) region: Option<crate::world::RegionCtx>,
@@ -286,6 +316,13 @@ pub struct Session {
     pub compiled_methods: Rc<HashMap<(String, String), std::rc::Rc<crate::value::FunctionObject>>>,
     /// DES ticks run so far (`every N ticks` counts on it).
     pub des_ticks: i64,
+    /// The phase of a `tick()` block running now (None: the tick's end).
+    pub phase: Option<std::rc::Rc<str>>,
+    /// Where the event log goes (`:event_log(path)`), None when it is off.
+    pub event_log: Option<crate::events::Sink>,
+    /// Each phase's view of the classes (`crate::tick::run_phase`), with
+    /// the classes it was made from.
+    pub phase_views: HashMap<String, (Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>, Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>)>,
     /// What `:metrics()` reports: objects and overlays made, tick time.
     pub des_metrics: crate::metrics::DesMetrics,
     /// In a region: its objects that transitioned this tick (see
@@ -371,6 +408,25 @@ pub struct Session {
 }
 
 impl Session {
+    /// Whether an object of `class` is one of `wanted`: that class, or,
+    /// for `uses diplomacy`, any class that uses the interface.
+    pub fn class_matches(&self, wanted: &str, class: &str) -> bool {
+        match wanted.strip_prefix("uses ") {
+            Some(iface) => self.classes.get(class).is_some_and(|c| c.uses.iter().any(|u| u == iface)),
+            None => wanted == class,
+        }
+    }
+
+    /// Where the objects of `wanted` (a class, or `uses diplomacy`) sit in
+    /// the store, in creation order.
+    pub fn places_of_class(&self, wanted: &str) -> Vec<usize> {
+        let store = &self.object_store;
+        if wanted.starts_with("uses ") {
+            return store.places_of(|c| self.class_matches(wanted, c));
+        }
+        store.of_class_ids(wanted).filter_map(|u| store.get_index_of(u)).collect()
+    }
+
     /// Notes that the object `uuid` changed, when a DES action is running.
     #[inline]
     pub(crate) fn touch(&mut self, uuid: &(impl crate::value::IdKey + ?Sized)) {
@@ -436,7 +492,10 @@ impl Session {
             .map(|d| d.subsec_nanos() as u128 | ((d.as_secs() as u128) << 32))
             .unwrap_or(0x123456789abcdef0u128)
             | 1; // MCG requires odd seed
+        let started = std::time::Instant::now();
         Session {
+            script_start: started,
+            last_split: started,
             arena: Slab::new(),
             globals: Vec::new(),
             global_names: Default::default(),
@@ -476,6 +535,9 @@ impl Session {
             classes: Default::default(),
             compiled_methods: Default::default(),
             des_ticks: 0,
+            phase_views: Default::default(),
+            phase: None,
+            event_log: None,
             des_metrics: Default::default(),
             transitioned: Vec::new(),
             enums: Default::default(),
@@ -638,7 +700,7 @@ impl Session {
     pub fn check_readable(&self, t: &Tether) -> Result<(), GoblinError> {
         match &self.get_stash(t)?.value {
             Value::Ref(uuid) if !self.object_store.contains_key(uuid) =>
-                Err(crate::actor::missing_object(self, uuid)),
+                crate::actor::gone_object(self, uuid).map(|_| ()),
             _ => Ok(()),
         }
     }
@@ -646,9 +708,10 @@ impl Session {
     pub fn read_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         // Auto-deref Ref through object_store (matches interpreter's get_var semantics).
         match &self.get_stash(t)?.value {
-            Value::Ref(uuid) => self.object_store.get(uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(self, uuid)),
+            Value::Ref(uuid) => match self.object_store.get(uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(self, uuid),
+            },
             Value::Frozen(f) => Ok(f.value.clone()),
             other => Ok(other.clone_fast()),
         }

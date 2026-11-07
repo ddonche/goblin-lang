@@ -1,0 +1,28 @@
+/// known-gap: interp has no tick() block or phase: blocks; the interpreter is being retired
+/// An `every N ticks` block inside a phase runs on the same ticks as the
+/// same block outside one: the phase counts the tick it runs in.
+<>Town |
+    inside: 0
+    outside: 0
+xx
+overlay fair
+    hosts: Town
+    phase: market
+        every 2 ticks
+            @inside |= @inside + 1
+        xx
+    xx
+    every 2 ticks
+        @outside |= @outside + 1
+    xx
+xx
+a <> Town |
+:overlay!(a, fair)
+t | 0
+repeat 4
+    tick()
+        market
+    xx
+    t |= t + 1
+    say("tick {t}: inside {a >> inside}, outside {a >> outside}")
+xx

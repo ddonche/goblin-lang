@@ -1,0 +1,6 @@
+{
+  "portal": "#site",
+  "need": "#need::output_dir",
+  "action": "trailboss::build_routes_once",
+  "path": "/docs/index.html"
+}

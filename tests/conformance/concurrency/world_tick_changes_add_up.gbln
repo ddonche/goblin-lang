@@ -53,7 +53,7 @@ a | :actor(make_zone(0, 2, 0), zone_day)
 b | :actor(make_zone(1, 0, 1), zone_day)
 :post(a, {"peer": b})
 repeat :range(1, 4) as d
-    tick([a, b])
+    tick()
     repeat :objects(it >> fat > 0)
         f | it >> fat
         say("tick {d}: the sheep has {f}")

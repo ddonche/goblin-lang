@@ -33,5 +33,5 @@ xx
 a | :actor(make(1), day)
 b | :actor(make(2), day)
 repeat 2
-    tick([a, b])
+    tick()
 xx

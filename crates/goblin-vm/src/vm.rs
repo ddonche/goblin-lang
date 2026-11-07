@@ -1677,6 +1677,9 @@ impl Vm {
                 }
 
                 let func_rc = func_rc.unwrap();
+                if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
+                    self.log_deed(&method_name, recv_idx)?;
+                }
 
                 if self.call_stack.len() >= MAX_CALL_DEPTH {
                     return Err(GoblinError::StackOverflow);
@@ -1785,6 +1788,10 @@ impl Vm {
                         got: arg_count,
                         name: func_rc.name.clone(),
                     });
+                }
+                if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
+                    let what = func_rc.name.clone();
+                    self.log_deed(&what, func_idx + 1)?;
                 }
 
                 // While a decision is worked out, an action that only reads
@@ -1979,6 +1986,14 @@ impl Vm {
                 }
                 // A decision read in its class's judge (the decision's place,
                 // or nothing for "a deed starts"): no argument list.
+                if id == BuiltinId::DeedDone {
+                    if let Some(d) = self.deciding.as_mut() {
+                        d.deeds = d.deeds.saturating_sub(1);
+                        if d.deeds == 0 { d.deed_depth = None; }
+                    }
+                    self.stack.push(Operand::Val(Value::Nil));
+                    return Ok(());
+                }
                 if id == BuiltinId::DecisionPick {
                     let at = match arg_count { 0 => None, _ => match self.pop_value()? { Value::Int(i) => Some(i as usize), _ => Some(usize::MAX) } };
                     let result = crate::tick::decision_pick(self, at)?;
@@ -2105,15 +2120,28 @@ impl Vm {
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
-                    BuiltinId::Tick if arg_vals.len() == 1 => {
-                        // tick(regions): one tick of every region together.
-                        let list = arg_vals.into_iter().next().unwrap();
-                        let n = crate::world::tick_regions(self, list)?;
-                        self.stack.push(Operand::Val(n));
+                    // A phase line of a `tick()` block.
+                    BuiltinId::TickPhase => {
+                        let name = match arg_vals.first() { Some(Value::Str(s)) => s.to_string(), _ => String::new() };
+                        crate::tick::check_phase(self, &name)?;
+                        if crate::world::tick_world(self, Some(&name))?.is_none() {
+                            crate::tick::run_phase(self, &name)?;
+                        }
+                        self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
                     BuiltinId::Tick => {
+                        if !arg_vals.is_empty() {
+                            return Err(GoblinError::ArityMismatch { expected: 0, got: arg_vals.len(), name: "tick".into() });
+                        }
+                        // Regions running: one tick of every region together.
+                        if let Some(n) = crate::world::tick_world(self, None)? {
+                            crate::events::flush(&mut self.session)?;
+                            self.stack.push(Operand::Val(n));
+                            return Ok(());
+                        }
                         self.vm_tick()?;
+                        crate::events::flush(&mut self.session)?;
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
@@ -2760,8 +2788,10 @@ impl Vm {
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
+                    phases: def.phases.clone(),
                     family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
                     generated: false,
+                    parents: Vec::new(),
                     // Other fields the overlay declares (`kind: "language"`),
                     // evaluated once here, as the interpreter does.
                     extra_fields: {
@@ -3138,6 +3168,7 @@ impl Vm {
                             let val = inner_trim.find("::").and_then(|pos| {
                                 let module = inner_trim[..pos].trim();
                                 let ident = inner_trim[pos + 2..].trim();
+                                if is_goblin_empty(module, ident) { return Some(Value::Str("".into())); }
                                 self.session.token_store.get(module)
                                     .or_else(|| self.session.token_store.get(&module.to_ascii_uppercase()))
                                     .and_then(|m| m.get(ident))
@@ -3626,9 +3657,10 @@ impl Vm {
     fn pop_value(&mut self) -> Result<Value, GoblinError> {
         let v = self.stack_pop()?;
         match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
+            Value::Ref(uuid) => match self.session.object_store.get(&uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(&self.session, &uuid),
+            },
             other => Ok(other),
         }
     }
@@ -4180,9 +4212,10 @@ impl Vm {
     fn deref_value(&self, t: &Tether) -> Result<Value, GoblinError> {
         let v = self.session.read_value(t)?;
         match v {
-            Value::Ref(uuid) => self.session.object_store.get(&uuid)
-                .cloned()
-                .ok_or_else(|| crate::actor::missing_object(&self.session, &uuid)),
+            Value::Ref(uuid) => match self.session.object_store.get(&uuid) {
+                Some(v) => Ok(v.clone()),
+                None => crate::actor::gone_object(&self.session, &uuid),
+            },
             other => Ok(other),
         }
     }
@@ -5181,7 +5214,12 @@ impl Vm {
             } else {
                 "Provoked constraint violated".to_string()
             };
-            return Err(GoblinError::Runtime(msg));
+            // Fatal: `attempt`/`rescue` and `!! =>` cannot catch it. The program stops here.
+            if let Some(buf) = self.session.output_buf.take() { print!("{}", buf); }
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+            eprintln!("error: A0502: provoked-abort: {}\n\nThis constraint must be true to continue. The program cannot recover.", msg);
+            std::process::exit(1);
         }
         Ok(Value::Bool(true))
     }
@@ -6017,6 +6055,8 @@ impl Vm {
     fn vm_objects_query(&mut self, class: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
         let ids: Option<Vec<usize>> = match class {
             None => None,
+            // `:objects(uses taxation)`: every class that uses it.
+            Some(c) if c.starts_with("uses ") => Some(self.session.places_of_class(c)),
             Some(c) => {
                 if !self.session.classes.contains_key(c) {
                     return Err(GoblinError::Runtime(format!(
@@ -6138,7 +6178,7 @@ impl Vm {
     pub(crate) fn link_targets_in(&self, from: &str, name: &str, class: &str) -> Vec<usize> {
         let store = &self.session.object_store;
         let mut at: Vec<usize> = self.session.link_offsets.targets(from, name).iter()
-            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if &*o.class_name == class))
+            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if self.session.class_matches(class, &o.class_name)))
             .filter_map(|u| store.get_index_of(u.as_str()))
             .collect();
         at.sort_unstable();
@@ -6252,7 +6292,7 @@ impl Vm {
         thread_local! {
             static RECORD_LAYOUT: std::cell::RefCell<Option<std::rc::Rc<crate::fields::Layout>>> = const { std::cell::RefCell::new(None) };
         }
-        const BASE: [&str; 6] = ["overlay_name", "host_uuid", "host_var", "intensity", "age", "ticks_remaining"];
+        const BASE: [&str; 7] = ["overlay_name", "host_uuid", "host_var", "intensity", "age", "ticks_remaining", "parents"];
         let mut vals = Vec::with_capacity(BASE.len() + inst.extra_fields.len());
         vals.push(Value::Str(inst.overlay_name.as_str().into()));
         vals.push(Value::Str(inst.host_uuid.as_str().into()));
@@ -6260,6 +6300,9 @@ impl Vm {
         vals.push(Value::Float(inst.strength));
         vals.push(Value::Int(inst.age as i64));
         vals.push(match inst.ticks_remaining { Some(t) => Value::Int(t as i64), None => Value::Nil });
+        // The kinds this one was made from (none for a declared overlay).
+        let parents = self.session.overlay_defs.get(&inst.overlay_name).map(|d| d.parents.as_slice()).unwrap_or(&[]);
+        vals.push(Value::Array(parents.iter().map(|p| Value::Str(p.as_str().into())).collect()));
         vals.extend(inst.extra_fields.values().cloned());
         let names = BASE.iter().copied().chain(inst.extra_fields.keys().map(|k| k.as_str()));
         let fields = if inst.extra_fields.keys().any(|k| BASE.contains(&k.as_str())) {
@@ -6345,6 +6388,26 @@ impl Vm {
             .or_else(|| self.session.global_names.iter().position(|n| n == name)
                 .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))?;
         self.session.read_value(&t).ok()
+    }
+
+    /// The event log's line for an action a class judge's deed calls: the
+    /// deciding object did `what` to the objects among the call's
+    /// receiver and arguments (`stack[from..]`).
+    fn log_deed(&mut self, what: &str, from: usize) -> Result<(), GoblinError> {
+        let me = self.deciding.as_deref().map(|d| d.self_uuid().to_string()).unwrap_or_default();
+        let mut ids: Vec<String> = Vec::new();
+        for i in from..self.stack.len() {
+            let v = self.resolve_op(self.stack[i].clone())?;
+            let u = match &v {
+                Value::Ref(u) => u.to_string(),
+                Value::Object(o) => o.uuid.to_string(),
+                _ => continue,
+            };
+            if u != me && !ids.contains(&u) && self.session.object_store.contains_key(u.as_str()) { ids.push(u); }
+        }
+        let whom: Vec<String> = ids.iter().map(|u| crate::events::who(self, u)).collect();
+        let who = crate::events::who(self, &me);
+        crate::events::log(self, who, what, &whom)
     }
 
     /// `:link_score(a, b, "trade")`: a's link to b (one way), as
@@ -6433,6 +6496,10 @@ impl Vm {
         let places: Vec<usize> = self.session.overlay_instances.on_host(&host).iter().copied()
             .filter(|&p| self.session.overlay_instances[p].overlay_name == name).collect();
         for gone in self.session.overlay_instances.take_at(&places) {
+            if crate::events::on(self) {
+                let who = crate::events::overlay(self, &gone);
+                crate::events::log(self, who, "taken off", &[])?;
+            }
             if let Some(hh) = self.session.des_store.handle_for_name(&gone.host_var) {
                 self.session.des_index.remove_overlay(hh, &gone.overlay_name, gone.des_id);
             }
@@ -7790,3 +7857,9 @@ pub(crate) fn trait_fields_of(
 /// Where a variable lives, for [`Vm::note_object_name`].
 #[derive(Clone, Copy)]
 enum NameOf { Global(usize), Local(usize) }
+
+/// `GOBLIN::EMPTY`: the built-in token that stands for nothing, so a
+/// template slot can be left empty without a module filling it.
+pub(crate) fn is_goblin_empty(module: &str, ident: &str) -> bool {
+    module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY")
+}

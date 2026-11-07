@@ -1,0 +1,8 @@
+/// An interface block's header is `interface NAME |`, like a class or
+/// an aspect (P1519 without the `|`).
+interface govern
+    act tax(p)
+        p >> gold |= p >> gold + 3
+    xx
+xx
+say("never printed")

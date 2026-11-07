@@ -77,9 +77,32 @@ pub enum PValue {
     /// A collection or long string holding no session state, converted once
     /// and shared: every actor on one worker reads the same copy.
     Shared(Arc<PValue>),
-    /// One tick of a world, for a region (`tick(regions)`); only ever the
+    /// One tick of a world, for a region (`:tick()`); only ever the
     /// message of a request to an actor.
     World(Arc<crate::world::WorldIn>),
+}
+
+impl PValue {
+    /// Whether this value holds a DES object anywhere inside it.
+    pub fn holds_object(&self) -> bool {
+        match self {
+            PValue::Object { .. } | PValue::ObjRef(_) | PValue::Moved { .. } => true,
+            PValue::Formatted(v, _) | PValue::CtrlReturn(v) => v.holds_object(),
+            PValue::Frozen(v) | PValue::Shared(v) => v.holds_object(),
+            PValue::Array(v) | PValue::Seq(v) => v.iter().any(PValue::holds_object),
+            PValue::Map(m) => m.values().any(PValue::holds_object),
+            PValue::MapOrd(m) => m.iter().any(|(_, v)| v.holds_object()),
+            PValue::Pair(a, b) => a.holds_object() || b.holds_object(),
+            PValue::Enum { fields: Some(f), .. } => f.iter().any(|(_, v)| v.holds_object()),
+            PValue::Collection(l, _) => match l {
+                PLayout::FlatArray(v) => v.iter().any(PValue::holds_object),
+                PLayout::RingBuf { buf, .. } => buf.iter().any(PValue::holds_object),
+                PLayout::ChunkedSeq { chunks, .. } => chunks.iter().flatten().any(PValue::holds_object),
+                PLayout::SmallMap(m) | PLayout::HashMapBackend(m) => m.iter().any(|(k, v)| k.holds_object() || v.holds_object()),
+            },
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,7 +256,7 @@ impl<'s> ToPortable<'s> {
                     Some(var) => PValue::HandedOff { uuid: uuid.to_string(), var: var.clone() },
                     None => match self.session.moved_away.get(uuid.as_str()) {
                         Some(var) => PValue::Moved { uuid: uuid.to_string(), var: var.clone() },
-                        None => return Err(crate::actor::missing_object(self.session, uuid)),
+                        None => { crate::actor::gone_object(self.session, uuid)?; PValue::Nil }
                     },
                 },
             },

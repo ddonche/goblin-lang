@@ -116,8 +116,19 @@ fn compile_class_methods(class: &goblin_ast::ClassDecl, session: &mut Session, p
         };
         let mut compiler = Compiler::new();
         compiler.is_class_method = true;
-        if class.decide.as_deref() == Some(action.name.as_str()) {
-            compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect();
+        // A judge, or the judge of one interface it calls (`judge #interfaces
+        // @inside govern`): its decisions' names read their picks.
+        // The longest judge name that matches wins, so a phase judge
+        // (`judge #decisions @grow`) is never taken for the class's own
+        // (`judge #decisions`).
+        let judges = |d: &Option<String>| d.as_deref().filter(|d| action.name == *d || action.name.strip_prefix(d).is_some_and(|r| r.starts_with(' '))).map(str::len);
+        let class_len = judges(&class.decide);
+        let phase = class.phases.iter().filter_map(|p| judges(&p.decide).map(|n| (n, p))).max_by_key(|(n, _)| *n);
+        match (class_len, phase) {
+            (Some(c), Some((n, p))) if n > c => compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect(),
+            (Some(_), _) => compiler.lazy_picks = class.decisions.iter().map(|d| d.name.clone()).collect(),
+            (None, Some((_, p))) => compiler.lazy_picks = p.decisions.iter().map(|d| d.name.clone()).collect(),
+            (None, None) => {}
         }
         let compiled = compiler.compile_action(&pseudo).or_else(|e| {
             // A method that does not compile reports why when it is called,
@@ -175,7 +186,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
         // Merge logic: if incoming decl has no actions/decision/judge/transitions
         // (i.e., it's a matrix-synthesized class), preserve those from the existing class
         // and also preserve fields that the matrix didn't redefine — matching interpreter behavior.
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() && decl.phases.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
@@ -184,6 +195,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 merged.transitions = existing.transitions.clone();
                 merged.every = existing.every.clone();
                 merged.decisions = existing.decisions.clone();
+                merged.phases = existing.phases.clone();
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
@@ -235,7 +247,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
     session.global_names = std::rc::Rc::new(compiled.global_names);
     for decl in &compiled.classes { compile_class_methods(decl, &mut session, None); }
     for decl in compiled.classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() && decl.phases.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
@@ -244,6 +256,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 merged.transitions = existing.transitions.clone();
                 merged.every = existing.every.clone();
                 merged.decisions = existing.decisions.clone();
+                merged.phases = existing.phases.clone();
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
@@ -323,7 +336,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
         compile_class_methods(decl, session, prefix);
     }
     for decl in classes {
-        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() {
+        let merged = if decl.actions.is_empty() && decl.decision.is_none() && decl.judge.is_none() && decl.transitions.is_empty() && decl.every.is_empty() && decl.decisions.is_empty() && decl.on_erase.is_none() && decl.one_of.is_empty() && decl.order_by.is_none() && decl.phases.is_empty() {
             if let Some(existing) = session.classes.get(&decl.name) {
                 let mut merged = decl.clone();
                 merged.actions = existing.actions.clone();
@@ -332,6 +345,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 merged.transitions = existing.transitions.clone();
                 merged.every = existing.every.clone();
                 merged.decisions = existing.decisions.clone();
+                merged.phases = existing.phases.clone();
                 if merged.on_erase.is_none() { merged.on_erase = existing.on_erase.clone(); }
                 if merged.one_of.is_empty() { merged.one_of = existing.one_of.clone(); }
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }

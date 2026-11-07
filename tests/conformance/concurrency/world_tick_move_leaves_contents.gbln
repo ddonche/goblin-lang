@@ -62,6 +62,6 @@ repeat :range(1, 5) as d
     w | :await(:request(west, {"ask": 1})){"seen"}
     e | :await(:request(east, {"ask": 1})){"seen"}
     say("before tick {d}: west {w}, east {e}")
-    tick([west, east])
+    tick()
 xx
 say(:len(:objects("Coin")))

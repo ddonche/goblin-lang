@@ -1,0 +1,12 @@
+/// Two aspects that give the same field different starting values, both
+/// used by one class that does not write it, are an error (P1343).
+aspect Political |
+    ~stability: .5
+xx
+aspect Order |
+    ~stability: .8
+xx
+<>Kingdom |
+    uses Political, Order
+xx
+say("never printed")

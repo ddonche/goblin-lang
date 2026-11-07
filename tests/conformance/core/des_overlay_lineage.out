@@ -1,0 +1,16 @@
+tick 0 | old_tongue on Land Varn | put on
+tick 0 | flu on Land Varn | put on
+tick 1 | flu on Land Varn | spreads to | Land Oss
+tick 1 | old_tongue on Land Varn | mutate | language_1
+tick 1 | flu on Land Varn | spawn | flu
+tick 1 | flu on Land Oss | spawn | flu
+tick 2 | language_1 on Land Varn | split | language_1A, language_1B
+tick 3 | language_1A on Land Varn | fracture | language_1A.1
+tick 3 | language_1B on Land Varn | fracture | language_1B.1
+tick 4 | language_1A on Land Varn | merge | language_1B, language_1A-1B
+
+flu on a from []
+flu on b from []
+language_1A.1 on a from [language_1A]
+language_1B.1 on a from [language_1B]
+language_1A-1B on a from [language_1A, language_1B]

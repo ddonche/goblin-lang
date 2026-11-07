@@ -137,7 +137,9 @@ prev    | :metrics()
 repeat :range(0, years + 1) as year
     if year > 0
         t | :epoch_ms()
-        :tick()
+        tick()
+            land
+        xx
         tick_ms |= tick_ms + :epoch_ms() - t
     xx
     if year % cfg{"sample_every"} != 0 => skip

@@ -161,6 +161,10 @@ fn takes_strings(id: BuiltinId) -> bool {
         | BuiltinId::EscapeHtml | BuiltinId::UrlEncode | BuiltinId::UrlDecode)
 }
 
+fn fmt_ms(ms: u128) -> String {
+    format!("{}ms ({}.{:03}s)", ms, ms / 1000, ms % 1000)
+}
+
 fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Value, GoblinError> {
     let args: Vec<Value> = if takes_strings(id) && args.iter().any(|a| matches!(a, Value::Char(_))) {
         args.into_iter().map(|a| match a { Value::Char(c) => Value::Str(c.to_string().into()), other => other }).collect()
@@ -203,6 +207,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
         BuiltinId::MemHuman => {
             Ok(Value::Str(human_bytes(process_memory_bytes()).into()))
+        }
+        BuiltinId::TotalTime => {
+            expect_n(0)?;
+            Ok(Value::Str(fmt_ms(session.script_start.elapsed().as_millis()).into()))
+        }
+        BuiltinId::SplitTime => {
+            expect_n(0)?;
+            let now = std::time::Instant::now();
+            let ms = now.duration_since(session.last_split).as_millis();
+            session.last_split = now;
+            Ok(Value::Str(fmt_ms(ms).into()))
         }
         BuiltinId::Gc | BuiltinId::StashCount | BuiltinId::TetherCount => {
             // Handled in vm.rs where the full root set is accessible for mark-and-sweep.
@@ -2755,7 +2770,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick | BuiltinId::DeedDone
         | BuiltinId::OverlayBang | BuiltinId::DetachBang | BuiltinId::LinkBang | BuiltinId::UnlinkBang => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
@@ -3734,7 +3749,16 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         // ── Tick (DES tick runner — not yet implemented in VM) ────────────────
-        BuiltinId::Tick => {
+        BuiltinId::EventLog => {
+            match args.as_slice() {
+                [Value::Nil] => crate::events::start(session, None)?,
+                [Value::Str(p)] => crate::events::start(session, Some(p))?,
+                [other] => return Err(GoblinError::Runtime(format!("R1251: event-log: `:event_log` takes a file path, or nil to stop, not {}", other.type_name()))),
+                _ => return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "event_log".into() }),
+            }
+            Ok(Value::Nil)
+        }
+        BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
             ))
@@ -3761,6 +3785,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let ns = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token ns")) }.to_ascii_uppercase();
             let key = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "resolve_token key")) };
+            if crate::vm::is_goblin_empty(&ns, &key) { return Ok(Value::Str("".into())); }
             match session.token_store.get(ns.as_str()).and_then(|m| m.get(key.as_str())) {
                 Some(v) => Ok(v.clone()),
                 None => Ok(Value::Nil),
@@ -3896,6 +3921,29 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // decision_debug reads every variable, so the VM handles it.
         BuiltinId::DecisionDebug => {
             Err(GoblinError::Runtime("decision_debug: must be called through VM dispatch".to_string()))
+        }
+        // `:field(obj, "x")`: what the field holds, without the overlays
+        // that `obj >> x` reads it through.
+        BuiltinId::Field => {
+            expect_n(2)?;
+            let obj = read(0)?;
+            let name = match read(1)? {
+                Value::Str(s) => s,
+                other => return Err(GoblinError::type_error("str", other.type_name(), "field name")),
+            };
+            let uuid = match &obj {
+                Value::Ref(u) => u.to_string(),
+                Value::Object(o) => o.uuid.to_string(),
+                other => return Err(GoblinError::type_error("object", other.type_name(), "field")),
+            };
+            let held = session.object_store.get(&uuid).cloned().unwrap_or(obj);
+            let Value::Object(o) = &held else {
+                return Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; the object is gone")));
+            };
+            match o.fields.stored(&name, o.trait_fields.contains(name.as_ref() as &str)) {
+                Some(v) => Ok(v),
+                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))),
+            }
         }
         BuiltinId::OverlaysOf => {
             expect_n(1)?;
@@ -4489,6 +4537,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             let module = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token module")) };
             let ident  = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "token ident")) };
+            if crate::vm::is_goblin_empty(&module, &ident) { return Ok(Value::Str("".into())); }
             match session.token_store.get(module.as_str())
                 .or_else(|| session.token_store.get(&module.to_ascii_uppercase()))
                 .and_then(|m| m.get(ident.as_str())) {

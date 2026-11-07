@@ -1,0 +1,53 @@
+/// known-gap: interp has no interfaces; the interpreter is being retired
+/// Two interfaces with a judge in one place: both judges run, one after
+/// the other in the order the class names them, each over its own
+/// decisions, with locals of its own. The second sees what the first
+/// one's deed changed, and the event log names each deed. Written with
+/// `as`, the form for members declared outside the interface's block.
+decision levy as govern
+    targets: Town where (target >> owner) == self
+    score => 1
+xx
+judge as govern
+    levy:
+        n | 1
+        raise(self, n)
+xx
+decision feast as court
+    targets: Town where (target >> owner) == self
+    score => @army
+xx
+judge as court
+    feast and (feast >> score) > 0:
+        n | 2
+        feast(self, n)
+    else: say("{self >> name} has no army to feast")
+xx
+act raise(p, n) as govern
+    p >> army |= p >> army + n
+    say("{p >> name} raises an army")
+xx
+act feast(p, n) as court
+    say("{p >> name} feasts {p >> army} for {n} days")
+xx
+<>Town |
+    name: ..
+    owner: nil
+xx
+<>Kingdom |
+    name: ..
+    army: 0
+    phase: inside
+        uses govern
+        uses court
+    xx
+xx
+k <> Kingdom | name: "Varn"
+t <> Town | name: "Oss", owner: k
+log | "{:env("GOBLIN_CONF_TMP")}/events.log"
+:event_log(log)
+tick()
+    inside
+xx
+:event_log(nil)
+say(:read_text(log))

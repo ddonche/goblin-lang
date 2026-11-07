@@ -101,6 +101,8 @@ enum PExpr {
         order_by: Option<(ast::Expr, bool)>,
         /// The class judge's action (`judge` over the block decisions).
         decide: Option<String>,
+        /// `phase: NAME` blocks.
+        phases: Vec<PClassPhase>,
     },
     EnumVariant {
         enum_name: String,
@@ -251,6 +253,17 @@ struct PAction {
     is_single: bool,
 }
 
+/// A class's `phase: NAME` block, as parsed.
+#[derive(Debug, Clone)]
+struct PClassPhase {
+    name: String,
+    transitions: Vec<ast::TransitionDef>,
+    every: Vec<(u64, String)>,
+    named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
+    one_of: Vec<Vec<String>>,
+    decide: Option<String>,
+}
+
 /// Parser-internal representation of a decision formula inside a class.
 #[derive(Debug, Clone)]
 struct PDecisionDef {
@@ -276,7 +289,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String>, phases: Vec<PClassPhase> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -324,6 +337,77 @@ pub struct Parser<'t> {
     /// Members read before their class was declared (member, class): filled
     /// in once the file is read; only top-level ones can be.
     overlay_members_waiting: Vec<(String, String)>,
+    /// The aspects this file declares (`aspect Political |` ... `xx`):
+    /// named sets of fields that classes take with `uses Political`.
+    aspects: Vec<(String, Vec<ast::FieldDecl>)>,
+    /// Classes that name an aspect not declared above them (class, aspect):
+    /// filled in once the file is read; only top-level ones can be.
+    uses_waiting: Vec<(String, String)>,
+    /// Interfaces: the actions (`act tax(x) as taxation`), decisions
+    /// (`decision trade as diplomacy`) and judges (`judge as diplomacy`)
+    /// that belong to each, by interface name.
+    interfaces: Vec<Interface>,
+    /// The `as` names a `judge as diplomacy` header gave, for its caller.
+    judge_as: Vec<String>,
+    /// Actions an `interface` block declared: they are top-level actions,
+    /// put in the file where the block stands.
+    hoisted: Vec<ast::Stmt>,
+}
+
+/// An interface: a named group of behavior that classes `uses`.
+#[derive(Debug, Clone, Default)]
+struct Interface {
+    name: String,
+    acts: Vec<String>,
+    decisions: Vec<ast::NamedDecision>,
+    /// The judge over its decisions, and whether it is a `judge_all`.
+    judge: Option<ast::Stmt>,
+    /// The transitions in its `interface conquest` ... `xx` block: every
+    /// class that uses it gets them, where it writes `uses conquest`.
+    transitions: Vec<ast::TransitionDef>,
+    /// The `on absorb => ...` hooks in that block: every class that uses
+    /// it gets them.
+    hooks: Vec<ast::ActionDecl>,
+    /// It has had its `interface` block.
+    block: bool,
+}
+
+/// The stand-in a class keeps among its transitions where it writes
+/// `uses NAME`, so the interface's transitions land in that place.
+fn uses_marker(name: &str, span: &goblin_diagnostics::Span) -> ast::TransitionDef {
+    ast::TransitionDef {
+        kind: ast::TransitionKind::Erase,
+        trigger: ast::Expr::Bool(false, span.clone()),
+        target_class: Some(format!("#uses {name}")),
+        into_classes: Vec::new(),
+        successors: Vec::new(),
+        overlay_rule: ast::OverlayContinuity::Drop,
+        link_rule: ast::LinkContinuity::Reset,
+        span: span.clone(),
+    }
+}
+
+fn marker_name(t: &ast::TransitionDef) -> Option<&str> {
+    t.target_class.as_deref().and_then(|c| c.strip_prefix("#uses "))
+}
+
+/// Puts each interface's transitions where its first `uses` marker
+/// stands, and drops markers of names that are not interfaces (aspects, missing ones).
+fn fill_transitions(ts: &mut Vec<ast::TransitionDef>, ifaces: &[Interface]) {
+    let mut out = Vec::with_capacity(ts.len());
+    let mut seen: Vec<String> = Vec::new();
+    for t in std::mem::take(ts) {
+        match marker_name(&t) {
+            // An interface named twice in one place gives its transitions once.
+            Some(n) if seen.iter().any(|m| m == n) => {}
+            Some(n) => {
+                seen.push(n.to_string());
+                if let Some(i) = ifaces.iter().find(|i| i.name == n) { out.extend(i.transitions.iter().cloned()); }
+            }
+            None => out.push(t),
+        }
+    }
+    *ts = out;
 }
 
 /// Names bound anywhere in the token stream (see `Parser::bound_names`).
@@ -427,6 +511,10 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
         return Err(s_help_site!("P1512", &format!("`transition {word}` needs the object it acts on"),
             &format!("Write: transition {word}\n    targets: Kingdom where (target >> power) < @power\nxx")));
     }
+    if overlay && t.target_class.as_deref().is_some_and(|c| c.starts_with("uses ")) {
+        return Err(s_help_site!("P1512", "An overlay's transition targets another overlay on its host, not the classes that use an interface",
+            "Write: targets: fever (an overlay, or an overlay class)"));
+    }
     if !binary && t.target_class.is_some() {
         return Err(s_help_site!("P1512", &format!("`transition {word}` acts on one object alone and takes no `targets:`"),
             "Only merge, absorb and subjugate take `targets:`"));
@@ -472,6 +560,155 @@ fn check_transition(t: &ast::TransitionDef, overlay: bool) -> Result<(), String>
         }
     }
     Ok(())
+}
+
+/// An expression's shape with its source places left out, so the same
+/// value written on two lines compares equal.
+fn without_spans(e: &Option<ast::Expr>) -> String {
+    let text = format!("{e:?}");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("Span {") {
+        out.push_str(&rest[..at]);
+        rest = rest[at..].find('}').map_or("", |end| &rest[at + end + 1..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Gives a class the fields of the aspects it `uses` that are in
+/// `aspects`, and drops their names from `uses`; returns the names it did
+/// not find. A line the class writes itself wins over the aspect's, and
+/// stays where the class wrote it. The aspects' fields come first, in the
+/// order the class names them, then the class's own. Two aspects may name
+/// the same field only if at most one of them gives it a starting value
+/// (or both give the same one).
+/// A clash (P1343) comes back as its message and help.
+fn fill_from_aspects(class: &mut ast::ClassDecl, aspects: &[(String, Vec<ast::FieldDecl>)]) -> Result<Vec<String>, (String, String)> {
+    let mut missing = Vec::new();
+    let mut taken: Vec<(ast::FieldDecl, String)> = Vec::new();
+    for name in std::mem::take(&mut class.uses) {
+        let Some((_, fields)) = aspects.iter().find(|(n, _)| *n == name) else {
+            missing.push(name.clone());
+            class.uses.push(name);
+            continue;
+        };
+        for f in fields {
+            if class.fields.iter().any(|g| g.name == f.name) { continue; }
+            match taken.iter_mut().find(|(g, _)| g.name == f.name) {
+                None => taken.push((f.clone(), name.clone())),
+                Some((g, from)) => {
+                    let given = |d: &Option<ast::Expr>| d.as_ref().is_some_and(|e| !matches!(e, ast::Expr::Nil(_)));
+                    if given(&f.default) && given(&g.default) && without_spans(&f.default) != without_spans(&g.default) {
+                        return Err((
+                            format!("Aspects {from} and {name} both give `{}` a starting value in class {}", f.name, class.name),
+                            format!("Give `{}` its starting value in one aspect, or in the class itself.", f.name)));
+                    }
+                    if !given(&g.default) { *g = f.clone(); *from = name.clone(); }
+                }
+            }
+        }
+    }
+    if !taken.is_empty() {
+        let mut fields: Vec<ast::FieldDecl> = taken.into_iter().map(|(f, _)| f).collect();
+        fields.append(&mut class.fields);
+        class.fields = fields;
+    }
+    Ok(missing)
+}
+
+/// Gives a class the decisions and judge of each interface it `uses`, in
+/// the place it names it: at the top of the class they run when the tick
+/// ends, in a `phase:` block in that phase. Actions need nothing: an
+/// interface's actions are free actions the class's code can call. Returns
+/// the names that are neither an interface nor an aspect. An error comes
+/// back as its code, message and help.
+fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspects: &[(String, Vec<ast::FieldDecl>)]) -> Result<Vec<String>, (&'static str, String, String)> {
+    let mut missing = Vec::new();
+    let span = class.span.clone();
+    let judge_action = |name: &str, stmt: &ast::Stmt| ast::ActionDecl {
+        name: name.to_string(), params: Vec::new(), body: ast::ActionBody::Block(vec![stmt.clone()]), span: span.clone(), ret: None,
+    };
+    let add = |iface: &Interface, decisions: &mut Vec<ast::NamedDecision>, decide: &mut Option<String>, actions: &mut Vec<ast::ActionDecl>, judge_name: String, cname: &str| -> Result<(), (&'static str, String, String)> {
+        for d in &iface.decisions {
+            if decisions.iter().any(|x| x.name == d.name) {
+                return Err(("P1345", format!("Class {cname} gets the decision '{}' twice (interface {})", d.name, iface.name),
+                    "Give each decision its own name, or use the interface once.".to_string()));
+            }
+            decisions.push(d.clone());
+        }
+        if let Some(j) = &iface.judge {
+            // Each interface's judge is a method of its own (its locals
+            // stay its own); the judge where they run calls them one after
+            // the other, in the order the class names the interfaces.
+            let own = format!("{judge_name} {}", iface.name);
+            actions.push(judge_action(&own, j));
+            let call = ast::Stmt::Expr(ast::Expr::Call(Box::new(ast::Expr::Ident("self".to_string(), span.clone())), own, Vec::new(), span.clone()));
+            if decide.as_deref() == Some(judge_name.as_str()) {
+                if let Some(ast::ActionDecl { body: ast::ActionBody::Block(b), .. }) = actions.iter_mut().find(|a| a.name == judge_name) {
+                    b.push(call);
+                    return Ok(());
+                }
+            }
+            if decide.is_some() {
+                return Err(("P1346", format!("Class {cname} already has a judge where it uses {}", iface.name),
+                    format!("A class has one judge where its decisions run: drop its own judge, or the judge of {}.", iface.name)));
+            }
+            actions.push(judge_action(&judge_name, &call));
+            *decide = Some(judge_name);
+        }
+        Ok(())
+    };
+    let cname = class.name.clone();
+    for name in class.uses.clone() {
+        let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
+        add(iface, &mut class.decisions, &mut class.decide, &mut class.actions, "judge #interfaces".to_string(), &cname)?;
+        if class.decision.is_none() { class.decision = class.decisions.first().map(|d| d.decision.clone()); }
+    }
+    for ph in class.phases.iter_mut() {
+        for name in ph.uses.clone() {
+            if aspects.iter().any(|(n, _)| *n == name) {
+                return Err(("P1340", format!("Aspect {name} is used inside phase {} of class {cname}", ph.name),
+                    format!("An aspect gives fields: write `uses {name}` at the top of the class.")));
+            }
+            let Some(iface) = ifaces.iter().find(|i| i.name == name) else { missing.push(name); continue };
+            add(iface, &mut ph.decisions, &mut ph.decide, &mut class.actions, format!("judge #interfaces @{}", ph.name), &cname)?;
+        }
+    }
+    // Transitions land where the class writes `uses`; hooks are the
+    // class's, wherever it uses the interface.
+    fill_transitions(&mut class.transitions, ifaces);
+    for ph in class.phases.iter_mut() { fill_transitions(&mut ph.transitions, ifaces); }
+    let mut used: Vec<String> = class.uses.clone();
+    for ph in &class.phases { for n in &ph.uses { if !used.contains(n) { used.push(n.clone()); } } }
+    let mut given: Vec<(String, String)> = Vec::new();
+    for name in &used {
+        let Some(iface) = ifaces.iter().find(|i| i.name == *name) else { continue };
+        for h in &iface.hooks {
+            if let Some((_, from)) = given.iter().find(|(n, _)| *n == h.name) {
+                return Err(("P1517", format!("Class {cname} gets `{}` from both {from} and {}", h.name, iface.name),
+                    "Keep the hook in one of the interfaces.".to_string()));
+            }
+            if class.actions.iter().any(|a| a.name == h.name) {
+                return Err(("P1517", format!("Class {cname} writes `{}` and also gets it from interface {}", h.name, iface.name),
+                    format!("Keep one: drop the class's own `{}`, or stop using it from {}.", h.name, iface.name)));
+            }
+            given.push((h.name.clone(), iface.name.clone()));
+            if h.name == "on erase" {
+                if class.on_erase.is_some() {
+                    return Err(("P1517", format!("Class {cname} has `on erase` and also gets it from interface {}", iface.name),
+                        "Keep one of them.".to_string()));
+                }
+                class.on_erase = Some(h.name.clone());
+            }
+            class.actions.push(h.clone());
+        }
+    }
+    // The class keeps every interface it uses, for `targets: uses x`.
+    for ph in &class.phases {
+        for n in &ph.uses { if !class.uses.contains(n) && !missing.contains(n) { class.uses.push(n.clone()); } }
+    }
+    Ok(missing)
 }
 
 fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
@@ -520,6 +757,26 @@ fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt)
         m.every.push((*n, name));
         m.actions.push(block);
     }
+    // The class's phases: a phase the member also has takes the class's
+    // spreads and transitions when it writes none, and its `every` blocks
+    // too; a phase only the class has comes whole.
+    for cp in &c.phases {
+        if !m.phases.iter().any(|p| p.name == cp.name) {
+            m.phases.push(ast::OverlayPhase { name: cp.name.clone(), ..Default::default() });
+        }
+        let at = m.phases.iter().position(|p| p.name == cp.name).unwrap();
+        if m.phases[at].spreads.is_empty() { m.phases[at].spreads = cp.spreads.clone(); }
+        if m.phases[at].transitions.is_empty() { m.phases[at].transitions = cp.transitions.clone(); }
+        for (n, a) in &cp.every {
+            let Some(block) = c.actions.iter().find(|x| &x.name == a) else { continue };
+            let name = format!("every {} ticks #{} @{}", n, m.phases[at].every.len() + 1, cp.name);
+            if m.actions.iter().any(|x| x.name == name) { continue; }
+            let mut block = block.clone();
+            block.name = name.clone();
+            m.phases[at].every.push((*n, name));
+            m.actions.push(block);
+        }
+    }
 }
 
 fn is_block_starter_name(name: &str) -> bool {
@@ -540,6 +797,11 @@ impl<'t> Parser<'t> {
             self_scope: 0,
             overlay_classes: Vec::new(),
             overlay_members_waiting: Vec::new(),
+            aspects: Vec::new(),
+            uses_waiting: Vec::new(),
+            interfaces: Vec::new(),
+            judge_as: Vec::new(),
+            hoisted: Vec::new(),
         }
     } 
 
@@ -1339,9 +1601,16 @@ impl<'t> Parser<'t> {
                 "targets" => {
                     let data = self.eat_op(":");
                     self.skip_layout_inline();
-                    let Some(cls) = self.eat_ident() else {
+                    let Some(mut cls) = self.eat_ident() else {
                         return Err(s_help_site!("P1403", "Expected a class name after 'targets:'", "Write: targets: Noble where (target >> gold) > 60"));
                     };
+                    // `targets: uses diplomacy`: the objects of every class that uses it.
+                    if cls == "uses" {
+                        let Some(iface) = self.eat_ident() else {
+                            return Err(s_help_site!("P1344", "Expected an interface after 'targets: uses'", "Write: targets: uses diplomacy where (target >> gold) > 60"));
+                        };
+                        cls = format!("uses {iface}");
+                    }
                     target_class = Some(cls);
                     self.skip_layout_inline();
                     if self.peek_ident() == Some("where") {
@@ -1618,6 +1887,7 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
+            if self.at_error_guard() { break; }
             if self.eat_op("!") {
                 // name!(args) for ANY ident (cast types, mutation builtins, etc.)
                 // e.g. str!(age), update_at!(meta, "id", val), delete_where!(xs, pred)
@@ -2840,6 +3110,14 @@ impl<'t> Parser<'t> {
             }
         }
 
+        // `as taxation, governance`: the interfaces the action belongs to.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            for iface in self.eat_name_list("P1344", "Write: act calculate_tax(target) as taxation")? {
+                self.interface_mut(&iface).acts.push(name.clone());
+            }
+        }
+
         // single-line form (LEGACY):  act foo = expr
         // IMPORTANT: only fire when the *current* token is exactly "=" (NOT "=>")
         if let Some(tok) = self.toks.get(self.i) {
@@ -2926,13 +3204,20 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // Normal expression case
+                // Normal expression case; `act f() => a => b` chains statements.
                 let pexpr = self.parse_coalesce()?;
                 let expr  = self.lower_expr(pexpr);
+                let body = if self.peek_op("=>") {
+                    let mut stmts = vec![ast::Stmt::Expr(expr)];
+                    self.parse_arrow_chain_rest(&mut stmts)?;
+                    ast::ActionBody::Block(stmts)
+                } else {
+                    ast::ActionBody::Expr(expr)
+                };
                 let act = ast::ActionDecl {
                     name: pa.name,
                     params,
-                    body: ast::ActionBody::Expr(expr),
+                    body,
                     span: action_span,
                     ret: None,
                 };
@@ -3064,6 +3349,50 @@ impl<'t> Parser<'t> {
     }
 
     // === BEGIN: parse_bind_stmt (tuple targets + |= + fallback-to-expr for comma expressions) ===
+    /// True when the next tokens are `!!` followed (past layout) by `=>`: the
+    /// `name | expr !! => stmt` error guard, which postfix `!` must not consume.
+    fn at_error_guard(&self) -> bool {
+        use goblin_lexer::TokenKind;
+        let bang = |k: usize| matches!(self.toks.get(k), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "!"));
+        if !(bang(self.i) && bang(self.i + 1)) { return false; }
+        let mut k = self.i + 2;
+        while let Some(t) = self.toks.get(k) {
+            match &t.kind {
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => { k += 1; }
+                TokenKind::Op(s) if s == ";" => { k += 1; }
+                _ => break,
+            }
+        }
+        matches!(self.toks.get(k), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "=>"))
+    }
+
+    /// One statement after `=>`, then `=> stmt` again for as long as the next token
+    /// is `=>`: `if c => a => b`. More than one statement comes back as a Stmt::Block.
+    fn parse_arrow_stmt_chain(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let first = self.parse_stmt()?;
+        if !self.peek_op("=>") {
+            return Ok(first);
+        }
+        let mut stmts = vec![first];
+        self.parse_arrow_chain_rest(&mut stmts)?;
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts, span })
+    }
+
+    /// The `=> stmt => stmt ...` tail of a chain, appended to `stmts`.
+    fn parse_arrow_chain_rest(&mut self, stmts: &mut Vec<ast::Stmt>) -> Result<(), String> {
+        use goblin_lexer::TokenKind;
+        while self.peek_op("=>") {
+            self.i += 1;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(())
+    }
+
     fn parse_bind_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -3426,12 +3755,26 @@ impl<'t> Parser<'t> {
                         }
                     }
 
-                    rhs_guard = Some(self.parse_stmt()?);
+                    rhs_guard = Some(self.parse_arrow_stmt_chain()?);
                 } else {
                     // Not a guard; rewind to before '??'
                     self.i = save_i;
                 }
             }
+        }
+
+        // Optional error guard: `!! => <stmt>` runs the guard when evaluating the
+        // right-hand side fails (as `?? =>` runs it when the value is nil).
+        let mut err_guard: Option<ast::Stmt> = None;
+        let err_guard_start_i = self.i;
+        if self.at_error_guard() {
+            self.i += 2;
+            while !self.peek_op("=>") { self.i += 1; }
+            self.i += 1;
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent) { self.i += 1; } else { break; }
+            }
+            err_guard = Some(self.parse_arrow_stmt_chain()?);
         }
 
         // 5) Build Stmt::Bind (single target)
@@ -3448,6 +3791,64 @@ impl<'t> Parser<'t> {
             class_name,
             lock_type: pending_lock_type,
         });
+
+        // With an error guard, `name | expr !! => g` becomes
+        //   __guard_name__ | nil
+        //   attempt
+        //       __guard_name__ |= expr
+        //   rescue
+        //       g
+        //   name | __guard_name__
+        // so `name` stays bound in the enclosing scope either way (`|=` keeps
+        // its old value instead: `attempt name |= expr rescue g`).
+        let bind_stmt = match err_guard {
+            None => bind_stmt,
+            Some(err_guard_stmt) => {
+                let guard_span = Self::span_from_tokens(
+                    self.toks,
+                    err_guard_start_i.min(self.toks.len().saturating_sub(1)),
+                    self.i.saturating_sub(1),
+                );
+                let mut stmts = Vec::new();
+                // A new binding evaluates into a hidden temporary, then binds the
+                // name from it after the attempt, so `imm` and a type lock still apply.
+                let mut after: Option<ast::Stmt> = None;
+                let inner = match bind_stmt {
+                    ast::Stmt::Bind(mut bs) if matches!(bs.mode, ast::BindMode::Tether) => {
+                        let tmp = format!("__guard_{}__", bs.name.0);
+                        let tmp_bind = |expr: ast::Expr, mode: ast::BindMode| ast::Stmt::Bind(ast::BindStmt {
+                            name: (tmp.clone(), guard_span.clone()),
+                            expr,
+                            is_imm: false,
+                            is_local: bs.is_local,
+                            mode,
+                            span: guard_span.clone(),
+                            class_name: None,
+                            lock_type: None,
+                        });
+                        stmts.push(tmp_bind(ast::Expr::Nil(guard_span.clone()), ast::BindMode::Tether));
+                        let rhs = std::mem::replace(&mut bs.expr, ast::Expr::Ident(tmp.clone(), guard_span.clone()));
+                        let inner = tmp_bind(rhs, ast::BindMode::Retether);
+                        after = Some(ast::Stmt::Bind(bs));
+                        inner
+                    }
+                    other => other,
+                };
+                let rescue_body = ast::Expr::Block { stmts: vec![err_guard_stmt], span: guard_span.clone() };
+                let rescues = ast::Expr::Array(
+                    vec![ast::Expr::Array(vec![ast::Expr::Ident("nil".into(), guard_span.clone()), rescue_body], guard_span.clone())],
+                    guard_span.clone(),
+                );
+                stmts.push(ast::Stmt::Expr(ast::Expr::FreeCall(
+                    "attempt".to_string(),
+                    vec![ast::Expr::Block { stmts: vec![inner], span: guard_span.clone() }, rescues],
+                    guard_span.clone(),
+                )));
+                stmts.extend(after);
+                let block_span = Self::span_from_tokens(self.toks, start_i_expr, self.i.saturating_sub(1));
+                ast::Stmt::Block { stmts, span: block_span }
+            }
+        };
 
         // If a guard was present, return a sequence equivalent to:
         //   <bind>
@@ -3632,6 +4033,18 @@ impl<'t> Parser<'t> {
     }
 
     // Do we see a block closer at the current position?  (allowed: 'end' or 'xx')
+    /// `phase: NAME` followed by an indented block (a field `phase: x` has
+    /// no block below it).
+    fn is_phase_block_at(&self, i: usize) -> bool {
+        use goblin_lexer::TokenKind;
+        let t = |k: usize| self.toks.get(i + k);
+        t(0).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("phase"))
+            && t(1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":"))
+            && t(2).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && t(3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+            && t(4).is_some_and(|t| matches!(t.kind, TokenKind::Indent))
+    }
+
     fn peek_block_close(&mut self) -> bool {
         let save_i = self.i;
         
@@ -4368,6 +4781,10 @@ impl<'t> Parser<'t> {
                 if matches!(tok.kind, TokenKind::Ident) && self.is_named_decision_at(self.i) {
                     break;
                 }
+                // `phase: NAME` with an indented block below starts a phase.
+                if self.is_phase_block_at(self.i) {
+                    break;
+                }
                 // `every N ticks` starts a block (a field named `every` has a ':').
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("every")
                     && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Int))
@@ -4396,9 +4813,11 @@ impl<'t> Parser<'t> {
                 {
                     break;
                 }
-                // `on erase: action` (a field named `on` is followed by ':').
+                // `on erase: action`, `on absorb => ...` (a field named `on`
+                // is followed by ':').
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("on")
-                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("erase"))
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)
+                        && t.value.as_deref().is_some_and(|w| w == "erase" || hook_params(w).is_some()))
                 {
                     break;
                 }
@@ -4406,7 +4825,24 @@ impl<'t> Parser<'t> {
 
             // Check if this is a relation keyword first (BEFORE eating ident)
             let first_ident = self.peek_ident();
-            
+
+            // `uses Political, Wealth`: aspects whose fields the class takes.
+            // Each name rides as a `#uses` entry until the class is lowered.
+            if first_ident == Some("uses")
+                && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            {
+                self.i += 1;
+                loop {
+                    let Some(n) = self.eat_ident() else {
+                        return Err(s_help_site!("P1340", "Expected a name after 'uses'", "Write: uses Political"));
+                    };
+                    fields.push(("#uses".to_string(), PExpr::Str(n), false, false, false, None));
+                    if !self.eat_op(",") { break; }
+                    self.skip_layout_inline();
+                }
+                continue;
+            }
+
             if first_ident == Some("with") || first_ident == Some("of") || first_ident == Some("re") {
                 // This is a relation declaration, not a regular field
                 let rel_keyword = self.eat_ident().unwrap();
@@ -4510,14 +4946,18 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
         let mut actions: Vec<PAction> = Vec::new();
         let mut decision: Option<PDecisionDef> = None;
         let mut judge: Option<ast::JudgeStmt> = None;
-        let mut transitions: Vec<ast::TransitionDef> = Vec::new();
+        // `uses` lines among the fields come before every transition.
+        let here = self.toks.get(self.i.saturating_sub(1)).map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+        let mut transitions: Vec<ast::TransitionDef> = fields.iter()
+            .filter_map(|f| match (&f.0, &f.1) { (k, PExpr::Str(n)) if k == "#uses" => Some(uses_marker(n, &here)), _ => None })
+            .collect();
         let mut capacity: Option<ast::CapacityDecl> = None;
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
@@ -4532,6 +4972,11 @@ impl<'t> Parser<'t> {
         let mut block_decisions = false;
         // Judges written before their decision: paired when it appears.
         let mut waiting: Vec<(Option<String>, ast::JudgeStmt)> = Vec::new();
+        // `phase: NAME` blocks. While one is open: its name and column, and
+        // the class's own members, set aside until it closes.
+        let mut phases: Vec<PClassPhase> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut in_phase: Option<(String, u32, (Vec<ast::TransitionDef>, Vec<(u64, String)>, Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, Vec<Vec<String>>, Option<String>, Option<PDecisionDef>, bool))> = None;
 
         loop {
             // Skip layout
@@ -4543,13 +4988,96 @@ impl<'t> Parser<'t> {
                 }
             }
 
+            // The `xx` of an open `phase:` block: the class's own members come back.
+            if let Some((_, pcol, _)) = &in_phase {
+                let pcol = *pcol;
+                if self.peek_block_close() {
+                    let col = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if col != pcol {
+                        return Err(s_help_site!("P0222",
+                            &format!("This closer is misaligned: expected column {}, found column {}", pcol, col),
+                            "Close the phase with 'xx' directly under 'phase'."));
+                    }
+                    self.expect_block_close("phase")?;
+                    let (pname, _, (t, e, n, o, d, dec, bd)) = in_phase.take().unwrap();
+                    phases.push(PClassPhase {
+                        name: pname,
+                        transitions: std::mem::replace(&mut transitions, t),
+                        every: std::mem::replace(&mut every, e),
+                        named: std::mem::replace(&mut named, n),
+                        one_of: std::mem::replace(&mut one_of, o),
+                        decide: std::mem::replace(&mut decide, d),
+                    });
+                    decision = dec;
+                    block_decisions = bd;
+                    continue;
+                }
+                if self.is_eof() {
+                    return Err(s_help_site!("P0212", "This phase block is missing its closing 'xx' (crossbones).",
+                        "Close the phase with 'xx' directly under 'phase'."));
+                }
+            }
+
+            // `phase: NAME` with its members indented below: what the class
+            // does when the program's `tick()` block runs that phase.
+            if self.is_phase_block_at(self.i) {
+                let col = self.toks[self.i].span.col_start;
+                if in_phase.is_some() {
+                    return Err(s_help_site!("P1580", "A phase cannot hold another phase",
+                        "Close the first phase with 'xx' before the next 'phase:'."));
+                }
+                let pname = self.toks[self.i + 2].value.clone().unwrap_or_default();
+                if phases.iter().any(|p| p.name == pname) {
+                    return Err(s_help_site!("P1582", &format!("This class already has a phase named '{}'", pname),
+                        "Put everything the class does in that phase in one 'phase:' block."));
+                }
+                self.i += 3;
+                let saved = (
+                    std::mem::take(&mut transitions),
+                    std::mem::take(&mut every),
+                    std::mem::take(&mut named),
+                    std::mem::take(&mut one_of),
+                    decide.take(),
+                    decision.take(),
+                    std::mem::replace(&mut block_decisions, false),
+                );
+                in_phase = Some((pname, col, saved));
+                continue;
+            }
+            // Inside a phase: only what DES runs in a phase.
+            if in_phase.is_some() {
+                if let Some(tok) = self.peek() {
+                    let ok = matches!(tok.kind, TokenKind::Ident)
+                        && (matches!(tok.value.as_deref(), Some("judge") | Some("judge_all") | Some("every") | Some("transition") | Some("uses"))
+                            || (tok.value.as_deref() == Some("decision") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)))
+                            || (tok.value.as_deref() == Some("one") && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("of"))));
+                    if !ok {
+                        return Err(s_help_site!("P1581", "This cannot go in a phase",
+                            "A phase holds decision blocks, a judge, 'every N ticks' blocks, transitions and 'one of'. Put fields and actions in the class itself."));
+                    }
+                }
+            }
+
+            // `uses diplomacy` among the class's members, or in a phase: the
+            // interface's decisions and judge run there.
+            if self.peek_ident() == Some("uses") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+                self.i += 1;
+                let key = match &in_phase { Some((p, _, _)) => format!("#uses@{p}"), None => "#uses".to_string() };
+                let at = self.toks.get(self.i.saturating_sub(1)).map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+                for n in self.eat_name_list("P1340", "Write: uses diplomacy")? {
+                    transitions.push(uses_marker(&n, &at));
+                    fields.push((key.clone(), PExpr::Str(n), false, false, false, None));
+                }
+                continue;
+            }
+
             // Allow inline closer on the same line as header (optional)
             if let Some(tok) = self.peek().cloned() {
                 let is_inline_ident = matches!(tok.kind, TokenKind::Ident)
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                 }
             }
 
@@ -4573,7 +5101,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
             }
 
             if self.is_eof() {
@@ -4637,7 +5165,7 @@ impl<'t> Parser<'t> {
                         "Write one judge that chooses between all of the class's decisions."));
                 }
                 let stmt = if act_tok.value.as_deref() == Some("judge") { self.parse_judge_stmt()? } else { self.parse_judge_all_stmt()? };
-                let action = "judge #decisions".to_string();
+                let action = match &in_phase { Some((p, _, _)) => format!("judge #decisions @{p}"), None => "judge #decisions".to_string() };
                 actions.push(PAction { name: action.clone(), params: Vec::new(), body: vec![stmt], is_single: false });
                 decide = Some(action);
                 self.skip_stmt_separators();
@@ -4995,7 +5523,10 @@ impl<'t> Parser<'t> {
                         "Close the block with 'end' or 'xx' (crossbones).",
                     ));
                 }
-                let action = format!("every {} ticks #{}", n, every.len() + 1);
+                let action = match &in_phase {
+                    Some((p, _, _)) => format!("every {} ticks #{} @{}", n, every.len() + 1, p),
+                    None => format!("every {} ticks #{}", n, every.len() + 1),
+                };
                 every.push((n, action.clone()));
                 actions.push(PAction { name: action, params: Vec::new(), body, is_single: false });
                 continue;
@@ -5077,7 +5608,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                 }
                 return Err(s_help_site!(
                     "P0910",
@@ -5153,7 +5684,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -5302,8 +5833,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                     }
                 }
 
@@ -5483,16 +6014,16 @@ impl<'t> Parser<'t> {
                     }
                 }
                 
-                // Parse single statement
-                let stmt = self.parse_stmt()?;
-                
+                // One statement, or a chain: `if c => a => b`
+                let mut stmts = vec![self.parse_stmt()?];
+                self.parse_arrow_chain_rest(&mut stmts)?;
+
                 // Calculate span for the entire inline if
                 let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
-                
-                // Create single-statement block
-                let then_block = ast::Expr::Block { 
-                    stmts: vec![stmt], 
-                    span: span.clone() 
+
+                let then_block = ast::Expr::Block {
+                    stmts,
+                    span: span.clone()
                 };
                 
                 // Return inline if (no elif, no else)
@@ -6510,6 +7041,8 @@ impl<'t> Parser<'t> {
                             sp,
                         ));
                     }
+                    // An interface block's actions.
+                    items.append(&mut self.hoisted);
                     // Flatten matrix blocks into top-level stmts so class decl and binds aren't scoped away
                     match stmt {
                         ast::Stmt::Block { stmts: block_stmts, .. }
@@ -6556,6 +7089,33 @@ impl<'t> Parser<'t> {
             };
             fill_from_overlay_class(def, c);
         }
+        for item in items.iter_mut() {
+            let ast::Stmt::Class(class) = item else { continue };
+            if !self.uses_waiting.iter().any(|(c, _)| *c == class.name) { continue };
+            fill_from_aspects(class, &self.aspects).map_err(|(m, h)| derr_help("P1343", &m, &h, class.span.clone()))?;
+            let missing = fill_from_interfaces(class, &self.interfaces, &self.aspects).map_err(|(c, m, h)| derr_help(c, &m, &h, class.span.clone()))?;
+            if let Some(a) = missing.first() {
+                return Err(derr_help("P1340", &format!("No aspect or interface named {a} (class {} uses it)", class.name),
+                    &format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx\nor give it behavior:\n  act tax(x) as {a}"), class.span.clone()));
+            }
+            let name = class.name.clone();
+            self.uses_waiting.retain(|(c, _)| *c != name);
+        }
+        // A class inside an action or block needs its aspects declared above it.
+        if let Some((class, a)) = self.uses_waiting.first() {
+            let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
+            let known = self.aspects.iter().any(|(n, _)| n == a) || self.interfaces.iter().any(|i| i.name == *a);
+            let (msg, help) = if known {
+                if self.interfaces.iter().any(|i| i.name == *a) {
+                    (format!("Class {class} is inside a block and uses interface {a}"), format!("Declare class {class} at the top level of the file."))
+                } else {
+                    (format!("Class {class} is inside a block and uses an aspect declared below it"), format!("Declare the aspects it uses above class {class}."))
+                }
+            } else {
+                (format!("No aspect or interface named {a} (class {class} uses it)"), format!("Declare it in this file:\n  aspect {a} |\n      ~aggression\n  xx"))
+            };
+            return Err(derr_help("P1340", &msg, &help, sp));
+        }
         // A member inside an action or block needs its class declared above it.
         if let Some((m, class)) = self.overlay_members_waiting.first() {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
@@ -6571,6 +7131,35 @@ impl<'t> Parser<'t> {
         Ok(ast::Module { items })
     }
 
+    /// `tick()` and its block, closed with `xx` under `tick`.
+    fn parse_tick_block(&mut self) -> Result<ast::Stmt, String> {
+        let tok = self.toks[self.i].clone();
+        let col = tok.span.col_start;
+        self.i += 3; // tick ( )
+        let body = self.parse_indented_block(col, &["end"])?;
+        self.skip_stmt_separators();
+        if self.block_closed_hard {
+            self.block_closed_hard = false;
+        } else if self.peek_block_close() {
+            let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+            if c != col {
+                return Err(s_help_site!(
+                    "P0222",
+                    &format!("This closer is misaligned: expected column {}, found column {}", col, c),
+                    "Align the closer with its header (same column), placing 'xx' (crossbones) directly under 'tick'.",
+                ));
+            }
+            self.expect_block_close("tick")?;
+        } else if !self.eat_layout_until_close(col) {
+            return Err(s_help_site!(
+                "P0212",
+                "This tick block is missing its closing 'xx' (crossbones).",
+                "Close the block with 'xx' (crossbones) under 'tick'.",
+            ));
+        }
+        Ok(ast::Stmt::TickBlock { body, span: tok.span.clone() })
+    }
+
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
@@ -6581,6 +7170,17 @@ impl<'t> Parser<'t> {
                     self.i += 1; // consume the colon
                 }
             }
+        }
+
+        // `tick()` with a block below: one tick that runs the phases named
+        // in it.
+        if self.peek_ident() == Some("tick")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "("))
+            && self.toks.get(self.i + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ")"))
+            && self.toks.get(self.i + 3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+            && self.toks.get(self.i + 4).is_some_and(|t| matches!(t.kind, TokenKind::Indent))
+        {
+            return self.parse_tick_block();
         }
 
         // --- block-local bind: local <name> = <expr>
@@ -6908,8 +7508,17 @@ impl<'t> Parser<'t> {
             return self.parse_attempt_stmt();
         }
 
-        if self.peek_ident() == Some("provoke") {
+        // `provoke(cond, msg)` is a call; only `provoke =>` / a provoke block is the statement form.
+        if self.peek_ident() == Some("provoke")
+            && !matches!(self.toks.get(self.i + 1), Some(t) if matches!(&t.kind, TokenKind::Op(s) if s == "("))
+        {
             return self.parse_provoke_stmt();
+        }
+
+        if matches!(self.peek_ident(), Some("judge") | Some("judge_all"))
+            && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_judge();
         }
 
         if self.peek_ident() == Some("judge") {
@@ -6965,6 +7574,43 @@ impl<'t> Parser<'t> {
         }
         if self.peek_ident() == Some("overlay") && !bang_call {
             return self.parse_overlay_stmt();
+        }
+        // `decision trade as diplomacy` ... `xx` and `judge as diplomacy`
+        // ... `xx`: behavior that belongs to an interface.
+        if self.peek_ident() == Some("decision")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_decision();
+        }
+        if matches!(self.peek_ident(), Some("judge") | Some("judge_all"))
+            && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            return self.parse_interface_judge();
+        }
+        // `interface conquest |` ... `xx`: what belongs to an interface.
+        if self.peek_ident() == Some("interface")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && self.toks.get(self.i + 2).is_none_or(|t| matches!(t.kind, TokenKind::Newline | TokenKind::Eof)
+                || matches!(&t.kind, TokenKind::Op(o) if o == "|"))
+        {
+            return self.parse_interface_block();
+        }
+        // Transitions and hooks are not joined to an interface with `as`.
+        if matches!(self.peek_ident(), Some("transition") | Some("on"))
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+            && self.toks.get(self.i + 2).is_some_and(|t| t.value.as_deref() == Some("as"))
+        {
+            let kw = self.peek_ident().unwrap_or_default().to_string();
+            let word = self.toks[self.i + 1].value.clone().unwrap_or_default();
+            return Err(s_help_site!("P1519", &format!("`{kw} {word}` is not joined to an interface with `as`"),
+                &format!("Write it inside the interface's block:\n  interface conquest |\n      {kw} {word} ...\n  xx")));
+        }
+        // `aspect Political |` ... `xx`: a named set of fields for classes.
+        if self.peek_ident() == Some("aspect")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident))
+        {
+            return self.parse_aspect();
         }
 
         // -------- detach overlay from host --------
@@ -7187,7 +7833,7 @@ impl<'t> Parser<'t> {
             }
         }
 
-        // ---- indexed |! update sugar: array[1] |! value ----
+        // ---- indexed |! update / !| delete sugar: array[1] |! value, array[1] !| ----
         {
             let save_i = self.i;
 
@@ -7209,7 +7855,7 @@ impl<'t> Parser<'t> {
                     let lhs = self.lower_expr(lhs_pe);
 
                     match lhs {
-                        ast::Expr::Index(base, index, _) => {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
                             let call = ast::Expr::FreeCall(
                                 "update_at!".to_string(),
                                 vec![*base, *index, rhs],
@@ -7241,6 +7887,42 @@ impl<'t> Parser<'t> {
                                 "P04U1",
                                 "Invalid target for '|!' update",
                                 "Use '|!' with a name or indexed collection target: array |! value or array[0] |! value."
+                            ));
+                        }
+                    }
+                }
+
+                // `names !|`, `names[1] !|`, `m{"key"} !|` delete in place.
+                if self.peek_op("!|") {
+                    let op_sp = self.peek().unwrap().span.clone();
+                    let _ = self.eat_op("!|");
+
+                    let lhs = self.lower_expr(lhs_pe);
+
+                    match lhs {
+                        ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete_at!".to_string(),
+                                vec![*base, *index],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        ast::Expr::Ident(_, _) => {
+                            let call = ast::Expr::FreeCall(
+                                "delete!".to_string(),
+                                vec![lhs],
+                                op_sp.clone(),
+                            );
+                            return Ok(ast::Stmt::Expr(call));
+                        }
+
+                        _ => {
+                            return Err(s_help_site!(
+                                "P04D1",
+                                "Invalid target for '!|' delete",
+                                "Use '!|' with a name or indexed collection target: names !| or names[0] !|."
                             ));
                         }
                     }
@@ -7443,6 +8125,8 @@ impl<'t> Parser<'t> {
             one_of: Vec::new(),
             order_by: None,
             decide: None,
+            phases: Vec::new(),
+            uses: Vec::new(),
             span: sp.clone(),
         }));
 
@@ -7583,7 +8267,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } => {
                 // Each name in `one of` must be a named decision of the class.
                 for n in one_of.iter().flatten() {
                     if !named.iter().any(|(d, _, _)| d == n) {
@@ -7594,6 +8278,20 @@ impl<'t> Parser<'t> {
                         ));
                     }
                 }
+                // `uses` names ride as `#uses` entries among the fields.
+                let mut uses: Vec<String> = Vec::new();
+                let mut phase_uses: Vec<(String, String)> = Vec::new();
+                let fields: Vec<_> = fields.into_iter().filter(|f| {
+                    let PExpr::Str(n) = &f.1 else { return true };
+                    if f.0 == "#uses" {
+                        if !uses.contains(n) { uses.push(n.clone()); }
+                    } else if let Some(p) = f.0.strip_prefix("#uses@") {
+                        if !phase_uses.iter().any(|(q, m)| q == p && m == n) { phase_uses.push((p.to_string(), n.clone())); }
+                    } else {
+                        return true;
+                    }
+                    false
+                }).collect();
                 // Fields
                 let fields_ast: Vec<ast::FieldDecl> = fields
                     .into_iter()
@@ -7645,6 +8343,33 @@ impl<'t> Parser<'t> {
                         span: sp.clone(),
                     }
                 });
+                for ph in &phases {
+                    for n in ph.one_of.iter().flatten() {
+                        if !ph.named.iter().any(|(d, _, _)| d == n) {
+                            return Err(s_help_site!("P1565",
+                                &format!("'one of' names `{n}`, which is not a decision of phase {} of {name}", ph.name),
+                                "Name decisions of the same phase: decision heal ... xx  then  one of heal, attack"));
+                        }
+                    }
+                }
+                let phases_ast: Vec<ast::ClassPhase> = phases.into_iter().map(|ph| ast::ClassPhase {
+                    uses: phase_uses.iter().filter(|(p, _)| *p == ph.name).map(|(_, n)| n.clone()).collect(),
+                    name: ph.name,
+                    transitions: ph.transitions,
+                    every: ph.every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
+                    decisions: ph.named.into_iter().map(|(name, d, judge)| {
+                        let formula = self.lower_expr(*d.formula);
+                        let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+                        let filter = d.filter.map(|f| self.lower_expr(*f));
+                        ast::NamedDecision {
+                            name,
+                            decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
+                            judge,
+                        }
+                    }).collect(),
+                    one_of: ph.one_of,
+                    decide: ph.decide,
+                }).collect();
                 let decisions_ast: Vec<ast::NamedDecision> = named.into_iter().map(|(name, d, judge)| {
                     let formula = self.lower_expr(*d.formula);
                     let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
@@ -7656,7 +8381,7 @@ impl<'t> Parser<'t> {
                     }
                 }).collect();
 
-                Ok(ast::Stmt::Class(ast::ClassDecl {
+                let mut class = ast::ClassDecl {
                     name,
                     fields: fields_ast,
                     actions: actions_ast,
@@ -7670,8 +8395,24 @@ impl<'t> Parser<'t> {
                     one_of,
                     order_by,
                     decide,
+                    phases: phases_ast,
+                    uses,
                     span: sp,
-                }))
+                };
+                // All in one go, so one aspect's fields are never taken for
+                // the class's own lines. A class that uses only aspects
+                // declared above it is filled now (it may sit inside an
+                // action or block); one that uses an interface, or an aspect
+                // declared below, once the file is read, since an
+                // interface's decisions may come later in the file.
+                if phase_uses.is_empty() && class.uses.iter().all(|n| self.aspects.iter().any(|(a, _)| a == n)) {
+                    fill_from_aspects(&mut class, &self.aspects).map_err(|(m, h)| s_help_site!("P1343", &m, &h))?;
+                    class.transitions.retain(|t| marker_name(t).is_none());
+                } else {
+                    for (_, n) in &phase_uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                    for n in &class.uses { self.uses_waiting.push((class.name.clone(), n.clone())); }
+                }
+                Ok(ast::Stmt::Class(class))
             }
             _ => Err(s_help_site!(
                 "P0905",
@@ -7752,6 +8493,287 @@ impl<'t> Parser<'t> {
     /// `<^>Mood |` ... `xx`: an overlay class. Its lines are an overlay's
     /// lines; each member (`overlay calm <^> Mood`) gets the ones it doesn't
     /// write itself, and its `dup:` says what a second member does.
+    /// `a, b, c`: one or more names.
+    fn eat_name_list(&mut self, code: &'static str, help: &str) -> Result<Vec<String>, String> {
+        let mut out = Vec::new();
+        loop {
+            let Some(n) = self.eat_ident() else {
+                return Err(s_help_site!(code, "Expected a name after 'as'", help));
+            };
+            out.push(n);
+            if !self.eat_op(",") { break; }
+            self.skip_layout_inline();
+        }
+        Ok(out)
+    }
+
+    fn interface_mut(&mut self, name: &str) -> &mut Interface {
+        if let Some(at) = self.interfaces.iter().position(|i| i.name == name) { return &mut self.interfaces[at]; }
+        self.interfaces.push(Interface { name: name.to_string(), ..Default::default() });
+        self.interfaces.last_mut().unwrap()
+    }
+
+    /// `decision trade as diplomacy` ... `xx`: a decision written once for
+    /// every class that uses the interface.
+    fn parse_interface_decision(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        self.i += 1; // `decision`
+        let name = self.eat_ident().unwrap_or_default();
+        self.i += 1; // `as`
+        let ifaces = self.eat_name_list("P1344", "Write: decision trade as diplomacy")?;
+        self.parse_interface_decision_in(start_i, col, name, ifaces)?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
+    /// A decision's block, filed under each of `ifaces`.
+    fn parse_interface_decision_in(&mut self, start_i: usize, col: u32, name: String, ifaces: Vec<String>) -> Result<(), String> {
+        let d = self.with_self(|p| p.parse_decision_block(col, &name))?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let formula = self.lower_expr(*d.formula);
+        let (formula_min, formula_max) = Self::derive_link_formula_range_parser(&formula);
+        let filter = d.filter.map(|f| self.lower_expr(*f));
+        let nd = ast::NamedDecision {
+            name: name.clone(),
+            decision: ast::DecisionDef { target_class: d.target_class, formula, formula_min, formula_max, margin: d.margin, filter, span: sp.clone() },
+            judge: None,
+        };
+        for iface in ifaces {
+            let i = self.interface_mut(&iface);
+            if i.decisions.iter().any(|x| x.name == name) {
+                return Err(s_help_site!("P1345", &format!("Interface {iface} already has a decision named '{name}'"), "Give each decision its own name."));
+            }
+            i.decisions.push(nd.clone());
+        }
+        Ok(())
+    }
+
+    /// `interface conquest |` then its actions, decisions, judge,
+    /// transitions and `on` hooks, closed with `xx`: written once for every
+    /// class that uses the interface. Actions, decisions and judges can
+    /// also join it from outside with `as`.
+    fn parse_interface_block(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        self.i += 1; // `interface`
+        let name = self.eat_ident().unwrap_or_default();
+        self.skip_layout_inline();
+        if !self.eat_op("|") || !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            return Err(s_help_site!("P1519", &format!("Expected '|' and then the interface's members under interface {name}"),
+                &format!("Write:\n  interface {name} |\n      act ...\n  xx")));
+        }
+        if self.interfaces.iter().any(|i| i.name == name && i.block) {
+            return Err(s_help_site!("P1518", &format!("The interface {name} has two `interface` blocks"), "Keep one block per interface."));
+        }
+        self.interface_mut(&name).block = true;
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P0909", &format!("I reached the end of the file, but the interface '{name}' is still open (missing 'xx')"),
+                    "Close the interface with 'xx' (crossbones) on its own line"));
+            }
+            if self.peek_block_close() {
+                let at = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if at != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {col}, found column {at}"),
+                        "Align the closer with its header: put 'xx' directly under 'interface'."));
+                }
+                self.expect_block_close("interface")?;
+                break;
+            }
+            let hook = self.peek_ident() == Some("on")
+                && self.toks.get(self.i + 1).is_some_and(|t| t.value.as_deref().is_some_and(|w| w == "erase" || hook_params(w).is_some()));
+            let kw = self.peek_ident().map(str::to_string);
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Act) | Some(TokenKind::Action)) {
+                let act = self.parse_stmt()?;
+                if let ast::Stmt::Action(a) = &act {
+                    let n = a.name.clone();
+                    let i = self.interface_mut(&name);
+                    if !i.acts.contains(&n) { i.acts.push(n); }
+                }
+                self.hoisted.push(act);
+            } else if kw.as_deref() == Some("decision") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+                let d_i = self.i;
+                let d_col = self.toks[d_i].span.col_start;
+                self.i += 1;
+                let dname = self.eat_ident().unwrap_or_default();
+                self.parse_interface_decision_in(d_i, d_col, dname, vec![name.clone()])?;
+            } else if matches!(kw.as_deref(), Some("judge") | Some("judge_all")) {
+                let all = kw.as_deref() == Some("judge_all");
+                let stmt = self.with_self(|p| if all { p.parse_judge_all_stmt() } else { p.parse_judge_stmt() })?;
+                let mut ifaces = std::mem::take(&mut self.judge_as);
+                if !ifaces.contains(&name) { ifaces.insert(0, name.clone()); }
+                self.file_interface_judge(stmt, ifaces)?;
+            } else if self.peek_ident() == Some("transition") {
+                self.parse_interface_transition(&name)?;
+            } else if hook {
+                self.parse_interface_hook(&name)?;
+            } else {
+                return Err(s_help_site!("P1519", &format!("Expected an act, decision, judge, transition or `on` hook in interface {name}"),
+                    "An interface block holds its actions, decisions, judge, transitions and hooks:\n  interface conquest |\n      act annexed(p, t)\n          ...\n      xx\n      transition absorb\n          targets: uses conquest where ...\n      xx\n      on absorb => annexed(self, target)\n  xx"));
+            }
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+    }
+
+    /// `transition absorb` ... `xx` in an `interface` block: a transition
+    /// written once for every class that uses the interface. It runs where
+    /// the class writes `uses conquest`: at the top of the class when the
+    /// tick ends, in a `phase:` in that phase.
+    fn parse_interface_transition(&mut self, iface: &str) -> Result<(), String> {
+        let start_i = self.i;
+        self.i += 1; // `transition`
+        let word = self.eat_ident().unwrap_or_default();
+        let kind = match word.as_str() {
+            "spawn" => ast::TransitionKind::Spawn, "erase" => ast::TransitionKind::Erase,
+            "split" => ast::TransitionKind::Split, "fracture" => ast::TransitionKind::Fracture,
+            "merge" => ast::TransitionKind::Merge, "absorb" => ast::TransitionKind::Absorb,
+            "subjugate" => ast::TransitionKind::Subjugate, "mutate" => ast::TransitionKind::Mutate,
+            other => return Err(s_help_site!("P1501",
+                &format!("Unknown transition kind '{}'. Valid kinds: spawn erase split fracture merge absorb subjugate mutate", other),
+                "Write: transition absorb")),
+        };
+        self.skip_layout_inline();
+        let td = self.with_self(|p| p.parse_transition_block(start_i, kind, None))?;
+        check_transition(&td, false)?;
+        self.interface_mut(iface).transitions.push(td);
+        Ok(())
+    }
+
+    /// `on absorb => annexed(self, target)` (or a block under it) in an
+    /// `interface` block: a transition hook for every class that uses the
+    /// interface.
+    fn parse_interface_hook(&mut self, iface: &str) -> Result<(), String> {
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        self.i += 1; // `on`
+        let word = self.eat_ident().unwrap_or_default();
+        self.skip_layout_inline();
+        let body = if self.eat_op("=>") {
+            self.skip_layout_inline();
+            vec![self.with_self(|p| p.parse_stmt())?]
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            self.with_self(|p| p.parse_head_block(col, &format!("on {word}")))?
+        } else {
+            return Err(s_help_site!("P1516", &format!("Expected '=>' or a block after 'on {word}'"),
+                &format!("Write: on {word} => record(self)")));
+        };
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let name = format!("on {word}");
+        let params = if word == "erase" { Vec::new() } else {
+            hook_params(&word).unwrap_or(&[]).iter().map(|p| ast::Param { name: p.to_string(), type_name: None, default: None, span: sp.clone() }).collect()
+        };
+        let act = ast::ActionDecl { name: name.clone(), params, body: ast::ActionBody::Block(body), span: sp, ret: None };
+        let i = self.interface_mut(iface);
+        if i.hooks.iter().any(|h| h.name == name) {
+            return Err(s_help_site!("P1517", &format!("`{name}` is written twice in interface {iface}"), "Keep one."));
+        }
+        i.hooks.push(act);
+        Ok(())
+    }
+
+    /// `judge as diplomacy` ... `xx`: the judge over an interface's
+    /// decisions, for every class that uses it.
+    fn parse_interface_judge(&mut self) -> Result<ast::Stmt, String> {
+        let start_i = self.i;
+        let all = self.peek_ident() == Some("judge_all");
+        let stmt = self.with_self(|p| if all { p.parse_judge_all_stmt() } else { p.parse_judge_stmt() })?;
+        let sp = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        let ifaces = std::mem::take(&mut self.judge_as);
+        self.file_interface_judge(stmt, ifaces)?;
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span: sp })
+    }
+
+    /// Files a judge under each of `ifaces`.
+    fn file_interface_judge(&mut self, stmt: ast::Stmt, ifaces: Vec<String>) -> Result<(), String> {
+        for iface in ifaces {
+            let i = self.interface_mut(&iface);
+            if i.judge.is_some() {
+                return Err(s_help_site!("P1345", &format!("Interface {iface} already has a judge"), "Write one judge for the interface."));
+            }
+            i.judge = Some(stmt.clone());
+        }
+        Ok(())
+    }
+
+    /// `aspect Political |` then one field a line (`~aggression`,
+    /// `~stability: .5`, `gold: 100`, `army`), closed with `xx`. A field
+    /// written without a value starts at 0.0 when it is a `~` trait and at
+    /// nil otherwise. Classes take the fields with `uses Political`.
+    fn parse_aspect(&mut self) -> Result<ast::Stmt, String> {
+        use goblin_lexer::TokenKind;
+        let start_i = self.i;
+        let col = self.toks[start_i].span.col_start;
+        let _ = self.eat_ident(); // `aspect`
+        let name = match self.eat_ident() {
+            Some(n) if n.starts_with(|ch: char| ch.is_ascii_uppercase()) => n,
+            _ => return Err(s_help_site!("P1341", "An aspect's name starts with a capital letter", "Write: aspect Political |")),
+        };
+        self.skip_layout_inline();
+        if !self.eat_op("|") || !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline)) {
+            return Err(s_help_site!("P1341", &format!("Expected '|' and then the aspect's fields under aspect {name}"),
+                &format!("Write:\n  aspect {name} |\n      ~aggression\n      gold: 100\n  xx")));
+        }
+        if self.aspects.iter().any(|(n, _)| *n == name) {
+            return Err(s_help_site!("P1342", &format!("The aspect {name} is declared twice"), "Keep one declaration per aspect."));
+        }
+        let mut fields: Vec<ast::FieldDecl> = Vec::new();
+        loop {
+            while let Some(t) = self.peek() {
+                if matches!(t.kind, TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent) { self.i += 1; } else { break; }
+            }
+            if self.is_eof() {
+                return Err(s_help_site!("P0909", &format!("I reached the end of the file, but the aspect '{name}' is still open (missing 'xx')"),
+                    "Close the aspect with 'xx' (crossbones) on its own line"));
+            }
+            if self.peek_block_close() {
+                let at = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                if at != col {
+                    return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {col}, found column {at}"),
+                        "Align the closer with its header: put 'xx' directly under 'aspect'."));
+                }
+                self.expect_block_close("aspect")?;
+                break;
+            }
+            let line_i = self.i;
+            let raw = self.eat_op("~");
+            let Some(fname) = self.eat_ident() else {
+                return Err(s_help_site!("P1341", &format!("Expected a field in aspect {name}"),
+                    "An aspect holds only fields, one a line: ~aggression or gold: 100"));
+            };
+            if fields.iter().any(|f| f.name == fname) {
+                return Err(s_help_site!("P1342", &format!("Aspect {name} names `{fname}` twice"), "Write each field once."));
+            }
+            let default = if self.eat_op(":") {
+                self.skip_layout_inline();
+                let e = self.parse_assign()?;
+                if raw && not_a_number(&e) { return Err(tilde_error(&fname)); }
+                e
+            } else if raw {
+                PExpr::Float("0.0".into())
+            } else {
+                PExpr::Nil
+            };
+            if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Newline) | Some(TokenKind::Dedent) | Some(TokenKind::Eof) | None) {
+                return Err(s_help_site!("P1341", &format!("Expected one field a line in aspect {name}"),
+                    "Write: ~aggression  or  gold: 100"));
+            }
+            let sp = Self::span_from_tokens(self.toks, line_i, self.i.saturating_sub(1));
+            fields.push(ast::FieldDecl {
+                name: fname, private: false, nullable: false, readonly: false, raw, relation: None,
+                default: Some(self.lower_expr(default)), span: sp,
+            });
+        }
+        let span = Self::span_from_tokens(self.toks, start_i, self.i.saturating_sub(1));
+        self.aspects.push((name, fields));
+        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+    }
+
     fn parse_overlay_class(&mut self) -> Result<ast::Stmt, String> {
         let start_i = self.i;
         let col = self.toks[start_i].span.col_start;
@@ -7798,6 +8820,11 @@ impl<'t> Parser<'t> {
         let mut every: Vec<(u64, String)> = Vec::new();
         let mut dup: Option<ast::OverlayDup> = None;
         let mut written: Vec<String> = Vec::new();
+        // `phase: NAME` blocks. While one is open: its name and column, and
+        // the overlay's own spreads, `every` blocks and transitions, set aside.
+        let mut phases: Vec<ast::OverlayPhase> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut in_phase: Option<(String, u32, (Vec<ast::OverlaySpread>, Vec<(u64, String)>, Vec<ast::TransitionDef>))> = None;
         let sp0 = self.toks[start_i].span.clone();
         let intensity_param = || vec![ast::Param { name: "intensity".to_string(), type_name: None, default: None, span: sp0.clone() }];
         let mk = |n: &str, body: Vec<ast::Stmt>| ast::ActionDecl {
@@ -7809,6 +8836,46 @@ impl<'t> Parser<'t> {
             }
             if self.is_eof() {
                 return Err(s_help_site!("P1203", &format!("The overlay '{name}' is missing its closing 'xx'"), "Close the overlay with 'xx' under 'overlay'."));
+            }
+            // The `xx` of an open `phase:` block: the overlay's own lines come back.
+            if let Some((_, pcol, _)) = &in_phase {
+                let pcol = *pcol;
+                if self.peek_block_close() {
+                    let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
+                    if c != pcol {
+                        return Err(s_help_site!("P0222", &format!("This closer is misaligned: expected column {}, found column {}", pcol, c),
+                            "Close the phase with 'xx' directly under 'phase'."));
+                    }
+                    self.expect_block_close("phase")?;
+                    let (pname, _, (sp, ev, tr)) = in_phase.take().unwrap();
+                    phases.push(ast::OverlayPhase {
+                        name: pname,
+                        spreads: std::mem::replace(&mut spreads, sp),
+                        every: std::mem::replace(&mut every, ev),
+                        transitions: std::mem::replace(&mut transitions, tr),
+                    });
+                    continue;
+                }
+            }
+            // `phase: NAME` with its lines indented below.
+            if self.is_phase_block_at(self.i) {
+                let pcol = self.toks[self.i].span.col_start;
+                if in_phase.is_some() {
+                    return Err(s_help_site!("P1580", "A phase cannot hold another phase",
+                        "Close the first phase with 'xx' before the next 'phase:'."));
+                }
+                let pname = self.toks[self.i + 2].value.clone().unwrap_or_default();
+                if phases.iter().any(|p| p.name == pname) {
+                    return Err(s_help_site!("P1582", &format!("This overlay already has a phase named '{}'", pname),
+                        "Put everything the overlay does in that phase in one 'phase:' block."));
+                }
+                self.i += 3;
+                in_phase = Some((pname, pcol, (std::mem::take(&mut spreads), std::mem::take(&mut every), std::mem::take(&mut transitions))));
+                continue;
+            }
+            if in_phase.is_some() && !matches!(self.peek_ident(), Some("spread") | Some("every") | Some("transition")) {
+                return Err(s_help_site!("P1581", "This cannot go in a phase",
+                    "An overlay's phase holds spread:, 'every N ticks' blocks and transitions. Put the overlay's other lines in the overlay itself."));
             }
             if self.peek_block_close() {
                 let c = self.toks.get(self.i).map(|t| t.span.col_start).unwrap_or(0);
@@ -7960,7 +9027,10 @@ impl<'t> Parser<'t> {
                         if n == 0 || !matches!(unit.as_deref(), Some("tick") | Some("ticks")) {
                             return Err(s_help_site!("P1560", "Expected a whole number of ticks after 'every'", "Write: every 1 tick ... xx"));
                         }
-                        let a = format!("every {} ticks #{}", n, every.len() + 1);
+                        let a = match &in_phase {
+                            Some((p, _, _)) => format!("every {} ticks #{} @{}", n, every.len() + 1, p),
+                            None => format!("every {} ticks #{}", n, every.len() + 1),
+                        };
                         every.push((n, a.clone()));
                         a
                     };
@@ -8003,7 +9073,7 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
             name, host_types, spread_rules: Vec::new(), decay_rate, modifiers, conflict_rules: Vec::new(), spawn_rules: Vec::new(),
             transitions, default_duration, apply_behavior, extra_fields, on_end, each_tick: Vec::new(),
-            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, span,
+            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, phases, span,
         }))
     }
 
@@ -8462,6 +9532,7 @@ impl<'t> Parser<'t> {
             actions: Vec::new(),
             on_start: None,
             every: Vec::new(),
+            phases: Vec::new(),
             span,
         }))
     }
@@ -9469,9 +10540,16 @@ impl<'t> Parser<'t> {
                         self.skip_layout_inline();
                     },
                     "targets" => {
-                        let Some(cls) = self.eat_ident() else {
+                        let Some(mut cls) = self.eat_ident() else {
                             return Err(s_help_site!("P1505", "Expected a class name after 'targets:'", "Write: targets: Kingdom where (target >> power) < @power"));
                         };
+                        // `targets: uses diplomacy`: the objects of every class that uses it.
+                        if cls == "uses" {
+                            let Some(iface) = self.eat_ident() else {
+                                return Err(s_help_site!("P1344", "Expected an interface after 'targets: uses'", "Write: targets: uses diplomacy where (target >> power) < @power"));
+                            };
+                            cls = format!("uses {iface}");
+                        }
                         target_class = Some(cls);
                         self.skip_layout_inline();
                         if self.peek_ident() == Some("where") {
@@ -10246,6 +11324,17 @@ impl<'t> Parser<'t> {
             if matches!(tok0.kind, TokenKind::Ident) {
                 let name = tok0.value.clone().unwrap_or_default();
                 self.i += 1; // eat the ident
+
+                // `uses taxation` (as in `:objects(uses taxation)`): every
+                // class that uses the interface, named as `targets:` names it.
+                if name == "uses" {
+                    if let Some(t) = self.peek().cloned() {
+                        if matches!(t.kind, TokenKind::Ident) && t.span.line_start == tok0.span.line_start {
+                            self.i += 1;
+                            return Ok(PExpr::Str(format!("uses {}", t.value.unwrap_or_default())));
+                        }
+                    }
+                }
 
                 // DEPRECATE old `Type: ...`
                 if self.peek_op(":") && self.suspend_colon_call == 0 && !self.in_object_construction {
@@ -11164,6 +12253,11 @@ impl<'t> Parser<'t> {
 
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge"));
         let _ = self.eat_ident();
+        // `judge as diplomacy`: an interface's judge; the caller files it.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            self.judge_as = self.eat_name_list("P1344", "Write: judge as diplomacy")?;
+        }
 
         self.suspend_colon_call += 1;
 
@@ -11315,6 +12409,11 @@ impl<'t> Parser<'t> {
 
         debug_assert_eq!(self.peek_ident().as_deref(), Some("judge_all"));
         let _ = self.eat_ident();
+        // `judge_all as diplomacy`: an interface's judge; the caller files it.
+        if self.peek_ident() == Some("as") && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident)) {
+            self.i += 1;
+            self.judge_as = self.eat_name_list("P1344", "Write: judge as diplomacy")?;
+        }
 
         self.suspend_colon_call += 1;
 
@@ -12862,6 +13961,7 @@ impl<'t> Parser<'t> {
                 }
                 continue;
             }
+            if self.at_error_guard() { break; }
             if self.eat_op("!")  { lhs = PExpr::Postfix(Box::new(lhs), "!".to_string());  continue; }
             if self.eat_op("^")  { lhs = PExpr::Postfix(Box::new(lhs), "^".to_string());  continue; }
             if self.eat_op("_")  { lhs = PExpr::Postfix(Box::new(lhs), "_".to_string());  continue; }

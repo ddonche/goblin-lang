@@ -1,0 +1,7 @@
+enabled: true
+deleted: false
+parent: nil
+count: 42
+negative: -7
+price: 19.95
+name: Goblin

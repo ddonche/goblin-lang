@@ -1,0 +1,9 @@
+year 0: 20 kingdoms, 63 village communities, 65 tribes
+year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
+year 100: 76 polities, largest Hallorisk with 17 provinces, 6 wars
+year 200: 56 polities, largest Gordun with 28 provinces, 3 wars
+year 300: 47 polities, largest Gordun-Ulfalvarhal with 28 provinces, 5 wars
+year 400: 47 polities, largest Kelros with 36 provinces, 5 wars
+year 500: 40 polities, largest Kelros with 38 provinces, 6 wars
+check: share of polity-years at war: 18.1%
+check: forms at the end: chieftainship 3, citizen_republic 3, elders_council 7, elective_monarchy 2, hereditary_monarchy 3, imperial_autocracy 2, merchant_oligarchy 7, military_junta 3, theocracy 9, tyranny 1

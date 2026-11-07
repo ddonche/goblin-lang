@@ -1,8 +1,9 @@
 /// known-gap: interp has no contents list (owner is a plain field there)
 /// `:objects("Item", it >> owner == x)` reads x each time it runs: a
 /// global, an action's argument, a loop variable. The same predicate run
-/// for different holders gives each holder's own items, and a holder that
-/// was erased holds nothing.
+/// for different holders gives each holder's own items. A holder that was
+/// erased reads as nil, so it then matches the items that have no holder
+/// (w, whose holder's things moved up to nothing).
 <>Bag |
     name: ""
     owner: nil

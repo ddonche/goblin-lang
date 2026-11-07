@@ -1,6 +1,6 @@
 /// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
 /// `:actor(state)` with no handler: the actor runs the objects in its state
-/// in `tick(regions)`, and takes no messages (posting one is C0107).
+/// in `:tick()`, and takes no messages (posting one is C0107).
 <>Meadow |
     n: 0
 xx
@@ -17,8 +17,8 @@ act make(i)
     return [m, r]
 xx
 meadows | [:actor(make(1)), :actor(make(2))]
-tick(meadows)
-tick(meadows)
+tick()
+tick()
 say(:len(:objects("Rabbit", it >> age == 2)))
 attempt
     :post(meadows[0], "hi")

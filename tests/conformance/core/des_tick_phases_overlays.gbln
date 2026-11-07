@@ -1,0 +1,46 @@
+/// known-gap: interp has no tick() block or phase: blocks; the interpreter is being retired
+/// An overlay's `phase: NAME` block holds spreads, `every N ticks` blocks
+/// and transitions that run only in that phase of a `tick()` block; its
+/// other lines run when the tick ends. Ageing and `lasts:` move once a
+/// tick, at its end. A member of an overlay class gets the class's phases.
+<>Town |
+    n: 0
+    sick: 0
+    calm: 0
+xx
+overlay flu
+    hosts: Town
+    lasts: 3
+    phase: spread
+        spread: 1 where (target >> n) == (self >> n) + 1
+        every 1 tick
+            @sick |= @sick + 1
+        xx
+    xx
+    every 1 tick
+        @sick |= @sick + 10
+    xx
+xx
+<^>Mood |
+    hosts: Town
+    phase: settle
+        every 1 tick
+            @calm |= @calm + 1
+        xx
+    xx
+xx
+overlay quiet <^> Mood
+xx
+a <> Town | n: 0
+b <> Town | n: 1
+c <> Town | n: 2
+:overlay!(a, flu)
+:overlay!(c, quiet)
+repeat 4
+    tick()
+        spread
+        settle
+    xx
+    on | :len(:overlays(flu))
+    say("{a >> sick} {b >> sick} {c >> sick} flu on {on}, calm {c >> calm}")
+xx
