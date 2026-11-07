@@ -1,0 +1,7 @@
+/// known-gap: interp lost GOBLIN::EMPTY with the VM (the interpreter is being retired)
+/// `GOBLIN::EMPTY` is a built-in token that stands for nothing: a template
+/// slot set to it renders empty, with no module registering it.
+:register_token("SLOT", "aside", raw "[{{{GOBLIN::EMPTY}}}]")
+say(:resolve_token(:resolve_token("SLOT", "aside")))
+say(:resolve_token(raw "<p>{{{goblin::empty}}}</p>"))
+say(:len(:resolve_token("GOBLIN", "EMPTY")))
