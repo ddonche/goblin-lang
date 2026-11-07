@@ -3516,12 +3516,14 @@ impl<'t> Parser<'t> {
         });
 
         // With an error guard, `name | expr !! => g` becomes
-        //   name | nil
+        //   __guard_name__ | nil
         //   attempt
-        //       name |= expr
+        //       __guard_name__ |= expr
         //   rescue
         //       g
-        // so `name` stays bound in the enclosing scope either way.
+        //   name | __guard_name__
+        // so `name` stays bound in the enclosing scope either way (`|=` keeps
+        // its old value instead: `attempt name |= expr rescue g`).
         let bind_stmt = match err_guard {
             None => bind_stmt,
             Some(err_guard_stmt) => {
@@ -3531,20 +3533,27 @@ impl<'t> Parser<'t> {
                     self.i.saturating_sub(1),
                 );
                 let mut stmts = Vec::new();
+                // A new binding evaluates into a hidden temporary, then binds the
+                // name from it after the attempt, so `imm` and a type lock still apply.
+                let mut after: Option<ast::Stmt> = None;
                 let inner = match bind_stmt {
                     ast::Stmt::Bind(mut bs) if matches!(bs.mode, ast::BindMode::Tether) => {
-                        stmts.push(ast::Stmt::Bind(ast::BindStmt {
-                            name: bs.name.clone(),
-                            expr: ast::Expr::Nil(guard_span.clone()),
+                        let tmp = format!("__guard_{}__", bs.name.0);
+                        let tmp_bind = |expr: ast::Expr, mode: ast::BindMode| ast::Stmt::Bind(ast::BindStmt {
+                            name: (tmp.clone(), guard_span.clone()),
+                            expr,
                             is_imm: false,
                             is_local: bs.is_local,
-                            mode: ast::BindMode::Tether,
+                            mode,
                             span: guard_span.clone(),
                             class_name: None,
                             lock_type: None,
-                        }));
-                        bs.mode = ast::BindMode::Retether;
-                        ast::Stmt::Bind(bs)
+                        });
+                        stmts.push(tmp_bind(ast::Expr::Nil(guard_span.clone()), ast::BindMode::Tether));
+                        let rhs = std::mem::replace(&mut bs.expr, ast::Expr::Ident(tmp.clone(), guard_span.clone()));
+                        let inner = tmp_bind(rhs, ast::BindMode::Retether);
+                        after = Some(ast::Stmt::Bind(bs));
+                        inner
                     }
                     other => other,
                 };
@@ -3558,6 +3567,7 @@ impl<'t> Parser<'t> {
                     vec![ast::Expr::Block { stmts: vec![inner], span: guard_span.clone() }, rescues],
                     guard_span.clone(),
                 )));
+                stmts.extend(after);
                 let block_span = Self::span_from_tokens(self.toks, start_i_expr, self.i.saturating_sub(1));
                 ast::Stmt::Block { stmts, span: block_span }
             }

@@ -1,0 +1,6 @@
+/// known-gap: interp yall_parse values never compare equal to map literals
+/// yall_write output reads back as the same value for multiline strings anywhere: block, inline, edge newlines
+cases | [{"a": "x\ny\n"}, {"a": "\nx"}, {"a": ["p\nq"]}, {"a": {"b": "p\nq"}}, {"a": "p\nq"}]
+repeat cases as c
+  say(:yall_parse(:yall_write(c), "t.yall") == c)
+xx

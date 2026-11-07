@@ -39,19 +39,20 @@ fn write_value(out: &mut String, v: &YallValue, indent: usize, top_level: bool) 
 // STRING RULES
 // ----------------------------------------------------
 
-fn write_string(out: &mut String, s: &str) {
-    if s.contains('\n') {
+/// A string as the whole value of a block-map key: multiline text is written
+/// as a `"""` block, the one place the parser reads one. Text that starts or
+/// ends with a newline stays escaped, since the block form would drop it.
+fn write_block_string(out: &mut String, s: &str) {
+    if s.contains('\n') && !s.starts_with('\n') && !s.ends_with('\n') {
         out.push_str("\"\"\"\n");
         out.push_str(s);
-
-        if !s.ends_with('\n') {
-            out.push('\n');
-        }
-
-        out.push_str("\"\"\"");
+        out.push_str("\n\"\"\"");
         return;
     }
+    write_string(out, s);
+}
 
+fn write_string(out: &mut String, s: &str) {
     if is_bare_ok(s) {
         out.push_str(s);
     } else {
@@ -61,6 +62,7 @@ fn write_string(out: &mut String, s: &str) {
             match ch {
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 c => out.push(c),
@@ -137,6 +139,11 @@ fn write_block_map(
                     out.push('\n');
                     write_block_list(out, a, indent + 2);
                 }
+            }
+            YallValue::Str(text) => {
+                out.push(' ');
+                write_block_string(out, text);
+                out.push('\n');
             }
             other => {
                 if is_simple_scalar(other) {
