@@ -40,20 +40,33 @@ fn write_value(out: &mut String, v: &YallValue, indent: usize, top_level: bool) 
 // ----------------------------------------------------
 
 fn write_string(out: &mut String, s: &str) {
+    if s.contains('\n') {
+        out.push_str("\"\"\"\n");
+        out.push_str(s);
+
+        if !s.ends_with('\n') {
+            out.push('\n');
+        }
+
+        out.push_str("\"\"\"");
+        return;
+    }
+
     if is_bare_ok(s) {
         out.push_str(s);
     } else {
         out.push('"');
+
         for ch in s.chars() {
             match ch {
                 '\\' => out.push_str("\\\\"),
                 '"' => out.push_str("\\\""),
-                '\n' => out.push_str("\\n"),
                 '\r' => out.push_str("\\r"),
                 '\t' => out.push_str("\\t"),
                 c => out.push(c),
             }
         }
+
         out.push('"');
     }
 }
@@ -67,6 +80,11 @@ fn write_string(out: &mut String, s: &str) {
 fn is_bare_ok(s: &str) -> bool {
     if s.is_empty() {
         return false;
+    }
+
+    match s {
+        "true" | "false" | "nil" => return false,
+        _ => {}
     }
 
     for ch in s.chars() {
@@ -101,12 +119,24 @@ fn write_block_map(
 
         match val {
             YallValue::Map(m) if !m.is_empty() => {
-                out.push('\n');
-                write_block_map(out, m, indent + 2);
+                if try_inline_map(m) {
+                    out.push(' ');
+                    write_inline_map(out, m);
+                    out.push('\n');
+                } else {
+                    out.push('\n');
+                    write_block_map(out, m, indent + 2);
+                }
             }
             YallValue::Array(a) if !a.is_empty() => {
-                out.push('\n');
-                write_block_list(out, a, indent + 2);
+                if try_inline_array(a) {
+                    out.push(' ');
+                    write_inline_array(out, a);
+                    out.push('\n');
+                } else {
+                    out.push('\n');
+                    write_block_list(out, a, indent + 2);
+                }
             }
             other => {
                 if is_simple_scalar(other) {
@@ -224,7 +254,7 @@ fn try_inline_map(map: &IndexMap<String, YallValue>) -> bool {
 }
 
 fn write_inline_map(out: &mut String, map: &IndexMap<String, YallValue>) {
-    out.push('{');
+    out.push_str("{ ");
     let mut first = true;
     for (k, v) in map {
         if !first {
@@ -235,7 +265,7 @@ fn write_inline_map(out: &mut String, map: &IndexMap<String, YallValue>) {
         out.push_str(": ");
         write_value(out, v, 0, false);
     }
-    out.push('}');
+    out.push_str(" }");
 }
 
 // ----------------------------------------------------
