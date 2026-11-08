@@ -4919,8 +4919,9 @@ impl Vm {
                         std::rc::Rc::make_mut(&mut self.session.named_values).insert(name.to_string(), val.clone());
                         return Some(val);
                     }
-                    // Last resort: bare name lookup (pre-existing flat-registry limitation)
-                    self.session.named_values.get(bare).cloned()
+                    // Never a bare-name fallback: `m::f` must not run another
+                    // module's `f` when `m` has none.
+                    None
                 } else {
                     None
                 }
@@ -5397,14 +5398,17 @@ impl Vm {
                 need_name, action_path
             )))?;
 
-        if !self.session.named_values.contains_key(provider_action) {
+        let _ = provider_action;
+        // The provider by its full name: a bare `action` could be another
+        // module's action of the same name.
+        if self.resolve_named(&action_path).is_none() {
             return Err(GoblinError::Runtime(format!(
                 "B0107: missing-provider-action — Configured action need '{}' points to '{}' but that action does not exist.",
                 need_name, action_path
             )));
         }
 
-        self.call_named(provider_action, forwarded)
+        self.call_named(&action_path, forwarded)
     }
 
     // ── Tick (DES simulation step) ────────────────────────────────────────────

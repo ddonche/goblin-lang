@@ -1,0 +1,3 @@
+act render(ctx)
+    return ctx + "b.render,"
+xx
