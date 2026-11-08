@@ -1072,6 +1072,7 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 /// - `target >> f == x` with `x` not naming `target` and `f` a field the
 ///   class declares: only the objects whose `f` can equal `x` (the store's
 ///   index of `f`) can pass.
+/// - `target == x` with `x` not naming `target`: only x itself can pass.
 /// The targets left out would have failed the condition at or before that
 /// point, and what came before changes nothing, so the result is the same.
 /// It stops at the first condition that names `target` and isn't one of
@@ -1104,6 +1105,26 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         if let Some(fewer) = narrow_by_link(vm, c, class, self_ref, self_at) { return fewer; }
         let E::Binary(l, op, r, _) = c else { return None };
         if op != "==" { return None; }
+        // `target == x` (`target == @capital`): only x itself can pass.
+        let is_target = |e: &E| matches!(e, E::Ident(n, _) if n == "target");
+        let other = if is_target(l) && !names(r, "target") { Some(&**r) }
+            else if is_target(r) && !names(l, "target") { Some(&**l) }
+            else { None };
+        if let Some(other) = other {
+            let f = vm.tick_formula(other, &["self", "target"]).ok()?;
+            let want = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
+            if changed(vm, epoch) { return None; }
+            let uuid = match want.ok()? {
+                Value::Ref(u) => u,
+                Value::Object(o) => o.uuid.clone(),
+                Value::Nil => return Some(Vec::new()),
+                _ => return None,
+            };
+            return Some(all.iter()
+                .filter(|(t, _)| matches!(t, Value::Ref(u) if *u == uuid))
+                .cloned()
+                .collect());
+        }
         // `target >> owner` is 1, `target >> owner >> owner` 2, ...
         fn owner_depth(e: &E) -> usize {
             match e {
