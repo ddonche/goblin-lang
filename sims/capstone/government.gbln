@@ -38,6 +38,7 @@ overlay hereditary_monarchy <^> Government
     modify
         @stability + .2 * (@succession - .5)
         @lean_war + .5
+        @lean_match + .5
     xx
 xx
 /// A ruler chosen by the great families.
@@ -261,11 +262,6 @@ act regime(p, lost, won, armed, unpaid)
     rep  | :has(republics, f)
     into | []
     odds | []
-    if mon and f != "imperial_autocracy" or f == "imperial_autocracy"
-        /// The line dies out or rival heirs contend.
-        :put_last!(into, "interregnum")
-        :put_last!(odds, under(p >> succession, .4) * under(p >> stability, .6))
-    xx
     if f == "interregnum"
         /// A claimant wins.
         :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy"]))

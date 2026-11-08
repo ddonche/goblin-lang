@@ -328,3 +328,172 @@ that every kind of transition happens in 500 years.
   That is about 10% of the year's time.
 - **`ns::action(...)` doesn't work inside `{...}` in a string** (known):
   bind it first.
+
+# Capstone step 4: rulers and families
+
+`family.gbln` holds the people. A tribe or village community is led by
+a `Chief`; a city-state and up is ruled by a `Person`. A ruling family
+is a `Dynasty`, which owns its living members. `check.sh` checks that
+marriages (`match`, `home`) and plots (`scheme`) happen, and reports
+what happened in the families.
+
+## What is built
+
+- **People** (`Person`): age, health, the seven traits of the plan
+  (aggression, ambition, competence, piety, honor, cruelty, charisma),
+  sex, father, mother, spouse, fame, and the court they live at. A
+  `Chief` has a name and three traits (aggression, ambition,
+  competence), as the plan says, so the many small polities stay cheap.
+  Both share one aspect (`Leader`).
+- **Dynasties** own their living members, keep a prestige, the thrones
+  they claim through marriage, and the names of their famous rulers.
+  A realm also has two **great families**: dynasties with no people of
+  their own until one is needed (a candidate, a regent, a spouse). The
+  great families stand in for the plan's "great families" in elections
+  until factions come in step 5.
+- **A year in a family**, in the inside phase:
+  - aging and death (the chance rises with age, poor health, famine, war
+    for a warlike ruler, and cruelty);
+  - births to married couples (the chance falls from 16 to 45), with the
+    child's traits drawn around its parents';
+  - coming of age at 16, with upbringing (war makes harder children,
+    learning abler ones, piety more pious ones);
+  - marriage, a new interface `court` (city-state and up): `match` with
+    another realm's ruling family, `home` with a noble of a great
+    family, or waiting;
+  - plots: an ambitious heir with little honor may strike at the ruler
+    or at a rival ahead of them (`scheme`).
+- **Succession laws**, the plan's seven, each set by the form of
+  government: a crown keeps a hereditary law (eldest child, eldest son,
+  divided, strongest kin) drawn from its culture; an elective monarchy
+  elects; a theocracy's priests name a pious one; a tyranny or junta
+  goes to force; a republic or merchant oligarchy elects a term leader.
+  Each year the line is worked out, and from it the `succession` trait
+  (now worked out, not drifting).
+- **When a ruler dies**, the law names the next ruler. A succession
+  clear enough goes through. Otherwise no one is accepted and an
+  interregnum begins, which ends when a claimant wins (step 3's
+  change). With no heir, a dynasty that married in may press its claim.
+  Under the divided law, a second grown son is owed a share and the
+  realm splits in the settle phase.
+- **Regency**: a child ruler gets a regent (its mother, else a grown
+  kinsman, else one of a great family). The regent hands over at 16,
+  or by chance keeps the rule.
+- **Changes of form seat a new ruler**: a usurper or a junta's general
+  from a great family, a priest, an elected leader, or a new dynasty when
+  a crown comes back. The deposed house becomes a great family that
+  claims the throne, and the deposed ruler may be killed.
+- **The ruler's push**: two overlays of one class, `<^>Rule`, bend the
+  realm by the ruler's traits, or the regent's while there is one.
+  `reign` (every leader) bends aggression, ambition, discipline and
+  stability; `crown` (a Person) bends spirituality, honor, fear and
+  legitimacy. When the ruler dies the push goes with them.
+- **Fame**: a war won (+5) or lost (−3), a building (+.5) and a famine
+  survived (+.2) move the ruler's fame and the house's prestige. A
+  famous ruler's name (fame 15 and up) is given to later children of
+  the house, and rulers of one name are numbered (`Arveth II`).
+- **Claims and kinship reach the polities**: a match raises kinship
+  between the realms and eases a grievance; a `kinship` link joins the
+  plan's union decision (with a shared enemy); a claim joins the war
+  decision (with a grievance); a hereditary monarchy leans toward
+  matches.
+
+## Result (seed 42, 500 years)
+
+- Families: 848 births and 1,925 deaths (chiefs included), 1,542
+  rulers seated and 1,532 elections held (re-elections included), 137
+  interregnums, 16 regencies,
+  22 usurpations, 16 murders and 29 failed plots, 496 marriages
+  (37 between realms, 459 at home), 214 new houses.
+- At the end: 47 polities, the largest 35 provinces (8.9% of the held
+  land; step 3: 40 and 38); 18.4% of polity-years at war (step 3:
+  18.1%); 28 merges (step 3: 4: the kinship term in union).
+- Laws at the end: 20 term, 10 elective, 3 eldest son, 1 eldest child,
+  1 strongest kin, 2 faith, 1 force.
+- Never happened in 500 years: a regent keeping the rule, a divided
+  realm and a claim won through marriage. Each has a chance; none is
+  likely yet.
+- People alive: 144 persons, 40 chiefs and 24 ruling dynasties at
+  year 100; 105, 9 and 15 at year 500 (`history_metrics.csv` now records
+  them every 100 years).
+- Speed: 500 years of history in 79.3 s, 14% longer than step 3 on the
+  same VM (69.7 s). The people's own layer is about 3% of the time; most
+  of the rest is the court decisions and the accounts.
+
+## Choices to confirm
+
+1. **Who has children.** Only a couple where one partner is the ruler, a
+   ruler's child or the first heir. Without a limit, every branch of
+   every house would grow without end, and the plan's people "who
+   matter to history" would become a population. Cadet branches last
+   one generation.
+2. **Great families have no people until they are needed.** A candidate,
+   a regent or a spouse is made a Person when chosen. Someone of a great
+   family with no office, no claim and no spouse leaves history
+   (`gone`), as does anyone whose court is gone.
+3. **Marriage at home** (`home`) is mine. Without it, almost no heir
+   marries: a match between realms needs two of opposite sex unmarried
+   at once in bordering or allied realms. It starts at age 20 and grows
+   likelier until 35. Waiting weighs a half against both.
+4. **Who moves in a marriage**: the one who is not their realm's heir;
+   between two alike, the woman. Moving out of a realm with no other heir
+   gives the house moved into a claim (the plan's rule).
+5. **Term leaders**: an aristocratic republic elects for 10 years, a
+   merchant oligarchy for 6, a citizen republic for 4. The one in office
+   may stand again (weighted 1.2).
+6. **A contested succession**: the chance of an interregnum at a death is
+   how far succession is under .5 (under .6 for force). I took out step
+   3's yearly chance of an interregnum ("the line dies out or rival heirs
+   contend"): it now comes only from a real succession.
+7. **Succession worked out**: .3, plus .3 for an adult heir, .15 × the
+   heir's competence and .15 × legitimacy, less .12 for each rival near
+   the heir (up to three) and .08 for each house claiming the throne (up
+   to three); force × .6. No heir: .15; no ruler: .1; a term leader:
+   .5 + .4 × legitimacy.
+8. **Sizes of the ruler's push**: .2 × (trait − .5), so ±.1 at the
+   extremes; competence also bends stability by half that. Which trait
+   bends which is mine: cruelty → fear, charisma → legitimacy,
+   competence → discipline and stability.
+9. **Plots**: ambition above .55 and honor under .45. A killing found
+   out costs legitimacy .15, stability .1 and cohesion .05; a failed
+   plot found out may cost the plotter's life (likelier under a cruel
+   ruler). A deposed ruler is killed with a chance of half the new
+   ruler's cruelty.
+10. **Union with kinship**: union weighs the larger of a shared enemy and
+    kinship. That made merges 7 times as common (4 to 28 in 500 years).
+    If that is too many, kinship could count less.
+11. **A reform can end a divided or strongest-kin law** (eldest son, or
+    eldest child in an open realm), with a chance of the realm's learning.
+12. **Stand-ins until later steps**: a plotter's faction and foreign
+    backer (factions, step 5, and a `meddle` decision the dealings group
+    does not have); faith in a match (step 6); famous generals and
+    prophets; a chronicle line on a famous ruler's death (history,
+    later).
+13. **A realm founded this year has no ruler until the next year's
+    accounts** (a fragment, a split's second half with no rival to
+    rule it). The end-of-run count shows them under no law.
+
+## Fixed in the runtime on the way
+
+- **`where target == x` checked every object of the class.** Every
+  `target == @capital` decision (reform, settle, migrate, disband,
+  `home`) ran its condition on all 400 provinces, and the plot decision
+  on every polity. Now only x is checked, and the result is the same.
+  Step 3's 500-year history: 73.2 s to 69.7 s, output unchanged.
+
+## Missing or wrong in the runtime (named, not worked around)
+
+- **A `modify` can't read through a field that holds nil.** `@ruler >>
+  aggression` with no ruler is an error. The sim takes the overlays off
+  while no one rules and puts them on again with the next ruler.
+- **A `modify` that reads another object is worked out when the overlay
+  goes on and once a tick.** A new ruler's push would show only the next
+  tick, so the sim puts the overlays on again when the ruler changes.
+- **The event log has no line for what plain code does.** Births,
+  deaths in a plot, coronations, successions and elections run as plain
+  code (or a hook), so the log shows only the deeds (`match`, `home`,
+  `scheme`) and the erasures. A way for code to add a line would need a
+  new builtin; I have not added one.
+- **A variable holding an object can't take nil** (R1300), even though a
+  gone object reads as nil: `victim |= line[0]` failed when the heir in
+  the stored line had died.

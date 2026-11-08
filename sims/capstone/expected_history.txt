@@ -1,9 +1,11 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 76 polities, largest Hallorisk with 17 provinces, 6 wars
-year 200: 56 polities, largest Gordun with 28 provinces, 3 wars
-year 300: 47 polities, largest Gordun-Ulfalvarhal with 28 provinces, 5 wars
-year 400: 47 polities, largest Kelros with 36 provinces, 5 wars
-year 500: 40 polities, largest Kelros with 38 provinces, 6 wars
-check: share of polity-years at war: 18.1%
-check: forms at the end: chieftainship 3, citizen_republic 3, elders_council 7, elective_monarchy 2, hereditary_monarchy 3, imperial_autocracy 2, merchant_oligarchy 7, military_junta 3, theocracy 9, tyranny 1
+year 100: 81 polities, largest Zanjorardun with 15 provinces, 9 wars
+year 200: 51 polities, largest Toresk with 24 provinces, 2 wars
+year 300: 50 polities, largest Iskjorisk-Iskjor-Margor-Wenyrzan with 35 provinces, 2 wars
+year 400: 46 polities, largest Iskjorisk-Iskjor-Margor-Wenyrzan-Yrzanjor with 28 provinces, 2 wars
+year 500: 47 polities, largest Roszansar-Halisk-Falgordun-Dunnorisk with 35 provinces, 3 wars
+check: share of polity-years at war: 18.4%
+check: forms at the end: aristocratic_republic 6, chieftainship 2, citizen_republic 2, elders_council 5, elective_monarchy 10, hereditary_monarchy 5, interregnum 1, merchant_oligarchy 12, military_junta 1, theocracy 3
+check: families: births 848, deaths 1925, crowned 1542, interregnums 137, regencies 16, usurped 22, regents_kept 0, murders 16, plots_failed 29, partitions 0, elections 1532, claims_won 0, new_houses 214, marriages 496
+check: succession laws at the end: eldest_child 1, eldest_son 3, elective 10, faith 2, force 1, strongest_kin 1, term 20

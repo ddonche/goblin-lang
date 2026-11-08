@@ -1,0 +1,1193 @@
+/// Capstone step 4: rulers and families. A tribe or a village community
+/// has a Chief: a name and three traits. A city-state and up is ruled by
+/// a Person: a ruler of a Dynasty, which owns its living members, or a
+/// leader its form of government puts in (a term leader, a priest, a
+/// general). Each year in the inside phase people age, may die, marry,
+/// have children and come of age, and an ambitious heir may plot. When a
+/// ruler dies, the polity's succession law names the next one, or no
+/// one is accepted and an interregnum begins. The ruler's (or regent's)
+/// traits push the polity's through the `reign` and `crown` overlays,
+/// and the push goes with them.
+import government as government
+
+aspect Leader |
+    name: ..
+    given: ..
+    born: 0
+    age: 0
+    health: .5
+    /// The polity whose court it lives at.
+    court: nil
+    owner: nil
+    dead: false
+    /// Left history without dying: its court is gone, or it no longer
+    /// matters to it (a term leader voted out, a married-in noble's
+    /// house with no claim).
+    gone: false
+    ~aggression: .5
+    ~ambition: .5
+    ~competence: .5
+xx
+
+/// A tribe's or a village community's leader.
+<>Chief |
+    uses Leader
+    phase: inside
+        every 1 tick
+            chief_year(self)
+        xx
+        transition erase where @dead or @gone
+    xx
+    on erase => chief_died(self)
+xx
+
+/// A ruler, a spouse, an heir, a regent, a term leader, a priest or a
+/// general. Its owner is its dynasty (or the great family it comes from).
+<>Person |
+    uses Leader
+    ~piety: .5
+    ~honor: .5
+    ~cruelty: .5
+    ~charisma: .5
+    female: false
+    /// Born into its dynasty, not married into it.
+    blood: true
+    /// A ruler's child.
+    royal: false
+    father: nil
+    mother: nil
+    spouse: nil
+    fame: 0.0
+    phase: inside
+        every 1 tick
+            person_year(self)
+        xx
+        /// An adult in the line, ambitious and with little honor, may
+        /// strike at the ruler or at a rival ahead of it.
+        decision plot
+            targets: uses govern where target == @court and @age >= 16 and @blood and @ambition > .55 and @honor < .45 and !((target >> ruler).nix?) and (target >> ruler) != self and in_line(target, self)
+            score => past(@ambition, .55) * under(@honor, .45) * (1.0 - (target >> ruler >> competence) * .5) * (1.0 - (target >> discipline) * (target >> legitimacy) * .5)
+        xx
+        judge
+            !plot.nix? and chance(plot >> score): scheme(self, plot >> target)
+        xx
+        transition erase where @dead or @gone
+    xx
+    on erase => died(self)
+xx
+
+/// A ruling family, or one of a realm's great families (`great`). It
+/// owns its living members; `claims` are the thrones it has a right to
+/// through marriage, `names` its famous rulers' names.
+<>Dynasty |
+    name: ..
+    seat: nil
+    great: false
+    prestige: 0.0
+    claims: []
+    names: []
+    members: 0
+    founded: 0
+    phase: settle
+        transition erase where @members == 0 and (!@great or @seat.nix?)
+    xx
+xx
+
+/// The ruler's push on the polity (or the regent's, while there is one).
+<^>Rule |
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState
+xx
+/// Every leader's: an aggressive one raises the realm's aggression, an
+/// ambitious one its ambition, a capable one its discipline and stability.
+overlay reign <^> Rule
+    modify
+        @aggression + .2 * ((@regent ?? @ruler) >> aggression - .5)
+        @ambition + .2 * ((@regent ?? @ruler) >> ambition - .5)
+        @discipline + .2 * ((@regent ?? @ruler) >> competence - .5)
+        @stability + .1 * ((@regent ?? @ruler) >> competence - .5)
+    xx
+xx
+/// A Person's too: a pious one raises the realm's spirituality, an
+/// honourable one its honor, a cruel one its fear, a charismatic one its
+/// legitimacy.
+overlay crown <^> Rule
+    modify
+        @spirituality + .2 * ((@regent ?? @ruler) >> piety - .5)
+        @honor + .2 * ((@regent ?? @ruler) >> honor - .5)
+        @fear + .2 * ((@regent ?? @ruler) >> cruelty - .5)
+        @legitimacy + .2 * ((@regent ?? @ruler) >> charisma - .5)
+    xx
+xx
+
+/// small helpers
+
+act chance(p)
+    return (pick 1 from 0...9999) < p * 10000.0
+xx
+
+act vary(v)
+    return :clamp(v + ((pick 1 from 0...300) - 150) / 1000.0, 0.0, 1.0)
+xx
+
+act past(v, at)
+    return :clamp((v - at) / (1.0 - at), 0.0, 1.0)
+xx
+
+act under(v, at)
+    return :clamp((at - v) / at, 0.0, 1.0)
+xx
+
+now | 0
+
+act year_now()
+    return now
+xx
+
+act age_of(x)
+    return x >> age
+xx
+
+/// What the great families back in a claimant.
+act backing(x)
+    return ((x >> competence) + (x >> charisma) + (x >> ambition)) / 3.0 + :min((x >> fame) / 50.0, .3)
+xx
+
+act piety_of(x)
+    return (x >> piety) * (x >> piety)
+xx
+
+act force_of(x)
+    return (x >> aggression) * (x >> ambition)
+xx
+
+act in_line(p, x)
+    repeat p >> line as y
+        if y == x => send true
+    xx
+    return false
+xx
+
+/// The great families of `p` still in the world.
+act houses_of(p)
+    out | []
+    repeat p >> houses as h
+        if !h.nix? => :put_last!(out, h)
+    xx
+    return out
+xx
+
+/// names
+
+givens | 0
+families | 0
+
+act word(i, s)
+    n | :len(s)
+    a | i % n
+    b | (a + 1 + (i * 7) % (n - 1)) % n
+    w | s[a] + s[b]
+    if i % 4 == 1 => w |= w + s[(b + 2 + (i * 3) % (n - 1)) % n]
+    if i >= n * 4 => w |= w + s[(i // n) % n]
+    return :title(w)
+xx
+
+/// A given name never used before.
+act given_name()
+    w | word(givens, ["a", "be", "ca", "do", "e", "fi", "ga", "ha", "i", "ja", "ke", "li", "mo", "na", "o", "pa", "ri", "sa", "ta", "u", "ve", "wi", "ya", "ze", "lan", "mir", "dor", "wen", "rik", "tha"])
+    givens |= givens + 1
+    return w
+xx
+
+/// A house name never used before.
+act house_name()
+    w | word(families, ["ash", "bry", "cael", "dra", "elm", "fen", "grim", "hol", "ird", "kes", "lyn", "morr", "ny", "orm", "pry", "quell", "rhun", "sev", "thal", "ulm", "vey", "wyr", "yst", "zor"])
+    families |= families + 1
+    return w
+xx
+
+act roman(n)
+    rs | ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"]
+    if n < :len(rs) => send rs[n]
+    return :str(n)
+xx
+
+/// the year's tally (printed at the end)
+
+tally | {"births": 0, "deaths": 0, "crowned": 0, "interregnums": 0, "regencies": 0, "usurped": 0, "regents_kept": 0, "murders": 0, "plots_failed": 0, "partitions": 0, "elections": 0, "claims_won": 0, "new_houses": 0, "marriages": 0}
+
+act count(k)
+    :update!(tally{k}, tally{k} + 1)
+xx
+
+/// people
+
+/// Traits for someone of `p`'s culture who is not born into a ruling
+/// family: drawn around the realm's own traits.
+act culture_traits(p)
+    return {
+        "aggression": vary(:field(p, "base_aggression")),
+        "ambition": vary(:field(p, "base_ambition")),
+        "competence": vary(.5),
+        "piety": vary(:field(p, "base_spirituality")),
+        "honor": vary(:field(p, "base_honor")),
+        "cruelty": vary((:field(p, "base_aggression") + 1.0 - :field(p, "base_tolerance")) / 2.0),
+        "charisma": vary(.5)
+    }
+xx
+
+/// A new adult Person of `house` (a Dynasty, or nil) at `p`'s court.
+act person(p, house, traits, age, female)
+    g | given_name()
+    hn | ..
+    if !house.nix? => hn |= " " + house >> name
+    x <> Person | given: g, name: "{g}{hn}", age: age, born: year_now() - age, female: female, court: p, owner: house
+    x >> health |= (pick 1 from 30...100) / 100.0
+    x >> aggression |= traits{"aggression"}
+    x >> ambition |= traits{"ambition"}
+    x >> competence |= traits{"competence"}
+    x >> piety |= traits{"piety"}
+    x >> honor |= traits{"honor"}
+    x >> cruelty |= traits{"cruelty"}
+    x >> charisma |= traits{"charisma"}
+    if !house.nix? => house >> members |= house >> members + 1
+    return x
+xx
+
+/// A tribe's or village's new leader, the elders' or the strongest
+/// kin's choice: of the land's culture.
+act make_chief(p)
+    t | culture_traits(p)
+    g | given_name()
+    c <> Chief | given: g, name: "{g} of {p >> name}", age: 25 + (pick 1 from 0...25), court: p
+    c >> born |= year_now() - c >> age
+    c >> health |= (pick 1 from 30...100) / 100.0
+    c >> aggression |= t{"aggression"}
+    c >> ambition |= t{"ambition"}
+    c >> competence |= t{"competence"}
+    p >> ruler |= c
+    p >> regent |= nil
+    p >> dynasty |= nil
+    p >> law |= ..
+    p >> line |= []
+    hand(p)
+    return c
+xx
+
+act chief_year(c)
+    c >> age |= c >> age + 1
+    p | c >> court
+    if p.nix? or p >> ruler != c
+        c >> gone |= true
+        send nil
+    xx
+    if chance(mortality(c, p)) => c >> dead |= true
+xx
+
+/// A chief's death: the elders or the kin choose the next.
+act chief_died(c)
+    p | c >> court ?? => send nil
+    if p >> ruler != c => send nil
+    if c >> dead => count("deaths")
+    make_chief(p)
+xx
+
+/// The chance a year that `x` dies: high for small children, low for
+/// young adults, then rising with age; poor health, famine, war (for a
+/// warlike leader) and cruelty (enemies) raise it.
+act mortality(x, p)
+    a | x >> age
+    m | .004 * :pow(2.718281828, .08 * (a - 30))
+    if a < 5 => m |= .05
+    if a >= 5 and a < 16 => m |= .008
+    m |= m * (1.5 - x >> health)
+    if p >> food == 0.0 => m |= m * 1.5
+    if a >= 16 and p >> wars > 0 => m |= m + .01 * (x >> aggression)
+    if :is_type(x, "Person") => m |= m + .005 * (x >> cruelty)
+    return :min(m, .9)
+xx
+
+/// A woman's chance a year of a child, falling from 16 to 45.
+act fertility(a)
+    if a < 16 or a > 45 => send 0.0
+    return .35 * (1.0 - (a - 16) / 30.0)
+xx
+
+/// The ruler or a ruler's child: the families whose children matter.
+act matters(x, p)
+    return x >> royal or p >> ruler == x or (:len(p >> line) > 0 and (p >> line)[0] == x)
+xx
+
+/// A person's year: age, coming of age, a child, death.
+act person_year(x)
+    x >> age |= x >> age + 1
+    p | x >> court
+    if p.nix?
+        x >> gone |= true
+        send nil
+    xx
+    if x >> age == 16 => come_of_age(x, p)
+    s | x >> spouse
+    if x >> female and !s.nix? and s >> court == p and (matters(x, p) or matters(s, p))
+        if chance(fertility(x >> age)) => born(x, s, p)
+    xx
+    if chance(mortality(x, p)) => x >> dead |= true
+xx
+
+/// A child of `m` and `f`: traits drawn around its parents', in its
+/// mother's household (her dynasty), a ruler's child if either rules.
+act born(m, f, p)
+    d | m >> owner
+    g | given_name()
+    if !d.nix? and :len(d >> names) > 0 and chance(.3) => g |= :shuffle(d >> names)[0]
+    hn | ..
+    if !d.nix? => hn |= " " + d >> name
+    c <> Person | given: g, name: "{g}{hn}", born: year_now(), court: p, owner: d, father: f, mother: m
+    c >> female |= chance(.5)
+    c >> royal |= p >> ruler == m or p >> ruler == f
+    c >> health |= (pick 1 from 30...100) / 100.0
+    c >> aggression |= vary((m >> aggression + f >> aggression) / 2.0)
+    c >> ambition |= vary((m >> ambition + f >> ambition) / 2.0)
+    c >> competence |= vary((m >> competence + f >> competence) / 2.0)
+    c >> piety |= vary((m >> piety + f >> piety) / 2.0)
+    c >> honor |= vary((m >> honor + f >> honor) / 2.0)
+    c >> cruelty |= vary((m >> cruelty + f >> cruelty) / 2.0)
+    c >> charisma |= vary((m >> charisma + f >> charisma) / 2.0)
+    if !d.nix? => d >> members |= d >> members + 1
+    count("births")
+xx
+
+/// Coming of age: a realm at war raises harder children, a learned one
+/// abler ones.
+act come_of_age(x, p)
+    if p >> wars > 0
+        x >> aggression |= x >> aggression + .1
+        x >> cruelty |= x >> cruelty + .05
+    xx
+    if p >> learning > .3 => x >> competence |= x >> competence + .05
+    if p >> spirituality > .6 => x >> piety |= x >> piety + .05
+xx
+
+/// marriage
+
+/// The one of `p`'s ruling family who should marry next: the heir, then
+/// the ruler, then the ruler's other grown children.
+act single_of(p)
+    r | p >> ruler
+    if r.nix? or (p >> dynasty).nix? => send nil
+    repeat p >> line as x
+        if (x >> spouse).nix? and x >> age >= 16 and x >> age <= 40 => send x
+        stop
+    xx
+    if :is_type(r, "Person") and r >> owner == p >> dynasty and (r >> spouse).nix? and r >> age >= 16 and r >> age <= 50 => send r
+    repeat p >> line as x
+        if x >> royal and (x >> spouse).nix? and x >> age >= 16 and x >> age <= 40 => send x
+    xx
+    return nil
+xx
+
+/// A match between the families of two polities. The one who is not
+/// their realm's heir (or, between two alike, the woman) joins the
+/// other's house and court. Marrying out of a realm with no other heir
+/// gives the house married into a claim to it. Kinship rises between
+/// the realms, and a grievance between them eases.
+act wed(a, b)
+    if a.nix? or b.nix? or !(a >> spouse).nix? or !(b >> spouse).nix? => send nil
+    pa | a >> court
+    pb | b >> court
+    ha | pa >> ruler == a or (:len(pa >> line) > 0 and (pa >> line)[0] == a)
+    hb | pb >> ruler == b or (:len(pb >> line) > 0 and (pb >> line)[0] == b)
+    mover | a
+    stay  | b
+    if (ha and !hb) or (ha == hb and a >> female == false)
+        mover |= b
+        stay  |= a
+    xx
+    a >> spouse |= b
+    b >> spouse |= a
+    count("marriages")
+    pm | mover >> court
+    ps | stay >> court
+    :link!(pa, pb, "kinship", .3, 60)
+    :link!(pb, pa, "kinship", .3, 60)
+    :link!(pa, pb, "grievance", -.2, 40)
+    :link!(pb, pa, "grievance", -.2, 40)
+    if pm >> ruler == mover or ps >> ruler == mover => send nil
+    home | stay >> owner
+    if !home.nix? and in_line(pm, mover) and :len(pm >> line) == 1 => :put_last!(home >> claims, pm)
+    od | mover >> owner
+    if !od.nix? => od >> members |= od >> members - 1
+    mover >> owner |= home
+    mover >> court |= ps
+    mover >> blood |= false
+    if !home.nix? => home >> members |= home >> members + 1
+xx
+
+/// A match at home: a noble of one of the realm's great families joins
+/// the ruling house.
+act wed_home(p)
+    x | p >> single ?? => send nil
+    if !(x >> spouse).nix? => send nil
+    hs | houses_of(p)
+    from | nil
+    if :len(hs) > 0 => from |= :shuffle(hs)[0]
+    age | :max(16, x >> age + (pick 1 from 0...10) - 5)
+    s | person(p, x >> owner, culture_traits(p), age, !(x >> female))
+    s >> blood |= false
+    if !from.nix?
+        s >> name |= "{s >> given} {x >> owner >> name}, born {from >> name}"
+        from >> prestige |= from >> prestige + 1.0
+    xx
+    x >> spouse |= s
+    s >> spouse |= x
+    count("marriages")
+xx
+
+/// the line
+
+act sons(xs)
+    out | []
+    repeat xs as x
+        if !(x >> female) => :put_last!(out, x)
+    xx
+    return out
+xx
+
+act eldest_first(xs)
+    return :reverse(:sort_by(xs, "age_of"))
+xx
+
+/// Who is next after `r` under `p`'s law, in order: its born members at
+/// the court (not `r`), the ruler's children first under the eldest
+/// laws, the strongest first under the others.
+act heirs(p, r)
+    d | p >> dynasty
+    law | p >> law
+    if d.nix? or law == "term" or law == .. => send []
+    kin | :objects(Person, it >> owner == d and it >> court == p and it >> blood and !(it >> dead) and it != r)
+    if law == "eldest_son" or law == "divided" => kin |= sons(kin)
+    judge
+        law == "eldest_child" or law == "eldest_son" or law == "divided":
+            mine | []
+            rest | []
+            repeat kin as x
+                if !r.nix? and (x >> father == r or x >> mother == r)
+                    :put_last!(mine, x)
+                else
+                    :put_last!(rest, x)
+                xx
+            xx
+            first | eldest_first(mine)
+            repeat eldest_first(rest) as x
+                :put_last!(first, x)
+            xx
+            send first
+    xx
+    grown | []
+    young | []
+    repeat kin as x
+        if x >> age >= 16
+            :put_last!(grown, x)
+        else
+            :put_last!(young, x)
+        xx
+    xx
+    key | "backing"
+    if law == "faith" => key |= "piety_of"
+    if law == "force" => key |= "force_of"
+    out | :reverse(:sort_by(grown, key))
+    repeat eldest_first(young) as x
+        :put_last!(out, x)
+    xx
+    return out
+xx
+
+/// How clear the succession is, 0 to 1: one adult, able heir and a ruler
+/// of standing make it high; none, a child, rivals near the heir's
+/// strength and other houses' claims make it low. Seizing by force is
+/// always a crisis.
+act clarity(p, claims)
+    r | p >> ruler
+    if r.nix? => send .1
+    law | p >> law
+    if law == .. => send :clamp(.4 + .3 * (r >> competence) - .2 * past(:min(r >> age / 70.0, 1.0), .6), 0.0, 1.0)
+    if law == "term" => send :clamp(.5 + .4 * (p >> legitimacy), 0.0, 1.0)
+    hs | p >> line
+    if :len(hs) == 0 => send .15
+    h | hs[0]
+    adult | 1.0
+    if h >> age < 16 => adult |= (h >> age) / 32.0
+    rivals | 0
+    judge
+        law == "divided":
+            rivals |= :max(:len(grown_sons(hs)) - 1, 0)
+        law == "eldest_child" or law == "eldest_son":
+            repeat hs as x
+                if x == h or x >> age < 16 => skip
+                if backing(x) > backing(h) + .15 and x >> honor < .5 => rivals |= rivals + 1
+            xx
+        true:
+            w | weight(p, h)
+            repeat hs as x
+                if x == h or x >> age < 16 => skip
+                if weight(p, x) >= w * .85 => rivals |= rivals + 1
+            xx
+    xx
+    s | .3 + .3 * adult + .15 * (h >> competence) + .15 * (p >> legitimacy) - .12 * :min(rivals, 3) - .08 * :min(claims, 3)
+    if law == "force" => s |= s * .6
+    return :clamp(s, 0.0, 1.0)
+xx
+
+act grown_sons(xs)
+    out | []
+    repeat xs as x
+        if !(x >> female) and x >> age >= 16 => :put_last!(out, x)
+    xx
+    return out
+xx
+
+/// A candidate's weight under `p`'s law.
+act weight(p, x)
+    law | p >> law
+    if law == "faith" => send piety_of(x) + .01
+    if law == "force" => send force_of(x) + .01
+    return backing(x) + .01
+xx
+
+/// the law
+
+hereditary | ["eldest_child", "eldest_son", "divided", "strongest_kin"]
+
+/// The kind of rule a form of government has.
+act kind(f)
+    judge
+        f == "hereditary_monarchy" or f == "elective_monarchy" or f == "imperial_autocracy" or f == "constitutional_monarchy": send "crown"
+        f == "tyranny": send "usurper"
+        f == "military_junta": send "junta"
+        f == "theocracy": send "priest"
+        f == "aristocratic_republic" or f == "citizen_republic" or f == "merchant_oligarchy": send "term"
+        f == "client_regime": send "client"
+    xx
+    return "none"
+xx
+
+/// A hereditary law drawn by the realm's culture.
+act draw_law(p)
+    names | ["eldest_son", "eldest_child", "strongest_kin"]
+    weights | [p >> tradition + .05, (p >> openness) * (p >> learning) * 2.0 + .05, (p >> aggression) * (1.0 - p >> legitimacy) + .05]
+    if p >> rank >= 4 and p >> rank <= 5
+        :put_last!(names, "divided")
+        :put_last!(weights, (1.0 - p >> centralization) * (p >> tradition) + .02)
+    xx
+    return :sample_weighted({"src": names, "weights": weights})[0]
+xx
+
+/// The law that goes with form `f`: a crown keeps a hereditary law it
+/// has (a constitution ends dividing the realm); others have their own.
+act law_for(p, f)
+    k | kind(f)
+    judge
+        f == "elective_monarchy": send "elective"
+        k == "crown":
+            if !:has(hereditary, p >> law) => send draw_law(p)
+            if p >> law == "divided" and (f == "constitutional_monarchy" or p >> rank < 4 or p >> rank > 5) => send "eldest_son"
+            send p >> law
+        k == "usurper" or k == "junta": send "force"
+        k == "priest": send "faith"
+        k == "term": send "term"
+    xx
+    if p >> law == .. => send draw_law(p)
+    return p >> law
+xx
+
+/// Term years by form.
+act term_of(f)
+    if f == "aristocratic_republic" => send 10
+    if f == "merchant_oligarchy" => send 6
+    return 4
+xx
+
+/// seating rulers
+
+/// Puts the reign (and, for a Person, the crown) on `p`, drawn anew from
+/// who rules now, or takes them off when no one does.
+act hand(p)
+    :detach!(p, "reign")
+    :detach!(p, "crown")
+    h | p >> regent ?? p >> ruler ?? => send nil
+    :overlay!(p, "reign")
+    if :is_type(h, "Person") => :overlay!(p, "crown")
+xx
+
+/// At least two great families in a realm of a city-state and up.
+act ensure_houses(p)
+    hs | houses_of(p)
+    repeat :max(2 - :len(hs), 0)
+        d <> Dynasty | name: house_name(), seat: p, great: true, founded: year_now()
+        d >> prestige |= (pick 1 from 0...10) * 1.0
+        :put_last!(hs, d)
+    xx
+    p >> houses |= hs
+    return hs
+xx
+
+/// A candidate a great family puts up: its traits, not yet a Person.
+act candidate(p, h)
+    t | culture_traits(p)
+    :update!(t{"house"}, h)
+    :update!(t{"age"}, 25 + (pick 1 from 0...30))
+    :update!(t{"female"}, chance(.2))
+    :update!(t{"fame"}, 0.0)
+    return t
+xx
+
+/// A candidate map's weight, as `weight` gives a Person's.
+act weight_of(p, c)
+    law | p >> law
+    if law == "faith" => send c{"piety"} * c{"piety"} + .01
+    if law == "force" => send c{"aggression"} * c{"ambition"} + .01
+    prest | :clamp(c{"house"} >> prestige / 50.0, 0.0, 1.0)
+    return (c{"competence"} + c{"charisma"} + c{"ambition"}) / 3.0 * (.7 + .3 * prest) + .01
+xx
+
+/// The candidate drawn becomes a Person.
+act embody(p, c)
+    x | person(p, c{"house"}, c, c{"age"}, c{"female"})
+    x >> blood |= true
+    return x
+xx
+
+/// Takes its ruler from `p`: the house it came from becomes one of the
+/// great families with a claim to the throne it lost (when it held it as
+/// a dynasty), and the deposed may be killed (`cruel`: the new ruler's
+/// cruelty). A term leader voted out leaves history.
+act depose(p, cruel)
+    r | p >> ruler
+    old | p >> dynasty
+    p >> ruler |= nil
+    p >> regent |= nil
+    p >> dynasty |= nil
+    if !old.nix? and old >> seat == p
+        old >> great |= true
+        :put_last!(old >> claims, p)
+        hs | houses_of(p)
+        :put_last!(hs, old)
+        p >> houses |= hs
+    xx
+    if r.nix? or !:is_type(r, "Person") => send nil
+    if old.nix? or r >> owner != old
+        r >> gone |= true
+        send nil
+    xx
+    if chance(cruel * .5)
+        r >> dead |= true
+        count("murders")
+    xx
+xx
+
+/// `x` rules `p` now. A dynasty's member makes its house the ruling one
+/// (the house before joins the great families); a term leader, a priest
+/// or a general rules without one. A child gets a regent.
+act crown(p, x)
+    k | kind(government::form_of(p) ?? ..)
+    d | x >> owner
+    old | p >> dynasty
+    if k == "crown" or k == "usurper" or k == "client"
+        if !d.nix? and d != old
+            if !old.nix? and old >> seat == p
+                old >> great |= true
+                :put_last!(p >> houses, old)
+            xx
+            d >> great |= false
+            if (d >> seat).nix? => d >> seat |= p
+            hs | []
+            repeat houses_of(p) as h
+                if h != d => :put_last!(hs, h)
+            xx
+            p >> houses |= hs
+        xx
+        p >> dynasty |= d
+    else
+        p >> dynasty |= nil
+    xx
+    p >> ruler |= x
+    x >> court |= p
+    x >> gone |= false
+    p >> regent |= nil
+    p >> term |= term_of(government::form_of(p) ?? ..)
+    n | (p >> reigns{x >> given} ?? 0) + 1
+    :update!(p >> reigns{x >> given}, n)
+    if n > 1
+        hn | ..
+        if !d.nix? => hn |= " " + d >> name
+        x >> name |= "{x >> given} {roman(n)}{hn}"
+    xx
+    repeat :objects(Person, it >> father == x or it >> mother == x) as c
+        c >> royal |= true
+    xx
+    if x >> age < 16 => regency(p, x)
+    p >> seated |= government::form_of(p) ?? ..
+    count("crowned")
+    hand(p)
+xx
+
+/// A regent for a child ruler: its mother, else a grown uncle or aunt,
+/// else one put up by a great family.
+act regency(p, x)
+    m | x >> mother
+    g | nil
+    if !m.nix? and m >> court == p and m >> age >= 16 => g |= m
+    if g.nix?
+        repeat heirs(p, x) as y
+            if y >> age >= 20
+                g |= y
+                stop
+            xx
+        xx
+    xx
+    if g.nix?
+        hs | ensure_houses(p)
+        g |= embody(p, candidate(p, :shuffle(hs)[0]))
+    xx
+    p >> regent |= g
+    count("regencies")
+xx
+
+/// A great family's candidate seizes `p` (a usurper for a tyranny, the
+/// army's choice for a junta): the bold and ambitious first.
+act usurp(p)
+    hs | ensure_houses(p)
+    cs | []
+    ws | []
+    repeat hs as h
+        c | candidate(p, h)
+        :put_last!(cs, c)
+        :put_last!(ws, c{"aggression"} * c{"ambition"} + c{"competence"} * .2 + .01)
+    xx
+    c | :sample_weighted({"src": cs, "weights": ws})[0]
+    x | embody(p, c)
+    depose(p, x >> cruelty)
+    crown(p, x)
+    count("usurped")
+xx
+
+/// A term leader chosen from the great families' candidates (the one in
+/// office may stand again).
+act election(p)
+    hs | ensure_houses(p)
+    cs | []
+    ws | []
+    r | p >> ruler
+    if !r.nix? and :is_type(r, "Person") and !(r >> dead) and r >> age < 70 and p >> law == "term"
+        :put_last!(cs, nil)
+        :put_last!(ws, (backing(r) + .01) * 1.2)
+    xx
+    repeat hs as h
+        c | candidate(p, h)
+        :put_last!(cs, c)
+        :put_last!(ws, weight_of(p, c))
+    xx
+    count("elections")
+    i | :sample_weighted({"src": :range(0, :len(cs)), "weights": ws})[0]
+    c | cs[i]
+    if c.nix?
+        p >> term |= term_of(government::form_of(p) ?? ..)
+        send nil
+    xx
+    x | embody(p, c)
+    depose(p, 0.0)
+    crown(p, x)
+xx
+
+/// No ruler accepted: rivals contend.
+act interregnum(p)
+    government::rule(p, "interregnum")
+    p >> seated |= "interregnum"
+    p >> ruler |= nil
+    p >> regent |= nil
+    count("interregnums")
+    hand(p)
+xx
+
+/// The house of a dynasty claiming `p` with a grown member who rules
+/// nowhere: its best by backing, or nil.
+act claimant(p)
+    best | nil
+    repeat :objects(Dynasty, it != p >> dynasty and claims_to(it, p)) as d
+        repeat :objects(Person, it >> owner == d and it >> blood and it >> age >= 16 and !(it >> dead)) as x
+            if !(x >> court).nix? and (x >> court) >> ruler == x => skip
+            if best.nix? or backing(x) > backing(best) => best |= x
+        xx
+    xx
+    return best
+xx
+
+act claims_to(d, p)
+    repeat d >> claims as c
+        if c == p => send true
+    xx
+    return false
+xx
+
+/// The next ruler of `p` after `r` (dead, or deposed), by its law; a
+/// succession unclear enough may be contested into an interregnum. The
+/// draws (elective, faith, force) are among the line's grown members and
+/// one candidate from each great family; under the elective law, also a
+/// claiming house's. With no one in the line, a claim from marriage
+/// comes in, or no one is accepted.
+act succeed(p, r)
+    law | p >> law
+    if law == "term" => send election(p)
+    hs | heirs(p, r)
+    if law == "elective" or law == "faith" or law == "force"
+        cs | []
+        ws | []
+        repeat hs as x
+            if x >> age < 16 => skip
+            :put_last!(cs, x)
+            :put_last!(ws, weight(p, x))
+        xx
+        if law == "elective"
+            cl | claimant(p)
+            if !cl.nix?
+                :put_last!(cs, cl)
+                :put_last!(ws, weight(p, cl))
+            xx
+        xx
+        repeat ensure_houses(p) as h
+            c | candidate(p, h)
+            :put_last!(cs, c)
+            :put_last!(ws, weight_of(p, c))
+        xx
+        crisis | under(p >> succession, .5)
+        if law == "force" => crisis |= under(p >> succession, .6)
+        if chance(crisis) => send interregnum(p)
+        x | :sample_weighted({"src": cs, "weights": ws})[0]
+        if :is_map(x) => x |= embody(p, x)
+        if (x >> court) != p
+            count("claims_won")
+            x >> court |= p
+        xx
+        send crown(p, x)
+    xx
+    if :len(hs) == 0
+        cl | claimant(p) ?? => send interregnum(p)
+        if chance(under(p >> succession, .5)) => send interregnum(p)
+        count("claims_won")
+        cl >> court |= p
+        send crown(p, cl)
+    xx
+    if chance(under(p >> succession, .5)) => send interregnum(p)
+    x | hs[0]
+    crown(p, x)
+    if law == "divided" and p >> rank >= 4 and p >> rank <= 5
+        repeat grown_sons(hs) as y
+            if y == x => skip
+            p >> partition |= y
+            count("partitions")
+            stop
+        xx
+    xx
+xx
+
+/// A Person leaves the world: a ruler's death brings the succession, a
+/// regent's a new regent; a famous ruler's name stays with its house.
+act died(x)
+    if x >> dead => count("deaths")
+    d | x >> owner
+    if !d.nix?
+        d >> members |= :max(d >> members - 1, 0)
+        if x >> fame >= 15.0 and !:has(d >> names, x >> given) => :put_last!(d >> names, x >> given)
+    xx
+    p | x >> court ?? => send nil
+    if p >> regent == x
+        p >> regent |= nil
+        r | p >> ruler
+        if !r.nix? and r >> age < 16 => regency(p, r)
+        hand(p)
+    xx
+    if p >> ruler != x => send nil
+    p >> ruler |= nil
+    p >> regent |= nil
+    hand(p)
+    if (government::form_of(p) ?? ..) == "interregnum" => send nil
+    succeed(p, x)
+xx
+
+/// plots
+
+/// `x` strikes at the ruler (when next in line) or at the rival ahead of
+/// it. A killing found out costs the realm legitimacy and stability and
+/// loosens it; a plot found out may cost the plotter its life.
+act scheme(x, p)
+    r | p >> ruler ?? => send nil
+    line | p >> line
+    victim | r
+    if :len(line) > 0 and !line[0].nix? and line[0] != x => victim |= line[0]
+    odds | (x >> ambition) * (.5 + (x >> cruelty) * .5) * (1.0 - (p >> discipline) * .5) * (1.0 - (victim >> competence) * .3)
+    found | chance(.2 + .5 * (1.0 - x >> charisma))
+    if chance(odds)
+        victim >> dead |= true
+        count("murders")
+        if found
+            p >> legitimacy |= p >> legitimacy - .15
+            p >> stability |= p >> stability - .1
+            p >> cohesion |= p >> cohesion - .05
+            x >> fame |= x >> fame - 5.0
+        xx
+        send nil
+    xx
+    count("plots_failed")
+    if found and chance(.3 + .5 * (r >> cruelty)) => x >> dead |= true
+xx
+
+/// fame
+
+/// The ruler of `p` gains (or loses) fame, and its house prestige.
+act famed(p, n)
+    r | p >> ruler ?? => send nil
+    if !:is_type(r, "Person") => send nil
+    r >> fame |= :max(r >> fame + n, 0.0)
+    d | r >> owner ?? => send nil
+    d >> prestige |= :max(d >> prestige + n, 0.0)
+xx
+
+act prestige_of(p)
+    d | p >> dynasty ?? => send 0.0
+    return :clamp(d >> prestige / 50.0, 0.0, 1.0)
+xx
+
+/// A polity starts over: no ruler, house or line of its own (a fragment
+/// or a split's second half, which copied its parent's).
+act fresh(p)
+    p >> ruler |= nil
+    p >> regent |= nil
+    p >> dynasty |= nil
+    p >> houses |= []
+    p >> line |= []
+    p >> single |= nil
+    p >> partition |= nil
+    p >> term |= 0
+    p >> seated |= ..
+    p >> reigns |= {}
+    p >> law |= ..
+    hand(p)
+xx
+
+/// Points the houses and the court of `old` (gone in a split or a
+/// merge) at `p`.
+act moved(p, d, hs)
+    if !d.nix? => d >> seat |= p
+    repeat hs as h
+        if !h.nix? => h >> seat |= p
+    xx
+    r | p >> ruler
+    if !r.nix? => r >> court |= p
+    g | p >> regent
+    if !g.nix? => g >> court |= p
+xx
+
+/// the year (plain code before the inside phase)
+
+/// Seats a ruler as `p`'s form of government (or class) asks: a chief for
+/// a tribe or village; for a city-state and up, a crown keeps a dynasty
+/// (a leader of another kind founds one), a tyranny or a junta is seized
+/// by a great family's candidate, a theocracy's priests name one of
+/// their own, a republic elects, an interregnum waits for a claimant.
+act check(p)
+    f | government::form_of(p) ?? ..
+    r | p >> ruler
+    if p >> rank <= 2
+        if r.nix? or !:is_type(r, "Chief")
+            if !r.nix? and :is_type(r, "Person")
+                d | p >> dynasty
+                if !d.nix?
+                    repeat :objects(Person, it >> owner == d and it >> court == p) as x
+                        x >> gone |= true
+                    xx
+                xx
+                r >> gone |= true
+            xx
+            make_chief(p)
+        xx
+        p >> seated |= f
+        send nil
+    xx
+    if !r.nix? and :is_type(r, "Chief")
+        p >> law |= law_for(p, f)
+        p >> ruler |= nil
+        r >> gone |= true
+        found_house(p, r)
+        p >> seated |= f
+        send nil
+    xx
+    if f == p >> seated and (!r.nix? or f == "interregnum") => send nil
+    k | kind(f)
+    was | kind(p >> seated)
+    p >> seated |= f
+    if k == "none" => send nil
+    p >> law |= law_for(p, f)
+    if k == "client" and !r.nix? => send nil
+    if k == was and !r.nix? => send nil
+    judge
+        k == "crown" or k == "client":
+            if !r.nix?
+                if (r >> owner).nix?
+                    d <> Dynasty | name: house_name(), seat: p, founded: year_now(), members: 1
+                    r >> owner |= d
+                    count("new_houses")
+                xx
+                crown(p, r)
+                send nil
+            xx
+            x | claimant(p)
+            hs | heirs(p, nil)
+            if :len(hs) > 0 => x |= hs[0]
+            if x.nix?
+                found_house(p, nil)
+                send nil
+            xx
+            x >> court |= p
+            crown(p, x)
+        k == "usurper" or k == "junta": usurp(p)
+        k == "priest":
+            hs | ensure_houses(p)
+            cs | []
+            ws | []
+            repeat hs as h
+                c | candidate(p, h)
+                :update!(c{"piety"}, :max(c{"piety"}, .6))
+                :put_last!(cs, c)
+                :put_last!(ws, c{"piety"} * c{"piety"})
+            xx
+            x | embody(p, :sample_weighted({"src": cs, "weights": ws})[0])
+            depose(p, .2)
+            crown(p, x)
+        k == "term":
+            depose(p, 0.0)
+            election(p)
+    xx
+xx
+
+/// A new ruling house for `p`: its founder (a chief who rose, or a great
+/// man of the realm), a spouse and children.
+act found_house(p, chief)
+    d <> Dynasty | name: house_name(), seat: p, founded: year_now()
+    count("new_houses")
+    t | culture_traits(p)
+    age | 22 + (pick 1 from 0...28)
+    female | chance(.2)
+    if p >> law == "eldest_son" => female |= false
+    if !chief.nix?
+        :update!(t{"aggression"}, chief >> aggression)
+        :update!(t{"ambition"}, chief >> ambition)
+        :update!(t{"competence"}, chief >> competence)
+        age |= chief >> age
+    xx
+    x | person(p, d, t, age, female)
+    if !chief.nix?
+        x >> given |= chief >> given
+        x >> name |= "{chief >> given} {d >> name}"
+    xx
+    if age >= 20 and chance(.8)
+        s | person(p, d, culture_traits(p), :max(16, age + (pick 1 from 0...10) - 5), !female)
+        s >> blood |= false
+        x >> spouse |= s
+        s >> spouse |= x
+        m | x
+        f | s
+        if !female
+            m |= s
+            f |= x
+        xx
+        k | pick 1 from 0...(:min(4, (age - 18) // 4))
+        repeat :range(0, k) as i
+            ca | age - 20 - i * 3
+            if ca < 0 => stop
+            c | person(p, d, culture_traits(p), ca, chance(.5))
+            c >> mother |= m
+            c >> father |= f
+            c >> royal |= true
+            c >> born |= year_now() - ca
+        xx
+    xx
+    if p >> law == .. => p >> law |= draw_law(p)
+    ensure_houses(p)
+    crown(p, x)
+    return x
+xx
+
+/// Each year before the inside phase: people whose court is gone follow
+/// their house's seat or leave; every realm's ruler is seated as its form
+/// asks; regents hand over or keep the rule; dynasties count their
+/// members and lose prestige slowly; and every realm's line, heir to
+/// marry and succession are worked out.
+act account(year)
+    now |= year
+    repeat :objects(Person, (it >> court).nix?) as x
+        d | x >> owner
+        if !d.nix? and !(d >> seat).nix?
+            x >> court |= d >> seat
+        else
+            x >> gone |= true
+        xx
+    xx
+    repeat :objects(uses govern) as p
+        if :is_type(p, "League") => skip
+        check(p)
+    xx
+    claims | {}
+    repeat :objects(Dynasty) as d
+        d >> prestige |= d >> prestige * .98
+        cs | []
+        repeat d >> claims as c
+            if c.nix? => skip
+            :put_last!(cs, c)
+            :update!(claims{c >> name}, (claims{c >> name} ?? 0) + 1)
+        xx
+        d >> claims |= cs
+        d >> members |= 0
+    xx
+    repeat :objects(Person, !(it >> gone)) as x
+        d | x >> owner
+        if d.nix? => skip
+        d >> members |= d >> members + 1
+        /// Someone of a great family with no claim, holding no office,
+        /// no longer matters to history.
+        p | x >> court
+        if d >> great and :len(d >> claims) == 0 and p >> ruler != x and p >> regent != x and (x >> spouse).nix?
+            x >> gone |= true
+        xx
+    xx
+    repeat :objects(uses govern) as p
+        if :is_type(p, "League") => skip
+        p >> partition |= nil
+        r | p >> ruler
+        g | p >> regent
+        if !g.nix? and !r.nix? and r >> age >= 16
+            keep | (g >> ambition) * (1.0 - g >> honor)
+            judge
+                chance(keep * .15):
+                    count("usurped")
+                    count("regents_kept")
+                    p >> regent |= nil
+                    crown(p, g)
+                chance(1.0 - keep):
+                    p >> regent |= nil
+                    hand(p)
+            xx
+        xx
+        if p >> law == "term" and !r.nix?
+            p >> term |= p >> term - 1
+            if p >> term <= 0 => election(p)
+        xx
+        if p >> food == 0.0 => famed(p, .2)
+        p >> line |= heirs(p, p >> ruler)
+        p >> single |= single_of(p)
+        p >> succession |= clarity(p, claims{p >> name} ?? 0)
+    xx
+xx
+
+/// How many people and houses are alive.
+act counts()
+    return {"persons": :len(:objects(Person)), "chiefs": :len(:objects(Chief)), "dynasties": :len(:objects(Dynasty, !(it >> great)))}
+xx
