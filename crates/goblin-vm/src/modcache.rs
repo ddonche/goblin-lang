@@ -84,7 +84,45 @@ pub fn compile_import(
 
     let source = std::fs::read_to_string(path)
         .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", path.display(), e)))?;
-    let tokens = goblin_lexer::lex(&source, &path.to_string_lossy())
+    let (entry, compiled_classes, compiled_enums, global_names) =
+        compile_text(&source, path, globals_before, module_prefix, owner_glam, quicken)?;
+    if let Some(st) = st {
+        CACHE.with(|c| c.borrow_mut().insert(key, Cached {
+            stamp: st,
+            globals_before: globals_before.to_vec(),
+            entry: entry.clone(),
+            classes: compiled_classes.clone(),
+            enums: compiled_enums.clone(),
+            global_names: global_names.clone(),
+        }));
+    }
+    Ok(ImportedModule { entry, classes: compiled_classes, enums: compiled_enums, global_names })
+}
+
+/// Compile module source text as if it were the file at `path` (no cache):
+/// `:eval` runs code it already read with `:load`.
+pub fn compile_source(
+    source: &str,
+    path: &Path,
+    globals_before: &[String],
+    module_prefix: &str,
+    quicken: impl FnOnce(&mut FunctionObject),
+) -> Result<ImportedModule, GoblinError> {
+    let (entry, classes, enums, global_names) =
+        compile_text(source, path, globals_before, module_prefix, None, quicken)?;
+    Ok(ImportedModule { entry, classes, enums, global_names })
+}
+
+#[allow(clippy::type_complexity)]
+fn compile_text(
+    source: &str,
+    path: &Path,
+    globals_before: &[String],
+    module_prefix: &str,
+    owner_glam: Option<String>,
+    quicken: impl FnOnce(&mut FunctionObject),
+) -> Result<(Rc<FunctionObject>, Vec<goblin_ast::ClassDecl>, Vec<goblin_ast::EnumDecl>, Rc<Vec<String>>), GoblinError> {
+    let tokens = goblin_lexer::lex(source, &path.to_string_lossy())
         .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
     let module = goblin_parser::Parser::new(&tokens).parse_module()
         .map_err(|diags| GoblinError::Runtime(diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")))?;
@@ -97,18 +135,5 @@ pub fn compile_import(
         .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;
     let mut entry = compiled.entry;
     quicken(&mut entry);
-    let entry = Rc::new(entry);
-    let global_names = Rc::new(compiled.global_names);
-
-    if let Some(st) = st {
-        CACHE.with(|c| c.borrow_mut().insert(key, Cached {
-            stamp: st,
-            globals_before: globals_before.to_vec(),
-            entry: entry.clone(),
-            classes: compiled.classes.clone(),
-            enums: compiled.enums.clone(),
-            global_names: global_names.clone(),
-        }));
-    }
-    Ok(ImportedModule { entry, classes: compiled.classes, enums: compiled.enums, global_names })
+    Ok((Rc::new(entry), compiled.classes, compiled.enums, Rc::new(compiled.global_names)))
 }

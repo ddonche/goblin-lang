@@ -1,0 +1,1 @@
+:inject("my_cool_module::action1", "before", "core::render")

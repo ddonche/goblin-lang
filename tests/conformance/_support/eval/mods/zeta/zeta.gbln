@@ -1,0 +1,4 @@
+say("zeta imported")
+act z(ctx)
+    return ctx
+xx

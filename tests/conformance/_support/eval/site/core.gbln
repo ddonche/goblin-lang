@@ -1,0 +1,12 @@
+act start(ctx)
+    return ctx + "start,"
+xx
+act build(ctx)
+    return ctx + "build,"
+xx
+act render(ctx)
+    return ctx + "render,"
+xx
+act finish(ctx)
+    return ctx + "finish,"
+xx

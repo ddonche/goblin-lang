@@ -1,0 +1,9 @@
+act action1(ctx)
+    return ctx + "a1,"
+xx
+act action2(ctx)
+    return ctx + "a2,"
+xx
+act render(ctx)
+    return ctx + "r,"
+xx

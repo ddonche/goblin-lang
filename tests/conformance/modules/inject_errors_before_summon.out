@@ -1,0 +1,9 @@
+zeta imported
+inject: `core::render` in `schedule` is overridden twice: by `my_cool_module::render` (from `_support/eval/cases/override_a.gob`) and by `extra::tail` (from `_support/eval/cases/override_b.gob`)
+inject: `extra::tail` (from `_support/eval/cases/missing.gob`) targets `core::nothing`, which no section lists
+inject: `extra::tail` (from `_support/eval/cases/wrong_section.gob`) targets `core::render` in `pre`, but `pre` does not list it
+inject: `nobody::here` (from `_support/eval/cases/unknown_action.gob`) is not an action Goblin can find; import it before the eval
+inject: operation must be "before", "after" or "override", got "sideways"
+inject: `extra::tail` (from `_support/eval/cases/target_injected.gob`) targets `my_cool_module::render`, which no section lists
+inject: `extra::tail` (from `_support/eval/cases/missing.gob`) has nothing to change: the eval has no data source
+inject: works only inside code run by :eval (for now)

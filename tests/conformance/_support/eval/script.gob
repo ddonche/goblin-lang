@@ -1,0 +1,6 @@
+say("script runs")
+total | 0
+repeat [1, 2, 3]
+    total |= total + it
+xx
+return total * 10

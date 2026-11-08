@@ -1174,6 +1174,12 @@ pub enum BuiltinId {
     Invoke,
     Summon,
     Provoke,
+    /// `:load(sources)`: read files into a bundle.
+    Load,
+    /// `:eval(x)`: run a bundle, a source or a file; returns one value.
+    Eval,
+    /// `:inject(action, op, target, section?)`: inside `:eval` only.
+    Inject,
     /// A decision's pick, worked out the first time the class judge reads it.
     DecisionPick,
     /// A class judge's deed ends (the event log stops counting the

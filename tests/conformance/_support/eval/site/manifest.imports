@@ -1,0 +1,2 @@
+import _support/eval/site/core as core
+import "_support/eval/mods/*/manifest.imports"

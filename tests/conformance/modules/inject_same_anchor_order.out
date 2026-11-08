@@ -1,0 +1,4 @@
+zeta imported
+[frontier::strip_frontmatter, my_cool_module::render, trailboss::process_wikilinks, my_cool_module::action2, extra::tail, stagehand::wire_slots]
+[frontier::strip_frontmatter, my_cool_module::render, trailboss::process_wikilinks, extra::tail, my_cool_module::action2, stagehand::wire_slots]
+true

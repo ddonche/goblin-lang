@@ -1,0 +1,5 @@
+zeta imported
+[core::start, my_cool_module::action1, core::build, core::build, my_cool_module::action2]
+[my_cool_module::render]
+inject: `extra::tail` (from `_support/eval/cases/in_two.gob`) targets `core::build`, which is in `first` and `second`; name the section as a 4th argument
+{first: [core::start, core::build], second: [core::build, extra::tail, core::finish]}

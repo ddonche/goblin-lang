@@ -1,0 +1,18 @@
+pre:
+  - "prospector::init"
+  - "stagehand::copy_assets"
+  - "goblin_repl::init"
+  - "trailboss::init_wanted_pages"
+  - "trailboss::init_backlinks"
+  - "trailboss::build_routes"
+  - "trailboss::build_routes"
+
+schedule:
+  - "frontier::strip_frontmatter"
+  - "markdown_core::render"
+  - "trailboss::process_wikilinks"
+  - "stagehand::wire_slots"
+
+post:
+  - "trailboss::build_wanted_pages_once"
+  - "brindle::export_header_partial"

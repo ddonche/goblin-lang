@@ -2770,7 +2770,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
         }
 
-        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::DecisionPick | BuiltinId::DeedDone
+        BuiltinId::Invoke | BuiltinId::Summon | BuiltinId::Provoke | BuiltinId::Eval | BuiltinId::Inject | BuiltinId::DecisionPick | BuiltinId::DeedDone
         | BuiltinId::OverlayBang | BuiltinId::DetachBang | BuiltinId::LinkBang | BuiltinId::UnlinkBang => {
             Err(GoblinError::NotImplemented { feature: "invoke/summon/provoke require dynamic action dispatch (VM limitation)" })
         }
@@ -2786,6 +2786,10 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let parsed = goblin_yall::yall_parse(&text, &label)
                 .map_err(|e| GoblinError::Runtime(format!("yall_parse failed: {e}")))?;
             Ok(yall_to_value(&parsed))
+        }
+        BuiltinId::Load => {
+            expect_n(1)?;
+            crate::evalload::load(&read(0)?)
         }
         BuiltinId::YallParseFile => {
             expect_n(1)?;
@@ -6027,7 +6031,7 @@ fn map_get_f64(m: &std::collections::BTreeMap<String, Value>, key: &str) -> Opti
     }
 }
 
-fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
+pub(crate) fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
     match v {
         goblin_yall::YallValue::Null     => Value::Nil,
         goblin_yall::YallValue::Bool(b)  => Value::Bool(*b),
@@ -6209,7 +6213,7 @@ pub(crate) fn process_memory_bytes() -> usize { 0 }
 /// Parses JSON straight into Goblin values. Objects keep their key order
 /// (D6: maps are insertion-ordered; serde_json's own map sorts its keys) and
 /// become map collections, so reading them back is not a deep copy.
-fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error> {
+pub(crate) fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error> {
     use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
     use std::fmt;
 

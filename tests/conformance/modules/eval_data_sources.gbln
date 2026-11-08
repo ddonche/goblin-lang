@@ -1,0 +1,18 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// Data sources merge by key; one key in two sources is an error; a source
+/// kind :load does not know is an error; a bundle can be evaluated again (acceptance 14).
+b | :load(["_support/eval/cases/extra_keys.json", "_support/eval/cases/more.yall"])
+say(b[0] >> kind)
+r | :eval(b)
+say(r)
+say(:eval(b) == r)
+act show(sources)
+    attempt
+        say(:eval(sources))
+    rescue e
+        say(:after("{e}", "runtime error: "))
+    xx
+xx
+show(["_support/eval/cases/extra_keys.json", "_support/eval/site/schedule.yall"])
+show("_support/eval/cases/notes.txt")
+show(42)

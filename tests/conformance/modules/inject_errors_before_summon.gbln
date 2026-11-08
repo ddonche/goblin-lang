@@ -1,0 +1,23 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// Composition errors stop the eval before anything runs (acceptance 7, 8).
+import "_support/eval/site/manifest.imports"
+act show(sources)
+    attempt
+        say(:eval(sources))
+    rescue e
+        say(:after("{e}", "runtime error: "))
+    xx
+xx
+s | "_support/eval/site/schedule.yall"
+show([s, "_support/eval/cases/override_a.gob", "_support/eval/cases/override_b.gob"])
+show([s, "_support/eval/cases/missing.gob"])
+show([s, "_support/eval/cases/wrong_section.gob"])
+show([s, "_support/eval/cases/unknown_action.gob"])
+show([s, "_support/eval/cases/bad_op.gob"])
+show([s, "_support/eval/cases/target_injected.gob", "_support/eval/mods/cool/site_events.gob"])
+show(["_support/eval/cases/missing.gob"])
+attempt
+    :inject("extra::tail", "after", "core::render")
+rescue e
+    say(:after("{e}", "runtime error: "))
+xx

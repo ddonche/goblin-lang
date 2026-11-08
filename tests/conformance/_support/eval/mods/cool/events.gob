@@ -1,0 +1,3 @@
+:inject("my_cool_module::action1", "before", "trailboss::init_backlinks")
+:inject("my_cool_module::action2", "after", "trailboss::process_wikilinks")
+:inject("my_cool_module::render", "override", "markdown_core::render")

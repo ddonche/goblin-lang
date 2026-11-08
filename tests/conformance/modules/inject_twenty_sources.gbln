@@ -1,0 +1,15 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// Twenty event files evaluate together into one schedule (acceptance 3).
+import "_support/eval/site/manifest.imports"
+files | ["_support/eval/site/schedule.yall"]
+repeat :range(1, 21) as i
+    n | :str(i)
+    if i < 10 => n |= "0" + n
+    :put_last!(files, "_support/eval/many/e{n}.gob")
+xx
+r | :eval(:load(files))
+say(:len(r >> schedule))
+say(r >> schedule[0])
+say(r >> schedule[10])
+say(r >> schedule[19])
+say(:len(:keys(r)))

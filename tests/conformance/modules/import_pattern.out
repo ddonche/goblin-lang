@@ -1,0 +1,4 @@
+zeta imported
+ok
+x,
+import: `_support/eval/mods/*/cool.gbln` is a pattern, which can match many files; `as c` names one module. Import the pattern without `as`.

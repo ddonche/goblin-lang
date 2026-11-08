@@ -1,0 +1,6 @@
+first:
+  - "core::start"
+  - "core::build"
+second:
+  - "core::build"
+  - "core::finish"
