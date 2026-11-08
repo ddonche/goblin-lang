@@ -1,0 +1,18 @@
+/// known-gap: interp errors on these calls but its :summon/:invoke messages do not name `a::render`
+/// `a::render` when module `a` has no `render` is an error, even though module `b`
+/// has one: a call, :summon and :invoke never run another module's action of that name.
+import _support/ns/a as a
+import _support/ns/b as b
+say(b::render(""))
+say(:summon("", ["a::hello", "b::render"]))
+attempt
+    say(:summon("", ["a::render"]))
+rescue e
+    say(:has("{e}", "a::render"))
+xx
+attempt
+    say(:invoke("a::render", ""))
+rescue e
+    say(:has("{e}", "a::render"))
+xx
+say(a::render(""))

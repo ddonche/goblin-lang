@@ -1,0 +1,15 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// `import "dir/*/file"` imports every match in sorted order; a file reached two
+/// ways runs once; a pattern with no match imports nothing; a pattern cannot
+/// take `as` (acceptance 12, 13).
+import "_support/eval/mods/*/manifest.imports"
+import "_support/eval/mods/zeta/../zeta/zeta.gbln"
+import "_support/eval/**/zeta.gbln"
+import "_support/eval/nothing/*/manifest.imports"
+say(zeta::z("ok"))
+say(extra::tail(""))
+attempt
+    :eval("_support/eval/cases/pattern_as.gob")
+rescue e
+    say(:after("{e}", "runtime error: "))
+xx

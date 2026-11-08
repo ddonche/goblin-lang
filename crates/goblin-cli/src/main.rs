@@ -8,6 +8,16 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// The import-exclusion file this run was given, if any.
+static IMPORT_EXCLUDES: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+/// Read the import exclusions before any code runs; a bad file stops here.
+fn setup_import_excludes() -> Result<(), String> {
+    let explicit = IMPORT_EXCLUDES.get().cloned().flatten();
+    let root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    goblin_vm::import_excludes::configure(explicit.as_deref(), &root)
+}
+
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -140,6 +150,20 @@ fn main() {
 
     let mut args = env::args().skip(1).collect::<Vec<_>>();
 
+    // `--import-excludes FILE` (anywhere, for run/start/repl) or
+    // GOBLIN_IMPORT_EXCLUDES replaces the project's imports.exclude.yall.
+    if let Some(i) = args.iter().position(|a| a == "--import-excludes") {
+        if i + 1 >= args.len() {
+            eprintln!("usage: --import-excludes <file.yall>");
+            std::process::exit(2);
+        }
+        let file = args.remove(i + 1);
+        args.remove(i);
+        let _ = IMPORT_EXCLUDES.set(Some(PathBuf::from(file)));
+    } else {
+        let _ = IMPORT_EXCLUDES.set(env::var("GOBLIN_IMPORT_EXCLUDES").ok().filter(|s| !s.is_empty()).map(PathBuf::from));
+    }
+
     // --version / -v
     if args.len() == 1 && (args[0] == "--version" || args[0] == "-v") {
         println!("Goblin v{}", env!("CARGO_PKG_VERSION"));
@@ -177,6 +201,7 @@ fn main() {
 
     // `goblin start [--host H] [--port P] [--proxy /pfx=URL]...`
     if !args.is_empty() && args[0] == "start" {
+        if let Err(e) = setup_import_excludes() { eprintln!("{e}"); std::process::exit(1); }
         args.remove(0);
 
         let mut host = String::from("0.0.0.0");
@@ -244,6 +269,10 @@ fn main() {
     let use_interp = std::env::var("GOBLIN_ENGINE").unwrap_or_default() == "interp"
         || args.iter().any(|a| a == "--interp" || a == "--int");
     let use_vm = !use_interp;
+    if use_interp && IMPORT_EXCLUDES.get().map_or(false, |f| f.is_some()) {
+        eprintln!("import exclusions need the VM; drop --interp to use --import-excludes");
+        std::process::exit(2);
+    }
     // Strip engine flags from args so subcommand parsers don't see them.
     args.retain(|a| a != "--vm" && a != "--interp" && a != "--int");
 
@@ -1173,6 +1202,10 @@ fn vm_error_to_diagnostic(
 /// `goblin run`; with GOBLIN_STARTUP set, that startup script runs first, as
 /// `goblin start --startup` runs it, and its actors finish after the script.
 fn run_run_vm(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
+    if let Err(e) = setup_import_excludes() {
+        eprintln!("{e}");
+        return 1;
+    }
     if let Some(file) = std::env::var("GOBLIN_STARTUP").ok().filter(|s| !s.is_empty()) {
         if let Err(e) = goblin_vm::startup::run(Path::new(&file)) {
             eprintln!("startup script {file} failed:\n{e}");
@@ -1265,6 +1298,10 @@ fn run_run_vm_inner(path: &std::path::Path, extra_args: Vec<String>) -> i32 {
 }
 
 fn run_repl_vm() -> i32 {
+    if let Err(e) = setup_import_excludes() {
+        eprintln!("{e}");
+        return 1;
+    }
     use std::io::{self, Write};
     use goblin_lexer::lex;
     use goblin_parser::Parser;

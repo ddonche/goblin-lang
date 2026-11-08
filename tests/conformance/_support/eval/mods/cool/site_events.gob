@@ -1,0 +1,3 @@
+:inject("my_cool_module::action1", "before", "core::build")
+:inject("my_cool_module::action2", "after", "core::build")
+:inject("my_cool_module::render", "override", "core::render")

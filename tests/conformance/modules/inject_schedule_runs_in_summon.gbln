@@ -1,0 +1,9 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// The composed lists go straight into :summon, and the injected actions come
+/// from manifests found by a pattern import (acceptance 10, 11, 12).
+import "_support/eval/site/manifest.imports"
+r | :eval(["_support/eval/site/schedule.yall", "_support/eval/mods/cool/site_events.gob", "_support/eval/mods/extra/site_events.gob"])
+ctx | :summon("", r >> pre)
+ctx |= :summon(ctx, r >> schedule)
+ctx |= :summon(ctx, r >> post)
+say(ctx)

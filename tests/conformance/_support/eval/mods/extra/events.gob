@@ -1,0 +1,1 @@
+:inject("extra::tail", "after", "trailboss::process_wikilinks")

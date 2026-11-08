@@ -1,0 +1,9 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// Several injections at one target keep source order, then the order inside
+/// each source; swapping the sources swaps them and nothing else (acceptance 5, 6).
+import "_support/eval/all.imports"
+one | :eval(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob", "_support/eval/mods/extra/events.gob"])
+two | :eval(["_support/eval/base.yall", "_support/eval/mods/extra/events.gob", "_support/eval/mods/cool/events.gob"])
+say(one >> schedule)
+say(two >> schedule)
+say(one >> pre == two >> pre)

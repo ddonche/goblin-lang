@@ -347,5 +347,7 @@ fn finds_by_name(id: BuiltinId) -> bool {
         | BuiltinId::QueryByIdent | BuiltinId::Tick | BuiltinId::TickPhase | BuiltinId::ResolveToken
         | BuiltinId::Objects | BuiltinId::ObjectsIn | BuiltinId::Overlays | BuiltinId::OverlaysOf
         | BuiltinId::OverlayStrength | BuiltinId::OwnedBy | BuiltinId::OwnsTree
-        | BuiltinId::DeleteOverlaysOn)
+        | BuiltinId::DeleteOverlaysOn
+        // `:eval` compiles code at run time, which may name any global.
+        | BuiltinId::Eval)
 }

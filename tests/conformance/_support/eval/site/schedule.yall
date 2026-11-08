@@ -1,0 +1,8 @@
+pre:
+  - "core::start"
+  - "core::build"
+  - "core::build"
+schedule:
+  - "core::render"
+post:
+  - "core::finish"

@@ -1934,7 +1934,7 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
     // may roll dice inside, so it counts as chance too: checked once a tick.
     let own_code = |n: &str| {
         let n = n.trim_end_matches('!');
-        matches!(n, "invoke" | "summon" | "provoke") || crate::compiler::builtin_by_name(n).is_none()
+        matches!(n, "invoke" | "summon" | "provoke" | "eval") || crate::compiler::builtin_by_name(n).is_none()
     };
     match e {
         E::FreeCall(n, args, _) => random_name(n) || own_code(n) || args.iter().any(uses_chance),

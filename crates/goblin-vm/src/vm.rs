@@ -201,6 +201,11 @@ pub struct Vm {
     /// Each entry keeps its function alive, so the query's address names it.
     owned_usable: rustc_hash::FxHashMap<usize, (Rc<FunctionObject>, bool)>,
     owned_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
+    /// One entry per `:eval` running: the code source it is on and the
+    /// `:inject` calls recorded so far.
+    inject_frames: Vec<(String, Vec<crate::evalload::Injection>)>,
+    /// The files being imported right now, outermost first (real paths).
+    import_stack: Vec<String>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -225,7 +230,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2048,6 +2053,22 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::Eval => {
+                        let result = self.vm_eval(arg_vals)?;
+                        self.stack.push(Operand::Val(result));
+                        return Ok(());
+                    }
+                    BuiltinId::Inject => {
+                        let source = match self.inject_frames.last() {
+                            Some((src, _)) => src.clone(),
+                            None => return Err(GoblinError::Runtime(
+                                "inject: works only inside code run by :eval (for now)".into())),
+                        };
+                        let rec = crate::evalload::injection(&arg_vals, source)?;
+                        if let Some(f) = self.inject_frames.last_mut() { f.1.push(rec); }
+                        self.stack.push(Operand::Val(Value::Nil));
+                        return Ok(());
+                    }
                     BuiltinId::Provoke => {
                         let result = self.vm_provoke(arg_vals)?;
                         self.stack.push(Operand::Val(result));
@@ -2583,8 +2604,18 @@ impl Vm {
                 // actions in the imported file are NOT registered under the importing GLAM's
                 // namespace. `import` is a file merge, not a namespace load — if the user
                 // wants namespace registration they should use `use "ns"` instead.
+                // A path with `*` imports every file it matches, in sorted order.
+                let paths = if path_str.contains('*') {
+                    expand_import_pattern(&full_path)?
+                } else {
+                    vec![full_path]
+                };
                 let prev_ns = self.session.current_glam_ns.take();
-                let r = self.import_file(full_path, None, std::collections::HashMap::new());
+                let mut r = Ok(());
+                for p in paths {
+                    r = self.import_file(p, None, std::collections::HashMap::new());
+                    if r.is_err() { break; }
+                }
                 self.session.current_glam_ns = prev_ns;
                 r?;
             }
@@ -2605,6 +2636,10 @@ impl Vm {
                     (path, ns)
                 };
 
+                if path_str.contains('*') {
+                    return Err(GoblinError::Runtime(format!(
+                        "import: `{path_str}` is a pattern, which can match many files; `as {ns}` names one module. Import the pattern without `as`.")));
+                }
                 let in_glam = self.call_stack.last()
                     .map(|f| f.func.owner_glam.is_some())
                     .unwrap_or(false);
@@ -2666,7 +2701,15 @@ impl Vm {
                     files.iter()
                         .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
                         .map(|(_, pairs)| pairs)
-                }));
+                })).or_else(|| {
+                    // The file ran first under another spelling (`./a.gbln`,
+                    // `x/../a.gbln`): imports run a file once by its real path.
+                    let real = |p: &std::path::Path| p.canonicalize().ok();
+                    let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
+                    files.iter()
+                        .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
+                        .map(|(_, pairs)| pairs)
+                });
                 if let Some(list) = list {
                     let mut qualified = String::new();
                     let mut missing = Vec::new();
@@ -2696,6 +2739,10 @@ impl Vm {
                 };
 
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
+                // An excluded GLAM is not read at all (not even its glam.toml).
+                if crate::import_excludes::excluded(&glam_dir.join(format!("{ns}.gbln")), &self.session.project_root)? {
+                    return Ok(());
+                }
                 let toml_path = glam_dir.join("glam.toml");
                 let prev_box_ns = self.session.box_namespace.take();
                 let prev_provides = self.session.box_provides.take();
@@ -4419,12 +4466,6 @@ impl Vm {
     /// from this file (so `:need()` can later identify their owning GLAM).
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
-        let canonical = full_path.to_string_lossy().to_string();
-        if self.session.imported.contains(&canonical) {
-            return Ok(());
-        }
-        std::rc::Rc::make_mut(&mut self.session.imported).insert(canonical.clone());
-
         let path_str = full_path.to_string_lossy().to_string();
         // Try .gbln fallback if not found
         let actual_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
@@ -4433,6 +4474,27 @@ impl Vm {
         } else {
             full_path.clone()
         };
+        // Excluded by the project's import exclusions: never read, never run.
+        if crate::import_excludes::excluded(&actual_path, &self.session.project_root)? {
+            return Ok(());
+        }
+        // One file reached by two spellings (`a/../b.gbln`, a symlink) runs once.
+        let canonical = actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone())
+            .to_string_lossy().to_string();
+        if self.session.imported.contains(&canonical) {
+            // Still running further up: a cycle. It is skipped, as before,
+            // but said, so a missing action is easier to trace.
+            if let Some(at) = self.import_stack.iter().position(|f| *f == canonical) {
+                let root = self.session.project_root.canonicalize().unwrap_or_else(|_| self.session.project_root.clone());
+                let show = |f: &String| std::path::Path::new(f).strip_prefix(&root)
+                    .map(|p| p.display().to_string()).unwrap_or_else(|_| f.clone());
+                let chain: Vec<String> = self.import_stack[at..].iter().chain(std::iter::once(&canonical)).map(show).collect();
+                eprintln!("warning: import cycle: {}; `{}` is already being imported, so this import of it is skipped",
+                    chain.join(" -> "), show(&canonical));
+            }
+            return Ok(());
+        }
+        std::rc::Rc::make_mut(&mut self.session.imported).insert(canonical.clone());
 
         // Seed the compiler with the session's full accumulated global names so
         // this module's new globals get non-overlapping indices. Without this,
@@ -4449,7 +4511,19 @@ impl Vm {
                 )?
             }
         };
+        self.import_stack.push(canonical);
+        let r = self.run_module(compiled, &actual_path, &module_prefix, globals_before_len, pre_globals);
+        self.import_stack.pop();
+        r?;
+        Ok(())
+    }
 
+    /// Run a compiled module's top level: register its globals, classes and
+    /// enums, then call its entry function and return what it gives back.
+    fn run_module(&mut self, compiled: crate::modcache::ImportedModule, actual_path: &std::path::Path,
+        module_prefix: &str, globals_before_len: usize, pre_globals: std::collections::HashMap<String, Value>,
+    ) -> Result<Value, GoblinError> {
+        let module_prefix = module_prefix.to_string();
         // Append any new global names this module introduced.
         for name in compiled.global_names[globals_before_len..].iter() {
             std::rc::Rc::make_mut(&mut self.session.global_names).push(name.clone());
@@ -4493,8 +4567,10 @@ impl Vm {
         let run_result = self.run_until_depth(depth_before);
         self.session.base_dir = prev_base_dir;
         run_result?;
-        self.stack.pop(); // discard the imported module's implicit return value
-        Ok(())
+        match self.stack.pop() {
+            Some(op) => self.resolve_op(op),
+            None => Ok(Value::Nil),
+        }
     }
 
     /// Parse glam.toml [needs.*] and [values] tables.
@@ -4812,7 +4888,19 @@ impl Vm {
         //    then try the bare suffix ("copy_assets") as a fallback.
         //    This handles GLAMs whose qualified names weren't registered because their
         //    file was loaded via `import` (not `use`) or before `use "ns"` ran.
-        let func_val = self.session.named_values.get(name).cloned()
+        let func_val = self.resolve_named(name)
+            .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
+        let (func_rc, upvalues) = match func_val {
+            Value::Function(f) => (f, Vec::new()),
+            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+        };
+        self.call_func_core(func_rc, upvalues, args)
+    }
+
+    /// The action `call_named` would call for `name`, if there is one.
+    pub(crate) fn resolve_named(&mut self, name: &str) -> Option<Value> {
+        self.session.named_values.get(name).cloned()
             .or_else(|| {
                 // Retroactive scan: if name is "ns::bare", look for files in glams/ns/
                 // that registered "bare" and haven't yet been wired up under the qualified key.
@@ -4831,19 +4919,73 @@ impl Vm {
                         std::rc::Rc::make_mut(&mut self.session.named_values).insert(name.to_string(), val.clone());
                         return Some(val);
                     }
-                    // Last resort: bare name lookup (pre-existing flat-registry limitation)
-                    self.session.named_values.get(bare).cloned()
+                    // Never a bare-name fallback: `m::f` must not run another
+                    // module's `f` when `m` has none.
+                    None
                 } else {
                     None
                 }
             })
-            .ok_or_else(|| GoblinError::Runtime(format!("invoke: unknown action '{name}'")))?;
-        let (func_rc, upvalues) = match func_val {
-            Value::Function(f) => (f, Vec::new()),
-            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
-            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
-        };
-        self.call_func_core(func_rc, upvalues, args)
+    }
+
+    /// `:eval(x)`: run the code sources in order, then return the data
+    /// (merged, with every `:inject` from that code applied), or, with no
+    /// data, what the last code source gave back.
+    fn vm_eval(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
+        if args.len() != 1 {
+            return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "eval".into() });
+        }
+        let sources = crate::evalload::sources_of(&args[0])?;
+        self.inject_frames.push((String::new(), Vec::new()));
+        let mut last = Value::Nil;
+        let mut data = Vec::new();
+        let mut run = Ok(());
+        for src in sources {
+            match src {
+                crate::evalload::Source::Data { path, data: d } => data.push((path, d)),
+                crate::evalload::Source::Code { path, text } => {
+                    if let Some(f) = self.inject_frames.last_mut() { f.0 = path.clone(); }
+                    match self.eval_code(&path, &text) {
+                        Ok(v) => last = v,
+                        Err(e) => { run = Err(e); break; }
+                    }
+                }
+            }
+        }
+        let (_, injections) = self.inject_frames.pop().unwrap_or_default();
+        run?;
+        match crate::evalload::merge_data(data)? {
+            Some(d) if injections.is_empty() => Ok(d),
+            Some(d) => {
+                for inj in &injections {
+                    if self.resolve_named(&inj.action).is_none() {
+                        return Err(GoblinError::Runtime(format!(
+                            "inject: `{}` (from `{}`) is not an action Goblin can find; import it before the eval",
+                            inj.action, inj.source)));
+                    }
+                }
+                crate::evalload::apply(&d, &injections)
+            }
+            None if !injections.is_empty() => Err(GoblinError::Runtime(format!(
+                "inject: `{}` (from `{}`) has nothing to change: the eval has no data source",
+                injections[0].action, injections[0].source))),
+            None => Ok(last),
+        }
+    }
+
+    /// Compile and run one code source for `:eval`. Unlike `import`, the
+    /// same file runs again each time it is evaluated.
+    fn eval_code(&mut self, path: &str, text: &str) -> Result<Value, GoblinError> {
+        let p = std::path::PathBuf::from(path);
+        let globals_before_len = self.session.global_names.len();
+        let module_prefix = format!("{}::", p.canonicalize().unwrap_or_else(|_| p.clone()).display());
+        let globals_before = self.session.global_names.clone();
+        let compiled = crate::modcache::compile_source(
+            text, &p, &globals_before, &module_prefix, |entry| self.quicken(entry))?;
+        let prev_ns = self.session.current_glam_ns.take();
+        let r = self.run_module(compiled, &p, &module_prefix, globals_before_len, std::collections::HashMap::new());
+        self.session.current_glam_ns = prev_ns;
+        r
     }
 
     /// Call any callable value: Str (action name or builtin), Function, or Closure.
@@ -5256,14 +5398,17 @@ impl Vm {
                 need_name, action_path
             )))?;
 
-        if !self.session.named_values.contains_key(provider_action) {
+        let _ = provider_action;
+        // The provider by its full name: a bare `action` could be another
+        // module's action of the same name.
+        if self.resolve_named(&action_path).is_none() {
             return Err(GoblinError::Runtime(format!(
                 "B0107: missing-provider-action — Configured action need '{}' points to '{}' but that action does not exist.",
                 need_name, action_path
             )));
         }
 
-        self.call_named(provider_action, forwarded)
+        self.call_named(&action_path, forwarded)
     }
 
     // ── Tick (DES simulation step) ────────────────────────────────────────────
@@ -7862,4 +8007,71 @@ enum NameOf { Global(usize), Local(usize) }
 /// template slot can be left empty without a module filling it.
 pub(crate) fn is_goblin_empty(module: &str, ident: &str) -> bool {
     module.eq_ignore_ascii_case("GOBLIN") && ident.eq_ignore_ascii_case("EMPTY")
+}
+
+/// The files an import pattern matches, sorted by path. `*` matches any run
+/// of characters inside one path segment; a `**` segment matches any number
+/// of directories, none included.
+pub(crate) fn expand_import_pattern(pattern: &std::path::Path) -> Result<Vec<std::path::PathBuf>, GoblinError> {
+    use std::path::PathBuf;
+    let mut base = PathBuf::new();
+    let mut rest: Vec<String> = Vec::new();
+    for c in pattern.components() {
+        let text = c.as_os_str().to_string_lossy().to_string();
+        if rest.is_empty() && !text.contains('*') {
+            base.push(c.as_os_str());
+        } else {
+            rest.push(text);
+        }
+    }
+    let mut found = Vec::new();
+    pattern_walk(&base, &rest, &mut found);
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+fn pattern_walk(dir: &std::path::Path, rest: &[String], found: &mut Vec<std::path::PathBuf>) {
+    let Some((seg, tail)) = rest.split_first() else {
+        if dir.is_file() { found.push(dir.to_path_buf()); }
+        return;
+    };
+    if seg == "**" {
+        pattern_walk(dir, tail, found);
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.path().is_dir() { pattern_walk(&e.path(), rest, found); }
+            }
+        }
+        return;
+    }
+    if !seg.contains('*') {
+        pattern_walk(&dir.join(seg), tail, found);
+        return;
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if segment_matches(seg, &name) { pattern_walk(&e.path(), tail, found); }
+        }
+    }
+}
+
+/// `*` in `pat` matches any run of characters (none included).
+pub(crate) fn segment_matches(pat: &str, name: &str) -> bool {
+    if !pat.contains('*') { return pat == name; }
+    let parts: Vec<&str> = pat.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {
+        return false;
+    }
+    let mut pos = first.len();
+    let end = name.len() - last.len();
+    for mid in &parts[1..parts.len() - 1] {
+        match name[pos..end].find(mid) {
+            Some(i) => pos += i + mid.len(),
+            None => return false,
+        }
+    }
+    true
 }

@@ -1,0 +1,11 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// before, after and override on the brief's schedule; the result keeps its
+/// pre/schedule/post shape and the bundle is not changed (acceptance 4).
+import "_support/eval/all.imports"
+b | :load(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob"])
+r | :eval(b)
+say(r >> pre)
+say(r >> schedule)
+say(r >> post)
+say(:keys(r))
+say(b[0] >> data >> schedule)

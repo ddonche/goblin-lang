@@ -1,0 +1,6 @@
+zeta imported
+[prospector::init, stagehand::copy_assets, goblin_repl::init, trailboss::init_wanted_pages, my_cool_module::action1, trailboss::init_backlinks, trailboss::build_routes, trailboss::build_routes]
+[frontier::strip_frontmatter, my_cool_module::render, trailboss::process_wikilinks, my_cool_module::action2, stagehand::wire_slots]
+[trailboss::build_wanted_pages_once, brindle::export_header_partial]
+[pre, schedule, post]
+[frontier::strip_frontmatter, markdown_core::render, trailboss::process_wikilinks, stagehand::wire_slots]

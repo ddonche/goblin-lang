@@ -1,0 +1,3 @@
+true
+[prospector::init, stagehand::copy_assets, goblin_repl::init, trailboss::init_wanted_pages, trailboss::init_backlinks, trailboss::build_routes, trailboss::build_routes]
+true
