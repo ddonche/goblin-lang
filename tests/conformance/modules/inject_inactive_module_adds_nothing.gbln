@@ -1,0 +1,9 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// Importing makes a module's actions available; only the event files passed to :eval
+/// change the schedule. `extra` is imported but its events.gob is not passed, so it adds
+/// nothing. An imported file's top level still runs once at import (zeta prints a line).
+import "_support/eval/all.imports"
+r | :eval(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob"])
+say(r >> schedule)
+say(:has(r >> schedule, "extra::tail"))
+say(:eval("_support/eval/base.yall") >> schedule)

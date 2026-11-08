@@ -204,6 +204,8 @@ pub struct Vm {
     /// One entry per `:eval` running: the code source it is on and the
     /// `:inject` calls recorded so far.
     inject_frames: Vec<(String, Vec<crate::evalload::Injection>)>,
+    /// The files being imported right now, outermost first (real paths).
+    import_stack: Vec<String>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -228,7 +230,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -4472,6 +4474,16 @@ impl Vm {
         let canonical = actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone())
             .to_string_lossy().to_string();
         if self.session.imported.contains(&canonical) {
+            // Still running further up: a cycle. It is skipped, as before,
+            // but said, so a missing action is easier to trace.
+            if let Some(at) = self.import_stack.iter().position(|f| *f == canonical) {
+                let root = self.session.project_root.canonicalize().unwrap_or_else(|_| self.session.project_root.clone());
+                let show = |f: &String| std::path::Path::new(f).strip_prefix(&root)
+                    .map(|p| p.display().to_string()).unwrap_or_else(|_| f.clone());
+                let chain: Vec<String> = self.import_stack[at..].iter().chain(std::iter::once(&canonical)).map(show).collect();
+                eprintln!("warning: import cycle: {}; `{}` is already being imported, so this import of it is skipped",
+                    chain.join(" -> "), show(&canonical));
+            }
             return Ok(());
         }
         std::rc::Rc::make_mut(&mut self.session.imported).insert(canonical.clone());
@@ -4491,7 +4503,10 @@ impl Vm {
                 )?
             }
         };
-        self.run_module(compiled, &actual_path, &module_prefix, globals_before_len, pre_globals)?;
+        self.import_stack.push(canonical);
+        let r = self.run_module(compiled, &actual_path, &module_prefix, globals_before_len, pre_globals);
+        self.import_stack.pop();
+        r?;
         Ok(())
     }
 
