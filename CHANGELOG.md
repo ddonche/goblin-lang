@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.1 — 2026-11-08
+
+- The VM runs `import` with a computed path, as the interpreter always has: a quoted path with `{...}` in it (`import "modules/{n}/{n}" as m`) is built when the statement runs, then imported like the same literal path (it runs once, a missing extension becomes `.gbln`, and exclusions apply). So a program can import modules from a list it builds, with no manifest per module and no `:eval`. As on the interpreter, a computed path to a Goblin file needs `as`, and one to a `.imports` manifest takes none. Before, the VM stopped with "not yet implemented: dynamic import paths". The alias is still a plain name.
+- The VM is goblin-vm 0.2.3.
+
 ## 0.51.0 — 2026-11-08
 
 - `import` takes a pattern: `import "modules/*/manifest.imports"` imports every file that matches, sorted by path. `*` matches inside one part of the path, and a `**` part matches any number of directories. A pattern that matches nothing imports nothing. A pattern can't take `as` (one alias names one module). The pattern resolves the way any `import` path does: against the project root, or the GLAM's directory inside a GLAM.

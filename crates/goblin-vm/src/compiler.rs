@@ -1030,8 +1030,15 @@ impl Compiler {
                             self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
                         }
                     }
-                    ImportItems::Expr(_) => {
-                        return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });
+                    ImportItems::Expr(expr) => {
+                        // `import "modules/{n}/{n}" as x`: the path is built when
+                        // the statement runs, then imported like a literal path.
+                        self.compile_expr(expr)?;
+                        let ns_idx = match &import_stmt.alias {
+                            Some(alias) => self.add_constant(Value::Str(alias.clone().into())),
+                            None => u16::MAX,
+                        };
+                        self.emit(Opcode::ImportDynamic(ns_idx));
                     }
                 }
             }

@@ -2584,40 +2584,7 @@ impl Vm {
                     }
                 };
 
-                // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
-                // which import_file sets to the GLAM entry file's parent). Imports in regular
-                // modules always resolve relative to project_root — this matches the interpreter's
-                // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
-                // inside a subdirectory uses paths that include that subdirectory.
-                let in_glam = self.call_stack.last()
-                    .map(|f| f.func.owner_glam.is_some())
-                    .unwrap_or(false);
-                let full_path = if std::path::Path::new(&path_str).is_absolute() {
-                    std::path::PathBuf::from(&path_str)
-                } else if in_glam {
-                    self.session.base_dir.join(&path_str)
-                } else {
-                    self.session.project_root.join(&path_str)
-                };
-
-                // Clear current_glam_ns while processing an `import` statement so that
-                // actions in the imported file are NOT registered under the importing GLAM's
-                // namespace. `import` is a file merge, not a namespace load — if the user
-                // wants namespace registration they should use `use "ns"` instead.
-                // A path with `*` imports every file it matches, in sorted order.
-                let paths = if path_str.contains('*') {
-                    expand_import_pattern(&full_path)?
-                } else {
-                    vec![full_path]
-                };
-                let prev_ns = self.session.current_glam_ns.take();
-                let mut r = Ok(());
-                for p in paths {
-                    r = self.import_file(p, None, std::collections::HashMap::new());
-                    if r.is_err() { break; }
-                }
-                self.session.current_glam_ns = prev_ns;
-                r?;
+                self.import_path(&path_str)?;
             }
 
             Opcode::ImportFileAs(path_idx, ns_idx) => {
@@ -2636,96 +2603,40 @@ impl Vm {
                     (path, ns)
                 };
 
-                if path_str.contains('*') {
-                    return Err(GoblinError::Runtime(format!(
-                        "import: `{path_str}` is a pattern, which can match many files; `as {ns}` names one module. Import the pattern without `as`.")));
-                }
-                let in_glam = self.call_stack.last()
-                    .map(|f| f.func.owner_glam.is_some())
-                    .unwrap_or(false);
-                let full_path = if std::path::Path::new(&path_str).is_absolute() {
-                    std::path::PathBuf::from(&path_str)
-                } else if in_glam {
-                    self.session.base_dir.join(&path_str)
+                self.import_path_as(&path_str, &ns)?;
+            }
+
+            Opcode::ImportDynamic(ns_idx) => {
+                let raw = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    _ => return Err(GoblinError::Runtime("import expression must evaluate to a string".into())),
+                };
+                // The same extension rule as a literal path.
+                let path_str = if raw.ends_with(".gbln") || raw.ends_with(".gob") || raw.ends_with(".imports") {
+                    raw.replace('/', std::path::MAIN_SEPARATOR_STR)
                 } else {
-                    self.session.project_root.join(&path_str)
+                    format!("{}.gbln", raw.replace('/', std::path::MAIN_SEPARATOR_STR))
                 };
-
-                // Remember which module this alias names in the importing file
-                // (the first import under an alias wins).
-                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
-                let prefix = match self.session.import_paths.get(&full_path) {
-                    Some(hit) => hit.clone(),
-                    None => {
-                        let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
-                            let p = full_path.with_extension("gbln");
-                            if p.exists() { p } else { full_path.clone() }
-                        } else { full_path.clone() };
-                        let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
-                        self.session.import_paths.insert(full_path.clone(), prefix.clone());
-                        prefix
+                let is_manifest = path_str.ends_with(".imports");
+                if ns_idx == u16::MAX {
+                    if !is_manifest && !path_str.contains('*') {
+                        return Err(GoblinError::Runtime(format!(
+                            "import of '{raw}' needs an alias. Write: import <path> as <alias>, then use <alias>::name.")));
                     }
-                };
-                match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
-                    Some(first) if *first != prefix => {
-                        // A second module under an alias this file already uses:
-                        // keep the first one and skip this import.
-                        eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
-                            path_str, ns, ns, first.trim_end_matches("::"));
-                        return Ok(());
-                    }
-                    Some(_) => {}
-                    None => { std::rc::Rc::make_mut(&mut self.session.module_aliases).insert((importer, ns.to_string()), prefix); }
-                }
-
-                // Run with current_glam_ns = Some(alias) so RegisterAction registers
-                // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
-                let prev_ns = self.session.current_glam_ns.take();
-                self.session.current_glam_ns = Some(ns.to_string());
-                let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
-                self.session.current_glam_ns = prev_ns;
-                r?;
-
-                // Retroactively register qualified names in case the import guard
-                // fired. Only the imported file's own actions get the alias: this
-                // used to take every file under the module's directory, which
-                // gave `alias::` names to sibling files' actions and, run for
-                // every import, was a large part of a request's time.
-                // A request imports the same modules from many files, so this
-                // runs often: look the file up directly (a scan only for paths
-                // written with backslashes), and add only the names missing.
-                let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
-                let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
-                let files = &self.session.action_file_map;
-                let list = targets.iter().find_map(|t| files.get(t.as_str()).or_else(|| {
-                    files.iter()
-                        .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
-                        .map(|(_, pairs)| pairs)
-                })).or_else(|| {
-                    // The file ran first under another spelling (`./a.gbln`,
-                    // `x/../a.gbln`): imports run a file once by its real path.
-                    let real = |p: &std::path::Path| p.canonicalize().ok();
-                    let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
-                    files.iter()
-                        .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
-                        .map(|(_, pairs)| pairs)
-                });
-                if let Some(list) = list {
-                    let mut qualified = String::new();
-                    let mut missing = Vec::new();
-                    for (bare_name, val) in list {
-                        qualified.clear();
-                        qualified.push_str(&ns);
-                        qualified.push_str("::");
-                        qualified.push_str(bare_name);
-                        if !self.session.named_values.contains_key(qualified.as_str()) {
-                            missing.push((qualified.clone(), val.clone()));
+                    self.import_path(&path_str)?;
+                } else {
+                    let ns = {
+                        let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                        match &frame.func.constants[ns_idx as usize] {
+                            Value::Str(s) => s.to_string(),
+                            _ => return Err(GoblinError::Runtime("ImportDynamic: namespace must be a string constant".into())),
                         }
+                    };
+                    if is_manifest {
+                        return Err(GoblinError::Runtime(format!(
+                            "alias is not allowed when importing a .imports manifest file ('{raw}' as '{ns}')")));
                     }
-                    if !missing.is_empty() {
-                        let names = std::rc::Rc::make_mut(&mut self.session.named_values);
-                        for (k, v) in missing { names.entry(k).or_insert(v); }
-                    }
+                    self.import_path_as(&path_str, &ns)?;
                 }
             }
 
@@ -4464,6 +4375,140 @@ impl Vm {
     /// Lex/parse/compile/run a single file, skipping it if already imported.
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
+    /// `import path` with the path already worked out (constant or computed).
+    fn import_path(&mut self, path_str: &str) -> Result<(), GoblinError> {
+        // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
+        // which import_file sets to the GLAM entry file's parent). Imports in regular
+        // modules always resolve relative to project_root — this matches the interpreter's
+        // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
+        // inside a subdirectory uses paths that include that subdirectory.
+        let in_glam = self.call_stack.last()
+            .map(|f| f.func.owner_glam.is_some())
+            .unwrap_or(false);
+        let full_path = if std::path::Path::new(&path_str).is_absolute() {
+            std::path::PathBuf::from(&path_str)
+        } else if in_glam {
+            self.session.base_dir.join(&path_str)
+        } else {
+            self.session.project_root.join(&path_str)
+        };
+
+        // Clear current_glam_ns while processing an `import` statement so that
+        // actions in the imported file are NOT registered under the importing GLAM's
+        // namespace. `import` is a file merge, not a namespace load — if the user
+        // wants namespace registration they should use `use "ns"` instead.
+        // A path with `*` imports every file it matches, in sorted order.
+        let paths = if path_str.contains('*') {
+            expand_import_pattern(&full_path)?
+        } else {
+            vec![full_path]
+        };
+        let prev_ns = self.session.current_glam_ns.take();
+        let mut r = Ok(());
+        for p in paths {
+            r = self.import_file(p, None, std::collections::HashMap::new());
+            if r.is_err() { break; }
+        }
+        self.session.current_glam_ns = prev_ns;
+        r?;
+        Ok(())
+    }
+
+    /// `import path as ns` with the path and alias already worked out.
+    fn import_path_as(&mut self, path_str: &str, ns: &str) -> Result<(), GoblinError> {
+        if path_str.contains('*') {
+            return Err(GoblinError::Runtime(format!(
+                "import: `{path_str}` is a pattern, which can match many files; `as {ns}` names one module. Import the pattern without `as`.")));
+        }
+        let in_glam = self.call_stack.last()
+            .map(|f| f.func.owner_glam.is_some())
+            .unwrap_or(false);
+        let full_path = if std::path::Path::new(&path_str).is_absolute() {
+            std::path::PathBuf::from(&path_str)
+        } else if in_glam {
+            self.session.base_dir.join(&path_str)
+        } else {
+            self.session.project_root.join(&path_str)
+        };
+
+        // Remember which module this alias names in the importing file
+        // (the first import under an alias wins).
+        let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+        let prefix = match self.session.import_paths.get(&full_path) {
+            Some(hit) => hit.clone(),
+            None => {
+                let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                    let p = full_path.with_extension("gbln");
+                    if p.exists() { p } else { full_path.clone() }
+                } else { full_path.clone() };
+                let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                self.session.import_paths.insert(full_path.clone(), prefix.clone());
+                prefix
+            }
+        };
+        match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
+            Some(first) if *first != prefix => {
+                // A second module under an alias this file already uses:
+                // keep the first one and skip this import.
+                eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
+                    path_str, ns, ns, first.trim_end_matches("::"));
+                return Ok(());
+            }
+            Some(_) => {}
+            None => { std::rc::Rc::make_mut(&mut self.session.module_aliases).insert((importer, ns.to_string()), prefix); }
+        }
+
+        // Run with current_glam_ns = Some(alias) so RegisterAction registers
+        // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
+        let prev_ns = self.session.current_glam_ns.take();
+        self.session.current_glam_ns = Some(ns.to_string());
+        let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
+        self.session.current_glam_ns = prev_ns;
+        r?;
+
+        // Retroactively register qualified names in case the import guard
+        // fired. Only the imported file's own actions get the alias: this
+        // used to take every file under the module's directory, which
+        // gave `alias::` names to sibling files' actions and, run for
+        // every import, was a large part of a request's time.
+        // A request imports the same modules from many files, so this
+        // runs often: look the file up directly (a scan only for paths
+        // written with backslashes), and add only the names missing.
+        let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+        let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
+        let files = &self.session.action_file_map;
+        let list = targets.iter().find_map(|t| files.get(t.as_str()).or_else(|| {
+            files.iter()
+                .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
+                .map(|(_, pairs)| pairs)
+        })).or_else(|| {
+            // The file ran first under another spelling (`./a.gbln`,
+            // `x/../a.gbln`): imports run a file once by its real path.
+            let real = |p: &std::path::Path| p.canonicalize().ok();
+            let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
+            files.iter()
+                .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
+                .map(|(_, pairs)| pairs)
+        });
+        if let Some(list) = list {
+            let mut qualified = String::new();
+            let mut missing = Vec::new();
+            for (bare_name, val) in list {
+                qualified.clear();
+                qualified.push_str(&ns);
+                qualified.push_str("::");
+                qualified.push_str(bare_name);
+                if !self.session.named_values.contains_key(qualified.as_str()) {
+                    missing.push((qualified.clone(), val.clone()));
+                }
+            }
+            if !missing.is_empty() {
+                let names = std::rc::Rc::make_mut(&mut self.session.named_values);
+                for (k, v) in missing { names.entry(k).or_insert(v); }
+            }
+        }
+        Ok(())
+    }
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
         let path_str = full_path.to_string_lossy().to_string();
