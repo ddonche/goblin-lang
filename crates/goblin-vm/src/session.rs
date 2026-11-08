@@ -282,6 +282,9 @@ pub struct Session {
 
     /// PRNG state for builtins like shuffle/mixed. LCG/MCG.
     pub rng_state: u128,
+    /// PRNG state for `:event` tellings, apart from `rng_state` so that
+    /// narrating never changes what the program draws.
+    pub event_rng: u128,
 
     /// Token store: namespace → key → value.
     pub token_store: BTreeMap<String, BTreeMap<String, Value>>,
@@ -525,6 +528,7 @@ impl Session {
             gc_bytes: 0,
             has_cells: false,
             rng_state: seed,
+            event_rng: crate::events::event_seed(seed),
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
             object_store: Default::default(),

@@ -2170,6 +2170,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 other => return Err(GoblinError::type_error("number", other.type_name(), "rand_seed")),
             };
             session.rng_state = ((n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1;
+            session.event_rng = crate::events::event_seed(session.rng_state);
             Ok(Value::Unit)
         }
         BuiltinId::Roll => {
@@ -3762,6 +3763,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(Value::Nil)
         }
+        BuiltinId::Event => crate::events::event(args, session),
         BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()

@@ -1187,6 +1187,8 @@ pub enum BuiltinId {
     DeedDone,
     /// `:event_log(path)` / `:event_log(nil)`.
     EventLog,
+    /// `:event(who, what, whom, telling)`: a line of narration in the event log.
+    Event,
     Need,
     YallParse,
     YallParseFile,

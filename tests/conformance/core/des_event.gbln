@@ -1,0 +1,49 @@
+/// known-gap: interp has no event log (the interpreter is being retired)
+/// `:event(who, what, whom, telling)` writes a line of narration to the
+/// event log and changes nothing: `tick N | who | what | whom | "telling"`.
+/// Who is an object or a text; whom an object, a text, a list or nil; the
+/// telling a text, or a map of tellings to weights, one drawn by weight
+/// (0 can't be drawn; all 0 writes nothing and gives nil). It gives back
+/// the telling. Its draws have their own random stream, so the program's
+/// own draws are the same with or without events.
+<>Realm |
+    name: ..
+    wars: 0
+xx
+<>Person |
+    name: ..
+    age: 0
+xx
+:rand_seed(7)
+r <> Realm | name: "Arveth", wars: 1
+k <> Person | name: "Toren", age: 70
+:event_log("des_event.log.txt")
+tick()
+t | :event(r, "ruler died", k, {"fell in battle": r >> wars * .5, "of the plague": 0.0, "of old age": k >> age / 80.0})
+:say(:has(["fell in battle", "of old age"], t))
+:event(r, "succeeded by", k, "the eldest son")
+:event(r, "omen", nil, "a comet over the capital")
+:event("the world", "long winter")
+:event(r, "treaty", [k, r])
+:say(:event(r, "nothing fits", k, {"a": 0, "b": 0.0}).nix?)
+a | pick 1 from 0...1000
+:event_log(nil)
+:rand_seed(7)
+b | pick 1 from 0...1000
+:say(a == b)
+lines | :lines(:read_text("des_event.log.txt"))
+:say(:len(lines))
+repeat :range(1, :len(lines)) as i
+    :say(lines[i])
+xx
+:delete_path!("des_event.log.txt")
+attempt
+    :event(r, "bad", k, {"a": -1})
+rescue e
+    :say(:has("{e}", "R1253"))
+xx
+attempt
+    :event(r, 3)
+rescue e
+    :say(:has("{e}", "R1253"))
+xx

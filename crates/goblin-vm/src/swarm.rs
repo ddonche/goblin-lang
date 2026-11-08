@@ -438,6 +438,7 @@ pub fn run(
                         let action = fp.value(p_action, &mut vm.session);
                         let context = p_context.as_ref().map(|c| fp.value(c, &mut vm.session));
                         vm.session.rng_state = task_seed(base_seed, i);
+                        vm.session.event_rng = crate::events::event_seed(vm.session.rng_state);
                         vm.session.output_buf = Some(String::new());
                         let mut args = vec![fp.value(&p_items[i], &mut vm.session)];
                         if let Some(c) = context { args.push(c); }

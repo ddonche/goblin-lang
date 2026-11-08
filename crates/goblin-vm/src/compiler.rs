@@ -4152,6 +4152,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         // DES tick
         "tick" | "tick_db"               => BuiltinId::Tick,
         "event_log"                      => BuiltinId::EventLog,
+        "event"                          => BuiltinId::Event,
 
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,
