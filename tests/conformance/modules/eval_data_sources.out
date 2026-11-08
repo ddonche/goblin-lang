@@ -2,5 +2,5 @@ data
 {title: site, pre: [core::start], author: other}
 true
 eval: key `pre` is in both `_support/eval/cases/extra_keys.json` and `_support/eval/site/schedule.yall`
-load: `_support/eval/cases/notes.txt`: unknown kind of file. Code is .gbln, .gob or .imports; data is .yall, .yaml, .yml or .json
+load: `_support/eval/cases/notes.txt`: unknown kind of file. Code is .gbln, .gob or .imports; data is .yall or .json
 eval: expects a path, a source from :load, or a list of them, got int

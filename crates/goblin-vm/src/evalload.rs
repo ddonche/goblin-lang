@@ -61,7 +61,7 @@ fn kind_of(path: &str) -> Option<Kind> {
     let ext = std::path::Path::new(path).extension()?.to_string_lossy().to_lowercase();
     match ext.as_str() {
         "gbln" | "gob" | "imports" => Some(Kind::Code),
-        "yall" | "yaml" | "yml" | "json" => Some(Kind::Data),
+        "yall" | "json" => Some(Kind::Data),
         _ => None,
     }
 }
@@ -84,7 +84,7 @@ pub fn load(arg: &Value) -> Result<Value, GoblinError> {
 
 fn load_one(path: &str) -> Result<Value, GoblinError> {
     let kind = kind_of(path).ok_or_else(|| err(format!(
-        "load: `{path}`: unknown kind of file. Code is .gbln, .gob or .imports; data is .yall, .yaml, .yml or .json")))?;
+        "load: `{path}`: unknown kind of file. Code is .gbln, .gob or .imports; data is .yall or .json")))?;
     let text = std::fs::read_to_string(path).map_err(|e| err(format!("load: cannot read `{path}`: {e}")))?;
     let mut m = IndexMap::new();
     m.insert("path".to_string(), Value::Str(path.into()));

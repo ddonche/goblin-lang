@@ -2699,7 +2699,15 @@ impl Vm {
                     files.iter()
                         .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
                         .map(|(_, pairs)| pairs)
-                }));
+                })).or_else(|| {
+                    // The file ran first under another spelling (`./a.gbln`,
+                    // `x/../a.gbln`): imports run a file once by its real path.
+                    let real = |p: &std::path::Path| p.canonicalize().ok();
+                    let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
+                    files.iter()
+                        .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
+                        .map(|(_, pairs)| pairs)
+                });
                 if let Some(list) = list {
                     let mut qualified = String::new();
                     let mut missing = Vec::new();
