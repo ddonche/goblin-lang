@@ -2,11 +2,11 @@
 /// imports like the same literal path (runs once, extension added).
 side | "left"
 import "_support/modules/{side}" as l
-say(l::name())
+:say(l::name())
 act load_right(dir)
     import "{dir}/right.gbln" as r
     return r::name()
 xx
-say(load_right("_support/modules"))
+:say(load_right("_support/modules"))
 import "_support/modules/{side}" as again
-say(again::name())
+:say(again::name())

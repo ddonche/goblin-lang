@@ -1,4 +1,4 @@
 /// A computed path to a .imports manifest imports it without `as`.
 m | "conf_manifest"
 import "_support/modules/{m}.imports"
-say(mm::double(2))
+:say(mm::double(2))

@@ -1,4 +1,4 @@
 /// A computed path to a Goblin file needs `as`, like a literal one (D15).
 name | "loud"
 import "_support/modules/{name}"
-say("not reached")
+:say("not reached")
