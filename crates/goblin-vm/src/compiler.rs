@@ -1000,6 +1000,21 @@ impl Compiler {
             // ── Import / Use ──────────────────────────────────────────────────
             Stmt::Import(import_stmt) => {
                 use goblin_ast::ImportItems;
+                if let Some(alias_expr) = &import_stmt.alias_expr {
+                    // `import path as {expr}`: path and alias are both strings on
+                    // the stack when the statement runs.
+                    match &import_stmt.items {
+                        ImportItems::Path(path) => {
+                            let idx = self.add_constant(Value::Str(path.clone().into()));
+                            self.emit(Opcode::LoadConst(idx));
+                        }
+                        ImportItems::Expr(expr) => self.compile_expr(expr)?,
+                        ImportItems::Named { .. } => unreachable!("grouped imports have no `as`"),
+                    }
+                    self.compile_expr(alias_expr)?;
+                    self.emit(Opcode::ImportDynamicAs);
+                    return Ok(());
+                }
                 match &import_stmt.items {
                     ImportItems::Path(path) => {
                         // Resolve extension: try .gbln then .gob

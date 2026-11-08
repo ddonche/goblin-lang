@@ -241,6 +241,10 @@ pub enum Opcode {
     /// path string. constants[ns_idx] is the alias, or ns_idx == u16::MAX for none.
     ImportDynamic(u16),
 
+    /// `import path as {expr}` — pops the alias string, then the path string,
+    /// and imports like `import path as alias`.
+    ImportDynamicAs,
+
     /// Load a GLAM: constants[ns_idx] is the glam namespace string.
     /// Reads glams/<ns>/glam.toml (if present) to populate session.action_needs,
     /// then imports glams/<ns>/<ns>.gbln with owner_glam = Some(ns) stamped onto
@@ -452,6 +456,7 @@ impl Opcode {
             Opcode::ImportFile(_)     => "ImportFile",
             Opcode::ImportFileAs(..)  => "ImportFileAs",
             Opcode::ImportDynamic(_)  => "ImportDynamic",
+            Opcode::ImportDynamicAs   => "ImportDynamicAs",
             Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
             Opcode::OverlayApply(_) => "OverlayApply",

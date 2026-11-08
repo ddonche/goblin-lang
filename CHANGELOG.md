@@ -3,10 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.2 — 2026-11-08
+
+- `import path as {x}`: the alias is the string `x` gives when the import runs (owner, 2026-11-08). Any expression goes in the braces (`as {n}`, `as {"m_" + n}`), and the path may be literal or computed. So a loop imports a list of modules under their own names: `repeat names as n` / `import "modules/{n}/{n}" as {n}` / `xx`, then `alpha::step()` or `:summon(ctx, ["alpha::step"])`. The name must be letters, digits and `_`, not starting with a digit; anything else, or a value that isn't a string, is an error, and so is `as {...}` on a `.imports` manifest. Otherwise it is `import path as name`, including the rule that one file can't give an alias to two different modules (the second is skipped with a warning). VM only: the interpreter reads `as {...}` as no alias (conformance: `known-gap: interp`).
+- The VM is goblin-vm 0.2.4.
+
 ## 0.51.1 — 2026-11-08
 
-- The VM runs `import` with a computed path, as the interpreter always has: a quoted path with `{...}` in it (`import "modules/{n}/{n}" as m`) is built when the statement runs, then imported like the same literal path (it runs once, a missing extension becomes `.gbln`, and exclusions apply). So a program can import modules from a list it builds, with no manifest per module and no `:eval`. As on the interpreter, a computed path to a Goblin file needs `as`, and one to a `.imports` manifest takes none. Before, the VM stopped with "not yet implemented: dynamic import paths". The alias is still a plain name.
-- The VM is goblin-vm 0.2.3.
+- The VM runs `import` with a computed path, as the interpreter always has: a quoted path with `{...}` in it (`import "modules/{n}/{n}" as m`) is built when the statement runs, then imported like the same literal path (it runs once, a missing extension becomes `.gbln`, and exclusions apply). So a program can import modules from a list it builds, with no manifest per module and no `:eval`. As on the interpreter, a computed path to a Goblin file needs `as`, and one to a `.imports` manifest takes none. Before, the VM stopped with "not yet implemented: dynamic import paths". - The VM is goblin-vm 0.2.3.
 
 ## 0.51.0 — 2026-11-08
 

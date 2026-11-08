@@ -10744,6 +10744,7 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Import(ast::ImportStmt {
                 items: ast::ImportItems::Named { items, source },
                 alias: None,
+                alias_expr: None,
                 span: start_span,
             }));
         }
@@ -10756,12 +10757,7 @@ impl<'t> Parser<'t> {
         if let Some(raw) = self.eat_string_lit() {
             self.skip_newlines();
 
-            let alias = if self.peek_ident() == Some("as") {
-                self.i += 1;
-                self.eat_ident()
-            } else {
-                None
-            };
+            let (alias, alias_expr) = self.parse_import_alias()?;
 
             // 🔑 CLASSIFICATION RULE:
             // If the string contains '{', it is dynamic → Expr
@@ -10771,6 +10767,7 @@ impl<'t> Parser<'t> {
                         ast::Expr::Str(raw, start_span.clone())
                     ),
                     alias,
+                    alias_expr,
                     span: start_span,
                 }));
             }
@@ -10779,6 +10776,7 @@ impl<'t> Parser<'t> {
             return Ok(ast::Stmt::Import(ast::ImportStmt {
                 items: ast::ImportItems::Path(raw),
                 alias,
+                alias_expr,
                 span: start_span,
             }));
         }
@@ -10802,18 +10800,35 @@ impl<'t> Parser<'t> {
 
         let path = path_parts.join("/");
 
-        let alias = if self.peek_ident() == Some("as") {
-            self.i += 1;
-            self.eat_ident()
-        } else {
-            None
-        };
+        let (alias, alias_expr) = self.parse_import_alias()?;
 
         Ok(ast::Stmt::Import(ast::ImportStmt {
             items: ast::ImportItems::Path(path),
             alias,
+            alias_expr,
             span: start_span,
         }))
+    }
+
+    /// `as name`, or `as {expr}` (the alias is computed when the import runs).
+    fn parse_import_alias(&mut self) -> Result<(Option<String>, Option<ast::Expr>), String> {
+        if self.peek_ident() != Some("as") {
+            return Ok((None, None));
+        }
+        self.i += 1;
+        if self.eat_op("{") {
+            let pexpr = self.parse_assign()?;
+            let expr = self.lower_expr(pexpr);
+            if !self.eat_op("}") {
+                return Err(s_help_site!(
+                    "P1014",
+                    "Expected '}' to close a computed import alias",
+                    "import \"modules/{n}/{n}\" as {n}"
+                ));
+            }
+            return Ok((None, Some(expr)));
+        }
+        Ok((self.eat_ident(), None))
     }
 
     fn parse_use(&mut self) -> Result<ast::Stmt, String> {

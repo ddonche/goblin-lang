@@ -523,6 +523,8 @@ pub struct UseStmt {
 pub struct ImportStmt {
     pub items: ImportItems,
     pub alias: Option<String>,  // Only used for single-path imports
+    /// `as {expr}`: the alias is the string `expr` gives when the import runs.
+    pub alias_expr: Option<Expr>,
     pub span: Span,
 }
 

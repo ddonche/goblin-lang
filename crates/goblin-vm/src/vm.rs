@@ -2606,6 +2606,34 @@ impl Vm {
                 self.import_path_as(&path_str, &ns)?;
             }
 
+            Opcode::ImportDynamicAs => {
+                let ns = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    other => return Err(GoblinError::Runtime(format!(
+                        "import: `as {{...}}` must give a name (a string), got {}", other.type_name()))),
+                };
+                let valid = ns.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && ns.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !valid {
+                    return Err(GoblinError::Runtime(format!(
+                        "import: `as {{...}}` gave \"{ns}\", which can't be a module name (letters, digits and _, not starting with a digit)")));
+                }
+                let raw = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    _ => return Err(GoblinError::Runtime("import expression must evaluate to a string".into())),
+                };
+                let path_str = if raw.ends_with(".gbln") || raw.ends_with(".gob") || raw.ends_with(".imports") {
+                    raw.replace('/', std::path::MAIN_SEPARATOR_STR)
+                } else {
+                    format!("{}.gbln", raw.replace('/', std::path::MAIN_SEPARATOR_STR))
+                };
+                if path_str.ends_with(".imports") {
+                    return Err(GoblinError::Runtime(format!(
+                        "alias is not allowed when importing a .imports manifest file ('{raw}' as '{ns}')")));
+                }
+                self.import_path_as(&path_str, &ns)?;
+            }
+
             Opcode::ImportDynamic(ns_idx) => {
                 let raw = match self.stack_pop()? {
                     Value::Str(s) => s.to_string(),
