@@ -1,0 +1,12 @@
+/// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
+/// An app that must not run inactive modules evaluates only the active modules'
+/// manifests instead of importing every manifest by pattern: their actions become
+/// available, and an inactive module's files never run (zeta prints when imported).
+active | ["_support/eval/mods/cool/manifest.imports"]
+:eval(active)
+say(:summon("", ["my_cool_module::action1", "my_cool_module::render"]))
+attempt
+    :summon("", ["zeta::z"])
+rescue e
+    say(:has("{e}", "unknown action 'zeta::z'"))
+xx
