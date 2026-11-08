@@ -61,20 +61,19 @@ aspect Polity |
     lean_league: 1.0
     lean_revolt: 1.0
     lean_match: 1.0
-    /// Its ruler (a Person, or a tribe's or village's Chief), the regent
-    /// ruling for a child, its ruling dynasty and great families, its
-    /// succession law, the line (who is next, in order), the one of the
-    /// ruling family to marry next, a son owed a share of the realm, the
-    /// years left of a term leader's term, the form of government its
-    /// ruler was seated under, and how many rulers have had each name.
+    /// Its ruler, its ruling dynasty and succession law, its ruling
+    /// family as numbers (the heir's age, -1 for none; other kin who
+    /// could contend), how many claims other houses hold on it, whether
+    /// a divided succession owes a son a share, the years left of a term
+    /// leader's term, the form of government its ruler was seated under,
+    /// and how many rulers have had each name.
     ruler: nil
-    regent: nil
     dynasty: nil
-    houses: []
     law: ..
-    line: []
-    single: nil
-    partition: nil
+    heir: -1
+    kin: 0
+    claimants: 0
+    partition: false
     term: 0
     seated: ..
     reigns: {}
@@ -366,7 +365,7 @@ xx
                 rank: 3
             xx
         xx
-        transition split where !(@partition.nix?)
+        transition split where @partition
             into: Kingdom, Kingdom
             first:
                 rank: 4
@@ -537,7 +536,7 @@ xx
                 rank: 6
             xx
         xx
-        transition split where !(@partition.nix?)
+        transition split where @partition
             into: Kingdom, Kingdom
             first:
                 rank: 4
@@ -1880,49 +1879,24 @@ interface realm |
     xx
 xx
 
-/// court: its ruling family's marriages (the inside phase, for a
-/// city-state and up). A match with another realm's ruling family weighs
-/// that family's prestige, the kinship already between them, a grievance
-/// a match could end, and the ruler's ambition; a match at home takes a
-/// noble of the realm's great families, from 20 on, likelier the longer
-/// the one to marry has waited. One a year, or none.
+/// court: its ruler's marriage (the inside phase, for a city-state and
+/// up). A match with another realm's ruling family weighs that family's
+/// prestige, the kinship already between them, a grievance a match could
+/// end, and the ruler's ambition. One a year, or none.
 
 interface court |
     decision match
-        targets: uses court where !(@single.nix?) and target != self and !((target >> single).nix?) and (@single >> female) != (target >> single >> female) and (:link_score(self, target, "border") or :link_score(self, target, "alliance") > 0)
+        targets: uses court where target != self and family::free(self) and !((target >> dynasty).nix?) and (:link_score(self, target, "border") or :link_score(self, target, "alliance") > 0)
         score => (family::prestige_of(target) + :link_score(self, target, "kinship") + :max(grudge(self, target), grudge(target, self)) + .2) / 2.2 * (.5 + @ambition * .5) * @lean_match
-    xx
-    decision home
-        targets: Land where target == @capital and !(@single.nix?) and (@single >> age) >= 20
-        score => :clamp(((@single >> age) - 19) / 15.0, 0.0, 1.0) * (1.0 - @ambition * .5)
     xx
 
     /// Waiting weighs a half.
     judge
-        true:
-            names   | [""]
-            weights | [.5]
-            repeat {"match": match, "home": home} as k, d
-                if d.nix? or (d >> score) <= 0 => skip
-                :put_last!(names, k)
-                :put_last!(weights, d >> score)
-            xx
-            if :len(names) > 1
-                name | :sample_weighted({"src": names, "weights": weights})[0]
-                judge
-                    name == "match": match(self, match >> target)
-                    name == "home": home(self, home >> target)
-                xx
-            xx
+        !match.nix? and (match >> score) > 0:
+            if :sample_weighted({"src": [false, true], "weights": [.5, match >> score]})[0] => match(self, match >> target)
     xx
     act match(p, t)
-        family::wed(p >> single, t >> single)
-        p >> single |= nil
-        t >> single |= nil
-    xx
-    act home(p, l)
-        family::wed_home(p)
-        p >> single |= nil
+        family::wed(p, t)
     xx
 xx
 
@@ -2218,22 +2192,9 @@ act united(p, t, m)
         m >> peoples |= :max(p >> peoples, t >> peoples)
     xx
     government::rule(m, government::choose(m))
-    /// Its court is the first's; the other's ruling house joins its
-    /// great families.
-    family::moved(m, m >> dynasty, m >> houses)
-    hs | family::houses_of(m)
-    td | t >> dynasty
-    if !td.nix?
-        td >> seat |= m
-        td >> great |= true
-        :put_last!(hs, td)
-    xx
-    repeat t >> houses as h
-        if h.nix? => skip
-        h >> seat |= m
-        :put_last!(hs, h)
-    xx
-    m >> houses |= hs
+    /// Its ruler is the first's; the other's ruling house keeps a claim.
+    family::moved(m)
+    family::joined(t, m)
     family::hand(m)
 xx
 
@@ -2317,23 +2278,9 @@ act divided(p, a, b)
     :link!(b, a, "grievance", .4, 60)
     government::rule(a, government::choose(a))
     government::rule(b, government::choose(b))
-    /// The first keeps the court. The second is ruled by the son owed it
-    /// (a divided succession) or by the rival next in the first's line;
-    /// with neither, a house of its own is seated next year.
-    family::moved(a, a >> dynasty, a >> houses)
-    son | a >> partition
-    rival | nil
-    repeat a >> line as x
-        if x.nix? or x >> age < 16 or x == a >> ruler => skip
-        rival |= x
-        stop
-    xx
+    /// The first keeps the ruler. The second is ruled by the son owed it
+    /// (a divided succession), or a ruler is seated next year.
+    family::moved(a)
     family::fresh(b)
-    a >> partition |= nil
-    x | son ?? rival ?? => send nil
-    x >> court |= b
-    b >> law |= a >> law
-    b >> houses |= []
-    family::ensure_houses(b)
-    family::crown(b, x)
+    family::shared(a, b)
 xx
