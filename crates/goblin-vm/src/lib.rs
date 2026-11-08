@@ -22,7 +22,6 @@ pub(crate) mod memo;
 pub mod reqenv;
 pub mod modcache;
 pub mod evalload;
-pub mod import_excludes;
 pub mod sweep;
 pub mod duration;
 pub mod portable;

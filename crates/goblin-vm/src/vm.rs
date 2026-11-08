@@ -2678,10 +2678,6 @@ impl Vm {
                 };
 
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
-                // An excluded GLAM is not read at all (not even its glam.toml).
-                if crate::import_excludes::excluded(&glam_dir.join(format!("{ns}.gbln")), &self.session.project_root)? {
-                    return Ok(());
-                }
                 let toml_path = glam_dir.join("glam.toml");
                 let prev_box_ns = self.session.box_namespace.take();
                 let prev_provides = self.session.box_provides.take();
@@ -4547,10 +4543,6 @@ impl Vm {
         } else {
             full_path.clone()
         };
-        // Excluded by the project's import exclusions: never read, never run.
-        if crate::import_excludes::excluded(&actual_path, &self.session.project_root)? {
-            return Ok(());
-        }
         // One file reached by two spellings (`a/../b.gbln`, a symlink) runs once.
         let canonical = actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone())
             .to_string_lossy().to_string();

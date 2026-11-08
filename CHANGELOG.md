@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.7 — 2026-11-08
+
+- Import exclusions are removed (owner, 2026-11-08): `imports.exclude.yall`, `--import-excludes FILE` and `GOBLIN_IMPORT_EXCLUDES` no longer exist, and `import` and `use` skip nothing. A program picks its modules in code and imports only those (`repeat names as n` / `import "modules/{n}/{n}" as {n}` / `xx`, 0.51.1–0.51.2), so a second list of what not to import is not needed. An `imports.exclude.yall` left in a project is ignored, and `--import-excludes` is no longer a goblin flag (before the script it is read as the script's name; after it, it is passed to the script). Ordinary, grouped, computed and pattern imports, `as {...}`, manifests, `:load`, `:eval` and `:inject` are unchanged.
+- The VM is goblin-vm 0.2.7.
+
 ## 0.51.6 — 2026-11-08
 
 - sims/capstone step 4 reworked (owner, 2026-11-08: "as little machinery as possible", events for what the sim doesn't model). The people are gone: no Person or Chief objects, no parents, children, regents, great families or plots. Every realm has one `Ruler` (name, age, house, fame, aggression, ambition, competence, piety); a `Dynasty` has no members (prestige, realms ruled, claims, famous names) and fades once it rules nowhere and claims nothing; the ruling family is numbers on the realm (`heir` age, `kin`, `claimants`). A ruler dies by the sum of its hazards (illness by age, old age, famine, battle, accidents, murder) and `:event` tells how, drawn by those same hazards; a death told as a murder costs legitimacy and stability. Births, weddings at home, an heir's death, successions, depositions, houses founded and faded, regencies and lines ending are told with `:event`. Succession laws, claims, kinship, partition and the court `match` decision stay; the `home` decision, `plot`/`scheme` and the `crown` overlay are gone; `reign` bends five traits and a child ruler pushes nothing. The metrics CSV counts rulers and dynasties. Year 500: 40 polities, the largest 44 provinces; 1,015 deaths, 74 interregnums, 23 murders, 115 marriages; 3,452 lines of narration; 67.4 s (0.51.4: 79.3 s). `family.gbln` 1,193 lines to about 720. Choices to confirm in `sims/capstone/FINDINGS.md`.
