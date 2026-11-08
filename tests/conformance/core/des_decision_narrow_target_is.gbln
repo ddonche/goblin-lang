@@ -18,7 +18,7 @@ xx
     guests: 0
 xx
 act visit(l, h)
-    say("{l >> name} visits {h >> name}")
+    :say("{l >> name} visits {h >> name}")
     h >> guests |= h >> guests + 1
 xx
 h1 <> Hall | name: "Oak", guests: 2
@@ -28,4 +28,4 @@ b <> Lord | name: "Bel"
 c <> Lord | name: "Cai", seat: a
 tick()
 tick()
-say(h1 >> guests)
+:say(h1 >> guests)
