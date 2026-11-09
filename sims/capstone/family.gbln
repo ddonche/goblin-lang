@@ -310,8 +310,7 @@ act died(r)
     if !d.nix? and r >> fame >= 15.0 and !:has(d >> names, r >> given) => :put_last!(d >> names, r >> given)
     p | r >> court ?? => send nil
     if p >> ruler != r => send nil
-    p >> ruler |= nil
-    hand(p)
+    :detach!(p, "reign")
     if (government::form_of(p) ?? ..) == "interregnum" => send nil
     succeed(p, r)
 xx
@@ -381,10 +380,12 @@ xx
 /// seating rulers
 
 /// Puts the reign on `p`, drawn anew from who rules now, or takes it off
-/// when no one rules or a child does.
+/// when no one rules, its ruler is leaving (erased this year) or a child
+/// rules.
 act hand(p)
     :detach!(p, "reign")
     r | p >> ruler ?? => send nil
+    if r >> dead or r >> gone => send nil
     if r >> age >= 16 => :overlay!(p, "reign")
 xx
 
@@ -460,7 +461,6 @@ xx
 act depose(p, cruel)
     r | p >> ruler ?? => send nil
     r >> gone |= true
-    p >> ruler |= nil
     how | :event(p, "ruler deposed", r, {"was put to death": cruel * .5, "fled into exile": 1.0 - cruel * .5})
     if how == "was put to death" => count("executions")
 xx
@@ -475,7 +475,6 @@ act interregnum(p, claim)
     p >> seated |= "interregnum"
     r | p >> ruler
     if !r.nix? => r >> gone |= true
-    p >> ruler |= nil
     p >> heir |= -1
     p >> kin |= 0
     count("interregnums")
@@ -636,10 +635,7 @@ act election(p, fresh)
         p >> term |= term_of(government::form_of(p) ?? ..)
         send nil
     xx
-    if !r.nix?
-        r >> gone |= true
-        p >> ruler |= nil
-    xx
+    if !r.nix? => r >> gone |= true
     p >> heir |= -1
     p >> kin |= 0
     crown(p, new_ruler(p, nil, c, c{"age"}), "elected")
@@ -669,7 +665,7 @@ xx
 /// Whether `p`'s ruler is of its house and free to wed.
 act free(p)
     r | p >> ruler ?? => send false
-    if (p >> dynasty).nix? or r >> house != p >> dynasty => send false
+    if r >> dead or r >> gone or (p >> dynasty).nix? or r >> house != p >> dynasty => send false
     return r >> spouse == .. and r >> age >= 16 and r >> age <= 50
 xx
 

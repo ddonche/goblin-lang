@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.9 — 2026-11-09
+
+- sims/capstone: a ruler leaves only by its erase transition (owner, 2026-11-09: "An object cannot be nil. It must be erased."). When a ruler died, was deposed or voted out, or an interregnum began, `family.gbln` also cleared the realm's `ruler` by hand; now the ruler is marked `dead` or `gone`, `transition erase` removes it, and the realm's `ruler` reads nil once it is erased. `reign` is not put on for a leaving ruler, and a leaving ruler can't wed. FINDINGS no longer lists "an object variable can't take nil" as a runtime gap. Year 500: 40 polities, the largest 45 provinces, 1,069 deaths, 65 interregnums; 62.8 s (0.51.6: 67.4 s, run noise included).
+
 ## 0.51.8 — 2026-11-09
 
 - GLAMs have no dependencies, and the Box is the only way in or out (owner, 2026-11-08). A GLAM's code is every file under `glams/<name>/`: its entry file, its own helper files, and their actions, whenever they run. That code:

@@ -1,11 +1,11 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 75 polities, largest Gorarhal-Falvar-Gortorhalgor with 19 provinces, 8 wars
-year 200: 49 polities, largest Gorarhal-Falvar-Gortorhalgor-Belfal-Sartorulgor with 29 provinces, 1 wars
-year 300: 39 polities, largest Orpel with 45 provinces, 3 wars
-year 400: 47 polities, largest Orpel with 42 provinces, 7 wars
-year 500: 40 polities, largest Gorarhal-Falvar-Gortorhalgor-Belfal-Sartorulgor with 44 provinces, 5 wars
-check: share of polity-years at war: 16.6%
-check: forms at the end: aristocratic_republic 2, chieftainship 1, citizen_republic 2, confederation 1, elders_council 3, elective_monarchy 6, interregnum 1, merchant_oligarchy 14, military_junta 2, theocracy 8
-check: families: deaths 1015, murders 23, executions 3, crowned 1253, regencies 3, usurped 30, interregnums 74, lines_ended 4, elections 1274, claims_won 56, new_houses 112, marriages 115, births 164, partitions 0
-check: succession laws at the end: elective 6, faith 4, force 2, none 2, term 17
+year 100: 67 polities, largest Orpel with 20 provinces, 1 wars
+year 200: 52 polities, largest Wenkelgor-Mardun-Pelquar-Toryrgor with 31 provinces, 5 wars
+year 300: 41 polities, largest Orpel with 30 provinces, 7 wars
+year 400: 38 polities, largest Orpel with 32 provinces, 5 wars
+year 500: 40 polities, largest Dunnoresk-Toresk-Roscor-Halordun with 45 provinces, 4 wars
+check: share of polity-years at war: 18.3%
+check: forms at the end: aristocratic_republic 2, citizen_republic 3, elders_council 3, elective_monarchy 5, hereditary_monarchy 1, imperial_autocracy 1, merchant_oligarchy 7, military_junta 3, theocracy 13, tyranny 2
+check: families: deaths 1069, murders 31, executions 6, crowned 1070, regencies 8, usurped 43, interregnums 65, lines_ended 8, elections 1009, claims_won 51, new_houses 106, marriages 99, births 127, partitions 0
+check: succession laws at the end: eldest_child 2, elective 4, faith 7, force 5, none 4, term 12

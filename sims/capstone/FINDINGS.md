@@ -398,7 +398,7 @@ kinsman") costs the realm legitimacy .15 and stability .1. That is
 modelled, not only told: murder is one of the hazards, so it can only be
 told where the realm's state made it likely.
 
-A run of one house, from the event log of the expected run:
+A run of one house, from the event log (first 0.51.6 run):
 
     tick 1200 | Kingdom Corjor | new ruler | Ruler Casa Ashbry | "the first of a new house"
     tick 1216 | Empire Corjor | ruler died | Ruler Casa Ashbry | "of a fever"
@@ -420,22 +420,29 @@ upbringing, regents as objects, the great families as objects, the
 a yearly chance now), the `crown` overlay (honor, fear, legitimacy and
 the cruelty and charisma traits), health, and sex.
 
-## Result (seed 42, 500 years)
+## Result (seed 42, 500 years, 0.51.9)
 
-- 40 polities, the largest 44 provinces (11.1% of the held land);
-  16.6% of polity-years at war. (0.51.4: 47, 35 and 18.4%.)
-- 1,253 rulers seated, 1,015 deaths (chiefs included: 501 of a fever,
-  404 of old age, 40 hunting, 26 a fall, 23 poisoned, 21 in battle),
-  74 interregnums, 4 lines ended, 56 claims won, 30 usurpations, 3
-  executions, 3 regencies, 112 new houses, 115 marriages (80 between
-  realms), 164 births, no partition in this run (one in an earlier
-  run).
-- 3,452 lines of narration in an event log of 253,636 lines.
-- Forms at the end: 14 merchant oligarchy, 8 theocracy, 6 elective
-  monarchy, no hereditary monarchy (0.51.4: 5). The runs are chaotic:
-  an earlier run of this step ended with 2.
-- Speed: 500 years of history in 67.4 s (0.51.4: 79.3 s; step 3:
+- 40 polities, the largest 45 provinces (11.4% of the held land);
+  18.3% of polity-years at war. (0.51.4: 47, 35 and 18.4%.)
+- 1,070 rulers seated, 1,069 deaths (chiefs included: 525 of a fever,
+  414 of old age, 42 hunting, 30 a fall, 28 poisoned, 3 by a kinsman,
+  27 in battle), 65 interregnums, 8 lines ended, 51 claims won, 43
+  usurpations, 6 executions, 8 regencies, 106 new houses, 99 marriages
+  (54 between realms), 127 births, no partition in this run.
+- 3,315 lines of narration in an event log of 254,678 lines.
+- Forms at the end: 13 theocracy, 7 merchant oligarchy, 5 elective
+  monarchy, 1 hereditary monarchy (0.51.4: 5). The runs are chaotic:
+  small changes move these a lot.
+- Speed: 500 years of history in 62.8 s (0.51.4: 79.3 s; step 3:
   69.7 s).
+
+**0.51.9: rulers leave only by erase** (owner, 2026-11-09: "An object
+cannot be nil. It must be erased."). 0.51.6 also cleared the realm's
+`ruler` by hand when a ruler died, was deposed, voted out or lost the
+throne in an interregnum, which did the erase's job twice. Now the
+ruler is marked (`dead` or `gone`) and its `transition erase` removes
+it; the realm's `ruler` reads nil once it is erased. `reign` is not put
+on for a ruler that is leaving, and a leaving ruler can't wed.
 
 ## Choices to confirm
 
