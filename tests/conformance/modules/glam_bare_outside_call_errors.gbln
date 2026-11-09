@@ -1,0 +1,8 @@
+/// known-gap: interp lets a GLAM call the project's actions (VM only, 0.51.8)
+/// A GLAM's code that calls a project action by name fails when it loads (B0111).
+act outside_act()
+    return "x"
+xx
+:say("before")
+use _conf_bareout
+:say("after")

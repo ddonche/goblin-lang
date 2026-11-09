@@ -3,6 +3,16 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.8 — 2026-11-09
+
+- GLAMs have no dependencies, and the Box is the only way in or out (owner, 2026-11-08). A GLAM's code is every file under `glams/<name>/`: its entry file, its own helper files, and their actions, whenever they run. That code:
+  - imports only files under `glams/<name>/` (a GLAM split across many files works as before); any other import is B0110;
+  - never runs `use`; loading another GLAM is B0109 (the project `use`s both, and they share values through the Box);
+  - can't read the project's variables or call its actions, or any other module's (B0111): a bare name that isn't the GLAM's own fails when the GLAM loads, a name found at run time fails when it's read, `{name}` in a string stays as written, and `:invoke`/`:summon` of an outside action fails. An outside action is wired in `[needs.actions]` and called with `:need`, as before;
+  - writes only into its own Box namespace (B0102) and only the names its `[provides] values` lists (B0105), at any time. Before, both rules held only while `use` ran the GLAM's top level, so its actions could write anywhere later.
+  - Reading any Box variable is still allowed, and so are builtins, file I/O and `:need`. Code outside `glams/` is unchanged.
+- The VM is goblin-vm 0.2.8. The interpreter has none of this (conformance: `known-gap: interp`).
+
 ## 0.51.7 — 2026-11-08
 
 - Import exclusions are removed (owner, 2026-11-08): `imports.exclude.yall`, `--import-excludes FILE` and `GOBLIN_IMPORT_EXCLUDES` no longer exist, and `import` and `use` skip nothing. A program picks its modules in code and imports only those (`repeat names as n` / `import "modules/{n}/{n}" as {n}` / `xx`, 0.51.1–0.51.2), so a second list of what not to import is not needed. An `imports.exclude.yall` left in a project is ignored, and `--import-excludes` is no longer a goblin flag (before the script it is read as the script's name; after it, it is passed to the script). Ordinary, grouped, computed and pattern imports, `as {...}`, manifests, `:load`, `:eval` and `:inject` are unchanged.

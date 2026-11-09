@@ -1,0 +1,20 @@
+/// known-gap: interp lets a GLAM use, import, read and write outside itself (VM only, 0.51.8)
+/// A GLAM has no dependencies: its code imports only its own files, never runs
+/// `use`, never reads or calls the project's names, and writes only its own
+/// Box namespace, at any time.
+project_secret | "secret"
+act project_act()
+    return "project"
+xx
+#site::title | "t"
+use _conf_nodeps
+:say(:summon("", ["_conf_nodeps::own"]))
+repeat ["load_glam", "load_project_file", "read_project_var", "write_other_ns", "call_project_action"] as a
+    attempt
+        :summon("", ["_conf_nodeps::" + a])
+        :say("{a}: ran")
+    rescue e
+        :say(a + ": " + :before(:after("{e}", "runtime error: "), ":"))
+    xx
+xx
+:say(#site::title)

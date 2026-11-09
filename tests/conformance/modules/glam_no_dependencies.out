@@ -1,0 +1,7 @@
+[own]
+load_glam: B0109
+load_project_file: B0110
+read_project_var: B0111
+write_other_ns: B0102
+call_project_action: B0111
+t

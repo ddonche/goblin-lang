@@ -206,6 +206,8 @@ pub struct Vm {
     inject_frames: Vec<(String, Vec<crate::evalload::Injection>)>,
     /// The files being imported right now, outermost first (real paths).
     import_stack: Vec<String>,
+    /// Source file -> the GLAM it belongs to (`glams/<name>/...`), if any.
+    glam_files: std::collections::HashMap<String, Option<String>>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -230,7 +232,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1454,6 +1456,7 @@ impl Vm {
                     (ns, name)
                 };
                 let val = self.pop_value()?;
+                self.check_glam_box_write(&ns, &name)?;
                 self.session.box_write(&ns, &name, val, tether)?;
             }
 
@@ -1462,7 +1465,9 @@ impl Vm {
                 let (Value::Str(ns), Value::Str(name)) = (&frame.func.constants[ns_idx as usize], &frame.func.constants[name_idx as usize]) else {
                     return Err(GoblinError::Runtime("BoxCheck: constants are not strings".into()));
                 };
-                self.session.box_check(ns, name)?;
+                let (ns, name) = (ns.clone(), name.clone());
+                self.check_glam_box_write(&ns, &name)?;
+                self.session.box_check(&ns, &name)?;
             }
 
             Opcode::SetField(idx) => {
@@ -2677,6 +2682,11 @@ impl Vm {
                     }
                 };
 
+                // A GLAM has no dependencies: its code never loads another GLAM.
+                if let Some(g) = self.current_glam() {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0109: glam-dependency: GLAM '{g}' cannot `use {ns}`: a GLAM has no dependencies. Read what it needs from the Box, and let the project `use` both GLAMs.")));
+                }
                 let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
                 let prev_box_ns = self.session.box_namespace.take();
@@ -3039,6 +3049,20 @@ impl Vm {
                     None => self.des_name(&name)
                         .ok_or_else(|| GoblinError::UndefinedVariable { name: name.to_string() })?,
                 };
+                // A GLAM's code reaches only its own actions by name; anything
+                // else from outside comes through the Box.
+                if let Some(g) = self.current_glam() {
+                    let src = match &value {
+                        Value::Function(f) => Some(f.source_file.clone()),
+                        Value::Closure(c) => Some(c.func.source_file.clone()),
+                        _ => None,
+                    };
+                    let own = src.map_or(false, |f| self.glam_of_file(&f).as_deref() == Some(g.as_str()));
+                    if !own {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0111: glam-outside-name: GLAM '{g}' cannot use '{name}' from outside the GLAM. A GLAM reads outside information from the Box.")));
+                    }
+                }
                 self.stack.push(Operand::Val(value));
             }
 
@@ -3283,6 +3307,15 @@ impl Vm {
             if let Ok(v) = self.session.read_value(&t) {
                 return Some(v);
             }
+        }
+        // In a GLAM's code, only the GLAM file's own globals: nothing from outside.
+        if self.current_glam().is_some() {
+            let file = self.call_stack.last()?.func.source_file.clone();
+            let p = std::path::Path::new(&file);
+            let own = format!("{}::{name}", p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display());
+            let t = self.session.global_names.iter().position(|n| *n == own)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten())?;
+            return self.session.read_value(&t).ok();
         }
         // 2. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
@@ -4533,6 +4566,48 @@ impl Vm {
         }
         Ok(())
     }
+    /// The GLAM a source file belongs to: a file under `glams/<name>/` in the
+    /// project root (helper files in subdirectories included).
+    fn glam_of_file(&mut self, file: &str) -> Option<String> {
+        if let Some(hit) = self.glam_files.get(file) { return hit.clone(); }
+        let glams = self.session.project_root.join("glams");
+        let glams = glams.canonicalize().unwrap_or(glams);
+        let p = std::path::Path::new(file);
+        let p = if p.is_absolute() { p.to_path_buf() } else { self.session.project_root.join(p) };
+        let p = p.canonicalize().unwrap_or(p);
+        let g = p.strip_prefix(&glams).ok().and_then(|rest| {
+            let mut parts = rest.components();
+            let first = parts.next()?;
+            parts.next()?;
+            Some(first.as_os_str().to_string_lossy().to_string())
+        });
+        self.glam_files.insert(file.to_string(), g.clone());
+        g
+    }
+
+    /// The GLAM whose code is running now, if any.
+    fn current_glam(&mut self) -> Option<String> {
+        let file = self.call_stack.last()?.func.source_file.clone();
+        self.glam_of_file(&file)
+    }
+
+    /// A GLAM's code, at any time, writes only into its own Box namespace
+    /// (B0102) and only the names its `[provides] values` lists (B0105).
+    fn check_glam_box_write(&mut self, ns: &str, name: &str) -> Result<(), GoblinError> {
+        let Some(g) = self.current_glam() else { return Ok(()) };
+        if g != ns {
+            return Err(GoblinError::Runtime(format!(
+                "B0102: box-namespace-violation: GLAM '{g}' cannot write into namespace '{ns}'")));
+        }
+        if let Some(provides) = self.session.glam_provides.get(&g) {
+            if !provides.contains(name) {
+                return Err(GoblinError::Runtime(format!(
+                    "B0105: box-undeclared-provide: GLAM '{g}' cannot publish '#{ns}::{name}' — '{name}' is not declared in [provides]")));
+            }
+        }
+        Ok(())
+    }
+
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
         let path_str = full_path.to_string_lossy().to_string();
@@ -4546,6 +4621,17 @@ impl Vm {
         // One file reached by two spellings (`a/../b.gbln`, a symlink) runs once.
         let canonical = actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone())
             .to_string_lossy().to_string();
+        // A GLAM's code imports only its own files.
+        if let Some(g) = self.current_glam() {
+            if self.glam_of_file(&canonical).as_deref() != Some(g.as_str()) {
+                let root = self.session.project_root.canonicalize().unwrap_or_else(|_| self.session.project_root.clone());
+                let shown = std::path::Path::new(&canonical).strip_prefix(&root)
+                    .map(|p| p.display().to_string()).unwrap_or_else(|_| canonical.clone());
+                return Err(GoblinError::Runtime(format!(
+                    "B0110: glam-outside-import: GLAM '{g}' cannot import '{shown}': a GLAM imports only its own files (glams/{g}/). Read what it needs from the Box.")));
+            }
+        }
+        let isolated = self.glam_of_file(&canonical).is_some();
         if self.session.imported.contains(&canonical) {
             // Still running further up: a cycle. It is skipped, as before,
             // but said, so a missing action is easier to trace.
@@ -4572,7 +4658,7 @@ impl Vm {
             None => {
                 let globals_before = self.session.global_names.clone();
                 crate::modcache::compile_import(
-                    &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
+                    &actual_path, &globals_before, &module_prefix, owner_glam, isolated, |entry| self.quicken(entry),
                 )?
             }
         };
@@ -4728,6 +4814,7 @@ impl Vm {
                         "B0105: [provides] values entries must be strings, got: {}", other))),
                 }
             }
+            self.session.glam_provides.insert(ns.to_string(), set.clone());
             self.session.box_provides = Some(set);
         }
 
@@ -5384,7 +5471,23 @@ impl Vm {
         } else {
             args[1..].to_vec()
         };
+        self.glam_may_call(&name)?;
         self.call_named(&name, forwarded)
+    }
+
+    /// `:invoke`/`:summon` from a GLAM's code reach only the GLAM's own
+    /// actions; an outside action is wired as a need and called with `:need`.
+    fn glam_may_call(&mut self, name: &str) -> Result<(), GoblinError> {
+        let Some(g) = self.current_glam() else { return Ok(()) };
+        let src = match self.resolve_named(name) {
+            Some(Value::Function(f)) => Some(f.source_file.clone()),
+            Some(Value::Closure(c)) => Some(c.func.source_file.clone()),
+            _ => None,
+        };
+        let Some(src) = src else { return Ok(()) };  // unknown: call_named reports it
+        if self.glam_of_file(&src).as_deref() == Some(g.as_str()) { return Ok(()); }
+        Err(GoblinError::Runtime(format!(
+            "B0111: glam-outside-name: GLAM '{g}' cannot call '{name}' from outside the GLAM. Declare it in [needs.actions] and call it with :need.")))
     }
 
     fn vm_summon(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
@@ -5402,6 +5505,7 @@ impl Vm {
                 Value::Str(s) => s,
                 other => return Err(GoblinError::type_error("str", other.type_name(), "summon event name")),
             };
+            self.glam_may_call(&name)?;
             acc = self.call_named(&name, vec![acc])?;
         }
         Ok(acc)

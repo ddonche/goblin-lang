@@ -386,6 +386,9 @@ pub struct Session {
     /// outside them raise B0102/B0105, as in the interpreter.
     pub box_namespace: Option<String>,
     pub box_provides: Option<std::collections::HashSet<String>>,
+    /// Each GLAM's `[provides] values` list: the only names its code may
+    /// publish, at any time (B0105).
+    pub glam_provides: HashMap<String, std::collections::HashSet<String>>,
     /// `import path as alias`: (importing file, alias) → the module's global-name
     /// prefix, so `alias::var` reads the module's live global.
     pub module_aliases: Rc<HashMap<(String, String), String>>,
@@ -568,6 +571,7 @@ impl Session {
             current_glam_ns: None,
             box_namespace: None,
             box_provides: None,
+            glam_provides: Default::default(),
             module_aliases: Default::default(),
             import_paths: HashMap::new(),
             box_store: HashMap::new(),
