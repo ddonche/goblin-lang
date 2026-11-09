@@ -1869,13 +1869,13 @@ interface realm |
         t >> owner |= nil
         p >> prestige |= p >> prestige - 2.0
         :link!(t, p, "grievance", -.3, 40)
-        if t >> form == "client_regime" => government::rule(t, government::choose(t))
+        if government::rule_of(t >> form) == "client" => government::rule(t, government::choose(t))
     xx
     act revolt(p, t)
         p >> owner |= nil
         p >> prestige |= p >> prestige + 2.0
         :link!(t, p, "grievance", .3, 60)
-        if p >> form == "client_regime" => government::rule(p, government::choose(p))
+        if government::rule_of(p >> form) == "client" => government::rule(p, government::choose(p))
     xx
 xx
 
@@ -1962,7 +1962,7 @@ act settle_year(p)
         if p >> lost_years == 0 => p >> beaten_by |= nil
     xx
     if :is_type(p, "League") and p >> lands == 0
-        if (p >> form) != "confederation" => government::rule(p, "confederation")
+        if (p >> form) != government::league_form() => government::rule(p, government::league_form())
     else
         armed  | (p >> army) / ((p >> people) * .1 + 1.0)
         unpaid | 0.0
@@ -2052,13 +2052,13 @@ xx
 act civil_war(p)
     if p >> lands < 4 => send 0.0
     gap | .3
-    if p >> form == "interregnum" => gap |= 1.0
+    if government::contested(p >> form) => gap |= 1.0
     return odds(under(p >> cohesion, .5) * under(p >> succession, .45) * gap)
 xx
 /// A kingdom breaks into city-states: an interregnum that drags on,
 /// centralization collapsed, cities strong.
 act shatter(p)
-    if p >> cities < 2 or p >> form != "interregnum" => send 0.0
+    if p >> cities < 2 or !government::contested(p >> form) => send 0.0
     return odds(:min(p >> form_years / 20.0, 1.0) * under(p >> centralization, .3) * :min((p >> cities - 1) / 2.0, 1.0))
 xx
 /// Its far province breaks away: far from the capital and a loose hold;
@@ -2175,7 +2175,7 @@ xx
 act vassal_made(p, t)
     t >> submits_to |= nil
     t >> beaten_by |= nil
-    government::rule(t, "client_regime")
+    government::rule(t, government::client_form())
 xx
 
 /// A union: both treasuries and armies, both peoples, a form drawn anew.
@@ -2210,7 +2210,7 @@ act founded_child(p, c)
             q >> owner |= c
         xx
         c >> members |= 1 + :len(ps)
-        government::rule(c, "confederation")
+        government::rule(c, government::league_form())
         send nil
     xx
     l | p >> colony_at ?? => send nil

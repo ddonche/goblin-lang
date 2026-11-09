@@ -326,7 +326,7 @@ act died(r)
     p | r >> court ?? => send nil
     if p >> ruler != r => send nil
     :detach!(p, "reign")
-    if (government::form_of(p) ?? ..) == "interregnum" => send nil
+    if government::contested(government::form_of(p) ?? ..) => send nil
     succeed(p, r)
 xx
 
@@ -338,17 +338,9 @@ xx
 
 hereditary | ["eldest_child", "eldest_son", "divided", "strongest_kin"]
 
-/// The kind of rule a form of government has.
+/// The kind of rule a form of government has (its `rule`).
 act kind(f)
-    judge
-        f == "hereditary_monarchy" or f == "elective_monarchy" or f == "imperial_autocracy" or f == "constitutional_monarchy": send "crown"
-        f == "tyranny": send "usurper"
-        f == "military_junta": send "junta"
-        f == "theocracy": send "priest"
-        f == "aristocratic_republic" or f == "citizen_republic" or f == "merchant_oligarchy": send "term"
-        f == "client_regime": send "client"
-    xx
-    return "none"
+    return government::rule_of(f)
 xx
 
 /// Whether a form of rule `k` has a ruling house.
@@ -372,10 +364,10 @@ xx
 act law_for(p, f)
     k | kind(f)
     judge
-        f == "elective_monarchy": send "elective"
+        government::of(f, "law", ..) != ..: send government::of(f, "law", ..)
         k == "crown":
             if !:has(hereditary, p >> law) => send draw_law(p)
-            if p >> law == "divided" and (f == "constitutional_monarchy" or p >> rank < 4 or p >> rank > 5) => send "eldest_son"
+            if p >> law == "divided" and (government::of(f, "constitution", false) or p >> rank < 4 or p >> rank > 5) => send "eldest_son"
             send p >> law
         k == "usurper" or k == "junta": send "force"
         k == "priest": send "faith"
@@ -385,11 +377,9 @@ act law_for(p, f)
     return p >> law
 xx
 
-/// Term years by form.
+/// Term years by form (its `term`).
 act term_of(f)
-    if f == "aristocratic_republic" => send 10
-    if f == "merchant_oligarchy" => send 6
-    return 4
+    return government::of(f, "term", 4)
 xx
 
 /// seating rulers
@@ -506,8 +496,8 @@ act interregnum(p, claim)
     d | p >> dynasty
     if claim => add_claim(d, p)
     set_house(p, nil)
-    government::rule(p, "interregnum")
-    p >> seated |= "interregnum"
+    government::rule(p, government::contested_form())
+    p >> seated |= government::contested_form()
     r | p >> ruler
     if !r.nix? => r >> gone |= true
     p >> heir |= -1
@@ -812,7 +802,7 @@ act check(p)
         p >> seated |= f
         send nil
     xx
-    if f == p >> seated and (!r.nix? or f == "interregnum") => send nil
+    if f == p >> seated and (!r.nix? or government::contested(f)) => send nil
     k | kind(f)
     was | kind(p >> seated)
     p >> seated |= f

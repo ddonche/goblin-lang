@@ -776,6 +776,7 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
         if !vm.session.overlay_defs.contains_key(&name) { break name; }
     };
     let made = OverlayDef { name: name.clone(), generated: true, parents: vec![parent.to_string()], ..(*def).clone() };
+    vm.session.kind_order.push(name.clone());
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok(name)
 }
@@ -814,6 +815,7 @@ fn merged_kind(vm: &mut Vm, a: &str, b: &str) -> Result<(String, bool), GoblinEr
     };
     if vm.session.overlay_defs.contains_key(&name) { return Ok((name, false)); }
     let made = OverlayDef { name: name.clone(), generated: true, parents: vec![a.to_string(), b.to_string()], ..(*def).clone() };
+    vm.session.kind_order.push(name.clone());
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok((name, true))
 }

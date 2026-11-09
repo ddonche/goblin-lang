@@ -1474,7 +1474,6 @@ impl Vm {
             }
 
             Opcode::SetField(idx) => {
-                let new_val = self.pop_value()?;
                 let key = {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
@@ -1483,47 +1482,7 @@ impl Vm {
                     Value::Str(s) => s.clone(),
                     other => return Err(GoblinError::Runtime(format!("SetField: key must be str, got {}", other.type_name()))),
                 };
-                // The object expression leaves a Ref or Object on the stack.
-                let obj_val = self.stack_pop()?;
-                let uuid = match obj_val {
-                    Value::Ref(u) => u,
-                    Value::Object(o) => o.uuid.clone(),
-                    other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
-                };
-                // An overlay is an object: a copy's fields are written like
-                // any object's (the variable gets the copy as it is now).
-                if uuid.starts_with(OVERLAY_RECORD) {
-                    let rec = self.write_overlay_field(&uuid, &field_name, new_val)?;
-                    self.stack.push(Operand::Val(rec));
-                    return Ok(());
-                }
-                let new_val = entry_of(&self.session, new_val);
-                if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
-                // Mutate directly in object_store (shared reference semantics, like interpreter).
-                self.session.touch(&uuid);
-                if let Some(obj) = self.session.object_store.get_mut(&uuid) {
-                    check_field_write(obj, &field_name)?;
-                    if let Value::Object(ref mut o) = obj {
-                        // A trait field (a 0..1 number at creation) stays in 0..1.
-                        let new_val = if o.trait_fields.contains(field_name.as_str()) {
-                            match new_val {
-                                Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
-                                Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
-                                other => other,
-                            }
-                        } else { new_val };
-                        std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
-                    }
-                    if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
-                    // A region's object, written by the program that runs
-                    // the world: its region gets the new value next tick.
-                    crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
-                } else {
-                    return Err(GoblinError::Runtime(format!(
-                        "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
-                }
-                // Push ref back so caller can chain / store back.
-                self.stack.push(Operand::Val(Value::Ref(uuid)));
+                return self.set_field_named(field_name);
             }
             Opcode::JumpIfLocalSet(slot, offset) => {
                 let frame = self.call_stack.last_mut().unwrap();
@@ -1724,6 +1683,28 @@ impl Vm {
                 self.call_stack.push(new_frame);
             }
 
+            Opcode::GetMemberDyn => {
+                let name = match self.pop_value()? {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R0414: field-name-not-text: `obj >> {{name}}` takes the field's name as text, got {}", other.type_name()))),
+                };
+                let obj = self.pop_value()?;
+                let v = member_dispatch(&obj, &name, &mut self.session)?;
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::SetFieldDyn => {
+                // Stack: [obj, name, value] -> SetField's [obj, value] with
+                // the name as a constant would be; reuse its code path.
+                let value = self.stack_pop()?;
+                let name = match self.pop_value()? {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R0414: field-name-not-text: `obj >> {{name}} |= ...` takes the field's name as text, got {}", other.type_name()))),
+                };
+                self.stack.push(Operand::Val(value));
+                return self.set_field_named(name);
+            }
             Opcode::GetMember(idx) => {
                 let key = {
                     let frame = self.call_stack.last().unwrap();
@@ -2842,6 +2823,7 @@ impl Vm {
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
+                if !self.session.overlay_defs.contains_key(&vm_def.name) { self.session.kind_order.push(vm_def.name.clone()); }
                 self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
@@ -5660,6 +5642,54 @@ impl Vm {
         Ok(f)
     }
 
+    /// `obj >> name |= v` (stack: [obj, v]): writes the field and leaves
+    /// the object (a reference) for the variable it came from.
+    fn set_field_named(&mut self, field_name: crate::value::GStr) -> Result<(), GoblinError> {
+        let new_val = self.pop_value()?;
+        // The object expression leaves a Ref or Object on the stack.
+        let obj_val = self.stack_pop()?;
+        let uuid = match obj_val {
+            Value::Ref(u) => u,
+            Value::Object(o) => o.uuid.clone(),
+            other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
+        };
+        // An overlay is an object: a copy's fields are written like
+        // any object's (the variable gets the copy as it is now).
+        if uuid.starts_with(OVERLAY_RECORD) {
+            let rec = self.write_overlay_field(&uuid, &field_name, new_val)?;
+            self.stack.push(Operand::Val(rec));
+            return Ok(());
+        }
+        let new_val = entry_of(&self.session, new_val);
+        if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
+        // Mutate directly in object_store (shared reference semantics, like interpreter).
+        self.session.touch(&uuid);
+        if let Some(obj) = self.session.object_store.get_mut(&uuid) {
+            check_field_write(obj, &field_name)?;
+            if let Value::Object(ref mut o) = obj {
+                // A trait field (a 0..1 number at creation) stays in 0..1.
+                let new_val = if o.trait_fields.contains(field_name.as_str()) {
+                    match new_val {
+                        Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+                        Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+                        other => other,
+                    }
+                } else { new_val };
+                std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
+            }
+            if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
+            // A region's object, written by the program that runs
+            // the world: its region gets the new value next tick.
+            crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
+        } else {
+            return Err(GoblinError::Runtime(format!(
+                "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
+        }
+        // Push ref back so caller can chain / store back.
+        self.stack.push(Operand::Val(Value::Ref(uuid)));
+        Ok(())
+    }
+
     /// The named variables of the running action (none at the top level,
     /// whose variables are globals), by name, each once, with its value now.
     fn maker_values(&mut self) -> Result<Vec<(String, Value)>, GoblinError> {
@@ -6448,8 +6478,16 @@ impl Vm {
             Some(c) if c.starts_with("uses ") => Some(self.session.places_of_class(c)),
             Some(c) => {
                 if !self.session.classes.contains_key(c) {
+                    // An overlay class: its overlays are its objects.
+                    if let Some(kinds) = self.overlay_kinds_of(c) {
+                        let mut out = Vec::with_capacity(kinds.len());
+                        for k in kinds {
+                            if pred.as_ref().is_none_or(|p| self.query_predicate_holds(p, &k)) { out.push(k); }
+                        }
+                        return Ok(Value::Array(out));
+                    }
                     return Err(GoblinError::Runtime(format!(
-                        "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
+                        "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name, or an overlay class (<^>Name) that has overlays")));
                 }
                 let narrowed = match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
                     Some(at) => Some(at),
@@ -6712,6 +6750,37 @@ impl Vm {
         }))
     }
 
+    /// The overlays of overlay class `class` (declared, or made while the
+    /// program ran), in the order they were made, each as an object of the
+    /// class: `overlay_name`, `parents`, the `intensity` a new copy starts
+    /// at, and its own fields. None when no overlay is of that class.
+    fn overlay_kinds_of(&self, class: &str) -> Option<Vec<Value>> {
+        let defs = &self.session.overlay_defs;
+        let mut names: Vec<&str> = self.session.kind_order.iter().map(String::as_str)
+            .filter(|n| defs.get(*n).is_some_and(|d| d.class.as_deref() == Some(class))).collect();
+        let mut rest: Vec<&str> = defs.iter()
+            .filter(|(n, d)| d.class.as_deref() == Some(class) && !self.session.kind_order.iter().any(|k| k == *n))
+            .map(|(n, _)| n.as_str()).collect();
+        rest.sort_unstable();
+        names.extend(rest);
+        if names.is_empty() { return None; }
+        Some(names.into_iter().map(|n| {
+            let d = &defs[n];
+            let mut f = crate::value::FieldMap::default();
+            f.insert("overlay_name".to_string(), Value::Str(n.into()));
+            f.insert("parents".to_string(), Value::Array(d.parents.iter().map(|p| Value::Str(p.as_str().into())).collect()));
+            f.insert("intensity".to_string(), Value::Float(d.intensity));
+            for (k, v) in &d.extra_fields { f.insert(k.clone(), v.clone()); }
+            Value::Object(Box::new(crate::value::ObjectVal {
+                class_name: crate::value::class_rc(class),
+                fields: std::rc::Rc::new(f),
+                readonly_fields: Default::default(),
+                trait_fields: Default::default(),
+                uuid: format!("{OVERLAY_RECORD}kind:{n}").into(),
+            }))
+        }).collect())
+    }
+
     /// Writes field `field` of the overlay copy a record names
     /// (`o >> intensity |= .9`, `o >> fervor |= 2`) and gives the copy's
     /// record as it is now. `intensity` stays in 0..1; `ticks_remaining`
@@ -6721,6 +6790,9 @@ impl Vm {
     fn write_overlay_field(&mut self, record: &str, field: &str, v: Value) -> Result<Value, GoblinError> {
         let err = |what: String| GoblinError::Runtime(format!("R1249: overlay-field-write: `{field}`: {what}"));
         let rest = &record[OVERLAY_RECORD.len()..];
+        if rest.starts_with("kind:") {
+            return Err(err("this is an overlay as it was made, read from `:objects(Class)`: its fields are what each new copy starts with, set where it is made; change a copy's fields (`:overlays(host)`), or make a new overlay".into()));
+        }
         let found = rest.rsplit_once(':').and_then(|(host, id)| {
             let id: u32 = id.parse().ok()?;
             let list = &self.session.overlay_instances;
@@ -7495,6 +7567,8 @@ impl TickFormula {
         let f = &self.func;
         f.bytecode.iter().all(|op| match op {
             Opcode::GetMember(idx) => matches!(f.constants.get(*idx as usize), Some(Value::Str(n)) if member_builtin(n).is_none()),
+            // A name worked out as it runs may be a member builtin's.
+            Opcode::GetMemberDyn => false,
             _ => true,
         })
     }

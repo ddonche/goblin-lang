@@ -7803,6 +7803,20 @@ impl<'t> Parser<'t> {
                         while let Some(t) = self.toks.get(k) {
                             match &t.kind {
                                 TokenKind::Op(s) if s == "|=" => { found_retether = true; break; }
+                                // `>> {expr}`: skip to the matching `}`.
+                                TokenKind::Op(s) if s == "{" && self.toks.get(k - 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ">>")) => {
+                                    let mut depth = 0usize;
+                                    while let Some(t) = self.toks.get(k) {
+                                        match &t.kind {
+                                            TokenKind::Op(o) if o == "{" => depth += 1,
+                                            TokenKind::Op(o) if o == "}" => { depth -= 1; if depth == 0 { k += 1; break; } }
+                                            TokenKind::Newline => break,
+                                            _ => {}
+                                        }
+                                        k += 1;
+                                    }
+                                }
+                                TokenKind::Op(s) if s == ">>" && self.toks.get(k + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "{")) => { k += 1; }
                                 TokenKind::Op(s) if s == ">>" => { k += 2; } // skip >> and field name
                                 TokenKind::Ident => { k += 1; }
                                 _ => break,
@@ -14239,6 +14253,19 @@ impl<'t> Parser<'t> {
 
             // ---------- member: >> name | >> "string" ----------
             if self.eat_op(">>") {
+                // `obj >> {expr}`: the field whose name `expr` gives.
+                if self.eat_op("{") {
+                    let key = self.parse_coalesce()?;
+                    if !self.eat_op("}") {
+                        return Err(s_help_site!(
+                            "P0406",
+                            "Expected '}' to close the field name after '>>'",
+                            "Write the name's expression in braces: p >> {trait}",
+                        ));
+                    }
+                    lhs = PExpr::Binary(Box::new(lhs), ">>{}".to_string(), Box::new(key));
+                    continue;
+                }
                 if let Some(name) = self.eat_ident()      { lhs = PExpr::Member(Box::new(lhs), name); continue; }
                 if let Some(key)  = self.eat_string_lit() { lhs = PExpr::Member(Box::new(lhs), key ); continue; }
                 return Err(s_help_site!(

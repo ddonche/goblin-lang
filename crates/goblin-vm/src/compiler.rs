@@ -2196,6 +2196,14 @@ impl Compiler {
             return Ok(());
         }
 
+        // Field read by a name worked out as it runs: obj >> {name}
+        if op == ">>{}" {
+            self.compile_expr(lhs)?;
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::GetMemberDyn);
+            return Ok(());
+        }
+
         // Field read: obj >> field
         if op == ">>" {
             self.compile_expr(lhs)?;
@@ -2223,6 +2231,24 @@ impl Compiler {
                 _ => None,
             };
 
+            // `obj >> {name} |= v`
+            if let Expr::Binary(obj_expr, inner_op, key, _) = lhs {
+                if inner_op == ">>{}" {
+                    self.compile_expr(obj_expr)?;
+                    self.compile_expr(key)?;
+                    self.compile_expr(rhs)?;
+                    self.emit(Opcode::SetFieldDyn);
+                    let var_name = match obj_expr.as_ref() {
+                        Expr::Ident(n, _) => n.clone(),
+                        _ => return Ok(()),
+                    };
+                    let store_op = self.resolve_store(&var_name)
+                        .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
+                    self.emit(Opcode::Dup);
+                    self.emit(store_op);
+                    return Ok(());
+                }
+            }
             if let Some((obj_expr, field_name)) = field_target {
                 self.compile_expr(obj_expr)?;
                 self.compile_expr(rhs)?;

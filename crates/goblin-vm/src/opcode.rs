@@ -137,6 +137,10 @@ pub enum Opcode {
     GuardRebindLocal(u16, u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
+    /// `obj >> {name}`: the field named by the value on top (then the object).
+    GetMemberDyn,
+    /// `obj >> {name} |= v`: stack [obj, name, v]; leaves the object.
+    SetFieldDyn,
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
     SetField(u16),
     /// Nested `update!` through an lvalue path of `n` segments.
@@ -424,6 +428,8 @@ impl Opcode {
             Opcode::GuardRebindLocal(..) => "GuardRebindLocal",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
+            Opcode::GetMemberDyn    => "GetMemberDyn",
+            Opcode::SetFieldDyn     => "SetFieldDyn",
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::UpdatePathMut(..) => "UpdatePathMut",

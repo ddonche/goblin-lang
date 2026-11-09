@@ -378,6 +378,9 @@ pub struct Session {
     pub kind_counts: HashMap<String, u64>,
     /// The `overlay` lines that have run (by their place in the source).
     pub overlay_lines_run: std::collections::HashSet<String>,
+    /// The overlay kinds in the order they were made (declared, or made
+    /// while the program ran), for `:objects(Government)`.
+    pub kind_order: Vec<String>,
     /// Generated overlay kinds converted to cross threads, made once each.
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     pub des_link_id_counter: u32,
@@ -579,6 +582,7 @@ impl Session {
             des_overlay_id_counter: 0,
             kind_counts: HashMap::new(),
             overlay_lines_run: Default::default(),
+            kind_order: Vec::new(),
             portable_kinds: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),

@@ -1,5 +1,9 @@
 /// Capstone step 3: forms of government. A polity's form is one member of
-/// the Government overlay class; putting on another replaces it. A form
+/// the Government overlay class; putting on another replaces it. Each form
+/// is described by its fields (who rules, what a polity needs to have it,
+/// how well it suits one, what it can become), and the code below reads
+/// those fields and never a form's name, so a new form works with no code
+/// change. A form
 /// bends some traits (a `+` is .1, a `++` .2) and leans some decisions
 /// (their weight is multiplied by its `lean_` field, 1 unless a form
 /// raises it by .5 or lowers it). A bend is on top of the trait: the
@@ -11,10 +15,46 @@
 <^>Government |
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     dup: replace
+    /// Who rules: "crown", "usurper", "junta", "priest", "term" (holders
+    /// chosen for a term), "client" (placed by an overlord) or "none".
+    rule: "none"
+    /// The law a crown under it follows when not inherited ("elective").
+    law: ..
+    /// Years a holder chosen for a term serves.
+    term: 4
+    /// What a polity needs to have it: one of these ranks, a city, an
+    /// overlord; whether a realm, and a league, can have it.
+    ranks: [1, 2, 3, 4, 5, 6]
+    city: false
+    overlord: false
+    realms: true
+    leagues: false
+    /// Whether a polity can take it by rule (`choose`, `keep`), rather than
+    /// only from what happens to it.
+    chosen: true
+    /// How well it suits a polity: the product of these traits, and of
+    /// one minus each of `fit_down` (0 with neither).
+    fit_up: []
+    fit_down: []
+    /// The forms that carry it on when a polity can't keep it.
+    carries_on: []
+    /// Whether it is a republic (the revolution's aim), and whether a
+    /// constitution binds its crown (it ends dividing the realm).
+    republic: false
+    constitution: false
+    /// Whether no ruler is accepted and rivals contend for the throne.
+    contested: false
+    /// What it can become, by kind of change (see `regime`).
+    becomes: {}
 xx
 
 /// The heads of families.
 overlay elders_council <^> Government
+    rule: "none"
+    ranks: [1, 2]
+    fit_up: ["cohesion", "tradition"]
+    carries_on: ["aristocratic_republic", "elective_monarchy"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"], "trade": ["merchant_oligarchy"], "strongman": ["chieftainship"]}
     modify
         @cohesion + .1
         @tradition + .1
@@ -25,6 +65,12 @@ overlay elders_council <^> Government
 xx
 /// One chief by strength or kin.
 overlay chieftainship <^> Government
+    rule: "none"
+    ranks: [1, 2]
+    fit_up: ["aggression"]
+    fit_down: ["cooperation"]
+    carries_on: ["hereditary_monarchy"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"], "chief_dies": ["elders_council"]}
     modify
         @aggression + .1
         @stability - .1
@@ -35,6 +81,11 @@ overlay chieftainship <^> Government
 xx
 /// A dynasty: steadier while the line is secure, shakier when it is not.
 overlay hereditary_monarchy <^> Government
+    rule: "crown"
+    ranks: [3, 4, 5, 6]
+    fit_up: ["tradition", "legitimacy"]
+    carries_on: ["chieftainship"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"], "reform": ["constitutional_monarchy"], "empire": ["imperial_autocracy"]}
     modify
         @stability + .2 * (@succession - .5)
         @lean_war + .5
@@ -43,6 +94,13 @@ overlay hereditary_monarchy <^> Government
 xx
 /// A ruler chosen by the great families.
 overlay elective_monarchy <^> Government
+    rule: "crown"
+    law: "elective"
+    ranks: [3, 4, 5, 6]
+    fit_up: ["cooperation"]
+    fit_down: ["centralization"]
+    carries_on: ["elders_council"]
+    becomes: {"harden": ["hereditary_monarchy"], "coup": ["military_junta"], "usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"], "reform": ["constitutional_monarchy"], "empire": ["imperial_autocracy"]}
     modify
         @legitimacy + .1
         @centralization - .1
@@ -50,6 +108,10 @@ overlay elective_monarchy <^> Government
 xx
 /// Priests, or a ruler who is the faith.
 overlay theocracy <^> Government
+    rule: "priest"
+    ranks: [2, 3, 4, 5, 6]
+    fit_up: ["spirituality", "spirituality"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "secular": ["hereditary_monarchy", "elective_monarchy", "aristocratic_republic", "citizen_republic", "elders_council"]}
     modify
         @spirituality + .1
         @openness - .1
@@ -58,6 +120,12 @@ overlay theocracy <^> Government
 xx
 /// Rich families and guilds.
 overlay merchant_oligarchy <^> Government
+    rule: "term"
+    term: 6
+    city: true
+    fit_up: ["openness"]
+    fit_down: ["honor"]
+    becomes: {"lords": ["hereditary_monarchy", "tyranny"], "coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"]}
     modify
         @openness + .1
         @honor - .1
@@ -68,6 +136,14 @@ overlay merchant_oligarchy <^> Government
 xx
 /// A council of nobles.
 overlay aristocratic_republic <^> Government
+    rule: "term"
+    term: 10
+    ranks: [3, 4, 5, 6]
+    republic: true
+    fit_up: ["tradition"]
+    fit_down: ["centralization"]
+    carries_on: ["elders_council"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "falls": ["tyranny", "military_junta"], "takeover": ["theocracy"], "trade": ["merchant_oligarchy"]}
     modify
         @stability + .1
         @centralization - .1
@@ -77,6 +153,12 @@ overlay aristocratic_republic <^> Government
 xx
 /// An assembly of citizens.
 overlay citizen_republic <^> Government
+    rule: "term"
+    ranks: [3, 6]
+    republic: true
+    fit_up: ["cooperation", "openness"]
+    carries_on: ["aristocratic_republic"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "falls": ["tyranny", "military_junta"], "takeover": ["theocracy"], "trade": ["merchant_oligarchy"]}
     modify
         @cooperation + .1
         @discipline - .1
@@ -88,6 +170,11 @@ overlay citizen_republic <^> Government
 xx
 /// A usurper ruling without law.
 overlay tyranny <^> Government
+    rule: "usurper"
+    city: true
+    fit_up: ["fear"]
+    fit_down: ["legitimacy"]
+    becomes: {"coup": ["military_junta"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
     modify
         @fear + .1
         @legitimacy - .1
@@ -97,6 +184,11 @@ overlay tyranny <^> Government
 xx
 /// The army's officers.
 overlay military_junta <^> Government
+    rule: "junta"
+    ranks: [3, 4, 5, 6]
+    fit_up: ["discipline", "aggression"]
+    fit_down: ["legitimacy"]
+    becomes: {"usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
     modify
         @discipline + .1
         @aggression + .1
@@ -107,6 +199,11 @@ overlay military_junta <^> Government
 xx
 /// An emperor over a bureaucracy.
 overlay imperial_autocracy <^> Government
+    rule: "crown"
+    ranks: [5]
+    fit_up: ["centralization", "ambition"]
+    carries_on: ["hereditary_monarchy"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
     modify
         @centralization + .1
         @ambition + .1
@@ -115,6 +212,10 @@ overlay imperial_autocracy <^> Government
 xx
 /// Members keep their own rule and share defence: a league's form.
 overlay confederation <^> Government
+    realms: false
+    leagues: true
+    fit_up: ["cooperation"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"]}
     modify
         @cooperation + .1
         @centralization - .2
@@ -124,6 +225,12 @@ overlay confederation <^> Government
 xx
 /// A crown bound by law and an assembly.
 overlay constitutional_monarchy <^> Government
+    rule: "crown"
+    ranks: [6]
+    constitution: true
+    fit_up: ["legitimacy", "cooperation"]
+    carries_on: ["hereditary_monarchy"]
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
     modify
         @stability + .1
         @legitimacy + .1
@@ -133,6 +240,10 @@ overlay constitutional_monarchy <^> Government
 xx
 /// Rulers placed or kept by an overlord.
 overlay client_regime <^> Government
+    rule: "client"
+    overlord: true
+    chosen: false
+    becomes: {"coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"]}
     modify
         @legitimacy - .1
         @lean_revolt - .5
@@ -140,17 +251,73 @@ overlay client_regime <^> Government
 xx
 /// No accepted ruler; rivals contend.
 overlay interregnum <^> Government
+    contested: true
+    leagues: true
+    chosen: false
+    becomes: {"restore": ["hereditary_monarchy", "elective_monarchy"], "coup": ["military_junta"], "usurper": ["tyranny"], "takeover": ["theocracy"]}
     modify
         @stability - .2
         @fear + .1
     xx
 xx
 
-forms | ["elders_council", "chieftainship", "hereditary_monarchy", "elective_monarchy", "theocracy",
-    "merchant_oligarchy", "aristocratic_republic", "citizen_republic", "tyranny", "military_junta",
-    "imperial_autocracy", "confederation", "constitutional_monarchy", "client_regime", "interregnum"]
-monarchies | ["hereditary_monarchy", "elective_monarchy", "imperial_autocracy", "constitutional_monarchy"]
-republics  | ["aristocratic_republic", "citizen_republic"]
+/// The forms, by name (an overlay is an object: `:objects(Government)`
+/// gives each, with its fields).
+kinds | {}
+forms | []
+repeat :objects(Government) as g
+    :update!(kinds{g >> overlay_name}, g)
+    :put_last!(forms, g >> overlay_name)
+xx
+
+/// Form `f` (a name), or nil. A form made while the program runs is
+/// found too.
+act form(f)
+    if f.nix? or f == .. => send nil
+    g | kinds{f}
+    if !g.nix? => send g
+    repeat :objects(Government) as k
+        if k >> overlay_name == f => send k
+    xx
+    return nil
+xx
+
+/// Field `field` of form `f`, or `none` when there is no such form.
+act of(f, field, none)
+    g | form(f) ?? => send none
+    return :field(g, field)
+xx
+
+/// The first form whose field `field` holds `v` (the client regime for
+/// rule "client", the league's form for leagues), or nil.
+act first_where(field, v)
+    repeat :objects(Government) as g
+        if :field(g, field) == v => send g >> overlay_name
+    xx
+    return nil
+xx
+
+/// The form a polity's overlord sets up, a league takes, or a realm
+/// falls into with no accepted ruler.
+act client_form()
+    return first_where("rule", "client")
+xx
+act league_form()
+    return first_where("realms", false)
+xx
+act contested_form()
+    return first_where("contested", true)
+xx
+
+/// Who rules under form `f` ("none" with no form).
+act rule_of(f)
+    return of(f, "rule", "none")
+xx
+
+/// Whether form `f` leaves the throne contested.
+act contested(f)
+    return of(f, "contested", false)
+xx
 
 /// The form of government on `p`, or nil.
 act form_of(p)
@@ -172,51 +339,38 @@ xx
 
 /// Whether `p` can have form `f` (the plan's "Allowed at").
 act allowed(p, f)
-    r | p >> rank
-    league | :is_type(p, "League")
-    if league => send f == "confederation" or f == "interregnum"
-    judge
-        f == "elders_council" or f == "chieftainship": send r <= 2
-        f == "theocracy": send r >= 2
-        f == "hereditary_monarchy" or f == "elective_monarchy" or f == "aristocratic_republic" or f == "military_junta": send r >= 3
-        f == "merchant_oligarchy" or f == "tyranny": send p >> cities >= 1
-        f == "citizen_republic": send r == 3 or r == 6
-        f == "imperial_autocracy": send r == 5
-        f == "constitutional_monarchy": send r == 6
-        f == "client_regime": send !(p >> owner).nix?
-        f == "confederation": send false
-    xx
+    g | form(f) ?? => send false
+    if :is_type(p, "League") => send g >> leagues
+    if !(g >> realms) => send false
+    if !:has(g >> ranks, p >> rank) => send false
+    if g >> city and p >> cities < 1 => send false
+    if g >> overlord and (p >> owner).nix? => send false
     return true
 xx
 
 /// How well form `f` suits `p`'s traits, for a polity that takes a new
-/// form by rule.
+/// form by rule: the product of its `fit_up` traits and of one minus each
+/// `fit_down` trait (0 with neither).
 act fit(p, f)
-    judge
-        f == "elders_council": send (p >> cohesion) * (p >> tradition)
-        f == "chieftainship": send (p >> aggression) * (1.0 - p >> cooperation)
-        f == "hereditary_monarchy": send (p >> tradition) * (p >> legitimacy)
-        f == "elective_monarchy": send (p >> cooperation) * (1.0 - p >> centralization)
-        f == "theocracy": send (p >> spirituality) * (p >> spirituality)
-        f == "merchant_oligarchy": send (p >> openness) * (1.0 - p >> honor)
-        f == "aristocratic_republic": send (p >> tradition) * (1.0 - p >> centralization)
-        f == "citizen_republic": send (p >> cooperation) * (p >> openness)
-        f == "tyranny": send (p >> fear) * (1.0 - p >> legitimacy)
-        f == "military_junta": send (p >> discipline) * (p >> aggression) * (1.0 - p >> legitimacy)
-        f == "imperial_autocracy": send (p >> centralization) * (p >> ambition)
-        f == "confederation": send p >> cooperation
-        f == "constitutional_monarchy": send (p >> legitimacy) * (p >> cooperation)
+    g | form(f) ?? => send 0.0
+    if :len(g >> fit_up) == 0 and :len(g >> fit_down) == 0 => send 0.0
+    w | 1.0
+    repeat g >> fit_up as t
+        w |= w * (p >> {t})
     xx
-    return 0.0
+    repeat g >> fit_down as t
+        w |= w * (1.0 - p >> {t})
+    xx
+    return w
 xx
 
-/// A form drawn by fit among those `p` can have (never a client regime or
-/// an interregnum: those come from what happens to it).
+/// A form drawn by fit among those `p` can have (only forms taken by
+/// rule: a client regime or an interregnum comes from what happens to it).
 act choose(p)
     names   | []
     weights | []
     repeat forms as f
-        if f == "client_regime" or f == "interregnum" => skip
+        if !of(f, "chosen", false) => skip
         if !allowed(p, f) => skip
         w | fit(p, f)
         if w <= 0.0 => skip
@@ -227,32 +381,17 @@ act choose(p)
     return :sample_weighted({"src": names, "weights": weights})[0]
 xx
 
-/// The forms that carry on form `f` when `p` can't keep it (it rose or
-/// fell a class): a chief becomes a king, the elders a council of nobles
-/// or an elected crown, an emperor's or a constitutional crown a
-/// hereditary one, a citizens' assembly a council of nobles.
-carry_on | {
-    "chieftainship": ["hereditary_monarchy"],
-    "elders_council": ["aristocratic_republic", "elective_monarchy"],
-    "imperial_autocracy": ["hereditary_monarchy"],
-    "constitutional_monarchy": ["hereditary_monarchy"],
-    "citizen_republic": ["aristocratic_republic"],
-    "hereditary_monarchy": ["chieftainship"],
-    "elective_monarchy": ["elders_council"],
-    "aristocratic_republic": ["elders_council"]
-}
-
 /// The form a successor of a polity under form `f` takes (a split's
 /// halves, a union, a polity that rose or fell a class): `f` if it can
-/// have it, else one drawn by fit, the forms that carry `f` on weighing
-/// .5 more.
+/// have it, else one drawn by fit, the forms that carry `f` on (its
+/// `carries_on`) weighing .5 more.
 act keep(p, f)
     if !f.nix? and f != .. and allowed(p, f) => send f
     names   | []
     weights | []
-    near | carry_on{f ?? ..} ?? []
+    near | of(f, "carries_on", [])
     repeat forms as g
-        if g == "client_regime" or g == "interregnum" or !allowed(p, g) => skip
+        if !of(g, "chosen", false) or !allowed(p, g) => skip
         w | fit(p, g)
         if :has(near, g) => w |= w + .5
         if w <= 0.0 => skip
@@ -276,12 +415,18 @@ act held(p)
     return d >> rulers
 xx
 
-/// The crown an interregnum ends in: hereditary or elective, drawn by
-/// fit, each claim on the throne adding .3 to the hereditary one (up to
-/// three).
-act restored(p)
-    names | ["hereditary_monarchy", "elective_monarchy"]
-    weights | [fit(p, "hereditary_monarchy") + .3 * :min(p >> claimants, 3) + .01, fit(p, "elective_monarchy") + .01]
+/// The crown a contested throne ends in, among `fs`, drawn by fit; each
+/// claim on the throne (up to three) adds .3 to a crown passed by birth
+/// (one with no `law` of its own).
+act restored(p, fs)
+    names | []
+    weights | []
+    repeat fs as f
+        w | fit(p, f)
+        if of(f, "law", ..) == .. => w |= w + .3 * :min(p >> claimants, 3)
+        :put_last!(names, f)
+        :put_last!(weights, w + .01)
+    xx
     return :sample_weighted({"src": names, "weights": weights})[0]
 xx
 
@@ -298,99 +443,90 @@ act one_of(p, fs)
     return :sample_weighted({"src": names, "weights": weights})[0]
 xx
 
-/// The year's change of form, if any. Each change the state makes
-/// possible has a chance this year (how far past its conditions the
-/// polity is); one draw takes at most one of them, and nothing changes
-/// with the chance left over. A form `p` can't have is replaced by rule.
-/// `lost`, `won`: whether it lost or won a war lately; `armed`: its army
-/// against its people; `unpaid`: an army it can't pay.
+/// The kinds of change a form can go through, in the order they are
+/// weighed, and the chance of each this year. A form says which it can go
+/// through, and into what (`becomes`); one target is taken as it is,
+/// several are drawn (`restore` by `restored`, the others by fit).
+changes | ["restore", "harden", "lords", "coup", "usurper", "revolution", "falls", "takeover", "secular", "reform", "empire", "trade", "strongman", "chief_dies"]
+
+act odds(p, c, lost, won, armed, unpaid)
+    judge
+        /// A claimant wins: by right of birth the likelier the more houses
+        /// claim the throne, else by the great families' choice.
+        c == "restore": send (p >> cohesion) * past(p >> legitimacy, .2)
+        /// A house that has held the throne for generations makes it
+        /// hereditary.
+        c == "harden": send past(:min(held(p) / 6.0, 1.0), .3) * past(p >> centralization, .4) * .2
+        /// One of the rich families makes itself lord.
+        c == "lords": send past(p >> ambition, .5) * under(p >> cooperation, .5) * (.5 + .5 * :min(p >> wars, 1))
+        /// A coup.
+        c == "coup": send past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(lost, unpaid))
+        /// A usurper.
+        c == "usurper": send under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5)
+        /// A revolution.
+        c == "revolution": send past(p >> learning, .3) * past(p >> openness, .5) * :min(2.0 * (p >> cities) / :max(p >> lands, 1), 1.0) * under(p >> legitimacy, .6)
+        /// The republic falls.
+        c == "falls": send (:overlay_strength("war_weariness", p) ?? 0.0) * under(p >> stability, .5) * (.5 + .5 * won)
+        /// A religious takeover.
+        c == "takeover": send past(p >> spirituality, .7) * under(p >> tolerance, .5)
+        /// Secularization.
+        c == "secular": send past(p >> learning, .2) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * (1.0 - p >> spirituality)
+        /// Reform or concession.
+        c == "reform": send past(p >> cooperation, .5) * past(p >> learning, .4)
+        /// An empire's crown over a bureaucracy (not in the plan's table).
+        c == "empire": send past(p >> centralization, .6) * past(p >> ambition, .5)
+        /// Trade makes the rich families rule (not in the plan's table).
+        c == "trade": send past(:min((p >> commerce) / 3.0, 1.0), .3) * past(p >> openness, .5)
+        /// A strong leader rises.
+        c == "strongman": send past(p >> aggression, .5) * (.2 + .8 * :min(p >> wars, 1))
+        /// The chief dies and the families take back the rule.
+        c == "chief_dies": send (1.0 - :min(p >> wars, 1)) * under(p >> aggression, .6) * (p >> cohesion)
+    xx
+    return 0.0
+xx
+
+/// What the state needs for change `c` to be possible at all.
+act possible(p, c)
+    judge
+        c == "lords" or c == "coup": send p >> rank >= 3
+        c == "usurper": send p >> cities >= 1
+        c == "takeover": send p >> rank >= 2
+    xx
+    return true
+xx
+
+/// The year's change of form, if any. Each change the form can go
+/// through and the state makes possible has a chance this year (how far
+/// past its conditions the polity is); one draw takes at most one of them,
+/// and nothing changes with the chance left over. A form `p` can't have
+/// is replaced by rule. `lost`, `won`: whether it lost or won a war
+/// lately; `armed`: its army against its people; `unpaid`: an army it
+/// can't pay.
 act regime(p, lost, won, armed, unpaid)
     f | form_of(p)
     if f.nix? or !allowed(p, f)
         rule(p, choose(p))
         send nil
     xx
-    mon  | :has(monarchies, f)
-    rep  | :has(republics, f)
+    becomes | of(f, "becomes", {})
     into | []
-    odds | []
-    if f == "interregnum"
-        /// A claimant wins: by right of birth (a hereditary crown) the
-        /// likelier the more houses claim the throne, else by the great
-        /// families' choice.
-        :put_last!(into, restored(p))
-        :put_last!(odds, (p >> cohesion) * past(p >> legitimacy, .2))
-    xx
-    if f == "elective_monarchy"
-        /// A house that has held the throne for generations makes it
-        /// hereditary.
-        :put_last!(into, "hereditary_monarchy")
-        :put_last!(odds, past(:min(held(p) / 6.0, 1.0), .3) * past(p >> centralization, .4) * .2)
-    xx
-    if f == "merchant_oligarchy" and p >> rank >= 3
-        /// One of the rich families makes itself lord.
-        :put_last!(into, one_of(p, ["hereditary_monarchy", "tyranny"]))
-        :put_last!(odds, past(p >> ambition, .5) * under(p >> cooperation, .5) * (.5 + .5 * :min(p >> wars, 1)))
-    xx
-    if f != "military_junta" and p >> rank >= 3
-        /// A coup.
-        :put_last!(into, "military_junta")
-        :put_last!(odds, past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(lost, unpaid)))
-    xx
-    if f != "tyranny" and p >> cities >= 1
-        /// A usurper.
-        :put_last!(into, "tyranny")
-        :put_last!(odds, under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5))
-    xx
-    if mon or f == "tyranny" or f == "military_junta"
-        /// A revolution.
-        :put_last!(into, one_of(p, republics))
-        :put_last!(odds, past(p >> learning, .3) * past(p >> openness, .5) * :min(2.0 * (p >> cities) / :max(p >> lands, 1), 1.0) * under(p >> legitimacy, .6))
-    xx
-    if rep
-        /// The republic falls.
-        :put_last!(into, one_of(p, ["tyranny", "military_junta"]))
-        :put_last!(odds, (:overlay_strength("war_weariness", p) ?? 0.0) * under(p >> stability, .5) * (.5 + .5 * won))
-    xx
-    if f != "theocracy" and p >> rank >= 2
-        /// A religious takeover.
-        :put_last!(into, "theocracy")
-        :put_last!(odds, past(p >> spirituality, .7) * under(p >> tolerance, .5))
-    xx
-    if f == "theocracy"
-        /// Secularization.
-        :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy", "aristocratic_republic", "citizen_republic", "elders_council"]))
-        :put_last!(odds, past(p >> learning, .2) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * (1.0 - p >> spirituality))
-    xx
-    if f == "hereditary_monarchy" or f == "elective_monarchy"
-        /// Reform or concession.
-        :put_last!(into, "constitutional_monarchy")
-        :put_last!(odds, past(p >> cooperation, .5) * past(p >> learning, .4))
-        /// An empire's crown over a bureaucracy (not in the plan's table).
-        :put_last!(into, "imperial_autocracy")
-        :put_last!(odds, past(p >> centralization, .6) * past(p >> ambition, .5))
-    xx
-    if rep or f == "elders_council"
-        /// Trade makes the rich families rule (not in the plan's table).
-        :put_last!(into, "merchant_oligarchy")
-        :put_last!(odds, past(:min((p >> commerce) / 3.0, 1.0), .3) * past(p >> openness, .5))
-    xx
-    if f == "elders_council"
-        /// A strong leader rises.
-        :put_last!(into, "chieftainship")
-        :put_last!(odds, past(p >> aggression, .5) * (.2 + .8 * :min(p >> wars, 1)))
-    xx
-    if f == "chieftainship"
-        /// The chief dies and the families take back the rule.
-        :put_last!(into, "elders_council")
-        :put_last!(odds, (1.0 - :min(p >> wars, 1)) * under(p >> aggression, .6) * (p >> cohesion))
+    odds_of | []
+    repeat changes as c
+        fs | becomes{c} ?? => skip
+        if !possible(p, c) => skip
+        judge
+            :len(fs) == 1: :put_last!(into, fs[0])
+            c == "restore": :put_last!(into, restored(p, fs))
+            true: :put_last!(into, one_of(p, fs))
+        xx
+        :put_last!(odds_of, odds(p, c, lost, won, armed, unpaid))
     xx
     names   | []
     weights | []
     left    | 1.0
     repeat :range(0, :len(into)) as i
         g | into[i]
-        c | :min(odds[i], .9)
+        c | :min(odds_of[i], .9)
         if g.nix? or g == f or c <= 0.0 or !allowed(p, g) => skip
         :put_last!(names, g)
         :put_last!(weights, c)
