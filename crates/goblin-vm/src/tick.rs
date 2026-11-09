@@ -323,12 +323,10 @@ fn run_overlay_block(vm: &mut Vm, inst: &OverlayInstance, block: &str) -> Result
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name) else { return Ok(()) };
     let Some(f) = def.methods.get(block).cloned() else { return Ok(()) };
     if !vm.session.object_store.contains_key(&inst.host_uuid) { return Ok(()); }
-    let mut args = Vec::with_capacity(2 + inst.extra_fields.len());
+    let mut args = Vec::with_capacity(2 + inst.extra_fields.len() + def.maker.len());
     args.push(Value::Ref(inst.host_uuid.clone().into()));
     args.push(Value::Float(inst.strength));
-    for k in def.extra_fields.keys() {
-        args.push(inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil));
-    }
+    args.extend(def.own_values(&inst.extra_fields));
     with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), args).map(|_| ()))
 }
 
@@ -435,6 +433,7 @@ pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)
                 ("intensity", Value::Float(strength)),
             ];
             for (k, v) in &extra { bind.push((k.as_str(), v.clone())); }
+            for (k, v) in &def.maker { bind.push((k.as_str(), v.clone())); }
             vm.eval_tick_expr(expr, bind)
         };
         match amount {
@@ -564,7 +563,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let stacks = matches!(def.apply_behavior, crate::session::OverlayApplyBehavior::Stacks { .. });
         let mut names: Vec<&str> = vec!["self", "target", "intensity"];
         names.extend(def.extra_fields.keys().map(String::as_str));
-        let extras: Vec<Value> = def.extra_fields.keys().map(|k| inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil)).collect();
+        names.extend(def.maker.iter().map(|(n, _)| n.as_str()));
+        let extras: Vec<Value> = def.own_values(&inst.extra_fields);
         for rule in def.spreads_in(phase) {
             let name = &def.name;
             let cond = vm.tick_formula(&rule.condition, &names)?;

@@ -61,9 +61,23 @@ pub struct OverlayDef {
     /// The kinds a transition made this one from (two for a merge); none
     /// for a declared overlay.
     pub parents: Vec<String>,
+    /// The variables of the action whose code made this overlay, as they
+    /// were when its `overlay` line ran: its lines see them, as code
+    /// written in an action does. None for one made at the top level.
+    pub maker: Vec<(String, Value)>,
 }
 
 impl OverlayDef {
+    /// The names an overlay's code sees after `self` and `intensity`: its
+    /// own fields, then the maker's variables.
+    pub fn own_names(&self) -> Vec<String> {
+        self.extra_fields.keys().cloned().chain(self.maker.iter().map(|(n, _)| n.clone())).collect()
+    }
+    /// Their values for this copy (`fields`: the copy's own).
+    pub fn own_values(&self, fields: &indexmap::IndexMap<String, Value>) -> Vec<Value> {
+        self.extra_fields.keys().map(|k| fields.get(k).cloned().unwrap_or(Value::Nil))
+            .chain(self.maker.iter().map(|(_, v)| v.clone())).collect()
+    }
     /// Its phase's block, in a phase; None at the tick's end (its own lines).
     fn phase_of(&self, phase: Option<&str>) -> Option<Option<&goblin_ast::OverlayPhase>> {
         phase.map(|p| self.phases.iter().find(|x| x.name == p))

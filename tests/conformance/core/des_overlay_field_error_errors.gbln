@@ -1,0 +1,16 @@
+/// An overlay field that can't be worked out is an error (R1233), not a
+/// field quietly left out.
+<>Land |
+    piety: 1
+xx
+<^>Faith |
+    hosts: Land
+xx
+act found(l)
+    overlay nf <^> Faith
+        fervor: nosuch
+    xx
+    :overlay!(l, nf, .2)
+xx
+a <> Land | piety: 1
+found(a)

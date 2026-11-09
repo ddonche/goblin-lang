@@ -39,6 +39,7 @@ pub(crate) struct POverlayDef {
     family: String,
     generated: bool,
     parents: Vec<String>,
+    maker: Vec<(String, PValue)>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,14 +102,17 @@ pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDe
         family: d.family.clone(),
         generated: d.generated,
         parents: d.parents.clone(),
+        maker: d.maker.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect::<Result<Vec<_>, GoblinError>>()?,
     })
 }
 
 /// An overlay definition rebuilt in this session (its blocks compiled again).
 pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session) -> OverlayDef {
     let extra_fields: indexmap::IndexMap<String, crate::value::Value> = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
-    let extra_names: Vec<String> = extra_fields.keys().cloned().collect();
+    let maker: Vec<(String, crate::value::Value)> = d.maker.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+    let extra_names: Vec<String> = extra_fields.keys().cloned().chain(maker.iter().map(|(k, _)| k.clone())).collect();
     OverlayDef {
+        maker,
         name: d.name.clone(),
         host_types: d.host_types.clone(),
         decay_rate: d.decay_rate,

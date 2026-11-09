@@ -2752,7 +2752,8 @@ impl Vm {
                         def.name)));
                 }
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
-                let vm_def = OverlayDef {
+                let maker = self.maker_values()?;
+                let mut vm_def = OverlayDef {
                     name: def.name.clone(),
                     host_types: def.host_types.clone(),
                     decay_rate: def.decay_rate,
@@ -2775,8 +2776,7 @@ impl Vm {
                     intensity: def.intensity,
                     spreads: def.spreads.clone(),
                     conflicts: def.conflicts.clone(),
-                    methods: crate::tick::compile_overlay_methods(&def.name, &def.actions,
-                        &def.extra_fields.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>())?,
+                    methods: std::collections::HashMap::new(),
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
@@ -2784,18 +2784,29 @@ impl Vm {
                     family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
                     generated: false,
                     parents: Vec::new(),
-                    // Other fields the overlay declares (`kind: "language"`),
-                    // evaluated once here, as the interpreter does.
+                    // Other fields the overlay declares (`fervor: f >> zeal`),
+                    // worked out once here, where the `overlay` line runs:
+                    // they see the variables of the code that runs it, as
+                    // an object made there (`n <> Nation | name: nm`) does.
+                    maker: Vec::new(),
                     extra_fields: {
                         let mut map = indexmap::IndexMap::new();
                         for (k, expr) in &def.extra_fields {
-                            if let Ok(v) = self.eval_tick_expr(expr, vec![]) {
-                                map.insert(k.clone(), v);
-                            }
+                            let bind: Vec<(&str, Value)> = maker.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+                            let v = self.eval_tick_expr(expr, bind).map_err(|e| GoblinError::Runtime(format!(
+                                "R1233: overlay-field: overlay {}, field `{k}`: {e}", def.name)))?;
+                            map.insert(k.clone(), v);
                         }
                         map
                     },
                 };
+                // The maker's variables its lines see: not the ones its own
+                // fields or the tick's names (`self`, `target`, ...) take.
+                const TICK_NAMES: [&str; 5] = ["self", "target", "intensity", "strength", "age"];
+                vm_def.maker = maker.into_iter()
+                    .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()))
+                    .collect();
+                vm_def.methods = crate::tick::compile_overlay_methods(&vm_def.name, &vm_def.actions, &vm_def.own_names())?;
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
@@ -5608,6 +5619,31 @@ impl Vm {
         if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
         self.tick_exprs.insert(key, f.clone());
         Ok(f)
+    }
+
+    /// The named variables of the running action (none at the top level,
+    /// whose variables are globals), by name, each once, with its value now.
+    fn maker_values(&mut self) -> Result<Vec<(String, Value)>, GoblinError> {
+        if self.call_stack.len() <= 1 { return Ok(Vec::new()); }
+        let frame = self.call_stack.last().unwrap();
+        let mut found: Vec<(String, Tether)> = Vec::new();
+        for (i, name) in frame.func.local_names.iter().enumerate() {
+            if name.is_empty() || name.starts_with("__") { continue; }
+            let Some(Some(t)) = frame.locals.get(i) else { continue };
+            match found.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 = t.clone(),
+                None => found.push((name.clone(), t.clone())),
+            }
+        }
+        // An object is kept as a reference to it, so the overlay's lines
+        // read its fields as they are when they run.
+        found.into_iter().map(|(n, t)| {
+            let v = match self.resolve_op(Operand::Ref(t))? {
+                Value::Object(o) if self.session.object_store.contains_key(&o.uuid) => Value::Ref(o.uuid.clone().into()),
+                v => v,
+            };
+            Ok((n, v))
+        }).collect()
     }
 
     /// The global prefix of the imported module `file` (as its spans name

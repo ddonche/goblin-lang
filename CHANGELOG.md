@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.12 — 2026-11-09
+
+- VM: an overlay made inside an action sees that action's variables, as other code written there does (owner, 2026-11-09: "WHY CAN SOME SHIT NOT SEE THE FIELDS OF OTHER SHIT?"). Its fields (`fervor: f >> zeal`) are worked out with the action's variables when the `overlay` line runs; before, they saw only top-level variables, so `fervor` was left out (and `modify` failed on it later) or quietly took a top-level variable of the same name. Its `modify`, `spread:`, `every`, `on ...` and transition lines see the variables too, as they were when the `overlay` line ran; an object is kept as a reference to it, so its fields are read as they are when the line runs. The overlay's own fields and the tick's names (`self`, `target`, `intensity`, `strength`, `age`) come first. An overlay made at the top level is unchanged. The VM's overlay storage is unchanged (the variables are kept on the overlay's definition).
+- VM: an overlay field that can't be worked out is an error, R1233 (`overlay-field`), instead of a field quietly left out.
+- Conformance: `core/des_overlay_made_in_action_sees_values`, `core/des_overlay_field_error_errors`.
+
 ## 0.51.11 — 2026-11-09
 
 - sims/capstone realism tuning (owner, 2026-11-09): successor polities (a split's halves, a union, a polity that rose or fell a class) keep their parent's form of government, or draw one that carries it on (`government::keep`: a chieftainship becomes a hereditary monarchy, an elders' council a council of nobles or an elected crown, ...); an interregnum ends in a hereditary crown likelier the more houses claim it; an elective crown held by one house for generations can turn hereditary; a merchant oligarchy's rich families can make themselves lords (hereditary monarchy or tyranny). Rulers marry readily (25% a year) and a grown ruler comes to the throne married with an heir by chance of age; after an interregnum the restoring house is drawn (a new house weighs a half) instead of always the most prestigious claimant; 19 tellings of death instead of 8. Year 500: 8 hereditary monarchies (was 1), 4 elective, 8 merchant oligarchies, 7 theocracies; 127 successions to the heir (was about 30); 39 interregnums (was 65); 59.2 s. Details and constants in `sims/capstone/FINDINGS.md`.

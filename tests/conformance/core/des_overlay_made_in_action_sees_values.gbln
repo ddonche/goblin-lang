@@ -1,0 +1,42 @@
+/// known-gap: interp has no block overlay syntax (overlay name ... xx); the interpreter is being retired
+/// An overlay made inside an action sees that action's variables, as code
+/// written there does: its fields take the maker's values when the
+/// `overlay` line runs, and its `modify`, `spread:` and `every` lines read
+/// them each tick. An object is kept as a reference, so its fields are read
+/// as they are then. A top-level variable of the same name doesn't take
+/// the place of the action's own.
+<>Land |
+    piety: 1
+    realm: ..
+xx
+<>Faction |
+    zeal: .5
+xx
+<^>Faith |
+    hosts: Land
+xx
+act found_faith(f, l, boost)
+    overlay new_faith <^> Faith
+        fervor: f >> zeal
+        spread: 1 where (target >> realm) == @realm and boost > 0
+        modify
+            @piety + intensity * (f >> zeal) * boost
+        xx
+        every 1 ticks
+            say("{l >> realm}: zeal {f >> zeal}, fervor {fervor}, boost {boost}")
+        xx
+    xx
+    :overlay!(l, new_faith, 1)
+xx
+boost | 100
+fa <> Faction | zeal: .5
+a <> Land | realm: "A"
+b <> Land | realm: "A"
+found_faith(fa, a, 2)
+say(a >> piety)
+fa >> zeal |= .25
+tick()
+say("{a >> piety} {b >> piety}")
+repeat :overlays() as o
+    say("{o >> overlay_name} on {o >> host_var} fervor {o >> fervor}")
+xx

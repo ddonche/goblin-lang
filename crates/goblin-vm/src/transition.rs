@@ -592,7 +592,7 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
                 let target = if alone(&t.kind) {
-                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None)) { continue; }
+                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None, &def.maker)) { continue; }
                     None
                 } else {
                     match find_overlay_target(vm, &inst, &me, t, &done) { Some(x) => Some(x), None => continue }
@@ -635,7 +635,7 @@ fn self_record(inst: &OverlayInstance) -> Value {
     }))
 }
 
-fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>) -> Vec<(&'a str, Value)> {
+fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>, maker: &'a [(String, Value)]) -> Vec<(&'a str, Value)> {
     let mut l = vec![
         ("self", me.clone()),
         ("strength", Value::Float(inst.strength)),
@@ -643,7 +643,13 @@ fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>
         ("age", Value::Int(inst.age as i64)),
     ];
     if let Some(t) = target { l.push(("target", t.clone())); }
+    for (n, v) in maker { l.push((n.as_str(), v.clone())); }
     l
+}
+
+/// The variables of the action that made this copy's kind (see `OverlayDef::maker`).
+fn maker_of(vm: &Vm, inst: &OverlayInstance) -> Vec<(String, Value)> {
+    vm.session.overlay_defs.get(&inst.overlay_name).map(|d| d.maker.clone()).unwrap_or_default()
 }
 
 /// Another overlay on the same host, of the overlay (or overlay class)
@@ -658,9 +664,10 @@ fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &Tran
             .filter(|o| o.overlay_name == wanted || defs.get(&o.overlay_name).is_some_and(|d| d.class.as_deref() == Some(wanted)))
             .cloned().collect()
     };
+    let maker = maker_of(vm, inst);
     for o in others {
         let rec = vm.overlay_record(&o);
-        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec))) { return Some(o); }
+        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec), &maker)) { return Some(o); }
     }
     None
 }
@@ -669,10 +676,11 @@ fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &Tran
 fn overlay_overrides(vm: &mut Vm, list: &[(String, goblin_ast::Expr)], me: &Value, inst: &OverlayInstance, target: Option<&OverlayInstance>)
     -> Result<(Option<f64>, Vec<(String, Value)>), GoblinError> {
     let rec = target.map(|t| vm.overlay_record(t));
+    let maker = maker_of(vm, inst);
     let mut intensity = None;
     let mut out = Vec::new();
     for (k, e) in list {
-        let v = vm.eval_tick_expr(e, overlay_locals(me, inst, rec.as_ref()))?;
+        let v = vm.eval_tick_expr(e, overlay_locals(me, inst, rec.as_ref(), &maker))?;
         if k == "intensity" {
             let f = match v {
                 Value::Float(f) => f,
@@ -730,8 +738,9 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
     // Its blocks take one argument per field, so a field the parent lacked
     // means compiling them again.
     if !inst.extra_fields.keys().eq(d.extra_fields.keys()) {
-        let names: Vec<String> = inst.extra_fields.keys().cloned().collect();
-        seeded.methods = crate::tick::compile_overlay_methods(&seeded.name, &seeded.actions, &names).unwrap_or_default();
+        let fields = &seeded.extra_fields;
+        seeded.maker.retain(|(n, _)| !fields.contains_key(n));
+        seeded.methods = crate::tick::compile_overlay_methods(&seeded.name, &seeded.actions, &seeded.own_names()).unwrap_or_default();
     }
     vm.session.overlay_defs.insert(inst.overlay_name.clone(), Rc::new(seeded));
 }
@@ -931,13 +940,11 @@ fn olog(vm: &mut Vm, inst: &OverlayInstance, kind: K, whom: Vec<String>) -> Resu
 fn overlay_hook(vm: &mut Vm, def: &Rc<OverlayDef>, kind: K, inst: &OverlayInstance, recs: Vec<Value>) -> Result<(), GoblinError> {
     let Some(f) = def.methods.get(&format!("on {}", word(&kind))).cloned() else { return Ok(()) };
     if !vm.session.object_store.contains_key(&inst.host_uuid) { return Ok(()); }
-    let mut args = Vec::with_capacity(2 + recs.len() + inst.extra_fields.len());
+    let mut args = Vec::with_capacity(2 + recs.len() + inst.extra_fields.len() + def.maker.len());
     args.push(Value::Ref(inst.host_uuid.clone().into()));
     args.push(Value::Float(inst.strength));
     args.extend(recs);
-    for k in def.extra_fields.keys() {
-        args.push(inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil));
-    }
+    args.extend(def.own_values(&inst.extra_fields));
     crate::tick::with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), args).map(|_| ()))
 }
 
