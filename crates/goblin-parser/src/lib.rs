@@ -5605,6 +5605,16 @@ impl<'t> Parser<'t> {
                     // Don't consume — let parse_module handle it
                     return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
                 }
+                // `order: 1` then fields: `order` was meant as a field.
+                if order_by.is_some() && matches!(act_tok.kind, TokenKind::Ident)
+                    && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":"))
+                {
+                    return Err(s_help_site!(
+                        "P1569",
+                        "A field line after `order:`: `order` can't be a field name",
+                        "In a class, `order:` sets the order its objects make their decisions in (`order: -@speed`), so it ends the fields. Name the field another way (`rank`, `standing`), or put `order:` after the fields",
+                    ));
+                }
                 return Err(s_help_site!(
                     "P0910",
                     "Inside a class, only 'act', 'action', or a closing 'end'/'xx' are allowed here",

@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.14 — 2026-11-09
+
+- A field named `order` is refused with a clear error (owner ruling, 2026-11-09). In a class, `order:` sets the order its objects make their decisions in, so `order` is never a field. Before, `order: 1` in a class quietly became that ordering line: `k <> Land | order: 5` dropped the 5 without a word, `@order` in `modify` said Land had no field named order, and a field line after it failed with the general P0910. Now: giving `order` when making an object is R0413 (`order-not-a-field`, VM); a field line after `order:` in a class is P1569 (parser, both engines); reading `order` (`>>`, `:field`, `modify`) says why it isn't a field.
+- Conformance: `core/class_order_not_a_field_errors`, `core/class_field_after_order_errors`; `core/des_overlay_dup_stronger` names its field `rank` (it was written `order: 0`, which had quietly been the ordering line).
+
 ## 0.51.13 — 2026-11-09
 
 - VM: an overlay copy's fields are written like any object's (owner, 2026-11-09: an overlay is an object). `o >> intensity |= .9` on a record from `:overlays(...)` changes that copy (kept in 0..1), as do `o >> ticks_remaining |= n` (a whole number or nil) and `o >> fervor |= x` for the overlay's own fields; its `modify` lines are worked out again at once, and the variable gets the copy as it is now. Before, every such write failed with R1240 ("an object that is no longer in the world"). The fields that say which copy it is (`overlay_name`, `host_uuid`, `host_var`, `parents`) and its `age` are the runtime's, and a copy no longer on its host can be read, not changed: both R1249 (`overlay-field-write`).

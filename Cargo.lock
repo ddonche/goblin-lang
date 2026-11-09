@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.51.13"
+version = "0.51.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -1159,7 +1159,7 @@ version = "0.1.0"
 
 [[package]]
 name = "goblin-vm"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "ahash 0.8.12",
  "chrono",

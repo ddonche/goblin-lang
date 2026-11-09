@@ -419,6 +419,7 @@ pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)
             Some(Value::Object(o)) => match o.fields.get(field) {
                 Some(Value::Int(_) | Value::Float(_)) => {}
                 Some(other) => return Err(fail(format!("{} holds {}, not a number", o.class_name, other.type_name()))),
+                None if field == "order" => return Err(fail(format!("{} has no field named order: {}", o.class_name, crate::builtins::no_field_help(field)))),
                 None => return Err(fail(format!("{} has no field named {field}", o.class_name))),
             },
             _ => return Ok(Vec::new()),

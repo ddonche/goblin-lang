@@ -3,7 +3,7 @@
 /// on a tie the one already there stays. In an overlay class it decides
 /// between any two members; in one overlay, between two copies of it.
 <>Kingdom |
-    order: 0
+    rank: 0
 xx
 <^>Faith |
     hosts: Kingdom
@@ -16,7 +16,7 @@ xx
 overlay blessing
     dup: stronger
 xx
-k <> Kingdom | order: 0
+k <> Kingdom | rank: 0
 :overlay!(k, sun_creed, .5)
 :overlay!(k, ash_rite, .4)
 say(:overlays_of(k))

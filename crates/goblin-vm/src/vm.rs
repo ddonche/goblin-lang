@@ -1595,6 +1595,12 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("class instantiation requires a map, got {}", other.type_name()))),
                 };
 
+                // `order:` in a class sets the order its objects decide in;
+                // it is never a field (owner, 2026-11-09).
+                if provided.contains_key("order") && !class.fields.iter().any(|f| f.name == "order") {
+                    return Err(GoblinError::Runtime(format!(
+                        "R0413: order-not-a-field: {class_name} has no field `order`: in a class, `order:` sets the order its objects make their decisions in, so it can't be a field; name the field another way (`rank`, `standing`)")));
+                }
                 let mut fields = crate::value::FieldMap::default();
                 let mut readonly_fields = std::collections::BTreeSet::new();
 
@@ -3532,7 +3538,7 @@ impl Vm {
                 && self.session.object_store.contains_key(u) => v,
             v => entry_out(&self.session, v),
         }).ok_or_else(|| GoblinError::Runtime(format!(
-            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
+            "R0403: no-such-field: no field '{name}'; {}", crate::builtins::no_field_help(name)))))
     }
 
     /// When the top two operands are both stored objects: whether they are

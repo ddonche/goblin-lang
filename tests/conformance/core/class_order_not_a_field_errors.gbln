@@ -1,0 +1,10 @@
+/// known-gap: interp keeps the old behaviour (drops `order: 5` quietly); the interpreter is being retired
+/// In a class, `order:` sets the order its objects make their decisions
+/// in, so `order` is never a field: giving it when making an object is
+/// R0413, not a value quietly dropped (owner, 2026-11-09).
+<>Land |
+    size: 1
+    order: @size
+xx
+a <> Land | size: 2, order: 5
+say(a)

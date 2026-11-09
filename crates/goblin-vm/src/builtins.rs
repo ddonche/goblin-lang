@@ -12,6 +12,15 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
+/// The help for a field an object doesn't have.
+pub(crate) fn no_field_help(name: &str) -> &'static str {
+    if name == "order" {
+        "`order` is never a field: in a class, `order:` sets the order its objects make their decisions in; name the field another way (`rank`, `standing`)"
+    } else {
+        "check the object's fields or correct the field name"
+    }
+}
+
 /// Whether a value names a stored object (a collection holds objects as
 /// ids) or holds an object whose field names one.
 fn holds_entry_fields(v: &Value) -> bool {
@@ -3948,7 +3957,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             match o.fields.stored(&name, o.trait_fields.contains(name.as_ref() as &str)) {
                 Some(v) => Ok(v),
-                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))),
+                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; {}", no_field_help(&name)))),
             }
         }
         BuiltinId::OverlaysOf => {
