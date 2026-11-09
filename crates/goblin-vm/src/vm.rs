@@ -45,6 +45,9 @@ pub struct CallFrame {
     pub loops: Vec<LoopState>,
     /// What this call does with the decision memo (see memo.rs), if one is on.
     pub(crate) memo: Option<crate::memo::Mark>,
+    /// The overlays this call's `overlay` lines made: the name each line
+    /// gives, and the kind it made (see the `OverlayDef` opcode).
+    pub(crate) made_overlays: Option<Box<Vec<(String, String)>>>,
 }
 
 /// One running `repeat`: its kind (see builtins::repeat_plan), what it
@@ -68,7 +71,7 @@ impl CallFrame {
         CallFrame {
             locals,
             locks: None,
-            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None,
+            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None, made_overlays: None,
         }
     }
 
@@ -1487,6 +1490,13 @@ impl Vm {
                     Value::Object(o) => o.uuid.clone(),
                     other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
                 };
+                // An overlay is an object: a copy's fields are written like
+                // any object's (the variable gets the copy as it is now).
+                if uuid.starts_with(OVERLAY_RECORD) {
+                    let rec = self.write_overlay_field(&uuid, &field_name, new_val)?;
+                    self.stack.push(Operand::Val(rec));
+                    return Ok(());
+                }
                 let new_val = entry_of(&self.session, new_val);
                 if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
                 // Mutate directly in object_store (shared reference semantics, like interpreter).
@@ -2753,8 +2763,18 @@ impl Vm {
                 }
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
                 let maker = self.maker_values()?;
+                // The first run of an `overlay` line makes the overlay it
+                // names. Each later run makes a new one, as `<>` makes a new
+                // object each time: a kind of its own, with no parent, named
+                // after its family (`faith_1`). In the code that ran the
+                // line, its name means the one just made.
+                let line = format!("{:?}", def.span);
+                let fresh = self.session.overlay_lines_run.contains(&line);
+                self.session.overlay_lines_run.insert(line);
+                let family = def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone());
+                let kind = if fresh { crate::transition::new_root_name(self, &family) } else { def.name.clone() };
                 let mut vm_def = OverlayDef {
-                    name: def.name.clone(),
+                    name: kind.clone(),
                     host_types: def.host_types.clone(),
                     decay_rate: def.decay_rate,
                     default_duration: def.default_duration,
@@ -2781,8 +2801,8 @@ impl Vm {
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
                     phases: def.phases.clone(),
-                    family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
-                    generated: false,
+                    family,
+                    generated: fresh,
                     parents: Vec::new(),
                     // Other fields the overlay declares (`fervor: f >> zeal`),
                     // worked out once here, where the `overlay` line runs:
@@ -2807,6 +2827,12 @@ impl Vm {
                     .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()))
                     .collect();
                 vm_def.methods = crate::tick::compile_overlay_methods(&vm_def.name, &vm_def.actions, &vm_def.own_names())?;
+                if fresh {
+                    let frame = self.call_stack.last_mut().unwrap();
+                    let made = frame.made_overlays.get_or_insert_with(Default::default);
+                    made.retain(|(n, _)| *n != def.name);
+                    made.push((def.name.clone(), kind));
+                }
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
@@ -3296,11 +3322,18 @@ impl Vm {
     /// A bare class, overlay or link name (`:objects(Rabbit)`,
     /// `:link_score(a, b, culture)`) stands for that name.
     fn des_name(&self, name: &str) -> Option<Value> {
+        if let Some(kind) = self.made_overlay(name) { return Some(Value::Str(kind.into())); }
         let s = &self.session;
         let known = s.classes.contains_key(name)
             || s.overlay_defs.contains_key(name)
             || s.link_defs.keys().any(|(_, ch)| ch == name);
         known.then(|| Value::Str(name.to_string().into()))
+    }
+
+    /// The overlay a line named `name` made in the running call, if one did.
+    fn made_overlay(&self, name: &str) -> Option<String> {
+        let made = self.call_stack.last()?.made_overlays.as_ref()?;
+        made.iter().rev().find(|(n, _)| n == name).map(|(_, k)| k.clone())
     }
 
     fn not_a_variable(name: &str) -> GoblinError {
@@ -6671,6 +6704,52 @@ impl Vm {
             // Its own id: binding it must not replace its host.
             uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0).into(),
         }))
+    }
+
+    /// Writes field `field` of the overlay copy a record names
+    /// (`o >> intensity |= .9`, `o >> fervor |= 2`) and gives the copy's
+    /// record as it is now. `intensity` stays in 0..1; `ticks_remaining`
+    /// takes a whole number or nil; the copy's own fields take any value.
+    /// The fields that say which copy it is, and its age, are the runtime's.
+    /// Its `modify` lines are worked out again at once.
+    fn write_overlay_field(&mut self, record: &str, field: &str, v: Value) -> Result<Value, GoblinError> {
+        let err = |what: String| GoblinError::Runtime(format!("R1249: overlay-field-write: `{field}`: {what}"));
+        let rest = &record[OVERLAY_RECORD.len()..];
+        let found = rest.rsplit_once(':').and_then(|(host, id)| {
+            let id: u32 = id.parse().ok()?;
+            let list = &self.session.overlay_instances;
+            list.on_host(host).iter().copied().find(|&q| list[q].des_id.0 == id)
+        });
+        let Some(p) = found else {
+            return Err(err("that overlay copy is no longer on its host (it ran out, was taken off or a transition replaced it): it can be read, not changed".into()));
+        };
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
+        match field {
+            "intensity" => {
+                let Some(x) = num(&v) else { return Err(err(format!("an overlay's intensity is a number from 0 to 1, got {}", v.type_name()))) };
+                self.session.overlay_instances[p].strength = x.clamp(0.0, 1.0);
+            }
+            "ticks_remaining" => {
+                self.session.overlay_instances[p].ticks_remaining = match v {
+                    Value::Nil => None,
+                    Value::Int(i) if i >= 0 => Some(i.min(u32::MAX as i64) as u32),
+                    other => return Err(err(format!("ticks_remaining is a whole number of ticks (0 or more) or nil, got {}", other.type_name()))),
+                };
+            }
+            "overlay_name" | "host_uuid" | "host_var" | "parents" | "age" =>
+                return Err(err("this field says which overlay copy it is and how old it is; the runtime keeps it (to move an idea, take it off and put it on; to change its kind, a transition)".into())),
+            _ => {
+                if !self.session.overlay_instances[p].extra_fields.contains_key(field) {
+                    let name = self.session.overlay_instances[p].overlay_name.clone();
+                    return Err(err(format!("overlay {name} has no field named {field}")));
+                }
+                let v = entry_of(&self.session, v);
+                self.session.overlay_instances[p].extra_fields.insert(field.to_string(), v);
+            }
+        }
+        crate::tick::rework_film(self, p)?;
+        let inst = self.session.overlay_instances[p].clone();
+        Ok(self.overlay_record(&inst))
     }
 
     /// `:overlays(...)`: every overlay, or one overlay's instances (read

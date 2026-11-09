@@ -473,6 +473,18 @@ fn refresh_films(vm: &mut Vm) -> Result<(), GoblinError> {
     Ok(())
 }
 
+/// Works out again the `modify` amounts of the overlay copy at `p` (its
+/// intensity or fields were written) and puts its host's film back on.
+pub(crate) fn rework_film(vm: &mut Vm, p: usize) -> Result<(), GoblinError> {
+    let host = vm.session.overlay_instances[p].host_uuid.clone();
+    film_off(&mut vm.session, &host);
+    let amounts = modify_amounts(vm, p);
+    vm.session.overlay_instances.mark(&host);
+    if let Ok(a) = &amounts { vm.session.overlay_instances[p].applied = a.clone(); }
+    settle_films(&mut vm.session);
+    amounts.map(|_| ())
+}
+
 /// Takes the film off a host for now (its fields read as stored).
 fn film_off(s: &mut crate::session::Session, host: &str) {
     let Some(Value::Object(o)) = s.object_store.get_mut(host) else { return };

@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.13 — 2026-11-09
+
+- VM: an overlay copy's fields are written like any object's (owner, 2026-11-09: an overlay is an object). `o >> intensity |= .9` on a record from `:overlays(...)` changes that copy (kept in 0..1), as do `o >> ticks_remaining |= n` (a whole number or nil) and `o >> fervor |= x` for the overlay's own fields; its `modify` lines are worked out again at once, and the variable gets the copy as it is now. Before, every such write failed with R1240 ("an object that is no longer in the world"). The fields that say which copy it is (`overlay_name`, `host_uuid`, `host_var`, `parents`) and its `age` are the runtime's, and a copy no longer on its host can be read, not changed: both R1249 (`overlay-field-write`).
+- VM: an `overlay` line makes a new overlay each time it runs, as `<>` makes a new object (owner, 2026-11-09: "each run makes its own overlay"). The first run makes the overlay it names, as before; each later run makes a kind of its own with no parent, named after its family as a transition's kinds are (`faith_1`, `faith_2`, from the same count). In the code that ran the line, the name means the one just made (`:overlay!(l, new_faith)`, `send new_faith`). Before, running the line again redefined the one kind, so every land given "a new faith" shared one. Storage unchanged (each kind is one more definition).
+- Conformance: `core/des_overlay_fields_written`, `core/des_overlay_field_write_identity_errors`, `core/des_overlay_line_each_run_its_own`.
+
 ## 0.51.12 — 2026-11-09
 
 - VM: an overlay made inside an action sees that action's variables, as other code written there does (owner, 2026-11-09: "WHY CAN SOME SHIT NOT SEE THE FIELDS OF OTHER SHIT?"). Its fields (`fervor: f >> zeal`) are worked out with the action's variables when the `overlay` line runs; before, they saw only top-level variables, so `fervor` was left out (and `modify` failed on it later) or quietly took a top-level variable of the same name. Its `modify`, `spread:`, `every`, `on ...` and transition lines see the variables too, as they were when the `overlay` line ran; an object is kept as a reference to it, so its fields are read as they are when the line runs. The overlay's own fields and the tick's names (`self`, `target`, `intensity`, `strength`, `age`) come first. An overlay made at the top level is unchanged. The VM's overlay storage is unchanged (the variables are kept on the overlay's definition).

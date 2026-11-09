@@ -376,6 +376,8 @@ pub struct Session {
     pub des_overlay_id_counter: u32,
     /// How many overlay kinds each family has made by transitions.
     pub kind_counts: HashMap<String, u64>,
+    /// The `overlay` lines that have run (by their place in the source).
+    pub overlay_lines_run: std::collections::HashSet<String>,
     /// Generated overlay kinds converted to cross threads, made once each.
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     pub des_link_id_counter: u32,
@@ -576,6 +578,7 @@ impl Session {
             des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
             kind_counts: HashMap::new(),
+            overlay_lines_run: Default::default(),
             portable_kinds: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),

@@ -780,6 +780,24 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
     Ok(name)
 }
 
+/// The name of a new kind with no parent, made by a run of an `overlay`
+/// line (see the `OverlayDef` opcode): its family, numbered as a declared
+/// overlay's children are (`faith_1`, `faith_2`), from the same count, so
+/// no two kinds share a name.
+pub(crate) fn new_root_name(vm: &mut Vm, family: &str) -> String {
+    let (k, n) = match vm.session.region.as_ref() {
+        Some(c) => (c.regions.iter().position(|r| *r == c.me).map_or(0, |p| p + 1) as u64, c.regions.len() as u64 + 1),
+        None => (0, crate::world::world_size(&vm.session).map_or(1, |r| r as u64 + 1)),
+    };
+    loop {
+        let c = vm.session.kind_counts.entry(family.to_string()).or_insert(0);
+        let num = *c * n + k + 1;
+        *c += 1;
+        let name = format!("{family}_{num}");
+        if !vm.session.overlay_defs.contains_key(&name) { return name; }
+    }
+}
+
 /// The kind a merge with no `into:` makes: named after both, as merged
 /// companies are (`language_1A` and `language_1B` make `language_1A-1B`;
 /// kinds of different families, `latin-greek`), with both as parents. Two
