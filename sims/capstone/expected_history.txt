@@ -1,11 +1,11 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 67 polities, largest Orpel with 20 provinces, 1 wars
-year 200: 52 polities, largest Wenkelgor-Mardun-Pelquar-Toryrgor with 31 provinces, 5 wars
-year 300: 41 polities, largest Orpel with 30 provinces, 7 wars
-year 400: 38 polities, largest Orpel with 32 provinces, 5 wars
-year 500: 40 polities, largest Dunnoresk-Toresk-Roscor-Halordun with 45 provinces, 4 wars
-check: share of polity-years at war: 18.3%
-check: forms at the end: aristocratic_republic 2, citizen_republic 3, elders_council 3, elective_monarchy 5, hereditary_monarchy 1, imperial_autocracy 1, merchant_oligarchy 7, military_junta 3, theocracy 13, tyranny 2
-check: families: deaths 1069, murders 31, executions 6, crowned 1070, regencies 8, usurped 43, interregnums 65, lines_ended 8, elections 1009, claims_won 51, new_houses 106, marriages 99, births 127, partitions 0
-check: succession laws at the end: eldest_child 2, elective 4, faith 7, force 5, none 4, term 12
+year 100: 73 polities, largest Halesk with 17 provinces, 10 wars
+year 200: 59 polities, largest Rosvar with 20 provinces, 7 wars
+year 300: 43 polities, largest Rosvar-Halbelhal with 39 provinces, 3 wars
+year 400: 46 polities, largest Rosvar-Halbelhal-Lorzanjor with 35 provinces, 10 wars
+year 500: 31 polities, largest Rosvar-Halbelhal-Lorzanjor with 36 provinces, 4 wars
+check: share of polity-years at war: 20.4%
+check: forms at the end: aristocratic_republic 1, elders_council 2, elective_monarchy 4, hereditary_monarchy 8, imperial_autocracy 1, merchant_oligarchy 8, theocracy 7
+check: families: deaths 1091, murders 33, executions 8, crowned 1030, regencies 16, usurped 38, interregnums 39, lines_ended 1, elections 957, claims_won 19, new_houses 151, marriages 312, births 561, partitions 0
+check: succession laws at the end: eldest_child 5, eldest_son 3, elective 4, faith 1, none 5, strongest_kin 1, term 9

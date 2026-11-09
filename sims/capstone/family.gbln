@@ -210,17 +210,33 @@ act hazards(r, p)
     plot | .02 * (1.0 - p >> legitimacy) * (1.0 - p >> discipline) * (.2 + .2 * :min(p >> kin, 3) + .2 * :min(p >> claimants, 2)) * (.5 + .5 * p >> ambition)
     kin | 0.0
     if p >> kin > 0 => kin |= plot * .5
+    wound | 0.0
+    if p >> wars > 0 => wound |= battle * .3
     return {
-        "of old age": old,
-        "of a fever": ill,
+        "of old age": old * .7,
+        "of a sudden fit": old * .3,
+        "of a fever": ill * .5,
+        "of the flux": ill * .2,
+        "of a wasting sickness": ill * .2,
+        "of a rotten tooth": ill * .1,
         "in the famine": famine,
         "in battle": battle,
+        "of a wound gone bad": wound,
         "in a fall from a horse": .001,
         "while hunting": .001,
-        "was poisoned": plot - kin,
-        "was murdered by a kinsman": kin
+        "drowned crossing a river": .0005,
+        "in a fire in the palace": .0003,
+        "of a surfeit at a feast": .0003,
+        "was poisoned": (plot - kin) * .6,
+        "was strangled in the night": (plot - kin) * .2,
+        "was stabbed at a feast": (plot - kin) * .2,
+        "was murdered by a brother": kin * .5,
+        "was murdered by a cousin": kin * .5
     }
 xx
+
+/// The tellings of a death that is a murder.
+murders | ["was poisoned", "was strangled in the night", "was stabbed at a feast", "was murdered by a brother", "was murdered by a cousin"]
 
 /// A child's chance a year of dying.
 act child_death(a)
@@ -246,7 +262,7 @@ act ruler_year(r)
     if chance(total)
         how | :event(p, "ruler died", r, hz)
         r >> dead |= true
-        if how == "was poisoned" or how == "was murdered by a kinsman"
+        if :has(murders, how)
             count("murders")
             p >> legitimacy |= p >> legitimacy - .15
             p >> stability |= p >> stability - .1
@@ -266,7 +282,7 @@ xx
 /// (the next of kin takes its place), kin lost.
 act family_year(r, p)
     a | r >> age
-    if r >> spouse == .. and a >= 18 and a <= 50 and chance(.06)
+    if r >> spouse == .. and a >= 16 and a <= 50 and chance(.25)
         r >> spouse |= given_name()
         count("marriages")
         :event(p, "ruler wed", r, "{r >> spouse}, of a great family of the realm")
@@ -448,11 +464,31 @@ act crown(p, x, how)
     p >> seated |= f
     count("crowned")
     :event(p, "new ruler", x, how)
+    if !d.nix? => household(p, x)
     if x >> age < 16
         count("regencies")
         :event(p, "regency", x, "a council rules for the child")
     xx
     hand(p)
+xx
+
+/// A grown ruler of a house comes to the throne with the family it
+/// already has: likelier married the older it is, and then likelier with
+/// an heir and other children (unless the realm already has an heir).
+act household(p, x)
+    a | x >> age
+    if a < 18 or x >> spouse != .. => send nil
+    if !chance(:min((a - 16) * .1, .9)) => send nil
+    x >> spouse |= given_name()
+    count("marriages")
+    told | "married to {x >> spouse}"
+    if p >> heir < 0 and a >= 20 and chance(:min((a - 19) * .08, .85))
+        p >> heir |= pick 1 from 0...(:max(a - 20, 1))
+        p >> kin |= :min(p >> kin + (pick 1 from 0...(:max(:min(3, (a - 20) // 5), 1))), 4)
+        count("births")
+        told |= "{told}, with an heir"
+    xx
+    :event(p, "ruler's family", x, told)
 xx
 
 /// The ruler of `p` leaves the throne, told by how cruel the one taking
@@ -501,6 +537,21 @@ xx
 act house_for(p)
     if housed(kind(government::form_of(p) ?? ..)) => send new_house()
     return nil
+xx
+
+/// After an interregnum: one of the houses claiming `p` by a draw (the
+/// more prestigious likelier), or a new house risen in the strife
+/// (nil), which weighs a half.
+act restorer(p)
+    hs | [nil]
+    ws | [.5]
+    repeat :objects(Dynasty, it != p >> dynasty) as d
+        if !claims_to(d, p) => skip
+        :put_last!(hs, d)
+        :put_last!(ws, .2 + :clamp(d >> prestige / 50.0, 0.0, 1.0))
+    xx
+    i | :sample_weighted({"src": :range(0, :len(hs)), "weights": ws})[0]
+    return hs[i]
 xx
 
 /// The house of a dynasty claiming `p`, the most prestigious, or nil.
@@ -782,7 +833,7 @@ act check(p)
                 set_house(p, r >> house)
                 send nil
             xx
-            cl | claimant(p)
+            cl | restorer(p)
             if !cl.nix?
                 count("claims_won")
                 send crown(p, new_ruler(p, cl, culture_traits(p), 20 + (pick 1 from 0...25)), "the house of {cl >> name}, by its claim")

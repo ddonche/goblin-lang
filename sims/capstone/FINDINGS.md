@@ -444,6 +444,57 @@ ruler is marked (`dead` or `gone`) and its `transition erase` removes
 it; the realm's `ruler` reads nil once it is erased. `reign` is not put
 on for a ruler that is leaving, and a leaving ruler can't wed.
 
+## 0.51.11: realism tuning (owner, 2026-11-09: fix before the next layer)
+
+Before (0.51.10, 500 years): at the end 1 hereditary monarchy, 5
+elective, 13 theocracies, 7 merchant oligarchies; about 30 successions
+went to the heir. Causes found in the event log: an interregnum after a
+hereditary crown usually ended in an elective one (its fit is
+cooperation × (1 − centralization), the hereditary one's tradition ×
+legitimacy, and legitimacy is low then); every successor polity (a
+split's halves, a union, a village risen to a city-state) drew its form
+anew by fit among eight or so, so a chief's realm became a monarchy one
+time in eight; a merchant oligarchy had no road back to a crown; and
+rulers married late (6% a year) and came to the throne with no family.
+
+Changes:
+- **Successors keep their form** (`government::keep`): a split's
+  halves, a union and a polity that rose or fell a class keep the
+  parent's form if they can have it; if not, a form that carries it on
+  weighs .5 more in the draw by fit (a chieftainship becomes a
+  hereditary monarchy, an elders' council a council of nobles or an
+  elected crown, an empire's or a constitutional crown a hereditary
+  one, a citizens' assembly a council of nobles; and back down).
+- **An interregnum ends in a hereditary crown the more houses claim
+  it**: each claim adds .3 (up to three) to its weight.
+- **An elective crown turns hereditary** when one house has held it for
+  generations: chance .2 × past(rulers / 6, .3) × past(centralization,
+  .4) a year.
+- **Rich families make themselves lords**: a merchant oligarchy (city-
+  state and up) may become a hereditary monarchy or a tyranny, chance
+  past(ambition, .5) × under(cooperation, .5) × (.5, or 1 at war).
+- **Rulers marry readily** (25% a year from 16), and a grown ruler of a
+  house comes to the throne with the family it has: married with a
+  chance of .1 a year past 16 (up to .9), then an heir with .08 a year
+  past 19 (up to .85) and up to three other children. Told as one event.
+- **After an interregnum the restorer is drawn**: each claiming house
+  weighs .2 + prestige / 50, a new house risen in the strife .5. Before,
+  the most prestigious claimant always came in, usually the house that
+  had just lost.
+- **More ways to die**: 19 tellings drawn from the same hazards
+  (illness split into fever, flux, wasting sickness and a rotten tooth;
+  old age into old age and a sudden fit; a wound gone bad while at war;
+  drowning, a palace fire, a surfeit at a feast; murder as poison,
+  strangling, a stabbing at a feast, or by a brother or a cousin).
+
+After (500 years): at the end 8 hereditary monarchies, 4 elective, 1
+imperial, 8 merchant oligarchies, 7 theocracies, 1 aristocratic republic
+and 2 elders' councils (31 polities, the largest 36 provinces); 127
+successions to the heir; 39 interregnums (was 65); 312 marriages, 561
+births; 59.2 s. With a different prehistory (1,100 years) the end has
+14 hereditary monarchies, 4 imperial, 1 elective, 9 theocracies, 4
+merchant oligarchies.
+
 ## Choices to confirm
 
 1. **The hazards and their sizes**: illness .004 × e^(.08 × (age − 30))

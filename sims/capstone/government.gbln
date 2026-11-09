@@ -227,10 +227,62 @@ act choose(p)
     return :sample_weighted({"src": names, "weights": weights})[0]
 xx
 
+/// The forms that carry on form `f` when `p` can't keep it (it rose or
+/// fell a class): a chief becomes a king, the elders a council of nobles
+/// or an elected crown, an emperor's or a constitutional crown a
+/// hereditary one, a citizens' assembly a council of nobles.
+carry_on | {
+    "chieftainship": ["hereditary_monarchy"],
+    "elders_council": ["aristocratic_republic", "elective_monarchy"],
+    "imperial_autocracy": ["hereditary_monarchy"],
+    "constitutional_monarchy": ["hereditary_monarchy"],
+    "citizen_republic": ["aristocratic_republic"],
+    "hereditary_monarchy": ["chieftainship"],
+    "elective_monarchy": ["elders_council"],
+    "aristocratic_republic": ["elders_council"]
+}
+
+/// The form a successor of a polity under form `f` takes (a split's
+/// halves, a union, a polity that rose or fell a class): `f` if it can
+/// have it, else one drawn by fit, the forms that carry `f` on weighing
+/// .5 more.
+act keep(p, f)
+    if !f.nix? and f != .. and allowed(p, f) => send f
+    names   | []
+    weights | []
+    near | carry_on{f ?? ..} ?? []
+    repeat forms as g
+        if g == "client_regime" or g == "interregnum" or !allowed(p, g) => skip
+        w | fit(p, g)
+        if :has(near, g) => w |= w + .5
+        if w <= 0.0 => skip
+        :put_last!(names, g)
+        :put_last!(weights, w)
+    xx
+    if :len(names) == 0 => send nil
+    return :sample_weighted({"src": names, "weights": weights})[0]
+xx
+
 /// Puts form `f` on `p` (it replaces the form before).
 act rule(p, f)
     if f.nix? => send nil
     :overlay!(p, f)
+xx
+
+/// How many rulers of its ruling house `p`'s throne has seen (0 with no
+/// house).
+act held(p)
+    d | p >> dynasty ?? => send 0
+    return d >> rulers
+xx
+
+/// The crown an interregnum ends in: hereditary or elective, drawn by
+/// fit, each claim on the throne adding .3 to the hereditary one (up to
+/// three).
+act restored(p)
+    names | ["hereditary_monarchy", "elective_monarchy"]
+    weights | [fit(p, "hereditary_monarchy") + .3 * :min(p >> claimants, 3) + .01, fit(p, "elective_monarchy") + .01]
+    return :sample_weighted({"src": names, "weights": weights})[0]
 xx
 
 /// One of `fs` that `p` can have, drawn by fit, or nil.
@@ -263,9 +315,22 @@ act regime(p, lost, won, armed, unpaid)
     into | []
     odds | []
     if f == "interregnum"
-        /// A claimant wins.
-        :put_last!(into, one_of(p, ["hereditary_monarchy", "elective_monarchy"]))
+        /// A claimant wins: by right of birth (a hereditary crown) the
+        /// likelier the more houses claim the throne, else by the great
+        /// families' choice.
+        :put_last!(into, restored(p))
         :put_last!(odds, (p >> cohesion) * past(p >> legitimacy, .2))
+    xx
+    if f == "elective_monarchy"
+        /// A house that has held the throne for generations makes it
+        /// hereditary.
+        :put_last!(into, "hereditary_monarchy")
+        :put_last!(odds, past(:min(held(p) / 6.0, 1.0), .3) * past(p >> centralization, .4) * .2)
+    xx
+    if f == "merchant_oligarchy" and p >> rank >= 3
+        /// One of the rich families makes itself lord.
+        :put_last!(into, one_of(p, ["hereditary_monarchy", "tyranny"]))
+        :put_last!(odds, past(p >> ambition, .5) * under(p >> cooperation, .5) * (.5 + .5 * :min(p >> wars, 1)))
     xx
     if f != "military_junta" and p >> rank >= 3
         /// A coup.

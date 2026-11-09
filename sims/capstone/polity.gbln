@@ -2157,7 +2157,7 @@ xx
 /// A new class: a form it can't have is replaced now.
 act mutated(p)
     f | government::form_of(p)
-    if f.nix? or !government::allowed(p, f) => government::rule(p, government::choose(p))
+    if f.nix? or !government::allowed(p, f) => government::rule(p, government::keep(p, f ?? p >> form))
 xx
 
 /// Conquest: the loser's peoples join if their culture is far off.
@@ -2191,7 +2191,7 @@ act united(p, t, m)
     else
         m >> peoples |= :max(p >> peoples, t >> peoples)
     xx
-    government::rule(m, government::choose(m))
+    government::rule(m, government::keep(m, m >> form))
     /// Its ruler is the first's; the other's ruling house keeps a claim.
     family::moved(m)
     family::joined(t, m)
@@ -2276,8 +2276,8 @@ act divided(p, a, b)
     xx
     :link!(a, b, "grievance", .4, 60)
     :link!(b, a, "grievance", .4, 60)
-    government::rule(a, government::choose(a))
-    government::rule(b, government::choose(b))
+    government::rule(a, government::keep(a, a >> form))
+    government::rule(b, government::keep(b, b >> form))
     /// The first keeps the ruler. The second is ruled by the son owed it
     /// (a divided succession), or a ruler is seated next year.
     family::moved(a)

@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.11 — 2026-11-09
+
+- sims/capstone realism tuning (owner, 2026-11-09): successor polities (a split's halves, a union, a polity that rose or fell a class) keep their parent's form of government, or draw one that carries it on (`government::keep`: a chieftainship becomes a hereditary monarchy, an elders' council a council of nobles or an elected crown, ...); an interregnum ends in a hereditary crown likelier the more houses claim it; an elective crown held by one house for generations can turn hereditary; a merchant oligarchy's rich families can make themselves lords (hereditary monarchy or tyranny). Rulers marry readily (25% a year) and a grown ruler comes to the throne married with an heir by chance of age; after an interregnum the restoring house is drawn (a new house weighs a half) instead of always the most prestigious claimant; 19 tellings of death instead of 8. Year 500: 8 hereditary monarchies (was 1), 4 elective, 8 merchant oligarchies, 7 theocracies; 127 successions to the heir (was about 30); 39 interregnums (was 65); 59.2 s. Details and constants in `sims/capstone/FINDINGS.md`.
+
 ## 0.51.10 — 2026-11-09
 
 - Parser: the field modifiers `name?:` (nullable) and `name!?:` / `name?!:` (readonly and nullable) parse again, on both engines. The lexer stopped fusing `?` into the name (as it had `!`, which the parser already re-attached), so `email?: ""`, the form the P0904 help itself suggests, failed with P0904. A nullable field can be given nil when the object is made; one without `?` still can't (T0207). Conformance: `core/class_field_nullable_suffix`, `core/class_field_nil_without_suffix_errors`.
