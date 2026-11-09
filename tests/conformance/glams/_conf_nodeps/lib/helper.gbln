@@ -1,0 +1,3 @@
+act wrap(x)
+    return "[" + x + "]"
+xx
