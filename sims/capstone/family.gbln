@@ -10,14 +10,14 @@
 import government as government
 
 /// A realm's ruler: a tribe's or village's chief, a king, a priest, a
-/// term leader or a general. `house` is its dynasty, nil for one who
-/// rules without one; `spouse` is only a name.
+/// term leader or a general. `house` is its dynasty, nil (`?`) for one
+/// who rules without one; `spouse` is only a name.
 <>Ruler |
     name: ..
     given: ..
     age: 0
     court: nil
-    house: nil
+    house?: nil
     spouse: ..
     fame: 0.0
     dead: false
@@ -160,8 +160,7 @@ act new_ruler(p, d, t, age)
     if !d.nix? and :len(d >> names) > 0 and chance(.3) => g |= :shuffle(d >> names)[0]
     n | "{g} of {p >> name}"
     if !d.nix? => n |= "{g} {d >> name}"
-    x <> Ruler | given: g, name: n, age: age, court: p
-    x >> house |= d
+    x <> Ruler | given: g, name: n, age: age, court: p, house: d
     x >> aggression |= t{"aggression"}
     x >> ambition |= t{"ambition"}
     x >> competence |= t{"competence"}

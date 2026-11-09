@@ -1,0 +1,6 @@
+/// A field without `?` can't be given nil when the object is made.
+<>Ruler |
+    name: ..
+xx
+r <> Ruler | name: nil
+:say("never printed")

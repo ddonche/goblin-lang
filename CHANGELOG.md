@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.10 — 2026-11-09
+
+- Parser: the field modifiers `name?:` (nullable) and `name!?:` / `name?!:` (readonly and nullable) parse again, on both engines. The lexer stopped fusing `?` into the name (as it had `!`, which the parser already re-attached), so `email?: ""`, the form the P0904 help itself suggests, failed with P0904. A nullable field can be given nil when the object is made; one without `?` still can't (T0207). Conformance: `core/class_field_nullable_suffix`, `core/class_field_nil_without_suffix_errors`.
+- sims/capstone: `Ruler.house` is `house?: nil` (no house is a plain nil field), given when the ruler is made. Output unchanged. FINDINGS no longer lists "a nil-default field refuses nil when made" as a runtime gap: the `?` modifier is the language's way, and it was the parser that was broken.
+
 ## 0.51.9 — 2026-11-09
 
 - sims/capstone: a ruler leaves only by its erase transition (owner, 2026-11-09: "An object cannot be nil. It must be erased."). When a ruler died, was deposed or voted out, or an interregnum began, `family.gbln` also cleared the realm's `ruler` by hand; now the ruler is marked `dead` or `gone`, `transition erase` removes it, and the realm's `ruler` reads nil once it is erased. `reign` is not put on for a leaving ruler, and a leaving ruler can't wed. FINDINGS no longer lists "an object variable can't take nil" as a runtime gap. Year 500: 40 polities, the largest 45 provinces, 1,069 deaths, 65 interregnums; 62.8 s (0.51.6: 67.4 s, run noise included).

@@ -4889,20 +4889,15 @@ impl<'t> Parser<'t> {
             // Check for ~ raw sigil before the field name
             let raw = self.eat_op("~");
 
-            let Some(mut fname) = self.eat_ident() else { break; };
-            // Lexer no longer fuses a trailing '!' into the identifier token; re-attach it here.
-            if self.eat_op("!") { fname.push('!'); }
-
-            // Modifiers: ? (nullable), ! (readonly) as suffixes
+            let Some(fname) = self.eat_ident() else { break; };
+            // Modifiers: ? (nullable), ! (readonly) as suffixes, in either
+            // order. The lexer doesn't fuse them into the identifier token.
             let mut readonly = false;
             let mut nullable = false;
-            if fname.ends_with('?') {
-                nullable = true;
-                fname.truncate(fname.len() - 1);
-            }
-            if fname.ends_with('!') {
-                readonly = true;
-                fname.truncate(fname.len() - 1);
+            loop {
+                if !readonly && self.eat_op("!") { readonly = true; continue; }
+                if !nullable && self.eat_op("?") { nullable = true; continue; }
+                break;
             }
 
             // Normal field: expect ':' and value

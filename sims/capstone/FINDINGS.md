@@ -473,9 +473,6 @@ on for a ruler that is leaving, and a leaving ruler can't wed.
 
 ## Runtime gaps (named, not worked around)
 
-- **A field with default `nil` can't be given nil when the object is
-  made** (T0207): `x <> Ruler | house: d` fails when `d` is nil, though
-  `x >> house |= nil` afterwards works. The sim sets it afterwards.
 - Still from 0.51.4: a `modify` can't read through a nil field (the
   sim takes `reign` off while no adult rules), and a `modify` reading
   another object is worked out when the overlay goes on and once a
