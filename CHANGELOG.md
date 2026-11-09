@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.16 — 2026-11-09
+
+- sims/capstone step 5: groups and ideas (owner rulings, 2026-11-09). A group (`Group`, factions.gbln) is people of a realm who decide: a guild, a sect, a legion, a club, a gang, a cartel. The kinds are data (`factions::kinds`, 14 of them: what realm field each grows from, its share of the people, its traits, what it wants, what its members earn); the code reads their fields, never a name. Every group has the same eight actions (give gold, withhold it, give men, plot a coup, preach, found an idea, press its wants, rise), each weighed by its traits and state (`~loyalty`, `~ambition`, `~militancy`, `~zeal`, `~greed`, `~unity`, its grievance, power and holdings), so a group with no militancy never plots or rises. Realms answer their groups (`answers`, polity.gbln): crush, concede, patronize. An idea is an overlay on a land (`Faith`, `Creed`): it spreads to bordering land, fades unless preached, makes heresies (likelier under an idea held across much of the world), and pulls its realm's culture (`bends`, read by `drift_traits`). Groups form by chance from what they grow from, split when large, merge, and end; a coup plot raises `government::odds`' coup odds and a rising its breakaway odds. What they do that changes nothing modeled is told with `:event`. Numbers and choices in `sims/capstone/FINDINGS.md`; design in goblin-docs/factions-design.md.
+- VM: an overlay's record from `:overlays(host)` is of its overlay class: `:is_type(o, "Faith")` is true for a copy of a kind of `Faith` (an overlay is an object of its class). Before, only its own kind's name matched.
+- VM: an overlay's blocks (`on mutate => heresy(self)`, the other `on` lines) written in an imported module call that module's actions, as the rest of its code does. Before, they were compiled seeing no names at all, so a call to the module's own action failed with "value of type 'nil' is not callable".
+- VM speed, same results: an overlay's `spread:` whose condition starts with `:link_score(self, target, "border")` tries only the linked hosts (it tried every host); a transition's `targets: K where (target >> f) == x and ...` tries only the objects whose `f` can match, as decision targets already did.
+- Conformance: `core/des_overlay_hook_in_module`, `core/des_overlay_copy_is_of_its_class`.
+
 ## 0.51.15 — 2026-11-09
 
 - `obj >> {name}`: the field whose name `name` gives (any expression giving text), read through the object's overlays as `obj >> piety` is; `obj >> {name} |= v` writes it (owner ruling, 2026-11-09, the braces of `import ... as {n}`). The name must be text: R0414 (`field-name-not-text`). Parser (P0406 for a missing `}`) and VM (`GetMemberDyn`, `SetFieldDyn`); the interpreter doesn't have it.

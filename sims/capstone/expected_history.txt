@@ -1,11 +1,13 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 73 polities, largest Halesk with 17 provinces, 10 wars
-year 200: 59 polities, largest Rosvar with 20 provinces, 7 wars
-year 300: 43 polities, largest Rosvar-Halbelhal with 39 provinces, 3 wars
-year 400: 46 polities, largest Rosvar-Halbelhal-Lorzanjor with 35 provinces, 10 wars
-year 500: 31 polities, largest Rosvar-Halbelhal-Lorzanjor with 36 provinces, 4 wars
-check: share of polity-years at war: 20.4%
-check: forms at the end: aristocratic_republic 1, elders_council 2, elective_monarchy 4, hereditary_monarchy 8, imperial_autocracy 1, merchant_oligarchy 8, theocracy 7
-check: families: deaths 1091, murders 33, executions 8, crowned 1030, regencies 16, usurped 38, interregnums 39, lines_ended 1, elections 957, claims_won 19, new_houses 151, marriages 312, births 561, partitions 0
-check: succession laws at the end: eldest_child 5, eldest_son 3, elective 4, faith 1, none 5, strongest_kin 1, term 9
+year 100: 72 polities, largest Orpel with 18 provinces, 8 wars
+year 200: 51 polities, largest Orpel with 27 provinces, 6 wars
+year 300: 40 polities, largest Corvardunesk with 29 provinces, 3 wars
+year 400: 37 polities, largest Toresk with 33 provinces, 6 wars
+year 500: 33 polities, largest Areskbeljor-Orisk-Lorvar-Wenquar-Belordun-Orlorjor with 44 provinces, 5 wars
+check: share of polity-years at war: 19.4%
+check: forms at the end: aristocratic_republic 2, chieftainship 3, citizen_republic 1, elders_council 1, elective_monarchy 4, hereditary_monarchy 4, imperial_autocracy 4, merchant_oligarchy 3, military_junta 2, theocracy 9
+check: families: deaths 1052, murders 22, executions 2, crowned 947, regencies 19, usurped 21, interregnums 48, lines_ended 4, elections 814, claims_won 23, new_houses 121, marriages 251, births 442, partitions 0
+check: succession laws at the end: eldest_child 5, eldest_son 1, elective 4, faith 4, force 2, none 3, strongest_kin 2, term 5
+check: groups: formed 618, split 20, merged 0, ended 435, give_gold 5961, withhold 21, give_men 1504, coup 6, preach 1284, found 173, press 645, rise 8, crush 21, concede 34, patronize 391, coups_won 0
+check: groups at the end: 203, largest share of a realm 0.318; ideas 55, largest holds 0.044 of all people

@@ -131,7 +131,7 @@ pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session
         conflicts: d.conflicts.clone(),
         class: d.class.clone(),
         class_dup: d.class_dup.clone(),
-        methods: crate::tick::compile_overlay_methods(&d.name, &d.actions, &extra_names).unwrap_or_default(),
+        methods: crate::tick::compile_overlay_methods(s, &d.name, &d.actions, &extra_names).unwrap_or_default(),
         actions: d.actions.clone(),
         on_start: d.on_start.clone(),
         every: d.every.clone(),

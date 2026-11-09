@@ -101,6 +101,25 @@ fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<S
     } else {
         vm.session.object_store.of_class_ids(class).cloned().collect()
     };
+    // `targets: Kind where (target >> realm) == @realm and ...`: only the
+    // objects that can pass the first test on `target` are tried, in the
+    // same order (see `tick::narrow`).
+    let ids: Vec<ObjId> = match vm.session.object_store.get_index_of(me.as_str()) {
+        Some(me_at) if ids.len() > 1 && vm.session.region.is_none() => {
+            let all: Vec<(Value, usize)> = ids.iter()
+                .filter_map(|u| vm.session.object_store.get_index_of(u.as_str()).map(|i| (Value::Ref(u.clone()), i)))
+                .collect();
+            match crate::tick::narrow(vm, &t.trigger, false, class, &Value::Ref(me.clone()), me_at, &all) {
+                Some(fewer) => {
+                    let keep: FxHashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
+                    all.into_iter().filter(|(_, i)| keep.contains(i))
+                        .filter_map(|(v, _)| if let Value::Ref(u) = v { Some(u) } else { None }).collect()
+                }
+                None => ids,
+            }
+        }
+        _ => ids,
+    };
     // A target with a partner may run in another region: subjugate's change
     // goes there; an absorb or merge of it is a claim the world settles
     // (see `claim`).
@@ -740,7 +759,7 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
     if !inst.extra_fields.keys().eq(d.extra_fields.keys()) {
         let fields = &seeded.extra_fields;
         seeded.maker.retain(|(n, _)| !fields.contains_key(n));
-        seeded.methods = crate::tick::compile_overlay_methods(&seeded.name, &seeded.actions, &seeded.own_names()).unwrap_or_default();
+        seeded.methods = crate::tick::compile_overlay_methods(&vm.session, &seeded.name, &seeded.actions, &seeded.own_names()).unwrap_or_default();
     }
     vm.session.overlay_defs.insert(inst.overlay_name.clone(), Rc::new(seeded));
 }

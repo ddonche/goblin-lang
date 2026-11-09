@@ -27,6 +27,9 @@
     temple: 0
     harbour: 0
     library: 0
+    /// How much of the world's people hold the idea held most firmly
+    /// here (set each year by factions::account).
+    dominance: 0.0
     phase: land
         every 1 tick
             @people |= @people + @growth * @people * (1.0 - @people / @food)

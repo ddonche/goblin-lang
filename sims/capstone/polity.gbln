@@ -13,6 +13,7 @@
 import land as land
 import government as government
 import family as family
+import factions as factions
 
 aspect Polity |
     name: ..
@@ -141,6 +142,12 @@ aspect Polity |
     relics: 0.0
     prestige: 0.0
     debt: 0.0
+    /// What its people's ideas pull its culture toward, by trait (set each
+    /// year by factions::account).
+    bends: {}
+    /// This year's coup plotting and unrest stirred by its factions.
+    plot: 0.0
+    unrest: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -225,6 +232,7 @@ xx
     ~learning: .02
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -260,6 +268,7 @@ xx
     ~learning: .05
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -299,6 +308,7 @@ xx
     ~learning: .25
     phase: inside
         uses govern
+        uses answers
         uses realm
         uses court
     xx
@@ -337,6 +347,7 @@ xx
     ~learning: .15
     phase: inside
         uses govern
+        uses answers
         uses realm
         uses court
     xx
@@ -514,6 +525,7 @@ xx
     ~learning: .25
     phase: inside
         uses govern
+        uses answers
         uses realm
         uses court
     xx
@@ -658,6 +670,7 @@ xx
     ~learning: .45
     phase: inside
         uses govern
+        uses answers
         uses realm
         uses court
     xx
@@ -768,6 +781,7 @@ xx
     ~centralization: .1
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -1608,23 +1622,15 @@ act settle_accounts(p)
     drift_traits(p)
 xx
 
-/// Pulls each trait 2% of the way back toward its baseline.
+/// Pulls each trait 2% of the way back toward its baseline, moved by
+/// what its people's ideas teach (`bends`).
+traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stability", "honor", "spirituality",
+    "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 act drift_traits(p)
-    p >> aggression |= drift(p >> aggression, :field(p, "aggression"), :field(p, "base_aggression"))
-    p >> cooperation |= drift(p >> cooperation, :field(p, "cooperation"), :field(p, "base_cooperation"))
-    p >> fear |= drift(p >> fear, :field(p, "fear"), :field(p, "base_fear"))
-    p >> ambition |= drift(p >> ambition, :field(p, "ambition"), :field(p, "base_ambition"))
-    p >> cohesion |= drift(p >> cohesion, :field(p, "cohesion"), :field(p, "base_cohesion"))
-    p >> stability |= drift(p >> stability, :field(p, "stability"), :field(p, "base_stability"))
-    p >> honor |= drift(p >> honor, :field(p, "honor"), :field(p, "base_honor"))
-    p >> spirituality |= drift(p >> spirituality, :field(p, "spirituality"), :field(p, "base_spirituality"))
-    p >> openness |= drift(p >> openness, :field(p, "openness"), :field(p, "base_openness"))
-    p >> discipline |= drift(p >> discipline, :field(p, "discipline"), :field(p, "base_discipline"))
-    p >> legitimacy |= drift(p >> legitimacy, :field(p, "legitimacy"), :field(p, "base_legitimacy"))
-    p >> centralization |= drift(p >> centralization, :field(p, "centralization"), :field(p, "base_centralization"))
-    p >> tolerance |= drift(p >> tolerance, :field(p, "tolerance"), :field(p, "base_tolerance"))
-    p >> tradition |= drift(p >> tradition, :field(p, "tradition"), :field(p, "base_tradition"))
-    p >> learning |= drift(p >> learning, :field(p, "learning"), :field(p, "base_learning"))
+    b | p >> bends
+    repeat traits as t
+        p >> {t} |= drift(p >> {t}, :field(p, t), :clamp(:field(p, "base_{t}") + (b{t} ?? 0.0), 0.0, 1.0))
+    xx
 xx
 
 /// Starts a polity of `class` holding `homes` (the first is its capital):
@@ -1719,6 +1725,45 @@ xx
 /// (a tribe), union, cede and release, and a vassal's or league member's
 /// revolt. Settle and union only choose: the colony (spawn) and the union
 /// (merge) are the settle phase's transitions.
+
+/// answers: the realm's answer to one of its groups, once a year or
+/// none: crush it (likelier the more it is feared and defied, the less
+/// tolerant the realm), concede what it wants (likelier the more
+/// cooperative the realm and the angrier and stronger the group), or
+/// take up its idea (likelier the more of its people hold it and the
+/// less sure the realm's rule).
+interface answers |
+    decision crush
+        targets: Group where (target >> realm) == self and @army >= 10.0
+        score => (target >> power) * ((target >> grievance) + (target >> defied)) * (1.0 - @tolerance) * (.5 + .5 * @fear)
+    xx
+    decision concede
+        targets: Group where (target >> realm) == self and :len(target >> wants) > 0
+        score => (target >> power) * (target >> grievance) * @cooperation
+    xx
+    decision patronize
+        targets: Group where (target >> realm) == self and (target >> idea) != .. and (target >> held) > .2
+        score => (target >> held) * (1.0 - @legitimacy) * (1.0 - target >> grievance) * .5
+    xx
+    judge
+        true:
+            names   | [""]
+            weights | [1.0]
+            repeat {"crush": crush, "concede": concede, "patronize": patronize} as k, d
+                if d.nix? or (d >> score) <= 0 => skip
+                :put_last!(names, k)
+                :put_last!(weights, d >> score)
+            xx
+            if :len(names) > 1
+                name | :sample_weighted({"src": names, "weights": weights})[0]
+                judge
+                    name == "crush": factions::crush(self, crush >> target)
+                    name == "concede": factions::concede(self, concede >> target)
+                    name == "patronize": factions::patronize(self, patronize >> target)
+                xx
+            xx
+    xx
+xx
 
 interface realm |
     decision reform
@@ -2069,8 +2114,8 @@ act breakaway(p, city)
     if p >> lands < 3 or land::is_city(r) != city => send 0.0
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
-    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0))
-    return odds(far * loose * (1.0 - p >> cohesion))
+    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
+    return odds(far * loose * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)

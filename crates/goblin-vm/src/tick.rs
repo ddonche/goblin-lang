@@ -610,6 +610,19 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 Some(fewer) => fewer,
                 None => candidates,
             };
+            // `:link_score(self, target, "border") and ...`: only the objects
+            // linked to its host can pass (the first part stops the rest), in
+            // the same order.
+            let candidates = match (def.host_types.as_slice(), cond_parts.first()) {
+                ([class], Some(first)) => match narrow_by_link(vm, first, class, &self_ref, self_at) {
+                    Some(Some(linked)) => {
+                        let keep: std::collections::HashSet<usize> = linked.iter().map(|(_, i)| *i).collect();
+                        std::rc::Rc::new(candidates.iter().filter(|(_, i)| keep.contains(i)).cloned().collect())
+                    }
+                    _ => candidates,
+                },
+                _ => candidates,
+            };
             for (target_ref, target_at) in candidates.iter() {
                 let target_at = *target_at;
                 if target_at == self_at { continue; }
@@ -1091,7 +1104,7 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 /// It stops at the first condition that names `target` and isn't one of
 /// those tests. The caller uses it only when scoring changes nothing
 /// either (so who holds what stays as it was while the targets are scored).
-fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
+pub(crate) fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
     use goblin_ast::Expr as E;
     if !all.iter().any(|(t, _)| t != self_ref) { return None; }
     let mut parts = Vec::new();
@@ -1326,7 +1339,18 @@ fn score_targets(
 
 /// An overlay's blocks compiled as methods: `self` (the host) first, then
 /// `intensity`, then the overlay's own data fields by name.
-pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionDecl], extra: &[String])
+/// The global prefix of the imported module written in `file` (none for
+/// the main program).
+pub(crate) fn module_prefix(session: &crate::session::Session, file: &str) -> Option<String> {
+    if file.is_empty() { return None; }
+    let prefix = format!("{}::", std::path::Path::new(file).canonicalize().ok()?.display());
+    session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
+}
+
+/// An overlay's blocks (`on mutate => heresy(self, mutated)`) see the
+/// program's globals, as the rest of the code does; one written in an
+/// imported module sees that module's names.
+pub(crate) fn compile_overlay_methods(session: &crate::session::Session, name: &str, actions: &[goblin_ast::ActionDecl], extra: &[String])
     -> Result<std::collections::HashMap<String, std::rc::Rc<crate::value::FunctionObject>>, GoblinError> {
     let mut m = std::collections::HashMap::new();
     for action in actions {
@@ -1336,7 +1360,8 @@ pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionD
         params.extend(action.params.clone());
         params.extend(extra.iter().map(|k| p(k)));
         let pseudo = goblin_ast::ActionDecl { params, ..action.clone() };
-        let mut c = crate::compiler::Compiler::new();
+        let mut c = crate::compiler::Compiler::new().with_initial_globals(session.global_names.to_vec())
+            .with_global_prefix(module_prefix(session, &action.span.file));
         c.is_class_method = true;
         let f = c.compile_action(&pseudo).map_err(|e| GoblinError::Runtime(format!("overlay {name}, `{}`: {e}", action.name)))?;
         m.insert(action.name.clone(), std::rc::Rc::new(f));

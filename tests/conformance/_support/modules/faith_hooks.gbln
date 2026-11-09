@@ -1,0 +1,16 @@
+/// An overlay class whose `on mutate` block calls an action of this file.
+<^>Creed |
+    hosts: Town
+    title: ..
+    transition mutate where age >= 1
+    on mutate => schism(self, title)
+xx
+act schism(t, title)
+    say("in {t >> name}, {title} broke apart")
+xx
+act found(t)
+    overlay first_creed <^> Creed
+        title: "the first creed"
+    xx
+    :overlay!(t, first_creed)
+xx

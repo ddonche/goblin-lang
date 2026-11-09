@@ -12,6 +12,7 @@ import land as land
 import polity as polity
 import government as government
 import family as family
+import factions as factions
 
 act food_of(p)
     return p >> food
@@ -137,6 +138,7 @@ repeat :reverse(:sort_by(lands, "people_of")) as l
     polity::found(class, polity::next_name(), held, 0)
     made |= made + 1
 xx
+factions::seed(:objects(Kingdom))
 nk | :len(:objects(Kingdom))
 nv | :len(:objects(Village))
 nt | :len(:objects(Tribe))
@@ -168,6 +170,7 @@ repeat :range(0, years + 1) as year
             land
             polity::account(lands, pairs)
             family::account(year)
+            factions::account(year, lands, :objects(uses govern))
             inside
             between
             settle
@@ -252,3 +255,11 @@ repeat laws as w, n
     :put_last!(held, "{w} {n}")
 xx
 :say("check: succession laws at the end: {:join(:sort(held), ", ")}")
+/// What the groups did, and the largest group and idea at the end.
+tl |= []
+repeat factions::tally as k, n
+    :put_last!(tl, "{k} {n}")
+xx
+:say("check: groups: {:join(tl, ", ")}")
+gc | factions::counts(lands)
+:say("check: groups at the end: {gc{"groups"}}, largest share of a realm {gc{"largest_group"}}; ideas {gc{"ideas"}}, largest holds {gc{"largest_idea"}} of all people")

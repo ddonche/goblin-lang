@@ -536,3 +536,123 @@ merchant oligarchies.
   `target == @capital` decision ran its condition on all 400
   provinces. Now only x is checked, with the same result. Step 3's
   500-year history: 73.2 s to 69.7 s, output unchanged.
+
+# Capstone step 5: groups and ideas
+
+`factions.gbln`. Design: goblin-docs/factions-design.md (owner rulings,
+2026-11-09). A group is people of a realm who decide (an object); an
+idea is an influence that decides nothing (an overlay on a land).
+
+## What is built
+
+- **Ideas.** `Faith` and `Creed`, overlay classes on `Land`. Intensity is
+  how firmly the land's people hold it. They spread to bordering land
+  (`.05 × intensity` a year for a faith, `.04` for a creed), fade (`.002`,
+  `.003` a year) unless preached, and mutate into heresies (lineage) by
+  chance, likelier under an idea held across much of the world (the
+  land's `dominance`). Each realm's culture is pulled toward its ideas'
+  `bends`, weighted by how many of its people hold each (`drift_traits`
+  reads `bends`, never a name). At year 0 each kingdom's capital holds an
+  old faith of its own with two random bends.
+- **Groups.** `Group`, one class. The 14 kinds are data (`kinds`):
+  faithful, holy order, merchant houses, guilds, bankers, officers, free
+  companies, great families, peasants' league, scholars, brotherhood,
+  outlaws, smugglers' ring, benevolent club. Each says what realm field
+  it grows from, its share of the people, its six traits, what it wants
+  and what its members earn. A new kind is one more entry.
+- **One decision a year, eight actions for every group**, each weighed by
+  traits and state (a 0 leaves it out; "nothing" weighs 1 − power/2):
+  give gold (loyalty × (1 − grievance) × gold), withhold (greed ×
+  grievance × power), give men (loyalty × (1 − grievance) × arms, more in
+  war), coup (ambition × militancy × arms × grievance × the realm's
+  weakness), preach (zeal × power × (1 − held)), found an idea (zeal ×
+  ambition × power, a faith or a creed by the realm's spirituality),
+  press (ambition × unmet wants × power), rise (militancy × max(zeal,
+  ambition) × grievance × power). A benevolent club has no militancy:
+  it never plots or rises.
+- **The realm answers** (`answers` interface in every realm): crush,
+  concede (its wants move the realm's baselines), patronize (its idea
+  firmer on the realm's lands, the realm's rule surer), or nothing.
+- **Grievance** rises only from what is done to a group (crushed, a
+  rival favored, wants far off) and fades 5% a year. Traits drift back
+  to the group's own.
+- **Coming and going.** New groups form by chance from what they grow
+  from, rarer as the realm's people are taken up, likelier against a
+  group grown strong. A large, disunited group splits (the splinter may
+  go to a bordering realm); two of one kind and idea in a realm merge;
+  a group with no members or no realm ends.
+- **Into the existing machinery.** A plot raises the coup odds in
+  `government::odds` (`plot`); a rising points the realm's `rebel` land
+  at where the group is strongest and raises the breakaway odds
+  (`unrest`). Plotters who took power get their wants.
+- **Told with `:event`:** formings, splits, endings, gifts (temple,
+  the poor, a loan, a school), refusals, plots, foundings, petitions,
+  risings, crushings, concessions, patronage, heresies, each telling
+  weighted by state.
+
+## Result (seed 42, 1,000 years)
+
+| | before (0.51.15) | with groups |
+|---|---|---|
+| polity-years at war | 21.6% | 21.6% |
+| polities at year 1000 | 22 | 18 |
+| usurped | 59 | 49 |
+| history time | 92.6 s | 147.4 s |
+
+Groups over 1,000 years: 960 formed, 891 ended, 30 splits, 1 merger,
+98 alive at the end (between 70 and 210 throughout). Actions: give gold
+13,417, give men 3,447, preach 2,007, press 1,083, found 257, withhold
+38, coup plots 14, risings 14. Realms: patronize 668, concede 80, crush
+64. 32 ideas at the end; the most widely held holds 8.3% of all people
+(weighted by intensity). The largest group holds 27% of its realm.
+
+## Runaways found and checked on the way
+
+1. **Endless splitting.** A group with low founding unity (the
+   peasants' league, .3) split every 50 years whatever its size, and
+   the splinters split again: 1,173 groups by year 1000, and the run
+   took 275 s. Now only a large group splits (`past(share, .05)`).
+2. **Splinters regrew to full size.** Each group of a kind grew toward
+   the whole of what its kind draws on. Now groups of one kind and idea
+   share it.
+3. **One faith took the world** (92.6% by year 400): patronage added .1
+   to every land each time. Now .03, and heresies grow likelier under
+   an idea held almost everywhere.
+
+## Choices made here (flagged)
+
+1. The 14 kinds and every number in them.
+2. The weight formulas above and "nothing" weighing 1 − power/2.
+3. Each kingdom starts with an old faith (tribes and villages with none).
+4. The realm answers decision, its weights, and that conceding moves the
+   realm's baselines (for good) while pressing moves its traits (for a
+   while).
+5. `Land.dominance`, a field written each year so a heresy's chance can
+   read how widely the land's leading idea is held.
+6. A group whose realm is gone ends; it does not follow a successor.
+
+## Checks
+
+`check.sh` now also checks that groups take each action, realms each
+answer, and groups form, split, merge and end. In 500 years no merger
+happens, so that check fails (flagged, not tuned away). Over 1,000
+years one merger happened, and no plot ended in a coup (14 plots).
+
+## Runtime fixed on the way (0.51.16)
+
+- `:is_type(o, "Faith")` was false for a copy read with `:overlays`:
+  only its kind's name matched. An overlay is an object of its class.
+- An overlay's `on` blocks written in an imported module could not call
+  that module's actions ("value of type 'nil' is not callable").
+- Speed, same results: a `spread:` starting with `:link_score(self,
+  target, "border")` tried every Land for every copy; a transition's
+  `targets: Group where (target >> realm) == @realm ...` tried every
+  group for every group. 300 years: 72.2 s to 65.3 s.
+
+## Runtime gaps (named, not worked around)
+
+- An overlay's `on mutate` block can't reach the copy that mutated:
+  `self` is the host and no `mutated` is given (objects get `self`).
+  The heresy telling doesn't rename the copy for this.
+- `{:type_of(o)}` and `{look >> score}` inside a string print literally
+  (known).

@@ -460,7 +460,7 @@ act odds(p, c, lost, won, armed, unpaid)
         /// One of the rich families makes itself lord.
         c == "lords": send past(p >> ambition, .5) * under(p >> cooperation, .5) * (.5 + .5 * :min(p >> wars, 1))
         /// A coup.
-        c == "coup": send past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(lost, unpaid))
+        c == "coup": send past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(:max(lost, unpaid), :min(p >> plot, 1.0)))
         /// A usurper.
         c == "usurper": send under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5)
         /// A revolution.

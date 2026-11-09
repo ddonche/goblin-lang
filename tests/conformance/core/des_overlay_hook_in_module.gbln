@@ -1,0 +1,12 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// An overlay's blocks (`on mutate => ...`) written in an imported module
+/// call that module's actions, as the rest of its code does.
+<>Town |
+    name: ..
+xx
+import _support/modules/faith_hooks as fh
+t <> Town | name: "Varn"
+fh::found(t)
+repeat 3
+    tick()
+xx

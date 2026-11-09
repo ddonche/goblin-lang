@@ -2762,8 +2762,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
                 (Value::Str(s), "int") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<i64>().is_ok() }
                 (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
-                // An object is of its class: `:is_type(r, "Rabbit")`.
-                (Value::Object(o), name) => &*o.class_name == name,
+                // An object is of its class: `:is_type(r, "Rabbit")`. An
+                // overlay's record (from `:overlays(host)`) is of its kind
+                // and of the overlay class the kind belongs to.
+                (Value::Object(o), name) => &*o.class_name == name
+                    || (o.uuid.starts_with(crate::vm::OVERLAY_RECORD)
+                        && session.overlay_defs.get(&*o.class_name).and_then(|d| d.class.as_deref()) == Some(name)),
                 (Value::Ref(u), name) => matches!(session.object_store.get(u),
                     Some(Value::Object(o)) if &*o.class_name == name),
                 _ => false,

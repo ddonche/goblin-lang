@@ -2813,7 +2813,7 @@ impl Vm {
                 vm_def.maker = maker.into_iter()
                     .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()))
                     .collect();
-                vm_def.methods = crate::tick::compile_overlay_methods(&vm_def.name, &vm_def.actions, &vm_def.own_names())?;
+                vm_def.methods = crate::tick::compile_overlay_methods(&self.session, &vm_def.name, &vm_def.actions, &vm_def.own_names())?;
                 if fresh {
                     let frame = self.call_stack.last_mut().unwrap();
                     let made = frame.made_overlays.get_or_insert_with(Default::default);
@@ -5718,10 +5718,7 @@ impl Vm {
     /// The global prefix of the imported module `file` (as its spans name
     /// it), or None for the main program.
     fn module_prefix_of(&self, file: &str) -> Option<String> {
-        if file.is_empty() { return None; }
-        let path = std::path::Path::new(file);
-        let prefix = format!("{}::", path.canonicalize().ok()?.display());
-        self.session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
+        crate::tick::module_prefix(&self.session, file)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
