@@ -13,6 +13,7 @@ import polity as polity
 import government as government
 import family as family
 import factions as factions
+import overlays as overlays
 
 act food_of(p)
     return p >> food
@@ -138,7 +139,7 @@ repeat :reverse(:sort_by(lands, "people_of")) as l
     polity::found(class, polity::next_name(), held, 0)
     made |= made + 1
 xx
-factions::seed(:objects(Kingdom))
+overlays::seed(:objects(Kingdom), :objects(uses govern, !:is_type(it, "Kingdom")), pairs)
 nk | :len(:objects(Kingdom))
 nv | :len(:objects(Village))
 nt | :len(:objects(Tribe))
@@ -171,6 +172,7 @@ repeat :range(0, years + 1) as year
             polity::account(lands, pairs)
             family::account(year)
             factions::account(year, lands, :objects(uses govern))
+            overlays::account(year, lands, :objects(uses govern))
             inside
             between
             settle
@@ -261,5 +263,12 @@ repeat factions::tally as k, n
     :put_last!(tl, "{k} {n}")
 xx
 :say("check: groups: {:join(tl, ", ")}")
+tl |= []
+repeat overlays::tally as k, n
+    :put_last!(tl, "{k} {n}")
+xx
+:say("check: overlays: {:join(tl, ", ")}")
+oc | overlays::counts(lands, :objects(uses govern))
+:say("check: ideas at the end: tongues {oc{"tongues"}} (largest holds {oc{"largest_tongue"}} of all people), faiths {oc{"faiths"}} (largest {oc{"largest_faith"}}), creeds {oc{"creeds"}}; realms of more than one people {oc{"many_peoples"}}")
 gc | factions::counts(lands)
 :say("check: groups at the end: {gc{"groups"}}, largest share of a realm {gc{"largest_group"}}; ideas {gc{"ideas"}}, largest holds {gc{"largest_idea"}} of all people")

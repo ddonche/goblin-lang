@@ -14,6 +14,7 @@ import land as land
 import government as government
 import family as family
 import factions as factions
+import overlays as overlays
 
 aspect Polity |
     name: ..
@@ -98,8 +99,8 @@ aspect Polity |
     rebel: nil
     /// Settled free provinces bordering its land.
     frontier: 0
-    /// Peoples under its rule: a polity of another culture taken in adds
-    /// one (until tongues and faiths, step 6).
+    /// Tongues spoken by at least 15% of its people (set each year by
+    /// overlays::account).
     peoples: 1
     /// For a League: its members, and the years one member has held more
     /// than half of the members' land.
@@ -1032,12 +1033,14 @@ interface govern |
         take | (l >> people) * .05 * (.5 + (p >> centralization) * .5) * (.5 + (p >> discipline) * .5)
         p >> gold |= p >> gold + take
         p >> legitimacy |= p >> legitimacy - .01
+        overlays::stir(p, .01)
     xx
     act relieve(p, l)
         cost | :min(p >> gold * .2, (l >> people) * .05)
         p >> gold |= p >> gold - cost
         p >> legitimacy |= p >> legitimacy + .02
         p >> stability |= p >> stability + .01
+        overlays::stir(p, -.05)
     xx
 
     /// What it builds is drawn by need: a granary where people are near what
@@ -1448,6 +1451,8 @@ act end_war(w, winner)
     loser >> legitimacy |= loser >> legitimacy - .05
     winner >> won_years |= 10
     loser >> lost_years |= 10
+    overlays::stir(winner, -.1)
+    overlays::stir(loser, .3)
     :link!(loser, winner, "grievance", .4, 80)
     aim | w >> aim
     if winner == a and !(aim.nix?) and aim >> owner == d => aim >> owner |= a
@@ -2205,13 +2210,9 @@ act mutated(p)
     if f.nix? or !government::allowed(p, f) => government::rule(p, government::keep(p, f ?? p >> form))
 xx
 
-/// Conquest: the loser's peoples join if their culture is far off.
+/// Conquest: the loser's army and treasury join (its tongues are counted
+/// with the land, by overlays::account).
 act annexed(p, t)
-    if closeness(p, t) < .85
-        p >> peoples |= p >> peoples + t >> peoples
-    else
-        p >> peoples |= :max(p >> peoples, t >> peoples)
-    xx
     p >> army |= p >> army + (t >> army) * .5
     p >> gold |= p >> gold + t >> gold
 xx
@@ -2223,7 +2224,7 @@ act vassal_made(p, t)
     government::rule(t, government::client_form())
 xx
 
-/// A union: both treasuries and armies, both peoples, a form drawn anew.
+/// A union: both treasuries and armies, a form drawn anew.
 act united(p, t, m)
     m >> union_with |= nil
     m >> gold |= p >> gold + t >> gold
@@ -2231,11 +2232,6 @@ act united(p, t, m)
     m >> food |= p >> food + t >> food
     m >> debt |= p >> debt + t >> debt
     m >> prestige |= :max(p >> prestige, t >> prestige)
-    if closeness(p, t) < .85
-        m >> peoples |= p >> peoples + t >> peoples
-    else
-        m >> peoples |= :max(p >> peoples, t >> peoples)
-    xx
     government::rule(m, government::keep(m, m >> form))
     /// Its ruler is the first's; the other's ruling house keeps a claim.
     family::moved(m)

@@ -8,39 +8,10 @@
 /// never stages a coup or rises. The kinds of group are data (`kinds`):
 /// the code reads their fields, never their names. What groups do that
 /// does not change the world is told with `:event`.
-/// The design is in goblin-docs/factions-design.md.
-
-/// A faith: about the gods.
-<^>Faith |
-    hosts: Land
-    dup: stronger
-    ~intensity: .3
-    decays: .002
-    spread: .05 * intensity where :link_score(self, target, "border") and target >> people > 0.0
-    /// What a realm's culture is pulled toward, by trait, as far as its
-    /// people hold it.
-    bends: {}
-    title: ..
-    founded: 0
-    /// A heresy: by chance, likelier where it is held most firmly, and
-    /// where the land's leading idea is held across much of the world.
-    transition mutate where chance(.0005 * intensity * (1.0 + 40.0 * (self >> dominance)))
-    on mutate => heresy(self)
-xx
-
-/// A creed: a philosophy or a cause about how people should live.
-<^>Creed |
-    hosts: Land
-    dup: stronger
-    ~intensity: .3
-    decays: .003
-    spread: .04 * intensity where :link_score(self, target, "border") and target >> people > 0.0
-    bends: {}
-    title: ..
-    founded: 0
-    transition mutate where chance(.0005 * intensity * (1.0 + 40.0 * (self >> dominance)))
-    on mutate => heresy(self)
-xx
+/// The design is in goblin-docs/factions-design.md. The ideas themselves
+/// (Faith, Creed) are in overlays.gbln, which makes new ones: an overlay
+/// class is known only in the file that declares it.
+import overlays as overlays
 
 now | 0
 
@@ -56,11 +27,6 @@ act jitter(v)
     return :clamp(v + ((pick 1 from 0...20) - 10) / 100.0, 0.0, 1.0)
 xx
 
-/// A heresy on a land: the land's copy is now a new idea of its own.
-act heresy(l)
-    :event(l, "heresy", nil, {"a preacher broke with the old teaching": 2.0, "a new sect arose": 1.0, "the faithful split over a vision": 1.0})
-xx
-
 /// What the run's groups did, and how they came and went (printed at the end).
 tally | {"formed": 0, "split": 0, "merged": 0, "ended": 0, "give_gold": 0, "withhold": 0, "give_men": 0, "coup": 0,
     "preach": 0, "found": 0, "press": 0, "rise": 0, "crush": 0, "concede": 0, "patronize": 0, "coups_won": 0}
@@ -69,9 +35,7 @@ act count(k)
     :update!(tally{k}, tally{k} + 1)
 xx
 
-/// The traits a culture can be pulled on.
-traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stability", "honor", "spirituality",
-    "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
+traits | overlays::traits
 
 /// The kinds of group a realm can have. Each is data: `from`, the realm
 /// field it grows from (read as `realm >> {from}`; "idea" for those who
@@ -323,28 +287,6 @@ act account(year, lands, realms)
         :update!(held{k}, hs)
         :update!(bends{k}, bs)
     xx
-    /// How much of the world's people hold each idea; each land's
-    /// `dominance` is that of the idea held most firmly there (heresies
-    /// are likelier under an idea held almost everywhere).
-    world | 0.0
-    reach | {}
-    repeat lands as l
-        world |= world + l >> people
-        repeat :overlays(l) as o
-            if !(:is_type(o, "Faith") or :is_type(o, "Creed")) => skip
-            :update!(reach{o >> overlay_name}, (reach{o >> overlay_name} ?? 0.0) + (l >> people) * (o >> intensity))
-        xx
-    xx
-    repeat lands as l
-        d | 0.0
-        top | 0.0
-        repeat :overlays(l) as o
-            if !(:is_type(o, "Faith") or :is_type(o, "Creed")) or o >> intensity <= top => skip
-            top |= o >> intensity
-            if world > 0.0 => d |= (reach{o >> overlay_name} ?? 0.0) / world
-        xx
-        if l >> dominance != d => l >> dominance |= d
-    xx
     /// The groups of each realm.
     of | {}
     repeat :objects(Group) as g
@@ -536,24 +478,7 @@ act found(g, p)
     xx
     t1 | traits[(pick 1 from 0...14)]
     :update!(b{t1}, (b{t1} ?? 0.0) + ((pick 1 from 0...30) - 15) / 100.0)
-    name | ..
-    if chance(p >> spirituality)
-        overlay new_faith <^> Faith
-            bends: b
-            title: "the faith of {g >> name}"
-            founded: now
-        xx
-        :overlay!(c, new_faith, .3)
-        name |= new_faith
-    else
-        overlay new_creed <^> Creed
-            bends: b
-            title: "the teaching of {g >> name}"
-            founded: now
-        xx
-        :overlay!(c, new_creed, .3)
-        name |= new_creed
-    xx
+    name | overlays::found(chance(p >> spirituality), b, g >> name, c)
     g >> idea |= name
     g >> wants |= b
     count("found")
@@ -643,6 +568,7 @@ act crush(p, g)
     p >> legitimacy |= p >> legitimacy - .03
     p >> army |= p >> army * .97
     p >> gold |= p >> gold * .95
+    overlays::stir(p, .05)
     repeat :objects(Group, it >> realm == p and it != g) as o
         o >> grievance |= o >> grievance + .02
     xx
@@ -658,6 +584,7 @@ act concede(p, g)
     xx
     g >> grievance |= g >> grievance - .3
     g >> defied |= 0.0
+    overlays::stir(p, -.05)
     repeat :objects(Group, it >> realm == p and it != g) as o
         o >> grievance |= o >> grievance + .02 * power(g)
     xx
@@ -681,25 +608,6 @@ act patronize(p, g)
     xx
     count("patronize")
     :event(p, "patronized", g, {"the court took up the teaching": 1.0, "the ruler built a great temple": .1 + p >> spirituality})
-xx
-
-/// Year 0: each kingdom's people hold an old faith of their own at its
-/// capital, teaching a little of two traits.
-act seed(realms)
-    repeat realms as p
-        c | p >> capital ?? => skip
-        b | {}
-        repeat [0, 1] as i
-            t | traits[(pick 1 from 0...14)]
-            :update!(b{t}, ((pick 1 from 0...30) - 15) / 100.0)
-        xx
-        overlay old_faith <^> Faith
-            bends: b
-            title: "the old gods of {p >> name}"
-            founded: 0
-        xx
-        :overlay!(c, old_faith, .8)
-    xx
 xx
 
 /// The largest group's share of its realm, groups alive, and the largest

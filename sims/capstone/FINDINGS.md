@@ -656,3 +656,118 @@ years one merger happened, and no plot ended in a coup (14 plots).
   The heresy telling doesn't rename the copy for this.
 - `{:type_of(o)}` and `{look >> score}` inside a string print literally
   (known).
+
+# Capstone step 6: overlays
+
+`overlays.gbln`. Design: goblin-docs/overlays-design.md. Owner go
+2026-11-10: faith transitions "like any other transition", year-0 seeding
+as proposed, the rest by judgment.
+
+## What is built
+
+- **Ideas on land** (`Tongue`, `Faith`, `Creed`). A land holds several;
+  each kind is put on once. A copy that has just spread in starts at .1
+  (it carries its source's `at`; `account` marks it held here). Each
+  year: a tongue held beside a firmer one loses 2% of the gap, the
+  firmest gains 1% of what it lacks, and the court's tongue (firmest at
+  the realm's capital) gains 1% × centralization on its realm's land and
+  does not give way. A faith beside a firmer one loses 1% of the gap. A
+  creed loses .02 a year on land with no city, and spreads only to cities.
+- **Their transitions**, by chance from a cause. `apart` counts a copy's
+  years cut off: +1 a year when no bordering land holds it at .3 or more,
+  +.25 when only land under another holder does, 0 when land under the
+  same holder does. Tongue and faith mutate at `.01 × intensity ×
+  past(apart / 200, .25)` a year. Two tongues of .3 or more on one land
+  merge at `.001 × (.2 + trade)`. A faith fractures into a sect at `.005 ×
+  intensity × rival` (rival: the other faiths' intensity on its land). A
+  creed fractures at `.003 × intensity × libraries / 3`. A daughter
+  faith or creed has one trait of its teaching moved a little.
+- **Conditions on land.** Plague starts at `.0001 × fullness × (.2 +
+  trade)` a year on land of 100+ people; kills `deadly` (.12) ×
+  intensity a year; halves trade at full intensity; spreads at `.5 ×
+  intensity × (.2 + stored trade) × the target's fullness` to bordering
+  land of 20+ people without immunity; decays .15 a year; mutates at
+  `.05 × intensity` (deadly moved ±.05); ends where fewer than 20 are
+  left; leaves `immunity` 40 years. Famine when people pass food × 1.02:
+  kills 6% × intensity / (1 + granaries) a year, ends when people are
+  down to food. Disasters by terrain: flood (rivers, .004), quake
+  (hills, mountains, .002), drought (steppe, desert, plain, .003; food
+  −40% for 3 years), fire (200+ people, .001). Flood, quake and fire
+  kill 3%, 5%, 2% once and may bring down two kinds of building.
+- **Moods of a realm.** `dread` (.6, decays .04) after a plague, flood or
+  quake on its land: fear +.1, tradition and spirituality +.05.
+  `discontent` (decays .05): famine +.05 a year, a tax +.01, a lost war
+  +.3, crushing a group +.05; relief −.05, conceding −.05, a won war
+  −.1. It adds .5 × intensity to `unrest` (breakaway odds), and lowers
+  stability .1 and legitimacy .05. `golden_age` (60 years) at .01 a year
+  for a realm at peace, no war memory, stability .55+, commerce .5+:
+  learning, openness +.1, ambition, legitimacy +.05; erased by a lost war
+  or unrest .3+; after 20 years mutates `into: decadence` at .03 a year
+  (40 years: discipline, cohesion −.1, ambition −.05).
+- **What a realm reads.** `peoples` = tongues spoken by 15%+ of its people
+  (intensity-weighted). `bends` gain cohesion `(share speaking the court's
+  tongue − .5) × .3` and legitimacy `(share holding the court's faith −
+  .5) × .2`.
+- **Year 0.** Each kingdom's land: a tongue of its own (.9) and a faith of
+  its own (.8). Each tribe and village community takes the tongue and
+  folk faith of the first bordering non-kingdom realm that has them, or
+  gets new ones (.8, .6).
+
+## Result (seed 42, 500 years)
+
+| | step 5 (0.51.17) | step 6 |
+|---|---|---|
+| polities at year 500 | 33 | 31 |
+| polity-years at war | 19.4% | 19.8% |
+| imperial autocracies at the end | 4 | 5 |
+| theocracies at the end | 9 | 7 |
+| group mergers | 0 | 3 |
+| 100 years (one thread) | 23.7 s | 36.7 s |
+
+Overlays: 8 new tongues, 43 merged, 8 new faiths, 35 sects, 2 creed
+splits; 17 plagues (spreading to about 4 lands each), 12 strains; 320
+famines; 77 floods, 78 quakes, 261 droughts, 97 fires; 169 dreads, 26
+golden ages, 11 decadences. At the end 75 tongues (the largest spoken by
+9.5% of all people), 45 faiths (largest 4.3%), 11 creeds; 18 of 31 realms
+rule more than one people.
+
+## Tuning on the way
+
+1. 153 new tongues in 500 years: every land on a border counted as cut
+   off. Now only firm copies (.3+) count as kin, a border cuts a quarter
+   as fast, and drift starts after 50 years alone.
+2. 343 tongue mergers: each merge makes a new kind on its land. Now
+   .001 × (.2 + trade).
+3. Conquered land never took its ruler's tongue (it gave way to the
+   local one). Now the court's tongue gains and does not give way.
+
+## Choices made here (flagged)
+
+1. Every number above.
+2. Cut from the list: the faction "movement" overlay (press already moves
+   the realm toward a group's wants); groups of other faiths gaining
+   grievance where one faith holds most of the realm (patronize already
+   does it); dread after drought and fire.
+3. The realm overlay for unrest is named `discontent`, since the realm
+   already has an `unrest` field (the groups' part, reset each year); the
+   overlay adds to it.
+4. One `immunity` covers every strain.
+5. A copy that has just spread starts at .1, set by `account` (the
+   runtime puts a spread copy on at its kind's intensity, which for a
+   kind made by a transition is the copy's intensity when it was made).
+
+## Runtime fixed on the way (0.51.18)
+
+- An overlay's transition could not read its host: `self` is the copy,
+  so `@people` read a field the copy doesn't have, and the condition was
+  false with no error. Famines never ended, golden ages never ended
+  early, a tongue merge's trade term never held. Now `host` is the
+  host.
+
+## Runtime gaps (named, not worked around)
+
+- An overlay class is known only in the file that declares it (P1295),
+  as aspects and interfaces are. Groups found new faiths and creeds by
+  calling `overlays::found`.
+- A condition that reads a missing field is false with no error
+  (open question, listed in memory).

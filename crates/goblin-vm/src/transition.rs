@@ -654,9 +654,13 @@ fn self_record(inst: &OverlayInstance) -> Value {
     }))
 }
 
+/// What an overlay's transition lines read: `self` is the copy (its kind,
+/// intensity, age and fields, also read as `@field`), `host` the object it
+/// is on, `target` the other copy a merge or absorb picked.
 fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>, maker: &'a [(String, Value)]) -> Vec<(&'a str, Value)> {
     let mut l = vec![
         ("self", me.clone()),
+        ("host", Value::Ref(inst.host_uuid.clone().into())),
         ("strength", Value::Float(inst.strength)),
         ("intensity", Value::Float(inst.strength)),
         ("age", Value::Int(inst.age as i64)),
