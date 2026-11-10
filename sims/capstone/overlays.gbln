@@ -3,7 +3,7 @@
 /// realm: tongues, faiths and creeds (ideas, lasting centuries), and
 /// plague, famine and disasters (conditions, lasting years). The moods of
 /// a state sit on the realm: dread, discontent, a golden age and the
-/// decadence it can turn into (with `at_war`, `war_weariness` and
+/// strife among the great houses it can turn into (with `at_war`, `war_weariness` and
 /// `war_memory` from polity.gbln). An overlay is an adjustment layer: its
 /// `modify` lines change what reading gives, never the stored fields;
 /// what lasts (the dead, a fallen wall) is written by `every` and
@@ -30,7 +30,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
 
 /// What the run's overlays did (printed at the end).
 tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
-    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "decadence": 0}
+    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0}
 
 act count(k)
     :update!(tally{k}, tally{k} + 1)
@@ -481,11 +481,14 @@ xx
 /// conditions: on land, for years
 
 /// A plague: it kills a share of the land's people each year it is on
-/// (`every`, so the dead stay dead), and trade falls while it lasts. It
-/// spreads along borders, more from trading land into crowded land; by
-/// chance it turns into a new strain, deadlier or milder. It dies out
-/// where too few are left, and leaves the survivors immune for a
-/// generation.
+/// (`every`, so the dead stay dead), more in a city, less where the
+/// people have met it before; trade falls while it lasts. It spreads
+/// along borders, more from trading land into crowded land, and by ship
+/// and caravan between the cities of realms that trade. By chance it
+/// turns into a new strain, deadlier or milder. It dies out where too few
+/// are left, and leaves the survivors immune; the immunity fades as
+/// children are born who never had it (`immunity`), and the sickness can
+/// come back.
 <^>Plague |
     hosts: Land
     /// One plague at a time on a land: a strain does not catch where another is.
@@ -493,8 +496,8 @@ xx
     ~intensity: .8
     decays: .15
     deadly: .12
-    spread: catch(self, target, intensity) where :link_score(self, target, "border") and target >> people >= 20.0 and open_to(target)
-    every 1 tick => @people |= @people * (1.0 - deadly * intensity)
+    spread: catch(self, target, intensity) where target >> people >= 20.0 and open_to(target) and (:link_score(self, target, "border") or (land::is_city(target) and land::is_city(self) and traded(self, target)))
+    every 1 tick => @people |= @people * (1.0 - deadly * intensity * toll(self))
     modify
         @trade - @trade * .5 * intensity
     xx
@@ -509,52 +512,88 @@ xx
 xx
 overlay plague <^> Plague
 xx
+/// What survivors of a plague keep: it fades over a generation, as the
+/// people who lived through it die and children are born.
 overlay immunity
     hosts: Land
-    lasts: 40
+    dup: replace
+    decays: .04
 xx
 
 act catch(a, b, i)
     return .5 * i * (.2 + :field(a, "trade")) * :min((b >> people) / (b >> food), 1.0)
 xx
 
+/// A plague catches only where most of the survivors of the last one are gone.
 act open_to(l)
-    return :len(:overlays(l, "immunity")) == 0
+    return (:overlay_strength("immunity", l) ?? 0.0) < .6
 xx
 
-/// Famine: more people than the land feeds (after a drought, or a granary
-/// lost). It kills, less where there are granaries, and ends when the
-/// people are down to what the land feeds.
+/// How hard a plague hits land `l`: half again in a city, less by the
+/// immunity left from the last one.
+act toll(l)
+    t | 1.0 - (:overlay_strength("immunity", l) ?? 0.0)
+    if land::is_city(l) => t |= t * 1.5
+    return t
+xx
+
+/// A bad harvest: a wet cold summer or a dry one over a whole region, the
+/// cold years after a great eruption over the whole world, a flood, or an
+/// army living off the land. The land feeds fewer until the next harvest.
+overlay dearth
+    hosts: Land
+    dup: stronger
+    ~intensity: .3
+    lasts: 2
+    modify
+        @food - @food * intensity
+    xx
+xx
+
+/// An army fought on land `l` this year: it ate and burned the harvest.
+act ravage(l)
+    :overlay!(l, dearth, .3)
+xx
+
+/// Famine: more people than this year's harvest feeds. It kills, mostly by
+/// the fevers that come with hunger, less where there are granaries or
+/// trade brings grain in, and ends with a good harvest.
 overlay famine
     hosts: Land
     dup: stronger
     ~intensity: .5
-    every 1 tick => @people |= @people * (1.0 - .06 * intensity / (1.0 + @granary))
+    every 1 tick => @people |= @people * (1.0 - .1 * intensity / (1.0 + @granary + @trade))
     transition erase where host >> people <= host >> food
 xx
 
-/// Small cataclysms, by chance from the land's terrain: floods on rivers,
-/// quakes in hills and mountains, droughts on dry and open land, fires in
-/// towns and cities. Each kills some and may bring down buildings once
-/// (`on start`); a drought cuts the harvest while it lasts.
+/// Small cataclysms: floods on rivers (the harvest lost), quakes in hills
+/// and mountains, deadliest in cities, fires in towns and cities. Each
+/// kills some and may bring down buildings once (`on start`). A drought
+/// on dry and open land cuts the harvest for years.
 <^>Disaster |
     hosts: Land
     lasts: 1
 xx
 overlay flood <^> Disaster
-    on start => struck(self, .03, "granary", "roads")
+    on start => struck(self, .01, "granary", "roads")
 xx
 overlay quake <^> Disaster
-    on start => struck(self, .05, "walls", "temple")
+    on start => struck(self, quake_toll(self), "walls", "temple")
 xx
 overlay fire <^> Disaster
-    on start => struck(self, .02, "library", "granary")
+    on start => struck(self, .002, "library", "granary")
 xx
 overlay drought <^> Disaster
     lasts: 3
     modify
         @food - @food * .4 * intensity
     xx
+xx
+
+/// A quake kills more where people live crowded in stone houses.
+act quake_toll(l)
+    if land::is_city(l) => send .08
+    return .02
 xx
 
 act struck(l, killed, a, b)
@@ -567,10 +606,36 @@ act struck(l, killed, a, b)
     xx
 xx
 
+/// The weather. Each year a region of the map (6 by 6 provinces) has a
+/// bad harvest by chance, one year in about sixteen, cutting it by a
+/// tenth to a third; and once in a few centuries a great eruption
+/// darkens the whole world's sky for two years. `weather` holds this
+/// year's draw for each region.
+weather   | {}
+cold_left | 0
+
+/// Dry, open land, where a bad year is a drought that lasts.
+act dry(k)
+    return k == "steppe" or k == "desert" or k == "plain"
+xx
+
+act harvest_cut(l)
+    key | "{l >> x // 6},{l >> y // 6}"
+    c | weather{key}
+    if c.nix?
+        c |= 0.0
+        if chance(.06) => c |= (pick 1 from 10...35) / 100.0
+        :update!(weather{key}, c)
+    xx
+    return c
+xx
+
 /// moods: on a realm, for years or a generation
 
-/// Dread, after a plague, a flood or a quake on its land: more afraid,
-/// more pious, holding to the old ways.
+/// Dread, after a plague, a quake, a great famine or the dark years: more
+/// afraid, more pious, holding to the old ways, harder on strangers and
+/// those of another faith, and doubting a ruler heaven seems to have
+/// left.
 overlay dread
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     dup: stronger
@@ -579,6 +644,8 @@ overlay dread
         @fear + .1 * intensity
         @tradition + .05 * intensity
         @spirituality + .05 * intensity
+        @tolerance - .1 * intensity
+        @legitimacy - .03 * intensity
     xx
 xx
 
@@ -603,32 +670,48 @@ act stir(p, amt)
     :overlay!(p, discontent, :clamp((was ?? 0.0) + amt, 0.0, 1.0))
 xx
 
-/// A golden age: after peace with trade and a steady rule, learning,
-/// openness and ambition rise for a generation. It ends with a lost war
-/// or unrest; or, by chance, long ease turns it into decadence.
+/// Each realm's people over what its land feeds in a good year (set each
+/// year by `account`).
+fullness | {}
+
+/// How far a realm's land has filled since `began` (its fullness then),
+/// 0 to 1 at eight points more.
+act crowd(p, began)
+    return :clamp(((fullness{p >> name} ?? 0.0) - began) / .08, 0.0, 1.0)
+xx
+
+/// A golden age: peace, trade and a steady rule over land with room to
+/// spare, so food is cheap and there is surplus for builders, scholars
+/// and patrons. Learning, openness and ambition rise. It ends with a lost
+/// war or unrest. The surplus feeds more children, and as the land fills
+/// the good years turn into strife among the great houses: more heirs
+/// and office seekers than land and offices for them.
 overlay golden_age
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     lasts: 60
+    /// The realm's fullness when it began.
+    began: 0.0
     modify
         @learning + .1 * intensity
         @openness + .1 * intensity
         @ambition + .05 * intensity
         @legitimacy + .05 * intensity
     xx
-    transition mutate where age >= 20 and chance(.03)
-        into: decadence
+    transition mutate where age >= 10 and chance(.05 * crowd(host, self >> began))
+        into: elite_strife
     xx
-    on mutate => drifted(self, "decadence", {"the court grew idle and vain": 2.0, "the old virtues were mocked": 1.0})
+    on mutate => drifted(self, "elite_strife", {"there were more lords than lands to give them": 2.0, "bread grew dear and the great houses quarrelled": 1.0})
     transition erase where host >> lost_years > 0 or host >> unrest >= .3
 xx
-/// Decadence: discipline and cohesion fall, and ambition with them.
-overlay decadence
+/// Elite strife: the great houses fight over too few offices and lands;
+/// cohesion, stability and legitimacy fall.
+overlay elite_strife
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     lasts: 40
     modify
-        @discipline - .1 * intensity
         @cohesion - .1 * intensity
-        @ambition - .05 * intensity
+        @stability - .1 * intensity
+        @legitimacy - .05 * intensity
     xx
 xx
 
@@ -748,13 +831,23 @@ court_fshare | {}
 /// weak, and a faith held beside a firmer one fades, faster the further
 /// behind it is; a creed fades where there is no city; each faith's years
 /// cut off and its rivals are counted. Each tongue's cut-off regions
-/// drift (`diverge`). Then plague, disasters and famine, by chance.
+/// drift (`diverge`). Then plague, the weather, disasters and famine.
 /// Then each realm: how many tongues its people speak (`peoples`), how
 /// much of them share its court's tongue (cohesion) and faith
 /// (legitimacy), through `bends`; dread after a plague or disaster on its
 /// land, discontent from famine, and by chance a golden age.
 act account(year, lands, realms)
     now |= year
+    weather |= {}
+    if cold_left > 0 => cold_left |= cold_left - 1
+    if cold_left == 0 and chance(.003)
+        cold_left |= 2
+        count("dark_years")
+        :event("the world", "dark_years", nil, {"the sun was dim for two summers": 2.0, "a dry fog hid the sky and the harvests failed everywhere": 1.0})
+    xx
+    /// Each realm's people and what its land feeds in a good year.
+    ate | {}
+    fed | {}
     /// Where each tongue and faith is held firmly (.3 or more): "kind|land"
     /// to the land's holder.
     where | {}
@@ -809,7 +902,7 @@ act account(year, lands, realms)
             elif :is_type(o, "Faith")
                 ft |= :max(ft, i)
                 fs |= fs + i
-            elif :is_type(o, "Plague") or o >> overlay_name == "immunity"
+            elif :is_type(o, "Plague")
                 sick |= true
             elif o >> overlay_name == "famine"
                 famine_on |= true
@@ -856,27 +949,41 @@ act account(year, lands, realms)
             :update!(spoken{w}, st)
             :update!(faithful{w}, sf)
         xx
-        /// Plague, disasters and famine.
+        /// Plague, the weather, disasters and famine.
         pe | l >> people
         if pe < 20.0 => skip
+        if !p.nix?
+            :update!(ate{w}, (ate{w} ?? 0.0) + pe)
+            :update!(fed{w}, (fed{w} ?? 0.0) + :field(l, "food"))
+        xx
         full | pe / (l >> food)
-        if !sick and pe >= 100.0 and chance(.0001 * :min(full, 1.0) * (.2 + l >> trade))
-            :overlay!(l, plague, .8)
-            count("plague")
-            hit |= true
-            :event(l, "plague", p, {"a sickness came with the ships": .1 + l >> trade, "the dead lay in the streets": 1.0, "a fever spread from the market": 1.0})
+        /// A sickness from outside comes with trade. One that came before
+        /// can come back once most who lived through it are gone; hunger
+        /// opens the way to fevers.
+        im | :overlay_strength("immunity", l) ?? 0.0
+        if !sick and pe >= 100.0 and im < .6
+            odds | .0001 * :min(full, 1.0) * (.2 + l >> trade)
+            if im > 0.0 => odds |= odds * 20.0
+            if famine_on => odds |= odds * 5.0
+            if chance(odds)
+                :overlay!(l, plague, .8)
+                count("plague")
+                hit |= true
+                :event(l, "plague", p, {"a sickness came with the ships": .1 + l >> trade, "the dead lay in the streets": 1.0, "a fever spread from the market": 1.0})
+            xx
         xx
         k | l >> terrain
-        if !busy and !hit
+        cut | harvest_cut(l)
+        if cold_left > 0 => cut |= cut + .25
+        if !busy
             d | ..
             judge
-                k == "river" and chance(.004): d |= "flood"
+                k == "river" and chance(.03): d |= "flood"
                 k == "mountains" and chance(.002): d |= "quake"
                 k == "hills" and chance(.002): d |= "quake"
-                k == "steppe" and chance(.003): d |= "drought"
-                k == "desert" and chance(.003): d |= "drought"
-                k == "plain" and chance(.003): d |= "drought"
-                pe >= 200.0 and chance(.001): d |= "fire"
+                cut > 0.0 and cold_left == 0 and dry(k) and chance(.5): d |= "drought"
+                land::is_city(l) and chance(.02): d |= "fire"
+                l >> settlement == "town" and chance(.02): d |= "fire"
             xx
             if d != ..
                 judge
@@ -886,17 +993,22 @@ act account(year, lands, realms)
                     d == "fire": :overlay!(l, fire, 1)
                 xx
                 count(d)
-                /// A flood or a quake is remembered; a fire or a drought
-                /// is not dreaded (a drought's famine stirs discontent).
-                if d == "flood" or d == "quake" => hit |= true
+                /// A flood takes the harvest; a quake is dreaded.
+                if d == "flood" => cut |= :max(cut, .5)
+                if d == "drought" => cut |= 0.0
+                if d == "quake" => hit |= true
                 :event(l, d, p, {"the {d} came": 2.0, "the old people had seen nothing like it": 1.0})
             xx
         xx
+        if cut > 0.0 => :overlay!(l, dearth, :min(cut, .6))
         if !famine_on and pe > (l >> food) * 1.02
-            :overlay!(l, famine, :clamp((full - 1.0) * 5.0, .1, 1.0))
+            fi | :clamp((pe / (l >> food) - 1.0) * 2.5, .1, 1.0)
+            :overlay!(l, famine, fi)
             count("famine")
             famine_on |= true
-            :event(l, "famine", p, {"the harvest failed": 2.0, "the granaries stood empty": 1.0})
+            /// A great famine is dreaded as well as hated.
+            if fi >= .5 => hit |= true
+            :event(l, "famine", p, {"the harvest failed": 2.0, "the granaries stood empty": 1.0, "bread cost a day's wage": 1.0})
         xx
         if p.nix? => skip
         if hit => :update!(struck{w}, true)
@@ -927,8 +1039,12 @@ act account(year, lands, realms)
             count("dread")
         xx
         if hungry{k} ?? false => stir(p, .05)
-        if p >> wars == 0 and (:overlay_strength("war_memory", p)).nix? and (:overlay_strength("golden_age", p)).nix? and (:overlay_strength("decadence", p)).nix? and p >> stability >= .55 and p >> commerce >= .5 and chance(.01)
+        f | (ate{k} ?? 0.0) / :max(fed{k} ?? 0.0, 1.0)
+        :update!(fullness{k}, f)
+        if p >> wars == 0 and f < .7 and (:overlay_strength("war_memory", p)).nix? and (:overlay_strength("golden_age", p)).nix? and (:overlay_strength("elite_strife", p)).nix? and p >> stability >= .55 and p >> commerce >= .5 and chance(.01)
             :overlay!(p, golden_age, 1)
+            g | :overlays(p, "golden_age")[0]
+            g >> began |= f
             count("golden_age")
             :event(p, "golden_age", nil, {"poets and builders came to the court": 2.0, "it was remembered as the good years": 1.0})
         xx

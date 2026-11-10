@@ -912,3 +912,74 @@ faint traces kept sending copies that died and were sent again: by year
 500 years: 9 school splits, 32 creeds at the end; 177 faith conversions,
 9 schisms, 5 new faiths, 5 blends; 96 tongue shifts, 7 new tongues;
 theocracies at the end 1. 242 s.
+
+## 0.51.23: conditions and moods from real life
+
+In real life:
+- **Famine** comes from bad harvests: a wet cold summer in the north, a
+  dry one in the south, over whole regions at once (the Great Famine of
+  1315-17 covered northern Europe); from the cold years after a great
+  eruption over the whole world (536, 1257, 1600, 1815); from armies
+  living off the land; and floods. Land near its limit has no margin. A
+  severe dearth hits a region every 10-30 years. Most deaths come from
+  the fevers of hunger; granaries and grain bought by trade soften it; it
+  ends with the next good harvest, and people leave for other land.
+- **Plague**: a new disease arrives from outside along trade and kills a
+  quarter to a half; then it returns every 10-20 years for centuries,
+  killing fewer each time, mostly the children born since the last wave,
+  worst in cities. Ships and caravans carry it between ports and cities.
+- **Disasters**: river floods every few decades destroy the harvest more
+  than they drown people; quakes kill most where people are crowded in
+  stone houses; nearly every town burned more than once a century, with
+  few dead.
+- **Dread** after catastrophe: piety, processions, a turn to the old
+  ways, scapegoats (strangers, other faiths), doubt in a ruler heaven
+  seems to have left.
+- **Golden age / decadence**: "golden age" is a label put on peace,
+  trade and a steady rule over land with room, when food is cheap and
+  there is surplus for patrons. "Decadence" is a moralist's word, not a
+  cause. What ends the good years (Turchin's secular cycles): the
+  surplus feeds more children, the land fills, food per head falls, and
+  the number of heirs and office seekers outgrows the lands and offices
+  for them, so the great houses fight.
+
+Built: `dearth` (regional weather: 6 by 6 provinces, .06 a year, a cut
+of .1 to .35; dry open land gets a 3-year drought instead half the time;
+dark years at .003 a year for 2 years, .25 off everywhere; floods take
+half the harvest; `ravage` .3 where an army fights). Famine intensity
+`(people / harvest - 1) × 2.5`, deaths `.1 × intensity / (1 + granary +
+trade)` a year, ends when people are at or under the harvest; a famine
+of .5 or more brings dread. Plague: `toll` = (1 - immunity) × 1.5 in a
+city; also spreads between cities of trading realms; `immunity` decays
+.04 a year, a plague catches under .6; an outbreak is 20 times likelier
+on land with immunity left (it came before) and 5 times with famine.
+Fires .02 a year in towns and cities (.002 dead); floods .03 on rivers
+(.01 dead); quakes .02 dead, .08 in a city. Dread adds tolerance -.1,
+legitimacy -.03. Golden age needs fullness (people over what the land
+feeds in a good year) under .7; mutates `into: elite_strife` at `.05 ×
+crowd` after 10 years, crowd = how much fuller the realm is than when
+the age began, 1 at eight points. `elite_strife`: cohesion -.1,
+stability -.1, legitimacy -.05, 40 years.
+
+500 years: 1,769 famines, 2,188 droughts, 626 floods, 2,523 fires, 91
+quakes, 4 dark years, 17 plagues, 45 strains, 640 dreads, 37 golden ages,
+11 turned to strife. People level off at 84,000-97,000 (0.51.22: rising
+from 105,000 to 152,000).
+
+Flagged:
+1. People fall from 105,000 to 85,000 in the first century: prehistory
+   runs only the land, with no bad harvests or plague, so year 0 starts
+   above what these conditions allow. Running the weather and plague in
+   prehistory would remove the drop.
+2. Land growth is .005 a year at most (step 1); real populations
+   recovered at about 1% (after the Black Death in 100-150 years). Land
+   refills slowly here, so few golden ages turn to strife (11 of 37).
+3. The map has no fault lines: quakes strike any hills or mountains.
+4. A returning plague is the first plague kind, not the strain last seen
+   on that land.
+5. Fewer people means fewer cities: creed splits fell from 9 to 2 and
+   creeds from 32 to 24.
+6. What a plague does to labour (wages up, land cheap, lords pushing
+   back, the revolts of 1358 and 1381) is not modeled.
+7. `dearth` lasts 2 ticks so it is felt from one harvest to the next
+   (`lasts: 1` is gone before the next year's land phase).

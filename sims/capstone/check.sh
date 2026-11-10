@@ -44,7 +44,7 @@ for a in give_gold withhold give_men coup preach found press rise crush concede 
     n=$(grep '^check: groups:' "$T/h1" | grep -o "$a [0-9]*" | awk '{ print $2 }')
     LABEL="groups: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done
-for a in tongue_new shifted faith_new schism converted creed_split plague strain famine flood quake drought fire dread golden_age decadence; do
+for a in tongue_new shifted faith_new schism converted creed_split plague strain famine flood quake drought fire dread golden_age elite_strife; do
     n=$(grep '^check: overlays:' "$T/h1" | grep -o "$a [0-9]*" | awk '{ print $2 }')
     LABEL="overlays: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done

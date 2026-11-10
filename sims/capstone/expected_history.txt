@@ -1,15 +1,15 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 75 polities, largest Yrzanar with 13 provinces, 7 wars
-year 200: 56 polities, largest Jorquar with 24 provinces, 7 wars
-year 300: 34 polities, largest Peltor-Varpel-Iskjor-Orlorpel-Yrzanar with 37 provinces, 2 wars
-year 400: 30 polities, largest Noresk with 49 provinces, 2 wars
-year 500: 33 polities, largest Rosvar-Roszansar with 56 provinces, 2 wars
-check: share of polity-years at war: 17.6%
-check: forms at the end: aristocratic_republic 4, citizen_republic 2, elders_council 6, elective_monarchy 1, hereditary_monarchy 7, imperial_autocracy 1, merchant_oligarchy 8, military_junta 3, theocracy 1
-check: families: deaths 997, murders 18, executions 6, crowned 1238, regencies 21, usurped 22, interregnums 43, lines_ended 3, elections 1296, claims_won 30, new_houses 158, marriages 302, births 543, partitions 1
-check: succession laws at the end: eldest_child 5, eldest_son 3, elective 1, faith 1, force 3, term 14
-check: groups: formed 724, split 103, merged 5, ended 576, give_gold 4174, withhold 132, give_men 2997, coup 42, preach 1974, found 109, press 1240, rise 25, crush 74, concede 133, patronize 1586, coups_won 0
-check: overlays: tongue_new 7, tongue_merge 0, shifted 96, faith_new 5, schism 9, blend 5, converted 177, creed_split 9, creed_shift 0, plague 14, strain 13, famine 370, flood 69, quake 75, drought 253, fire 115, dread 157, golden_age 33, decadence 19
-check: ideas at the end: tongues 40 (largest holds 0.074 of all people), faiths 58 (largest 0.088), creeds 32; realms of more than one people 11
-check: groups at the end: 247, largest share of a realm 0.62; ideas 90, largest holds 0.088 of all people
+year 100: 82 polities, largest Rosvar with 14 provinces, 7 wars
+year 200: 51 polities, largest Dunnoresk with 26 provinces, 3 wars
+year 300: 45 polities, largest Orpel with 25 provinces, 2 wars
+year 400: 37 polities, largest Gordun-Varmarwen-Halyrgor-Lorvarisk with 35 provinces, 5 wars
+year 500: 34 polities, largest Rosvar-Halisk-Lorvar-Roszansar-Zandunarjor with 56 provinces, 2 wars
+check: share of polity-years at war: 15.7%
+check: forms at the end: aristocratic_republic 3, chieftainship 3, citizen_republic 1, elders_council 7, elective_monarchy 2, hereditary_monarchy 5, imperial_autocracy 2, interregnum 2, merchant_oligarchy 5, military_junta 2, theocracy 2
+check: families: deaths 1058, murders 14, executions 2, crowned 994, regencies 17, usurped 20, interregnums 43, lines_ended 3, elections 999, claims_won 19, new_houses 129, marriages 261, births 478, partitions 0
+check: succession laws at the end: eldest_child 3, eldest_son 4, elective 2, faith 1, force 2, none 2, term 9
+check: groups: formed 626, split 118, merged 9, ended 557, give_gold 3224, withhold 150, give_men 2124, coup 38, preach 2110, found 94, press 1284, rise 27, crush 76, concede 129, patronize 1774, coups_won 0
+check: overlays: tongue_new 7, tongue_merge 0, shifted 105, faith_new 3, schism 5, blend 2, converted 176, creed_split 2, creed_shift 0, plague 17, strain 45, famine 1769, flood 626, quake 91, drought 2188, fire 2523, dread 640, golden_age 37, elite_strife 11, dark_years 4
+check: ideas at the end: tongues 42 (largest holds 0.057 of all people), faiths 46 (largest 0.085), creeds 24; realms of more than one people 11
+check: groups at the end: 178, largest share of a realm 1; ideas 70, largest holds 0.085 of all people

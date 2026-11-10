@@ -1428,6 +1428,7 @@ act fight(w)
     a >> army |= a >> army * (1.0 - .08 * (1.0 - share))
     d >> army |= d >> army * (1.0 - .08 * share)
     at >> people |= at >> people * .97
+    overlays::ravage(at)
     judge
         w >> standing >= 1.0 or (d >> army < 1.0 and share > .5): end_war(w, a)
         w >> standing <= -1.0 or a >> army < 1.0: end_war(w, d)
