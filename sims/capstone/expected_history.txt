@@ -1,15 +1,16 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 82 polities, largest Rosvar with 14 provinces, 7 wars
-year 200: 51 polities, largest Dunnoresk with 26 provinces, 3 wars
-year 300: 45 polities, largest Orpel with 25 provinces, 2 wars
-year 400: 37 polities, largest Gordun-Varmarwen-Halyrgor-Lorvarisk with 35 provinces, 5 wars
-year 500: 34 polities, largest Rosvar-Halisk-Lorvar-Roszansar-Zandunarjor with 56 provinces, 2 wars
-check: share of polity-years at war: 15.7%
-check: forms at the end: aristocratic_republic 3, chieftainship 3, citizen_republic 1, elders_council 7, elective_monarchy 2, hereditary_monarchy 5, imperial_autocracy 2, interregnum 2, merchant_oligarchy 5, military_junta 2, theocracy 2
-check: families: deaths 1058, murders 14, executions 2, crowned 994, regencies 17, usurped 20, interregnums 43, lines_ended 3, elections 999, claims_won 19, new_houses 129, marriages 261, births 478, partitions 0
-check: succession laws at the end: eldest_child 3, eldest_son 4, elective 2, faith 1, force 2, none 2, term 9
-check: groups: formed 626, split 118, merged 9, ended 557, give_gold 3224, withhold 150, give_men 2124, coup 38, preach 2110, found 94, press 1284, rise 27, crush 76, concede 129, patronize 1774, coups_won 0
-check: overlays: tongue_new 7, tongue_merge 0, shifted 105, faith_new 3, schism 5, blend 2, converted 176, creed_split 2, creed_shift 0, plague 17, strain 45, famine 1769, flood 626, quake 91, drought 2188, fire 2523, dread 640, golden_age 37, elite_strife 11, dark_years 4
-check: ideas at the end: tongues 42 (largest holds 0.057 of all people), faiths 46 (largest 0.085), creeds 24; realms of more than one people 11
-check: groups at the end: 178, largest share of a realm 1; ideas 70, largest holds 0.085 of all people
+year 100: 75 polities, largest Rosvar with 23 provinces, 6 wars
+year 200: 56 polities, largest Noresk-Quarros with 42 provinces, 10 wars
+year 300: 46 polities, largest Noresk-Quarros with 35 provinces, 7 wars
+year 400: 31 polities, largest Noresk-Quarros with 45 provinces, 3 wars
+year 500: 29 polities, largest Belfal-Wenquaryrisk with 59 provinces, 2 wars
+check: share of polity-years at war: 18.2%
+check: forms at the end: chieftainship 2, client_regime 1, elders_council 2, elective_monarchy 4, hereditary_monarchy 10, merchant_oligarchy 7, theocracy 3
+check: families: deaths 1050, murders 20, executions 6, crowned 901, regencies 15, usurped 21, interregnums 63, lines_ended 5, elections 762, claims_won 30, new_houses 190, marriages 355, births 660, partitions 1
+check: succession laws at the end: eldest_child 6, eldest_son 3, elective 4, faith 1, none 1, strongest_kin 1, term 8
+check: groups: formed 627, split 130, merged 2, ended 570, give_gold 3191, withhold 130, give_men 2384, coup 42, preach 2305, found 86, press 1367, rise 37, crush 94, concede 154, patronize 1919, coups_won 0
+check: overlays: tongue_new 11, tongue_merge 0, shifted 76, faith_new 2, schism 12, blend 4, converted 224, creed_split 1, creed_shift 0, plague 16, strain 9, famine 1980, flood 584, quake 88, drought 2353, fire 2506, dread 655, golden_age 28, elite_strife 13, dark_years 2
+check: ideas at the end: tongues 46 (largest holds 0.062 of all people), faiths 55 (largest 0.087), creeds 24; realms of more than one people 15
+check: bordering realms: 59 pairs, sharing a tongue (.5 or more) 5, a faith 3; wars under way between faiths 2 of 2
+check: groups at the end: 186, largest share of a realm 0.526; ideas 79, largest holds 0.087 of all people

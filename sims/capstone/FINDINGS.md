@@ -983,3 +983,45 @@ Flagged:
    back, the revolts of 1358 and 1381) is not modeled.
 7. `dearth` lasts 2 ticks so it is felt from one harvest to the next
    (`lasts: 1` is gone before the next year's land phase).
+
+## 0.51.24: tongues and faiths between realms
+
+In real life:
+- A shared tongue makes trade easier (lingua francas: Aramaic, Greek,
+  Arabic, the Hanse's Low German); merchant networks of one faith or
+  people (Jewish, Armenian, Muslim traders) trust each other.
+- A shared faith makes alliances, royal marriages and aid easier
+  (marriages across faiths were rare among Christian and Muslim courts);
+  peace is harder to make across faiths. A different faith gives a war
+  its justification (crusade, jihad), though most wars were still fought
+  between realms of one faith.
+- Conquerors absorbed kindred land (the English and Frankish kingdoms
+  from their neighbours) and held other peoples as vassals or tributaries
+  (the Mongols' Rus, the Ottomans' Danubian princes).
+
+Built: `shared_tongue`, `shared_faith` links (overlays.gbln, `kindred`),
+set each year as lasting links between bordering realms: half the overlap
+of their peoples' shares, half whether the courts agree. Read by trade
+(`.8 + .4 × tongue`), aid and ally (`.6 + .8 × faith`), treaty and
+sue_for_peace (`.7 + .6 × faith`), match (`.5 + faith`), war (`1 + (.5 -
+faith) × spirituality × .6`), denounce (`1 + (.5 - faith) × spirituality ×
+.5`), annex and vassal odds (`akin` = closeness `+ (tongue + faith - 1) ×
+.2`). Every factor is 1 at .5. A first try averaged closeness with the two
+links, which lowered it for nearly every pair: vassalages went from 23 to
+176.
+
+500 years: 29 polities at the end (0.51.23: 34), 18.2% of polity-years at
+war (15.7%), 53 vassalages (23), 192 absorptions (199 in 0.51.22). At the
+end 59 bordering pairs: 5 share a tongue, 3 a faith; both wars under way
+are between faiths.
+
+Flagged:
+1. Few neighbours share a faith late in the run (3 of 59): faiths split
+   into ~50 small ones and none spreads across many realms, so faith acts
+   mostly as a difference. Universal missionary faiths (the faith-traits
+   item) would make blocs of realms of one faith, as in real life.
+2. Only bordering realms are linked; trade partners further away are not
+   (real merchant diasporas reached across seas).
+3. Breakaways do not yet seek a neighbour of their own faith or tongue,
+   and a realm does not yet claim land of its own people (that is mostly
+   a modern, national idea).

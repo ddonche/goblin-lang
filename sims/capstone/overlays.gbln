@@ -1049,6 +1049,84 @@ act account(year, lands, realms)
             :event(p, "golden_age", nil, {"poets and builders came to the court": 2.0, "it was remembered as the good years": 1.0})
         xx
     xx
+    kindred(realms, spoken, faithful, court_t, court_f)
+xx
+
+/// What two bordering realms share, 0 to 1: of their tongues
+/// (`shared_tongue`) and of their faiths (`shared_faith`). Half is how
+/// much their peoples hold alike (the overlap of their shares), half
+/// whether their courts hold the same one. In real life a shared tongue
+/// makes trade easier; a shared faith makes alliances, royal marriages,
+/// aid and peace easier, and a different one gives a war its
+/// justification; land of one's own tongue and faith is easier to take
+/// in than to hold as a vassal. polity.gbln reads these links.
+link shared_tongue
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+link shared_faith
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+
+/// Last year's bordering pairs, and how many share a tongue or a faith
+/// (.5 or more).
+kin_seen | {"pairs": 0, "tongue": 0, "faith": 0}
+
+act kindred(realms, spoken, faithful, court_t, court_f)
+    seen | {"pairs": 0, "tongue": 0, "faith": 0}
+    tsh | {}
+    fsh | {}
+    repeat realms as p
+        k | p >> name
+        total | p >> people
+        if total <= 0.0 => skip
+        a | {}
+        repeat (spoken{k} ?? {}) as t, v
+            :update!(a{t}, v / total)
+        xx
+        :update!(tsh{k}, a)
+        b | {}
+        repeat (faithful{k} ?? {}) as t, v
+            :update!(b{t}, v / total)
+        xx
+        :update!(fsh{k}, b)
+    xx
+    n | :len(realms)
+    repeat :range(0, n) as i
+        p | realms[i]
+        repeat :range(i + 1, n) as j
+            q | realms[j]
+            if !:link_score(p, q, "border") => skip
+            st | alike(tsh{p >> name} ?? {}, tsh{q >> name} ?? {}, court_t{p >> name}, court_t{q >> name})
+            sf | alike(fsh{p >> name} ?? {}, fsh{q >> name} ?? {}, court_f{p >> name}, court_f{q >> name})
+            tie(p, q, "shared_tongue", st)
+            tie(p, q, "shared_faith", sf)
+            :update!(seen{"pairs"}, seen{"pairs"} + 1)
+            if st >= .5 => :update!(seen{"tongue"}, seen{"tongue"} + 1)
+            if sf >= .5 => :update!(seen{"faith"}, seen{"faith"} + 1)
+        xx
+    xx
+    kin_seen |= seen
+xx
+
+/// Half the overlap of two realms' shares, half whether their courts agree.
+act alike(a, b, ca, cb)
+    o | 0.0
+    repeat a as t, v
+        o |= o + :min(v, b{t} ?? 0.0)
+    xx
+    same | 0.0
+    if !ca.nix? and ca != .. and ca == cb => same |= 1.0
+    return :clamp(o, 0.0, 1.0) * .5 + same * .5
+xx
+
+/// Sets a lasting link both ways to `v`.
+act tie(p, q, what, v)
+    d | v - :link_score(p, q, what)
+    if :abs(d) < .01 => send nil
+    :link!(p, q, what, d)
+    :link!(q, p, what, d)
 xx
 
 act holder(l)
@@ -1084,6 +1162,23 @@ act counts(lands, realms)
         c | cls{n}
         :update!(out{"{c}s"}, out{"{c}s"} + 1)
         if total > 0.0 and c != "creed" => :update!(out{"largest_{c}"}, :max(out{"largest_{c}"}, :round(v / total, 3)))
+    xx
+    return out
+xx
+
+/// Last year's bordering realms sharing a tongue or a faith (.5 or
+/// more), and how many wars under way are between realms that do not
+/// share a faith.
+act kinship_counts()
+    out | kin_seen
+    :update!(out{"wars"}, 0)
+    :update!(out{"wars_apart"}, 0)
+    repeat :objects(War, !(it >> over)) as w
+        a | w >> attacker
+        d | w >> defender
+        if a.nix? or d.nix? => skip
+        :update!(out{"wars"}, out{"wars"} + 1)
+        if :link_score(a, d, "shared_faith") < .5 => :update!(out{"wars_apart"}, out{"wars_apart"} + 1)
     xx
     return out
 xx

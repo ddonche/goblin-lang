@@ -1107,7 +1107,7 @@ xx
 interface dealings |
     decision trade
         targets: uses dealings where :link_score(self, target, "border")
-        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * @lean_trade
+        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * @lean_trade
     xx
     decision envoy
         targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
@@ -1115,15 +1115,15 @@ interface dealings |
     xx
     decision aid
         targets: uses dealings where :link_score(self, target, "border") and (@food >= @people * .1 or @gold >= @people * .1) and ((target >> food) < (target >> people) * .02 or (target >> wars) > 0)
-        score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * @lean_aid
+        score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_aid
     xx
     decision ally
         targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
-        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * @lean_ally
+        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_ally
     xx
     decision treaty
         targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
-        score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * @lean_treaty
+        score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * (.7 + :link_score(self, target, "shared_faith") * .6) * @lean_treaty
     xx
 
     /// Pressure: spy, denounce, embargo, demand.
@@ -1134,7 +1134,7 @@ interface dealings |
     xx
     decision denounce
         targets: uses dealings where :link_score(self, target, "border")
-        score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade"))
+        score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade")) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .5)
     xx
     decision embargo
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
@@ -1161,7 +1161,7 @@ interface dealings |
     xx
     decision war
         targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * .6 * @lean_war
+        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * .6 * @lean_war
     xx
     decision break_treaty
         targets: uses dealings where :link_score(self, target, "alliance") > 0
@@ -1169,7 +1169,7 @@ interface dealings |
     xx
     decision sue_for_peace
         targets: uses dealings where @wars > 0 and !(war_between(self, target).nix?)
-        score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5)
+        score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5) * (.7 + :link_score(self, target, "shared_faith") * .6)
     xx
 
     /// One decision a year toward another polity, drawn by weight among the
@@ -1941,7 +1941,7 @@ xx
 interface court |
     decision match
         targets: uses court where target != self and family::free(self) and !((target >> dynasty).nix?) and (:link_score(self, target, "border") or :link_score(self, target, "alliance") > 0)
-        score => (family::prestige_of(target) + :link_score(self, target, "kinship") + :max(grudge(self, target), grudge(target, self)) + .2) / 2.2 * (.5 + @ambition * .5) * @lean_match
+        score => (family::prestige_of(target) + :link_score(self, target, "kinship") + :max(grudge(self, target), grudge(target, self)) + .2) / 2.2 * (.5 + @ambition * .5) * (.5 + :link_score(self, target, "shared_faith")) * @lean_match
     xx
 
     /// Waiting weighs a half.
@@ -1971,6 +1971,14 @@ act under(v, at)
 xx
 
 /// How alike two cultures are: 1 less the mean gap between baselines.
+/// How alike two realms' peoples are: their ways (`closeness`), raised
+/// up to .2 by a shared tongue and faith and lowered as much by neither.
+/// A conqueror takes in land of its own kind and keeps other peoples as
+/// vassals.
+act akin(a, b)
+    return :clamp(closeness(a, b) + (:link_score(a, b, "shared_tongue") + :link_score(a, b, "shared_faith") - 1.0) * .2, 0.0, 1.0)
+xx
+
 act closeness(a, b)
     d | :abs(a >> base_aggression - b >> base_aggression) + :abs(a >> base_cooperation - b >> base_cooperation)
     d |= d + :abs(a >> base_fear - b >> base_fear) + :abs(a >> base_ambition - b >> base_ambition)
@@ -2128,12 +2136,12 @@ act breakaway(p, city)
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)
-    return odds(closeness(p, t) * edge(p, t))
+    return odds(akin(p, t) * edge(p, t))
 xx
 /// A broken loser made a vassal; one that offered to serve is taken.
 act vassal_odds(p, t)
     if t >> submits_to == p => send .9
-    return odds((1.0 - closeness(p, t)) * edge(p, t))
+    return odds((1.0 - akin(p, t)) * edge(p, t))
 xx
 /// The independent allies beside `p` that share an enemy with it.
 act league_partners(p)

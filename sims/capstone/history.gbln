@@ -270,5 +270,7 @@ xx
 :say("check: overlays: {:join(tl, ", ")}")
 oc | overlays::counts(lands, :objects(uses govern))
 :say("check: ideas at the end: tongues {oc{"tongues"}} (largest holds {oc{"largest_tongue"}} of all people), faiths {oc{"faiths"}} (largest {oc{"largest_faith"}}), creeds {oc{"creeds"}}; realms of more than one people {oc{"many_peoples"}}")
+kc | overlays::kinship_counts()
+:say("check: bordering realms: {kc{"pairs"}} pairs, sharing a tongue (.5 or more) {kc{"tongue"}}, a faith {kc{"faith"}}; wars under way between faiths {kc{"wars_apart"}} of {kc{"wars"}}")
 gc | factions::counts(lands)
 :say("check: groups at the end: {gc{"groups"}}, largest share of a realm {gc{"largest_group"}}; ideas {gc{"ideas"}}, largest holds {gc{"largest_idea"}} of all people")
