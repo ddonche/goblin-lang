@@ -45,7 +45,7 @@ act free_beside(p, min_people)
 xx
 
 cfg | {
-    "seed": 42,
+    "seed": :int(:env("SEED") ?? "42"),
     "provinces": 400,
     "kingdoms": 20,
     "prehistory": 1200,

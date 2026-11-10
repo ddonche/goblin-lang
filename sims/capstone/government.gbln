@@ -188,7 +188,7 @@ overlay military_junta <^> Government
     ranks: [3, 4, 5, 6]
     fit_up: ["discipline", "aggression"]
     fit_down: ["legitimacy"]
-    becomes: {"usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
+    becomes: {"lords": ["hereditary_monarchy", "tyranny"], "usurper": ["tyranny"], "revolution": ["aristocratic_republic", "citizen_republic"], "takeover": ["theocracy"]}
     modify
         @discipline + .1
         @aggression + .1
@@ -460,7 +460,10 @@ act odds(p, c, lost, won, armed, unpaid)
         /// One of the rich families makes itself lord.
         c == "lords": send past(p >> ambition, .5) * under(p >> cooperation, .5) * (.5 + .5 * :min(p >> wars, 1))
         /// A coup.
-        c == "coup": send past(armed, .3) * past(p >> discipline, .5) * under(p >> legitimacy, .5) * (.25 + .75 * :max(:max(lost, unpaid), :min(p >> plot, 1.0)))
+        /// In real life an army takes power where it is large against the
+        /// realm and the crown's right is doubted, mostly after a defeat,
+        /// when it goes unpaid, or when its officers plot.
+        c == "coup": send past(armed, .1) * under(p >> legitimacy, .6) * (.1 + .9 * :max(:max(lost, unpaid), :min(p >> plot, 1.0)))
         /// A usurper.
         c == "usurper": send under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5)
         /// A revolution.
@@ -468,9 +471,14 @@ act odds(p, c, lost, won, armed, unpaid)
         /// The republic falls.
         c == "falls": send (:overlay_strength("war_weariness", p) ?? 0.0) * under(p >> stability, .5) * (.5 + .5 * won)
         /// A religious takeover.
-        c == "takeover": send past(p >> spirituality, .7) * under(p >> tolerance, .5)
+        /// In real life priests rule only where the faith's men are the
+        /// strongest power in the land and the crown is weak: a devout,
+        /// intolerant people alone is not enough.
+        c == "takeover": send past(p >> spirituality, .7) * under(p >> tolerance, .5) * past(p >> clergy, .4) * under(p >> legitimacy, .5)
         /// Secularization.
-        c == "secular": send past(p >> learning, .2) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * (1.0 - p >> spirituality)
+        /// Secularization, or the lords taking the rule back from priests
+        /// whose hold has slipped.
+        c == "secular": send :max(past(p >> learning, .2) * :min((p >> gold) / ((p >> people) * .05 + 1.0), 1.0) * (1.0 - p >> spirituality), under(p >> clergy, .3) * .05)
         /// Reform or concession.
         c == "reform": send past(p >> cooperation, .5) * past(p >> learning, .4)
         /// An empire's crown over a bureaucracy (not in the plan's table).

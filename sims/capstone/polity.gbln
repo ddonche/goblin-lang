@@ -149,6 +149,9 @@ aspect Polity |
     /// This year's coup plotting and unrest stirred by its factions.
     plot: 0.0
     unrest: 0.0
+    /// The strongest group of believers' hold on the realm this year
+    /// (its power times its zeal, 0 to 1; set by factions::account).
+    clergy: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each

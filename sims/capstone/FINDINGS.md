@@ -802,3 +802,59 @@ Built that way (`shift`, `diverge`, `born` in overlays.gbln):
 creoles, 45 tongues at the end (the largest spoken by 10.9% of all
 people), 9 realms of more than one people. 500 years took 160 s (150 s in
 0.51.18): the regions are worked out every year.
+
+## 0.51.20: groups tuned toward real life (owner, 2026-11-10)
+
+Daniel: "Try it. See how it works." then "let's tweak them." What was
+off, against real life: 13 of 38 realms were theocracies at the end
+(priests ruled wherever the people were devout, with no clergy needed);
+coups almost never happened (8 plots, 0 won: the odds needed an army
+past 3% of the people *and* past .5 discipline); groups mostly gave
+gold (7,348 gifts, 30 refusals); officers and peasants' leagues founded
+religions.
+
+Changed:
+
+- **Theocracy** (`takeover`): `past(spirituality, .7) × under(tolerance,
+  .5) × past(clergy, .4) × under(legitimacy, .5)`. `Polity.clergy` is
+  the strongest group's power × zeal, set each year. `secular` also
+  happens at `.05 × under(clergy, .3)`: the lords take the rule back.
+- **Coup**: `past(armed, .1) × under(legitimacy, .6) × (.1 + .9 ×
+  max(lost, unpaid, plot))`. A plot's weight is the plotters' arms
+  against a twentieth of the army, × militancy. The group's coup score
+  no longer needs grievance: `ambition × militancy × arms × weak × (.2
+  + grievance + .5 × lost war)`. A junta can become a hereditary
+  monarchy or a tyranny (`lords`).
+- **Gifts** × `(.2 + .8 × max(at war, short of gold))`. **Refusals**:
+  `greed × power × (grievance + .5 × hard + .2 × weak)`, where `hard`
+  is the realm's `discontent`; hard times add `.03 × discontent` to
+  grievance a year.
+- **Founding**: `past(zeal, .4) × ambition × (.3 + .7 × power) × .5`.
+- `SEED` sets the map seed of history.gbln (default 42).
+
+Result, four seeds (1 to 4), 500 years, average per run:
+
+| | 0.51.19 | 0.51.20 |
+|---|---|---|
+| polities at the end | 33.5 | 38.3 |
+| theocracies at the end | 7.3 | 1.8 |
+| juntas at the end | 1.5 | 3.0 |
+| juntas formed | 8.0 | 21.8 |
+| coup plots | 5.5 | 47.5 |
+| gifts of gold | 6,583 | 3,421 |
+| refusals | 29 | 136 |
+| ideas founded | 154 | 117 |
+
+Founders before: holy orders 225, peasants' leagues 145, guilds 119,
+brotherhoods 58, officers 23, great families 22. After: holy orders,
+brotherhoods and scholars only.
+
+Left as found (flagged):
+
+1. Theocracies still form about as often (26 to 48 a run); they now end
+   sooner. Some come by other paths than `takeover` (a form not allowed
+   at a new rank is replaced by the best fit).
+2. Plotters seldom take power themselves (0 to 2 a run): most coups
+   come from defeat or an unpaid army.
+3. Risings stay rare (8 to 17 a run); hard times did not raise them.
+4. Every number above is my choice.
