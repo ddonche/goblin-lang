@@ -858,3 +858,33 @@ Left as found (flagged):
    come from defeat or an unpaid army.
 3. Risings stay rare (8 to 17 a run); hard times did not raise them.
 4. Every number above is my choice.
+
+## 0.51.21: faiths from real life (owner go, 2026-11-10)
+
+In real life: conversion is a slow shift toward the faith with more
+followers and standing, cities first; faiths are also carried on purpose
+(missionaries along trade routes) and pushed from the top (a ruler
+converts, the people follow; an intolerant court presses harder, a
+tolerant one lets faiths live side by side); schisms split whole regions
+along political lines; isolated communities keep rites of their own;
+new faiths come from a teacher; blending is common in folk practice but
+rarely makes a new named faith.
+
+Built: `shift` (shared with tongues) at .03 with the court's standing ×
+(1.5 − tolerance); `missions` spread `.02 × intensity × (1 + 2 × trade)`,
+twice into towns and cities; no decay. `diverge` (shared) drifts cut-off
+regions (new faith at `.005 × past(drift / 600, .4)`) and builds
+`tension` in a region whose ruler holds the faith as the court's apart
+from its heartland (`.5 + learning` a year); a schism at `.01 ×
+past(tension / 300, .3)`, .7 of the region following. Blend: two faiths
+each .3 to .6 on a land, .0005 a year.
+
+500 years: 247 lands changed their main faith, 7 schisms, 2 new faiths
+from isolation, 4 blends; 50 faiths at the end (the largest held by 8.4%
+of all people); theocracies at the end 3 (13 in 0.51.19). No creed split
+in 500 years (creeds not rebuilt yet). 500 years 183 s.
+
+Flagged: no faith reaches across the continent. Every faith acts alike;
+in real life universal, missionary faiths (Buddhism, Christianity, Islam)
+spread far beyond their realms while ethnic faiths do not. A faith field
+for how much it seeks converts would give that.

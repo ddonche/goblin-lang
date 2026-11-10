@@ -29,7 +29,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
     "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 
 /// What the run's overlays did (printed at the end).
-tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "sect": 0, "creed_split": 0, "plague": 0, "strain": 0,
+tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "plague": 0, "strain": 0,
     "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "decadence": 0}
 
 act count(k)
@@ -115,10 +115,10 @@ xx
 /// against the other's (.05: a small minority with no standing loses its
 /// tongue in about three generations, as immigrants do). More speakers
 /// draw more, and standing can beat numbers. A copy that has just spread here starts at .1.
-act shift(l, court, pull)
+act shift(l, cls, court, pull, rate, what)
     ts | []
     repeat :overlays(l) as o
-        if !:is_type(o, "Tongue") => skip
+        if !:is_type(o, cls) => skip
         if o >> at != l >> name
             o >> at |= l >> name
             if o >> intensity > .1 => o >> intensity |= .1
@@ -130,7 +130,7 @@ act shift(l, court, pull)
     repeat ts as o
         if o >> intensity > top >> intensity => top |= o
     xx
-    c  | .05 * pace(l)
+    c  | rate * pace(l)
     tn | top >> overlay_name
     xt | top >> intensity
     pt | standing(tn, court, pull)
@@ -147,10 +147,10 @@ act shift(l, court, pull)
         move |= :clamp(move, -xt, x)
         x |= x - move
         xt |= xt + move
-        /// Under one in fifty, its last speakers here are gone.
+        /// Under one in fifty, its last speakers (or faithful) here are gone.
         if x < .02 => x |= 0.0
         o >> intensity |= x
-        if x > xt => count("shifted")
+        if x > xt => count(what)
     xx
     top >> intensity |= :clamp(xt, 0.0, 1.0)
 xx
@@ -161,7 +161,7 @@ xx
 /// (a quarter where it borders land of another holder that speaks it,
 /// halved again under a realm of full learning), and the heart is pulled
 /// back together (its drift falls 5% a year).
-act diverge(firm, where)
+act diverge(firm, where, court)
     repeat firm as k, ls
         seen  | {}
         parts | []
@@ -213,6 +213,14 @@ act diverge(firm, where)
                 p | part[0] >> owner
                 if !p.nix? => rate |= rate * (1.0 - .5 * (p >> learning))
             xx
+            /// A region whose ruler holds this faith as the court's own,
+            /// apart from its heart, is strained toward a schism, more under
+            /// a learned ruler (tongues have no strain).
+            pull | 0.0
+            if idx != heart
+                p | part[0] >> owner
+                if !p.nix? and (court{p >> name} ?? ..) == k => pull |= .5 + p >> learning
+            xx
             repeat part as l
                 repeat :overlays(l, k) as o
                     d | o >> drift
@@ -220,6 +228,14 @@ act diverge(firm, where)
                         if d > 0.0 => o >> drift |= d * .95
                     else
                         o >> drift |= d + rate
+                    xx
+                    if :is_type(o, "Faith")
+                        sn | o >> tension
+                        if pull > 0.0
+                            o >> tension |= sn + pull
+                        elif sn > 0.0
+                            o >> tension |= sn * .95
+                        xx
                     xx
                 xx
             xx
@@ -241,6 +257,32 @@ act born(l)
     count("tongue_new")
     :event(l, "tongue_new", nil, {"their speech had drifted from their fathers'": 2.0, "the old tongue was spoken there no more": 1.0})
     if o.nix? => send nil
+    region(l, o, 1.0)
+xx
+
+/// A faith's new kind on land `l`: drifted apart (`share` 1, the whole
+/// region takes it) or split off in a schism (`share` .7: most of the
+/// region follows its ruler, the rest keep the old faith). The copy is the
+/// newest copy of a Faith on `l` made from another (`kept`: whether the
+/// old one is still there, as after a fracture).
+act faith_born(l, share, kept, what, telling)
+    o | nil
+    repeat :overlays(l) as c
+        if :is_type(c, "Faith") and c >> age == 0 and :len(c >> parents) > 0 and (:len(:overlays(l, (c >> parents)[0])) > 0) == kept
+            o |= c
+            stop
+        xx
+    xx
+    count(what)
+    :event(l, what, nil, telling)
+    if o.nix? => send nil
+    region(l, o, share)
+xx
+
+/// The rest of new kind `o`'s region on land `l`: bordering land holding
+/// its parent kind firmly (.3+) under the same holder. On each, `share`
+/// of the parent's people take the new kind.
+act region(l, o, share)
     n  | o >> overlay_name
     old | (o >> parents)[0]
     h  | holder(l)
@@ -257,11 +299,13 @@ act born(l)
             if :len(was) == 0 => skip
             w0 | was[0]
             if w0 >> intensity < .3 => skip
-            :overlay!(q, n, w0 >> intensity)
-            w0 >> intensity |= 0.0
+            i0 | w0 >> intensity
+            :overlay!(q, n, i0 * share)
+            w0 >> intensity |= i0 * (1.0 - share)
             repeat :overlays(q, n) as c
                 c >> at |= q >> name
                 c >> drift |= 0.0
+                if :is_type(c, "Faith") => c >> tension |= 0.0
             xx
             :put_last!(part, q)
         xx
@@ -278,42 +322,73 @@ act carry(a, b, i)
     return c
 xx
 
-/// A faith: about the gods. It spreads to bordering land, fades unless it
-/// is preached, and pulls the culture of the realms whose people hold it
-/// (its `bends`).
+/// A faith: about the gods, as faiths behave (2026-11-10, owner: real
+/// life first). Its intensity on a land is the share of the land's people
+/// who hold it.
+/// - Conversion is a shift, as for tongues (`shift`), but slower, and
+///   faster in cities (the countryside holds out). The court's faith has
+///   standing as far as the realm holds it, pressed harder by an
+///   intolerant ruler. Preachers carry it along borders, more from trading
+///   land (`spread`), and groups preach and found it (factions.gbln).
+/// - Isolated believers drift into rites of their own, slower than a
+///   tongue (scripture and clergy hold a faith together): `drift`, set by
+///   `diverge`, and the whole cut-off region takes the new faith.
+/// - Schisms split whole regions and follow politics: a region whose own
+///   ruler holds the faith apart from its heartland builds up `tension`,
+///   more under a learned ruler, and by chance breaks away; most of the
+///   region follows its ruler (Reformation, East and West).
+/// - Blending of two faiths into a new one, where both are held side by
+///   side and neither is on top: rare.
 <^>Faith |
     hosts: Land
     ~intensity: .3
-    decays: .002
-    spread: .05 * intensity where :link_score(self, target, "border") and target >> people > 0.0
+    spread: missions(self, target, intensity) where :link_score(self, target, "border") and target >> people > 0.0
     /// What a realm's culture is pulled toward, by trait, as far as its
     /// people hold it.
     bends: {}
     title: ..
     founded: 0
     at: ..
-    apart: 0.0
-    rival: 0.0
-    /// Cut off for generations, its teaching drifts into a faith of its own.
-    transition mutate where chance(.01 * intensity * past(:min((self >> apart) / 200.0, 1.0), .25))
+    drift: 0.0
+    tension: 0.0
+    transition mutate where chance(.005 * past(:min((self >> drift) / 600.0, 1.0), .4))
         carries:
-            apart: 0.0
+            drift: 0.0
+            tension: 0.0
             bends: shifted(self >> bends)
         xx
     xx
-    on mutate => drifted(self, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
-    /// Pressed by another faith held firmly beside it, it splits: a sect.
-    transition fracture where chance(.005 * intensity * (self >> rival))
+    on mutate => faith_born(self, 1.0, false, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
+    transition fracture where chance(.01 * past(:min((self >> tension) / 300.0, 1.0), .3))
         fragment:
-            intensity: intensity * .3
-            apart: 0.0
+            intensity: intensity * .7
+            drift: 0.0
+            tension: 0.0
             bends: shifted(self >> bends)
         xx
         carries:
-            intensity: intensity * .7
+            intensity: intensity * .3
+            tension: 0.0
         xx
     xx
-    on fracture => drifted(self, "sect", {"a preacher broke with the old teaching": 2.0, "a new sect arose": 1.0, "the faithful split over a vision": 1.0})
+    on fracture => faith_born(self, .7, true, "schism", {"the realm broke with the old church": 2.0, "a reformer's teaching was taken up by the court": 1.0, "the bishops would no longer bow to the old see": 1.0})
+    transition merge
+        targets: Faith where (target >> intensity) >= .3 and (target >> intensity) <= .6 and intensity >= .3 and intensity <= .6 and chance(.0005)
+        carries:
+            intensity: intensity + target >> intensity
+            drift: 0.0
+            tension: 0.0
+        xx
+    xx
+    on merge => drifted(self, "blend", {"the old gods were worshipped as saints": 2.0, "the two rites became one": 1.0})
+xx
+
+/// How likely preachers carry a faith from land `a` to `b`: more from
+/// trading land, twice as likely into a town or city.
+act missions(a, b, i)
+    c | .02 * i * (1.0 + 2.0 * a >> trade)
+    if b >> settlement == "town" or b >> settlement == "city" or b >> settlement == "great city" => c |= c * 2.0
+    return c
 xx
 
 /// A creed: a philosophy or a cause about how people should live. It needs
@@ -631,8 +706,10 @@ act top(l, c)
     return best
 xx
 
-/// Last year's share of each realm's people speaking its court's tongue.
-court_share | {}
+/// Last year's share of each realm's people speaking its court's tongue,
+/// and holding its court's faith.
+court_share  | {}
+court_fshare | {}
 
 /// Each year, after the groups' accounts: on each land, speakers shift
 /// between its tongues (`shift`); faiths that have just arrived start
@@ -649,21 +726,18 @@ act account(year, lands, realms)
     /// Where each tongue and faith is held firmly (.3 or more): "kind|land"
     /// to the land's holder.
     where | {}
-    /// The lands that speak each tongue firmly.
+    /// The lands that hold each tongue and faith firmly.
     firm  | {}
     repeat lands as l
         w | holder(l)
         repeat :overlays(l) as o
             if o >> intensity < .3 => skip
-            tongue | :is_type(o, "Tongue")
-            if tongue or :is_type(o, "Faith")
+            if :is_type(o, "Tongue") or :is_type(o, "Faith")
                 n | o >> overlay_name
                 :update!(where{"{n}|{l >> name}"}, w)
-                if tongue
-                    xs | firm{n} ?? []
-                    :put_last!(xs, l)
-                    :update!(firm{n}, xs)
-                xx
+                xs | firm{n} ?? []
+                :put_last!(xs, l)
+                :update!(firm{n}, xs)
             xx
         xx
     xx
@@ -711,10 +785,14 @@ act account(year, lands, realms)
                 busy |= true
             xx
         xx
-        if ts > 0.0
-            shift(l, court_t{w} ?? .., court_share{w} ?? .5)
-            os |= :overlays(l)
+        if ts > 0.0 => shift(l, "Tongue", court_t{w} ?? .., court_share{w} ?? .5, .05, "shifted")
+        /// The court presses its faith harder the less tolerant it is.
+        if fs > 0.0
+            press | 1.0
+            if !p.nix? => press |= 1.5 - p >> tolerance
+            shift(l, "Faith", court_f{w} ?? .., (court_fshare{w} ?? .5) * press, .03, "converted")
         xx
+        if ts > 0.0 or fs > 0.0 => os |= :overlays(l)
         st | spoken{w} ?? {}
         sf | faithful{w} ?? {}
         repeat os as o
@@ -727,36 +805,16 @@ act account(year, lands, realms)
                 if !p.nix? => :update!(st{n}, (st{n} ?? 0.0) + (l >> people) * i)
                 skip
             xx
+            if faith
+                if !p.nix? => :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
+                skip
+            xx
             if o >> at != ln
                 o >> at |= ln
                 if i > .1 => i |= .1
             xx
-            if !faith
-                if !land::is_city(l) => i |= i - .02
-                if i != o >> intensity => o >> intensity |= :max(i, 0.0)
-                skip
-            xx
-            /// Cut off: a year for each year no bordering land holds it
-            /// firmly, a quarter where only land under another holder does.
-            kin | 0
-            repeat ns as q
-                h | where{"{n}|{q >> name}"} ?? => skip
-                if h == w
-                    kin |= 2
-                    stop
-                xx
-                kin |= 1
-            xx
-            judge
-                kin == 2: if o >> apart != 0.0 => o >> apart |= 0.0
-                kin == 1: o >> apart |= o >> apart + .25
-                true: o >> apart |= o >> apart + 1.0
-            xx
-            o >> rival |= fs - i
-            if i < ft => i |= i - .01 * (ft - i)
-            i |= :clamp(i, 0.0, 1.0)
-            if i != o >> intensity => o >> intensity |= i
-            if !p.nix? => :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
+            if !land::is_city(l) => i |= i - .02
+            if i != o >> intensity => o >> intensity |= :max(i, 0.0)
         xx
         if !p.nix?
             :update!(spoken{w}, st)
@@ -808,7 +866,7 @@ act account(year, lands, realms)
         if hit => :update!(struck{w}, true)
         if famine_on => :update!(hungry{w}, true)
     xx
-    diverge(firm, where)
+    diverge(firm, where, court_f)
     repeat realms as p
         k | p >> name
         total | p >> people
@@ -822,6 +880,7 @@ act account(year, lands, realms)
             tshare | (st{court_t{k} ?? ..} ?? 0.0) / total
             :update!(court_share{k}, tshare)
             fshare | ((faithful{k} ?? {}){court_f{k} ?? ..} ?? 0.0) / total
+            :update!(court_fshare{k}, fshare)
             b | p >> bends
             :update!(b{"cohesion"}, (b{"cohesion"} ?? 0.0) + (tshare - .5) * .3)
             :update!(b{"legitimacy"}, (b{"legitimacy"} ?? 0.0) + (fshare - .5) * .2)
