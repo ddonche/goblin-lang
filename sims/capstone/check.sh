@@ -44,10 +44,12 @@ for a in give_gold withhold give_men coup preach found press rise crush concede 
     n=$(grep '^check: groups:' "$T/h1" | grep -o "$a [0-9]*" | awk '{ print $2 }')
     LABEL="groups: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done
-for a in tongue_new tongue_merge faith_new sect creed_split plague strain famine flood quake drought fire dread golden_age decadence; do
+for a in tongue_new shifted faith_new sect creed_split plague strain famine flood quake drought fire dread golden_age decadence; do
     n=$(grep '^check: overlays:' "$T/h1" | grep -o "$a [0-9]*" | awk '{ print $2 }')
     LABEL="overlays: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done
+# A creole (two tongues merging) is near-never in real life: counted, not required.
+echo "     tongues merged into a creole: $(grep '^check: overlays:' "$T/h1" | grep -o 'tongue_merge [0-9]*' | awk '{ print $2 }')"
 echo "     changes of form: $(grep -cE '^tick [0-9]+ \| [a-z_]+ on [A-Za-z]+ [^|]* \| pushes off \| (elders_council|chieftainship|hereditary_monarchy|elective_monarchy|theocracy|merchant_oligarchy|aristocratic_republic|citizen_republic|tyranny|military_junta|imperial_autocracy|confederation|constitutional_monarchy|client_regime|interregnum)$' "$T/e1")"
 echo "     $(grep '^check: forms at the end' "$T/h1" | sed 's/^check: //')"
 echo "     $(tail -n 1 "$D/history_metrics.csv" | awk -F, '{ printf "year %s: %s polities, the largest holds %s provinces (%.1f%% of the held land)", $1, $7, $15, $16 * 100 }')"

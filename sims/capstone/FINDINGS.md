@@ -771,3 +771,34 @@ rule more than one people.
   calling `overlays::found`.
 - A condition that reads a missing field is false with no error
   (open question, listed in memory).
+
+## 0.51.19: tongues from real life (owner, 2026-11-10)
+
+Daniel asked why tongues merged all the time (43 in 500 years), then:
+"think in terms of real life and then make the sim match". In real life:
+tongues almost never merge (creoles only where many meet and none is on
+top); the usual change is shift, toward prestige weighed against numbers,
+in towns and among the elite first, sometimes the conquerors to the
+locals' tongue (Franks, Normans, Manchu); new tongues come from
+separation over 500 to 1,000 years, slowed by central rule and writing;
+two tongues can live side by side for centuries where neither dominates.
+
+Built that way (`shift`, `diverge`, `born` in overlays.gbln):
+
+- Shift on each land between each tongue and the most spoken one, by the
+  Abrams-Strogatz model (a = 1.3): a year's move is `.05 × pace × (a ×
+  b^1.3 × s − b × a^1.3 × (1 − s))`; pace 1 in the country, 2 in a
+  town, 3 in a city; standing 1, and 1 + 3 × (the share of the realm
+  speaking it) for the court's tongue. Under .02 a tongue is gone there.
+- A tongue's regions: bordering land speaking it (.3+) under one holder.
+  The most peopled region is its heart (drift falls 5% a year); every
+  other region drifts 1 a year (.25 where it borders land of another
+  holder speaking it), × (1 − .5 × the holder's learning). A new tongue
+  at `.01 × past(drift / 500, .4)` a year, and the whole region takes it.
+- A creole: two tongues each .25 to .55 on a trading city (trade .5+),
+  .002 a year.
+
+500 years: 152 lands changed their main tongue, 10 new tongues, 0
+creoles, 45 tongues at the end (the largest spoken by 10.9% of all
+people), 9 realms of more than one people. 500 years took 160 s (150 s in
+0.51.18): the regions are worked out every year.

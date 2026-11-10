@@ -1,15 +1,15 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 69 polities, largest Jorwenkeldun with 15 provinces, 3 wars
-year 200: 46 polities, largest Lorvar-Yrlorfal with 24 provinces, 7 wars
-year 300: 44 polities, largest Rosvar-Lorvar-Yrlorfal with 51 provinces, 3 wars
-year 400: 34 polities, largest Rosvar-Lorvar-Yrlorfal with 52 provinces, 3 wars
-year 500: 31 polities, largest Rosvar-Lorvar-Yrlorfal with 50 provinces, 3 wars
-check: share of polity-years at war: 19.8%
-check: forms at the end: aristocratic_republic 5, elders_council 2, elective_monarchy 2, hereditary_monarchy 4, imperial_autocracy 5, merchant_oligarchy 5, military_junta 1, theocracy 7
-check: families: deaths 984, murders 13, executions 2, crowned 973, regencies 15, usurped 20, interregnums 40, lines_ended 3, elections 901, claims_won 21, new_houses 123, marriages 283, births 481, partitions 1
-check: succession laws at the end: eldest_child 6, eldest_son 3, elective 2, faith 3, force 1, none 3, term 10
-check: groups: formed 680, split 63, merged 3, ended 497, give_gold 7430, withhold 38, give_men 2243, coup 9, preach 2491, found 177, press 1127, rise 14, crush 38, concede 98, patronize 1345, coups_won 0
-check: overlays: tongue_new 8, tongue_merge 43, faith_new 8, sect 35, creed_split 2, plague 17, strain 12, famine 320, flood 77, quake 78, drought 261, fire 97, dread 169, golden_age 26, decadence 11
-check: ideas at the end: tongues 75 (largest holds 0.095 of all people), faiths 45 (largest 0.043), creeds 11; realms of more than one people 18
-check: groups at the end: 243, largest share of a realm 0.391; ideas 56, largest holds 0.043 of all people
+year 100: 78 polities, largest Falvar with 16 provinces, 13 wars
+year 200: 54 polities, largest Falvar with 26 provinces, 6 wars
+year 300: 44 polities, largest Yrul-Falvar-Kelul with 32 provinces, 3 wars
+year 400: 44 polities, largest Yrul-Falvar-Kelul-Wentorjor with 33 provinces, 1 wars
+year 500: 38 polities, largest Halorisklor-Corsarlor-Eskul-Corjor with 42 provinces, 4 wars
+check: share of polity-years at war: 18%
+check: forms at the end: aristocratic_republic 2, chieftainship 1, citizen_republic 2, elders_council 3, elective_monarchy 4, hereditary_monarchy 5, imperial_autocracy 2, merchant_oligarchy 6, theocracy 13
+check: families: deaths 1094, murders 23, executions 2, crowned 941, regencies 9, usurped 15, interregnums 47, lines_ended 2, elections 943, claims_won 18, new_houses 138, marriages 241, births 435, partitions 1
+check: succession laws at the end: eldest_child 3, eldest_son 4, elective 4, faith 6, none 7, term 8
+check: groups: formed 631, split 69, merged 1, ended 514, give_gold 7348, withhold 30, give_men 2329, coup 8, preach 2474, found 141, press 1059, rise 17, crush 48, concede 117, patronize 1480, coups_won 0
+check: overlays: tongue_new 10, tongue_merge 0, shifted 152, faith_new 10, sect 32, creed_split 2, plague 14, strain 8, famine 311, flood 97, quake 69, drought 242, fire 113, dread 177, golden_age 33, decadence 12
+check: ideas at the end: tongues 45 (largest holds 0.109 of all people), faiths 44 (largest 0.067), creeds 10; realms of more than one people 9
+check: groups at the end: 185, largest share of a realm 0.391; ideas 54, largest holds 0.067 of all people

@@ -29,7 +29,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
     "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 
 /// What the run's overlays did (printed at the end).
-tally | {"tongue_new": 0, "tongue_merge": 0, "faith_new": 0, "sect": 0, "creed_split": 0, "plague": 0, "strain": 0,
+tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "sect": 0, "creed_split": 0, "plague": 0, "strain": 0,
     "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "decadence": 0}
 
 act count(k)
@@ -50,38 +50,223 @@ xx
 
 /// ideas: on land, for centuries
 
-/// A tongue. A land can hold several (kinds of one class sit side by
-/// side; a kind already there is not put on again). `at` is the land this
-/// copy is held on: a copy that has just
-/// spread here (it carries its source's `at`) is spoken by few. `apart`
-/// is the years it has been cut off from the rest of its kind (no
-/// bordering land speaks it under the same holder) and `rival` how firmly
-/// other tongues are held beside it, both set each year by `account`.
+/// A tongue, as languages behave (2026-11-10, owner: real life first).
+/// Its intensity on a land is the share of the land's people who speak
+/// it; a land can hold several (kinds of one class sit side by side; a
+/// kind already there is not put on again). `at` is the land this copy is
+/// held on: a copy that has just spread here (it carries its source's
+/// `at`) is spoken by few.
+/// - Shift, not merging, is how tongues meet: speakers go over to the
+///   tongue with more speakers and more standing, slowly, faster in towns
+///   and cities (`shift`). The court's tongue has standing as far as the
+///   realm speaks it: a tongue most of the realm speaks draws others; the
+///   tongue of a few conquerors gives way to the locals' (Franks, Normans).
+/// - New tongues come from separation: the speakers of a tongue cut off
+///   from the rest of it drift apart over centuries, faster with no
+///   contact at all than across a border, slower under a learned realm
+///   (a written standard). `drift` is the years of it, set by `diverge`.
+///   When it has gone far enough, by chance, it is a new tongue, and the
+///   whole cut-off region speaks it (`born`).
+/// - A creole: almost never, only in a trading city where two tongues
+///   meet and neither is on top.
 <^>Tongue |
     hosts: Land
     ~intensity: .1
     title: ..
     at: ..
-    apart: 0.0
-    rival: 0.0
+    drift: 0.0
     spread: carry(self, target, intensity) where :link_score(self, target, "border") and target >> people > 0.0
-    /// Cut off for generations, its speech drifts into a tongue of its own.
-    transition mutate where chance(.01 * intensity * past(:min((self >> apart) / 200.0, 1.0), .25))
+    transition mutate where chance(.01 * past(:min((self >> drift) / 500.0, 1.0), .4))
         carries:
-            apart: 0.0
+            drift: 0.0
         xx
     xx
-    on mutate => drifted(self, "tongue_new", {"their speech had drifted from their fathers'": 2.0, "the old tongue was spoken there no more": 1.0})
-    /// Two tongues held side by side where goods change hands become a
-    /// trade tongue.
+    on mutate => born(self)
     transition merge
-        targets: Tongue where (target >> intensity) >= .3 and intensity >= .3 and chance(.001 * (.2 + host >> trade))
+        targets: Tongue where (target >> intensity) >= .25 and (target >> intensity) <= .55 and intensity >= .25 and intensity <= .55 and land::is_city(host) and host >> trade >= .5 and chance(.002)
         carries:
-            intensity: :max(intensity, target >> intensity)
-            apart: 0.0
+            intensity: intensity + target >> intensity
+            drift: 0.0
         xx
     xx
-    on merge => drifted(self, "tongue_merge", {"a trade tongue grew in the markets": 2.0, "two peoples came to speak as one": 1.0})
+    on merge => drifted(self, "tongue_merge", {"a trade tongue grew in the markets": 2.0, "the children of the port spoke a tongue of their own": 1.0})
+xx
+
+/// A tongue's standing on a land: 1, and for the court's tongue 1 + 3 ×
+/// the share of the realm that speaks it (last year's).
+act standing(n, court, pull)
+    if n == court => send 1.0 + 3.0 * pull
+    return 1.0
+xx
+
+/// How fast people change tongue where they live: a town twice as fast
+/// as the country, a city three times.
+act pace(l)
+    s | l >> settlement
+    if s == "city" or s == "great city" => send 3.0
+    if s == "town" => send 2.0
+    return 1.0
+xx
+
+/// Speakers go over between each tongue and the most spoken one on land
+/// `l`, as in the Abrams-Strogatz model of language shift (Nature, 2003):
+/// a year's move is .05 × pace × (a × b^1.3 × s − b × a^1.3 × (1 − s)),
+/// for shares a and b of the two and the most spoken one's standing s
+/// against the other's (.05: a small minority with no standing loses its
+/// tongue in about three generations, as immigrants do). More speakers
+/// draw more, and standing can beat numbers. A copy that has just spread here starts at .1.
+act shift(l, court, pull)
+    ts | []
+    repeat :overlays(l) as o
+        if !:is_type(o, "Tongue") => skip
+        if o >> at != l >> name
+            o >> at |= l >> name
+            if o >> intensity > .1 => o >> intensity |= .1
+        xx
+        :put_last!(ts, o)
+    xx
+    if :len(ts) < 2 => send nil
+    top | ts[0]
+    repeat ts as o
+        if o >> intensity > top >> intensity => top |= o
+    xx
+    c  | .05 * pace(l)
+    tn | top >> overlay_name
+    xt | top >> intensity
+    pt | standing(tn, court, pull)
+    repeat ts as o
+        n | o >> overlay_name
+        if n == tn => skip
+        x | o >> intensity
+        both | x + xt
+        if both <= 0.0 => skip
+        a | x / both
+        b | xt / both
+        st | pt / (pt + standing(n, court, pull))
+        move | c * both * (a * :pow(b, 1.3) * st - b * :pow(a, 1.3) * (1.0 - st))
+        move |= :clamp(move, -xt, x)
+        x |= x - move
+        xt |= xt + move
+        /// Under one in fifty, its last speakers here are gone.
+        if x < .02 => x |= 0.0
+        o >> intensity |= x
+        if x > xt => count("shifted")
+    xx
+    top >> intensity |= :clamp(xt, 0.0, 1.0)
+xx
+
+/// Each tongue's speakers in regions: bordering lands that speak it
+/// (.3 or more) under the same holder. The region with the most people is
+/// the tongue's heart; every other region drifts a year for each year
+/// (a quarter where it borders land of another holder that speaks it,
+/// halved again under a realm of full learning), and the heart is pulled
+/// back together (its drift falls 5% a year).
+act diverge(firm, where)
+    repeat firm as k, ls
+        seen  | {}
+        parts | []
+        repeat ls as l
+            if seen{l >> name} ?? false => skip
+            h | holder(l)
+            part | [l]
+            :update!(seen{l >> name}, true)
+            i | 0
+            repeat i < :len(part)
+                repeat near{part[i] >> name} ?? [] as q
+                    if seen{q >> name} ?? false => skip
+                    if (where{"{k}|{q >> name}"} ?? "") != h => skip
+                    :update!(seen{q >> name}, true)
+                    :put_last!(part, q)
+                xx
+                i |= i + 1
+            xx
+            :put_last!(parts, part)
+        xx
+        heart | 0
+        most  | -1.0
+        repeat parts as part
+            n | 0.0
+            repeat part as l
+                n |= n + l >> people
+            xx
+            if n > most
+                most |= n
+                heart |= idx
+            xx
+        xx
+        repeat parts as part
+            rate | 1.0
+            if idx != heart
+                mine | {}
+                repeat part as l
+                    :update!(mine{l >> name}, true)
+                xx
+                repeat part as l
+                    repeat near{l >> name} ?? [] as q
+                        if !(mine{q >> name} ?? false) and :has(where, "{k}|{q >> name}")
+                            rate |= .25
+                            stop
+                        xx
+                    xx
+                    if rate < 1.0 => stop
+                xx
+                p | part[0] >> owner
+                if !p.nix? => rate |= rate * (1.0 - .5 * (p >> learning))
+            xx
+            repeat part as l
+                repeat :overlays(l, k) as o
+                    d | o >> drift
+                    if idx == heart
+                        if d > 0.0 => o >> drift |= d * .95
+                    else
+                        o >> drift |= d + rate
+                    xx
+                xx
+            xx
+        xx
+    xx
+xx
+
+/// A new tongue on land `l`: the copy that has just drifted into it. The
+/// rest of its cut-off region (bordering land speaking the old tongue
+/// under the same holder) speaks it too.
+act born(l)
+    o | nil
+    repeat :overlays(l) as c
+        if :is_type(c, "Tongue") and c >> age == 0 and :len(c >> parents) > 0 and :len(:overlays(l, (c >> parents)[0])) == 0
+            o |= c
+            stop
+        xx
+    xx
+    count("tongue_new")
+    :event(l, "tongue_new", nil, {"their speech had drifted from their fathers'": 2.0, "the old tongue was spoken there no more": 1.0})
+    if o.nix? => send nil
+    n  | o >> overlay_name
+    old | (o >> parents)[0]
+    h  | holder(l)
+    part | [l]
+    seen | {}
+    :update!(seen{l >> name}, true)
+    i | 0
+    repeat i < :len(part)
+        repeat near{part[i] >> name} ?? [] as q
+            if seen{q >> name} ?? false => skip
+            :update!(seen{q >> name}, true)
+            if holder(q) != h => skip
+            was | :overlays(q, old)
+            if :len(was) == 0 => skip
+            w0 | was[0]
+            if w0 >> intensity < .3 => skip
+            :overlay!(q, n, w0 >> intensity)
+            w0 >> intensity |= 0.0
+            repeat :overlays(q, n) as c
+                c >> at |= q >> name
+                c >> drift |= 0.0
+            xx
+            :put_last!(part, q)
+        xx
+        i |= i + 1
+    xx
 xx
 
 /// How likely a tongue spreads from land `a` to `b`: more with trade,
@@ -446,13 +631,15 @@ act top(l, c)
     return best
 xx
 
-/// Each year, after the groups' accounts: on each land, tongues and faiths
-/// that have just arrived start weak; a tongue held beside a firmer one
-/// gives way to it, faster the further behind it is, and the firmest
-/// gains; the court's tongue gains on the land its realm rules and does
-/// not give way; a faith held beside a firmer one fades the same way;
-/// a creed fades where there is no city; each copy's years cut off and
-/// its rivals are counted. Then plague, disasters and famine, by chance.
+/// Last year's share of each realm's people speaking its court's tongue.
+court_share | {}
+
+/// Each year, after the groups' accounts: on each land, speakers shift
+/// between its tongues (`shift`); faiths that have just arrived start
+/// weak, and a faith held beside a firmer one fades, faster the further
+/// behind it is; a creed fades where there is no city; each faith's years
+/// cut off and its rivals are counted. Each tongue's cut-off regions
+/// drift (`diverge`). Then plague, disasters and famine, by chance.
 /// Then each realm: how many tongues its people speak (`peoples`), how
 /// much of them share its court's tongue (cohesion) and faith
 /// (legitimacy), through `bends`; dread after a plague or disaster on its
@@ -462,12 +649,21 @@ act account(year, lands, realms)
     /// Where each tongue and faith is held firmly (.3 or more): "kind|land"
     /// to the land's holder.
     where | {}
+    /// The lands that speak each tongue firmly.
+    firm  | {}
     repeat lands as l
         w | holder(l)
         repeat :overlays(l) as o
             if o >> intensity < .3 => skip
-            if :is_type(o, "Tongue") or :is_type(o, "Faith")
-                :update!(where{"{o >> overlay_name}|{l >> name}"}, w)
+            tongue | :is_type(o, "Tongue")
+            if tongue or :is_type(o, "Faith")
+                n | o >> overlay_name
+                :update!(where{"{n}|{l >> name}"}, w)
+                if tongue
+                    xs | firm{n} ?? []
+                    :put_last!(xs, l)
+                    :update!(firm{n}, xs)
+                xx
             xx
         xx
     xx
@@ -515,6 +711,10 @@ act account(year, lands, realms)
                 busy |= true
             xx
         xx
+        if ts > 0.0
+            shift(l, court_t{w} ?? .., court_share{w} ?? .5)
+            os |= :overlays(l)
+        xx
         st | spoken{w} ?? {}
         sf | faithful{w} ?? {}
         repeat os as o
@@ -523,11 +723,15 @@ act account(year, lands, realms)
             if !(tongue or faith or :is_type(o, "Creed")) => skip
             n | o >> overlay_name
             i | o >> intensity
+            if tongue
+                if !p.nix? => :update!(st{n}, (st{n} ?? 0.0) + (l >> people) * i)
+                skip
+            xx
             if o >> at != ln
                 o >> at |= ln
                 if i > .1 => i |= .1
             xx
-            if !(tongue or faith)
+            if !faith
                 if !land::is_city(l) => i |= i - .02
                 if i != o >> intensity => o >> intensity |= :max(i, 0.0)
                 skip
@@ -548,25 +752,11 @@ act account(year, lands, realms)
                 kin == 1: o >> apart |= o >> apart + .25
                 true: o >> apart |= o >> apart + 1.0
             xx
-            if tongue
-                o >> rival |= ts - i
-                judge
-                    !p.nix? and n == (court_t{w} ?? ..): i |= i + .01 * (p >> centralization)
-                    i >= tt: i |= i + .01 * (1.0 - i)
-                    true: i |= i - .02 * (tt - i)
-                xx
-            else
-                o >> rival |= fs - i
-                if i < ft => i |= i - .01 * (ft - i)
-            xx
+            o >> rival |= fs - i
+            if i < ft => i |= i - .01 * (ft - i)
             i |= :clamp(i, 0.0, 1.0)
             if i != o >> intensity => o >> intensity |= i
-            if p.nix? => skip
-            if tongue
-                :update!(st{n}, (st{n} ?? 0.0) + (l >> people) * i)
-            else
-                :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
-            xx
+            if !p.nix? => :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
         xx
         if !p.nix?
             :update!(spoken{w}, st)
@@ -618,6 +808,7 @@ act account(year, lands, realms)
         if hit => :update!(struck{w}, true)
         if famine_on => :update!(hungry{w}, true)
     xx
+    diverge(firm, where)
     repeat realms as p
         k | p >> name
         total | p >> people
@@ -629,6 +820,7 @@ act account(year, lands, realms)
             xx
             if :max(n, 1) != p >> peoples => p >> peoples |= :max(n, 1)
             tshare | (st{court_t{k} ?? ..} ?? 0.0) / total
+            :update!(court_share{k}, tshare)
             fshare | ((faithful{k} ?? {}){court_f{k} ?? ..} ?? 0.0) / total
             b | p >> bends
             :update!(b{"cohesion"}, (b{"cohesion"} ?? 0.0) + (tshare - .5) * .3)
