@@ -29,7 +29,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
     "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 
 /// What the run's overlays did (printed at the end).
-tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "plague": 0, "strain": 0,
+tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
     "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "decadence": 0}
 
 act count(k)
@@ -75,7 +75,8 @@ xx
     title: ..
     at: ..
     drift: 0.0
-    spread: carry(self, target, intensity) where :link_score(self, target, "border") and target >> people > 0.0
+    /// Carried by people from where it is spoken by many (.3 or more).
+    spread: carry(self, target, intensity) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
     transition mutate where chance(.01 * past(:min((self >> drift) / 500.0, 1.0), .4))
         carries:
             drift: 0.0
@@ -342,7 +343,8 @@ xx
 <^>Faith |
     hosts: Land
     ~intensity: .3
-    spread: missions(self, target, intensity) where :link_score(self, target, "border") and target >> people > 0.0
+    /// Missions go out from where the faith is established (.3 or more).
+    spread: missions(self, target, intensity) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
     /// What a realm's culture is pulled toward, by trait, as far as its
     /// people hold it.
     bends: {}
@@ -391,21 +393,32 @@ act missions(a, b, i)
     return c
 xx
 
-/// A creed: a philosophy or a cause about how people should live. It needs
-/// cities: it spreads only to them, and fades where there are none.
+/// A creed: a philosophy or a cause about how people should live, as
+/// creeds behave (2026-11-10, owner: real life first). Its intensity on a
+/// land is the share of the land's learned (scholars, the court, the
+/// well-off) who hold it, so it lives in cities.
+/// - It is carried by scholars from city to city: to a bordering city, and
+///   to a city of a realm its own realm trades with, more from a city with
+///   libraries (`schools`).
+/// - Schools compete for students: the learned shift toward the school
+///   with the larger following (`shift`, .05: faster than people change
+///   tongue), out of one pool of the learned, so a city holds a few
+///   schools and the small ones die out.
+/// - Where learning collapses (no city left), it fades, slower where a
+///   library keeps the books.
+/// - Schools split often where scholars gather: a pupil turns on his
+///   master (Plato and Aristotle, the Confucian schools), more in a city
+///   of many libraries under a learned realm.
 <^>Creed |
     hosts: Land
     ~intensity: .3
-    decays: .003
-    spread: .04 * intensity where :link_score(self, target, "border") and land::is_city(target)
+    /// Scholars go out from a school with a following (.3 or more).
+    spread: schools(self, target, intensity) where intensity >= .3 and land::is_city(target) and (:link_score(self, target, "border") or traded(self, target))
     bends: {}
     title: ..
     founded: 0
     at: ..
-    apart: 0.0
-    rival: 0.0
-    /// Where there are libraries, its scholars fall out into two schools.
-    transition fracture where chance(.003 * intensity * :min(host >> library, 3) / 3.0)
+    transition fracture where intensity >= .3 and chance(.002 * intensity * :min(host >> library, 3) / 3.0 * (.5 + learned(host)))
         fragment:
             intensity: intensity * .4
             bends: shifted(self >> bends)
@@ -415,6 +428,25 @@ xx
         xx
     xx
     on fracture => drifted(self, "creed_split", {"the scholars fell out into two schools": 2.0, "a pupil turned on his master": 1.0})
+xx
+
+/// How likely scholars carry a creed from city land `a` to `b`.
+act schools(a, b, i)
+    return .02 * i * (1.0 + :min(a >> library, 3))
+xx
+
+/// Whether the holders of lands `a` and `b` trade.
+act traded(a, b)
+    p | a >> owner ?? => send false
+    q | b >> owner ?? => send false
+    if p == q => send false
+    return :link_score(p, q, "trade") > 0
+xx
+
+/// The learning of the realm holding land `l` (0 with no holder).
+act learned(l)
+    p | l >> owner ?? => send 0.0
+    return p >> learning
 xx
 
 /// A new idea from nothing, at land `c`, teaching `b`: a faith, or a creed
@@ -792,7 +824,8 @@ act account(year, lands, realms)
             if !p.nix? => press |= 1.5 - p >> tolerance
             shift(l, "Faith", court_f{w} ?? .., (court_fshare{w} ?? .5) * press, .03, "converted")
         xx
-        if ts > 0.0 or fs > 0.0 => os |= :overlays(l)
+        if land::is_city(l) => shift(l, "Creed", .., 0.0, .05, "creed_shift")
+        if ts > 0.0 or fs > 0.0 or land::is_city(l) => os |= :overlays(l)
         st | spoken{w} ?? {}
         sf | faithful{w} ?? {}
         repeat os as o
@@ -809,12 +842,15 @@ act account(year, lands, realms)
                 if !p.nix? => :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
                 skip
             xx
+            /// A creed: just arrived, held by few; with no city left it
+            /// fades, slower where a library keeps the books.
             if o >> at != ln
                 o >> at |= ln
                 if i > .1 => i |= .1
             xx
-            if !land::is_city(l) => i |= i - .02
-            if i != o >> intensity => o >> intensity |= :max(i, 0.0)
+            if !land::is_city(l) => i |= i - .05 / (1.0 + l >> library)
+            i |= :clamp(i, 0.0, 1.0)
+            if i != o >> intensity => o >> intensity |= i
         xx
         if !p.nix?
             :update!(spoken{w}, st)

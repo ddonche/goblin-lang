@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.22 — 2026-11-10
+
+- sims/capstone: creeds rebuilt from how philosophies behave in real life. A creed's intensity is the share of a land's learned who hold it, so it lives in cities. Scholars carry it to bordering cities and to cities of realms its realm trades with, more from a city with libraries (`schools`, `traded`). Schools compete for one pool of students (`shift`, .05), so a city holds a few and the small ones die out; with no city left a creed fades, slower where a library keeps the books. Schools split where scholars gather: a creed held by .3 or more, more with libraries and under a learned realm. It no longer fades by itself in a city.
+- sims/capstone: a tongue, faith or creed spreads only from land where it is held by .3 or more (people move, missions and scholars go out from where it is established). Before, every faint trace sent out copies that died and were sent again: 1,000 copies of each class by year 300, and each century took longer than the last.
+- Capstone, 500 years: 9 school splits, 32 creeds at the end; 177 lands changed faith, 9 schisms, 5 new faiths, 5 blends; 96 lands changed tongue, 7 new tongues. 500 years 242 s. Expected history regenerated.
+
 ## 0.51.21 — 2026-11-10
 
 - sims/capstone: faiths rebuilt from how faiths behave in real life (owner go, 2026-11-10). Conversion is a shift between a land's faiths, as for tongues but slower (.03), faster in towns and cities; the court's faith has standing as far as the realm holds it, pressed harder by an intolerant ruler (× 1.5 − tolerance). Preachers carry a faith along borders, more from trading land and into towns (`missions`); it no longer fades by itself. Isolated believers drift into rites of their own, slower than a tongue (`drift` to 600), and the whole cut-off region takes the new faith. Schisms split whole regions and follow politics: a region whose own ruler holds the faith as the court's, apart from the faith's heartland, builds up `tension`, more under a learned ruler, and by chance breaks away; .7 of the region follows (`faith_born`, `region`). Two faiths held side by side with neither on top blend, rarely. The random single-land sects (a faith pressed by a rival) are gone.

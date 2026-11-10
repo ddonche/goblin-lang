@@ -888,3 +888,27 @@ Flagged: no faith reaches across the continent. Every faith acts alike;
 in real life universal, missionary faiths (Buddhism, Christianity, Islam)
 spread far beyond their realms while ethnic faiths do not. A faith field
 for how much it seeks converts would give that.
+
+## 0.51.22: creeds from real life
+
+In real life a philosophy is held by the learned (scholars, courts, the
+well-off) in cities; it travels with scholars from city to city, along
+trade, far more than between neighbours; schools compete for students
+(Athens kept a few great schools for centuries, the small ones vanished);
+they split where scholars gather, a pupil against his master; where
+cities and learning collapse they fade, kept alive where books are kept.
+
+Built: intensity = share of a land's learned; `schools` spread `.02 ×
+intensity × (1 + libraries)` to bordering cities and cities of trading
+realms; competition by `shift` at .05; fade `.05 / (1 + libraries)` a
+year with no city; a school split at `.002 × intensity × libraries / 3 ×
+(.5 + learning)` for a creed held .3 or more.
+
+Every idea now spreads only from land where it is held .3 or more. Before,
+faint traces kept sending copies that died and were sent again: by year
+300 about 1,000 copies of each class, and each century ran slower (41,
+48, 98 s). Now about 40 s a century.
+
+500 years: 9 school splits, 32 creeds at the end; 177 faith conversions,
+9 schisms, 5 new faiths, 5 blends; 96 tongue shifts, 7 new tongues;
+theocracies at the end 1. 242 s.
