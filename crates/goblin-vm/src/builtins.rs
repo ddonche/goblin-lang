@@ -122,7 +122,7 @@ pub fn call_builtin(
     dispatch(id, args, session)
 }
 
-fn is_math(id: BuiltinId) -> bool {
+pub(crate) fn is_math(id: BuiltinId) -> bool {
     matches!(id,
         BuiltinId::Abs | BuiltinId::Min | BuiltinId::Max | BuiltinId::Avg | BuiltinId::Sum
         | BuiltinId::Floor | BuiltinId::Ceil | BuiltinId::Round | BuiltinId::Sqrt

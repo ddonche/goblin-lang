@@ -5916,6 +5916,27 @@ impl Vm {
                 Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
+                // A global the run's snapshot doesn't hold (a DES formula
+                // has none): read where it lives now, as the VM does. An
+                // action that only reads can be called (`Call` below); a
+                // plain value is pushed; anything else is the VM's.
+                Opcode::LoadGlobal(g) if !env.globals.iter().any(|(n, _)| *n == g) => {
+                    let t = self.session.get_global(g as usize)?;
+                    let v = self.session.resolve(t.addr).ok()?.value.clone();
+                    match v {
+                        Value::Function(func) => {
+                            if !self.fn_reads_only(&func) { return None; }
+                            st.push(Fv::Act(func));
+                        }
+                        Value::Closure(c) if c.upvalues.is_empty() => {
+                            let func = c.func.clone();
+                            if !self.fn_reads_only(&func) { return None; }
+                            st.push(Fv::Act(func));
+                        }
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_) => st.push(Fv::Val(v)),
+                        _ => return None,
+                    }
+                }
                 Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
                     let slot = match op {
                         Opcode::LoadLocal(s) => { if s as usize >= ups_at { return None; } s as usize }
@@ -6006,7 +6027,7 @@ impl Vm {
                 }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(*a, *p) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(*a, *p), Fv::Act(f) => Fv::Act(f.clone()) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
@@ -6071,7 +6092,7 @@ impl Vm {
                         continue;
                     }
                     let id = |v: &Fv| -> Option<Option<String>> {
-                        let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x };
+                        let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x, Fv::Act(_) => return None };
                         match x {
                             Value::Object(o) => Some(Some(o.uuid.to_string())),
                             Value::Ref(u) => Some(if self.session.object_store.contains_key(u) { Some(u.to_string()) } else { None }),
@@ -6100,12 +6121,83 @@ impl Vm {
                     let start = st.len().checked_sub(argc as usize)?;
                     let mut largs = Vec::with_capacity(argc as usize);
                     for v in st.drain(start..) {
-                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v), _ => return None }
+                        match v {
+                            Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v),
+                            // `self`, `target`: the objects themselves.
+                            Fv::Arg(slot, _) => match value_at(slot)? {
+                                v @ (Value::Ref(_) | Value::Object(_)) => largs.push(v.clone()),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        }
                     }
                     st.push(Fv::Val(self.link_score_in(&largs, Some((f, args))).ok()?));
                 }
+                // `:min(a, b)`, `:clamp(x, 0.0, 1.0)` ...: a math builtin on
+                // plain numbers, through the same code the VM calls.
+                Opcode::CallBuiltin(id, argc) if crate::builtins::is_math(id) => {
+                    let start = st.len().checked_sub(argc as usize)?;
+                    let mut nums = Vec::with_capacity(argc as usize);
+                    for v in st.drain(start..) {
+                        match v { Fv::Val(v @ (Value::Int(_) | Value::Float(_))) => nums.push(v), _ => return None }
+                    }
+                    let r = crate::builtins::call_builtin(id, nums, &mut self.session).ok()?;
+                    if !matches!(r, Value::Int(_) | Value::Float(_)) { return None; }
+                    st.push(Fv::Val(r));
+                }
+                // An action that only reads (`short(@gold, 10.0)`): only it
+                // gets a call frame. While a decision is scored its answer
+                // for these arguments is kept, as the VM keeps it (memo.rs).
+                // It changes nothing, so if a later step hands the formula
+                // to the VM, running it again there gives the same answer.
+                Opcode::Call(argc) => {
+                    let start = st.len().checked_sub(argc as usize + 1)?;
+                    let mut vals: Vec<Value> = Vec::with_capacity(argc as usize);
+                    for v in st.drain(start + 1..) {
+                        vals.push(match v {
+                            Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => v,
+                            Fv::Val(Value::Ref(u)) if !u.starts_with(OVERLAY_RECORD) => Value::Ref(u),
+                            Fv::Arg(slot, _) => match value_at(slot)? {
+                                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => Value::Ref(u.clone()),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        });
+                    }
+                    let Some(Fv::Act(func)) = st.pop() else { return None };
+                    if vals.len() < func.required_params || vals.len() > func.params { return None; }
+                    if vals.iter().any(|v| matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u))) { return None; }
+                    let key = match self.memo.as_ref() {
+                        Some(m) if m.changing == 0 => {
+                            let mut a = smallvec::SmallVec::new();
+                            for v in &vals { a.push(crate::memo::Arg::of(v)?); }
+                            let key = (Rc::as_ptr(&func) as usize, a);
+                            if let Some(v) = m.answers.get(&key) {
+                                let v = v.clone();
+                                st.push(Fv::Val(v));
+                                continue;
+                            }
+                            Some((key, m.epoch))
+                        }
+                        _ => None,
+                    };
+                    let r = self.call_func_core(func, Vec::new(), vals).ok()?;
+                    if let (Some((key, epoch)), Some(m)) = (key, self.memo.as_mut()) {
+                        if m.epoch == epoch && m.changing == 0 { m.answers.insert(key, r.clone()); }
+                    }
+                    match r {
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_) => st.push(Fv::Val(r)),
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => st.push(Fv::Val(Value::Ref(u))),
+                        _ => return None,
+                    }
+                }
                 Opcode::Return => {
-                    return match st.pop()? { Fv::Val(v) if st.is_empty() => Some(v), _ => None };
+                    return match st.pop()? {
+                        Fv::Val(v) if st.is_empty() => Some(v),
+                        // An argument given back (`self`): as it was given.
+                        Fv::Arg(slot, _) if st.is_empty() => value_at(slot).cloned(),
+                        _ => None,
+                    };
                 }
                 _ => return None,
             }
@@ -6125,7 +6217,13 @@ impl Vm {
                 _ => None,
             }
         };
-        let r = crate::memo::reads_only(f, &globals, &mut Vec::new());
+        let named = |n: &str| -> Option<Value> {
+            match session.named_values.get(n) {
+                Some(v @ (Value::Function(_) | Value::Closure(_) | Value::Builtin(_))) => Some(v.clone()),
+                _ => None,
+            }
+        };
+        let r = crate::memo::reads_only(f, &globals, &named, &mut Vec::new());
         self.reads_only.insert(key, (f.clone(), r));
         r
     }
@@ -7554,7 +7652,9 @@ pub(crate) struct FormulaEnv {
 
 /// An operand of `Vm::run_formula_in`: a value, or an argument that refers
 /// to an object (by its argument slot), with where it sits in the store.
-enum Fv { Val(Value), Arg(usize, usize) }
+/// A value on the direct runner's stack: a value, an argument read where
+/// it lives, or an action to call that only reads.
+enum Fv { Val(Value), Arg(usize, usize), Act(Rc<crate::value::FunctionObject>) }
 
 impl TickFormula {
     /// Whether it reads `x >> name` only for names that are fields, not
@@ -7605,7 +7705,11 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
         | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
-        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)
+        // Actions and globals are checked when they are read: one that
+        // doesn't only read hands the formula to the VM.
+        | Opcode::LoadGlobal(_) | Opcode::Call(_))
+        || matches!(op, Opcode::CallBuiltin(id, _) if crate::builtins::is_math(*id)),
     })
 }
 
@@ -8436,3 +8540,4 @@ pub(crate) fn segment_matches(pat: &str, name: &str) -> bool {
     }
     true
 }
+
