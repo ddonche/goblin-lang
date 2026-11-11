@@ -1,3 +1,3 @@
 m | {"a": 1, "b": 2}
-say(:items(m))
-say(:len(:items(m)))
+:say(:items(m))
+:say(:len(:items(m)))

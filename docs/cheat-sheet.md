@@ -192,8 +192,8 @@ Casting **never mutates** the original value; it returns a new value or throws.
   bool 5         /// true
   "".bool        /// false
 
-  parse_bool "true"   /// true    (also "false","yes","no","1","0"; case-insensitive)
-  parse_bool "maybe"  /// ⚠ ValueError
+  :parse_bool "true"   /// true    (also "false","yes","no","1","0"; case-insensitive)
+  :parse_bool "maybe"  /// ⚠ ValueError
   ```
 * **Dates & Times (constructors, not generic casts)**
 
@@ -265,8 +265,8 @@ Type access never auto-invokes: `str.upper` gives the unbound op value.
 
 **Zero-arg (and special English forms) only**
 ```goblin
-upper s
-trim_lead s
+:upper s
+:trim_lead s
 replace "a" with "b" in s
 split s on ","
 join parts with ", "
@@ -419,12 +419,12 @@ unescape "line\\n"    /// "line\n"
 #### Trimming & stripping (lead/trail family)
 
 ```goblin
-trim s                        /// whitespace both ends
-trim_lead s                   /// whitespace at start
-trim_trail s                  /// whitespace at end
+:trim s                        /// whitespace both ends
+:trim_lead s                   /// whitespace at start
+:trim_trail s                  /// whitespace at end
 strip_lead  "pre"   from s    /// drop leading substring if present
 strip_trail ".txt"  from s    /// drop trailing substring if present
-minimize s                    /// remove ALL whitespace characters
+:minimize s                    /// remove ALL whitespace characters
 ```
 
 #### Everyday text sugar
@@ -436,9 +436,9 @@ before_last "/"    in s
 after_last  "/"    in s
 between "<b>" and "</b>" in s
 
-lines s            /// split on universal newlines
-words s            /// split on whitespace
-chars s            /// characters as an array (code points)
+:lines s            /// split on universal newlines
+:words s            /// split on whitespace
+:chars s            /// characters as an array (code points)
 ```
 
 #### Literal find & replace (non-regex)
@@ -447,7 +447,7 @@ chars s            /// characters as an array (code points)
 has "needle" in s            /// bool
 find "needle" in s           /// first start index (0-based) or nil
 find_all "needle" in s       /// [start indices], non-overlapping
-count "needle" in s          /// occurrence count
+:count "needle" in s          /// occurrence count
 
 replace "old" with "new" in s        /// replaces ALL occurrences
 replace_first "old" with "new" in s  /// only the first occurrence
@@ -1356,9 +1356,9 @@ rex  = Pet: name: "Rex" :: age: 5   /// named bindings
 
 ### Usage
 ```goblin
-say fido.speak()        /// "Hi, I'm Fido, age 3"
+:say fido.speak()        /// "Hi, I'm Fido, age 3"
 fido.set_age(4)         /// auto-generated setter
-say fido.speak()        /// "Hi, I'm Fido, age 4"
+:say fido.speak()        /// "Hi, I'm Fido, age 4"
 ```
 
 ### Rule
@@ -1873,7 +1873,7 @@ files = product.export(items) via all
 
 #### Contracts
 ```goblin
-contract product.export(items: array<Product>) -> file
+contract product.export(:items: array<Product>) -> file
     errors: [ValidationError, AuthError]
 end
 ```
@@ -2051,7 +2051,7 @@ This patch adds APIs and clarifies defaults for file I/O and data formats, using
 cwd()            /// → string absolute path of current working directory
 chdir(path)      /// change current working directory
 
-now()            /// → datetime (UTC, trusted source)
+:now()            /// → datetime (UTC, trusted source)
 uuid()           /// → string (RFC 4122 v4)
 ```
 

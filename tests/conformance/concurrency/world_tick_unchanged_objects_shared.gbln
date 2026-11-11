@@ -43,20 +43,20 @@ xx
 a | :actor(make_posts(), day)
 b | :actor(make_watchers(), day)
 repeat :range(1, 7) as d
-    tick()
+    :tick()
     repeat :objects("Post")
         l | it >> level
         n | it >> n
-        say("tick {d}: post level {l}, n {n}")
+        :say("tick {d}: post level {l}, n {n}")
         if d == 4
             it >> level |= 5
             l2 | it >> level
-            say("tick {d}: the program set level {l2}")
+            :say("tick {d}: the program set level {l2}")
         xx
     xx
     repeat :objects("Watcher")
         l | it >> saw_level
         n | it >> saw_n
-        say("tick {d}: watcher saw level {l}, n {n}")
+        :say("tick {d}: watcher saw level {l}, n {n}")
     xx
 xx

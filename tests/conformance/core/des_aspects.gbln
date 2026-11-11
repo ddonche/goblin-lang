@@ -28,8 +28,8 @@ aspect Wealth |
 xx
 t <> Tribe | aggression: .25
 v <> Village | gold: 3
-say("{t >> aggression} {t >> stability} {t >> tradition} {t >> gold} {t >> army}")
-say("{v >> aggression} {v >> stability} {v >> tradition} {v >> gold} {v >> granary}")
+:say("{t >> aggression} {t >> stability} {t >> tradition} {t >> gold} {t >> army}")
+:say("{v >> aggression} {v >> stability} {v >> tradition} {v >> gold} {v >> granary}")
 t >> gold |= 12
-tick()
-say(:len(:objects(Village)))
+:tick()
+:say(:len(:objects(Village)))

@@ -2,4 +2,4 @@
 act min(x)
     return "user-min"
 xx
-say(min([1, 2]))
+:say(min([1, 2]))

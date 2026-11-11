@@ -6,7 +6,7 @@
     on mutate => schism(self, title)
 xx
 act schism(t, title)
-    say("in {t >> name}, {title} broke apart")
+    :say("in {t >> name}, {title} broke apart")
 xx
 act found(t)
     overlay first_creed <^> Creed

@@ -13,12 +13,12 @@ import _support/modules/mathy as m
     xx
     on erase
         v | m::scaled(self >> n)
-        say("gone at {v}")
+        :say("gone at {v}")
     xx
 xx
 p <> Pot | name: "p"
 p.grow()
-say(p >> n)
-tick()
-say(p >> n)
+:say(p >> n)
+:tick()
+:say(p >> n)
 :delete_object!(p)

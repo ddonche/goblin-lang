@@ -1,2 +1,2 @@
-say(:words("  a b\t c\nd  "))
-say(:words(""))
+:say(:words("  a b\t c\nd  "))
+:say(:words(""))

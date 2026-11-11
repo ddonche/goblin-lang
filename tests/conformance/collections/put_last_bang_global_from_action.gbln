@@ -4,4 +4,4 @@ act note(x)
 xx
 note("a")
 note("b")
-say log
+:say log

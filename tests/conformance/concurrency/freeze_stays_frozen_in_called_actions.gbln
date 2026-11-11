@@ -12,13 +12,13 @@ snap | :freeze({"k": 0})
 attempt
     change_map(snap)
 rescue e
-    say(:has("{e}", "C0102"))
+    :say(:has("{e}", "C0102"))
 xx
 five | :freeze(5)
 attempt
     change_number(five)
 rescue e
-    say(:has("{e}", "C0102"))
+    :say(:has("{e}", "C0102"))
 xx
-say(snap)
-say(five)
+:say(snap)
+:say(five)

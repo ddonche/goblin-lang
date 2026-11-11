@@ -14,7 +14,7 @@ xx
     hosts: Creature
     lasts: 3
     dup: replace
-    on start => say("mood on")
+    on start => :say("mood on")
 xx
 overlay calm <^> Mood
     modify
@@ -44,12 +44,12 @@ overlay blessed
 xx
 c <> Creature | hp: 10
 :overlay!(c, calm)
-say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
+:say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
 :overlay!(c, angry)
-say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
+:say("{:overlays_of(c)} focus {c >> focus} attack {c >> attack}")
 :overlay!(c, sick)
 :overlay!(c, delirious)
 :overlay!(c, blessed)
-say("{:overlays_of(c)} hp {c >> hp} focus {c >> focus}")
-tick()
-say("{:overlays_of(c)}")
+:say("{:overlays_of(c)} hp {c >> hp} focus {c >> focus}")
+:tick()
+:say("{:overlays_of(c)}")

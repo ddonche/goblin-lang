@@ -3,5 +3,5 @@ act addone(xs)
     return :len(xs)
 xx
 a | [1, 2]
-say(addone(a))
-say a
+:say(addone(a))
+:say a

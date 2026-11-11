@@ -12,14 +12,14 @@ a >> next |= b
 b >> next |= a
 c <> N | v: 3
 d <> N | v: 4, next: c
-delete_object!(c)
+:delete_object!(c)
 ch | :channel(10)
 :post(ch, a)
 :post(ch, d)
 x | :receive(ch)
-say(x >> v)
-say(x >> next >> v)
-say(x >> next >> next >> v)
+:say(x >> v)
+:say(x >> next >> v)
+:say(x >> next >> next >> v)
 y | :receive(ch)
-say(y >> v)
-say(:is_nil(y >> next))
+:say(y >> v)
+:say(:is_nil(y >> next))

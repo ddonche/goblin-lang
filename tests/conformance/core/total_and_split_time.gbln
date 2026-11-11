@@ -1,7 +1,7 @@
 /// known-gap: interp — :total_time and :split_time are VM-only (ported from rc-value-perf eaddb05).
 t | :total_time()
-say(:is_matching(t, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))
+:say(:is_matching(t, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))
 a | :split_time()
 b | :split_time()
-say(:is_matching(a, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))
-say(:is_matching(b, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))
+:say(:is_matching(a, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))
+:say(:is_matching(b, "^[0-9]+ms \\([0-9]+\\.[0-9]{3}s\\)$"))

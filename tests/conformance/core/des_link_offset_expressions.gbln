@@ -13,10 +13,10 @@ a <> P | n: 1
 b <> P | n: 2
 amount | 4
 :link!(a, b, trust, 2 * amount)
-say(:link_score(a, b, "trust"))
+:say(:link_score(a, b, "trust"))
 :link!(a, b, trust, -amount + 1)
-say(:link_score(a, b, "trust"))
+:say(:link_score(a, b, "trust"))
 :link!(a, b, trust, .5)
-say(:link_score(a, b, "trust"))
+:say(:link_score(a, b, "trust"))
 :link!(a, b, trust, -10, 3)
-say(:link_score(a, b, "trust"))
+:say(:link_score(a, b, "trust"))

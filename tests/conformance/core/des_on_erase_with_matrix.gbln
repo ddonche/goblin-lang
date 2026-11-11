@@ -10,7 +10,7 @@
 xx
 act bury(p)
     a | p >> age
-    say("buried at {a}")
+    :say("buried at {a}")
 xx
 
 <>Person matrix
@@ -18,6 +18,6 @@ xx
     age:  10,       nc,  20
 end
 
-tick()
-tick()
-say("done")
+:tick()
+:tick()
+:say("done")

@@ -9,7 +9,7 @@ xx
 xx
 rome <> Polity | name: "rome"
 smiths <> Guild | size: 4
-say(:len(:objects()))
+:say(:len(:objects()))
 found | :objects(it >> kind == "polity")
-say(:len(found))
-say(found[0] >> name)
+:say(:len(found))
+:say(found[0] >> name)

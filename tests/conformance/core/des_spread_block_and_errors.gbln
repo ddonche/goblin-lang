@@ -22,11 +22,11 @@ a <> P | age: 0
 b <> P | age: 0
 c <> P | age: 90
 :overlay!(a, yawn)
-tick()
-say([:len(:overlays(b)), :len(:overlays(c))])
+:tick()
+:say([:len(:overlays(b)), :len(:overlays(c))])
 :overlay!(a, bad)
 attempt
-    tick()
+    :tick()
 rescue e
-    say(:has("{e}", "R1232"))
+    :say(:has("{e}", "R1232"))
 xx

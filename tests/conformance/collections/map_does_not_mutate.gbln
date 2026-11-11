@@ -3,5 +3,5 @@ act dbl(n)
 xx
 l | [1, 2]
 r | :map(l, "dbl")
-say l
-say r
+:say l
+:say r

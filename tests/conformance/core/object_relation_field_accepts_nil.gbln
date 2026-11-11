@@ -7,4 +7,4 @@ xx
     of User as author
 xx
 p <> Post | heading: "x", author: nil
-say(p >> heading)
+:say(p >> heading)

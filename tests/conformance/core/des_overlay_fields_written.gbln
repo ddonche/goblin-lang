@@ -21,18 +21,18 @@ act preach(o, by)
 xx
 a <> Land | piety: 1
 :overlay!(a, sun, .5)
-say(a >> piety)
+:say(a >> piety)
 repeat :overlays(a, sun) as o
     preach(o, .2)
 xx
-say(a >> piety)
+:say(a >> piety)
 repeat :overlays(a, sun) as o
     o >> fervor |= 10
     o >> intensity |= 5
     o >> ticks_remaining |= 2
-    say("{o >> intensity} {o >> fervor} {o >> ticks_remaining}")
+    :say("{o >> intensity} {o >> fervor} {o >> ticks_remaining}")
 xx
-say("{a >> piety} {:field(a, "piety")}")
-tick()
-tick()
-say("{:overlays(a)} {a >> piety}")
+:say("{a >> piety} {:field(a, "piety")}")
+:tick()
+:tick()
+:say("{:overlays(a)} {a >> piety}")

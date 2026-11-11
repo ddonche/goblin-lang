@@ -21,7 +21,7 @@ xx
 h <> H | hp: 10
 :overlay!(h, rot)
 repeat 6
-    tick()
+    :tick()
 xx
-say(h >> log)
-say(h >> hp)
+:say(h >> log)
+:say(h >> hp)

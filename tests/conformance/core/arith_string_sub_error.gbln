@@ -1,2 +1,2 @@
-say("start")
-say("a" - "b")
+:say("start")
+:say("a" - "b")

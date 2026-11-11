@@ -1,2 +1,2 @@
 local q | 3
-say(q)
+:say(q)

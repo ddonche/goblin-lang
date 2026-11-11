@@ -20,19 +20,19 @@ overlay regen
     every 1 tick => @hp |= @hp + rate * intensity
 xx
 act cured(f)
-    say("cured")
+    :say("cured")
 xx
 a <> F | hp: 20
 :overlay!(a, poisoned)
 repeat :range(1, 4) as d
-    tick()
+    :tick()
     h | a >> hp
-    say("tick {d}: hp {h}")
+    :say("tick {d}: hp {h}")
 xx
 :overlay!(a, regen)
 repeat :range(1, 3) as d
-    tick()
+    :tick()
     h | a >> hp
     df | a >> def
-    say("regen {d}: hp {h}, def {df}")
+    :say("regen {d}: hp {h}, def {df}")
 xx

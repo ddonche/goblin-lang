@@ -3,7 +3,7 @@
 a | [1, 2]
 b | [3]
 c | a + b
-say(c)
-say(a)
-say([] + ["x"])
-say(:len(c))
+:say(c)
+:say(a)
+:say([] + ["x"])
+:say(:len(c))

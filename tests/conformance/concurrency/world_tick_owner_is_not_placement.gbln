@@ -51,10 +51,10 @@ act show(t)
             :put_last!(names, "{o >> name}@{o >> owner >> name}")
         xx
     xx
-    say("tick {t}: {names}")
+    :say("tick {t}: {names}")
 xx
 repeat :range(1, 5) as t
-    tick()
+    :tick()
     show(t)
     if t == 3
         m2 | :objects("Meadow", it >> n == 2)[0]

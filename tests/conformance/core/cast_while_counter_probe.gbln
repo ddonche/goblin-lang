@@ -4,4 +4,4 @@ while i < 3
     part | :str(i)
     i |= i + 1
 xx
-say(i)
+:say(i)

@@ -3,5 +3,5 @@ act f()
     skip
     return 1
 xx
-say("before")
-say(f())
+:say("before")
+:say(f())

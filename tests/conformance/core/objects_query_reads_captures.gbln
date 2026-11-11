@@ -14,7 +14,7 @@ lim | 1
 a <> A | x: 1
 a2 <> A | x: 3
 b <> B | y: 2
-say(:len(:objects(it >> x >= lim)))
-say(:len(:objects(it >> y == 2)))
-say(a.same())
-say(a2.same())
+:say(:len(:objects(it >> x >= lim)))
+:say(:len(:objects(it >> y == 2)))
+:say(a.same())
+:say(a2.same())

@@ -7,6 +7,6 @@ xx
 act f(x)
     return "f-mine"
 xx
-say(all(2))
-say(str(2))
-say(f(2))
+:say(all(2))
+:say(str(2))
+:say(f(2))

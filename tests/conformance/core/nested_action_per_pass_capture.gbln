@@ -14,5 +14,5 @@ act make()
     return fs
 xx
 repeat make() as shower
-    say(shower())
+    :say(shower())
 xx

@@ -22,6 +22,23 @@ mod diagnostics_ext;
 pub use diagnostics_ext::{s, derr, derr_help, derr_expected_found};
 use goblin_ast::{SweepArm, SweepArmKind, SweepArmRepeat /*, ...*/};
 
+/// The builtins that take one argument without parentheses: `:say "hi"`,
+/// `:upper name`.
+pub fn is_no_parens_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "say" | "sweep" | "sweep_all" |
+        "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
+        "trim" | "trim_lead" | "trim_trail" | "minimize" |
+        "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
+        "keys" | "values" | "items" |
+        "count" | "len" |
+        "parse_bool" | "json_parse" | "json_stringify" | "json_stringify_pretty" |
+        "is_even" | "is_odd" | "is_positive" | "is_negative" |
+        "is_alpha" | "is_digit" | "is_alnum" | "is_whitespace"
+    )
+}
+
 /// Like `s_help_site!`, but appends the Rust source site: `path/file.rs:LINE`.
 macro_rules! s_help_site {
     ($code:expr, $msg:expr, $help:expr $(,)?) => {{
@@ -1095,6 +1112,39 @@ impl<'t> Parser<'t> {
     // --- SHIMS: keep old call sites working ---
     fn parse_primary(&mut self) -> Result<PExpr, String> {
         self.parse_primary_impl()
+    }
+
+    /// After a builtin that takes one argument without parentheses (`say`,
+    /// `upper`, ...): skips line breaks, then whether the next token starts
+    /// that argument.
+    fn starts_no_parens_arg(&mut self) -> bool {
+        use goblin_lexer::TokenKind;
+        self.skip_newlines();
+        match self.peek() {
+            Some(t) => match &t.kind {
+                TokenKind::String
+                | TokenKind::Int
+                | TokenKind::Float
+                | TokenKind::Money
+                | TokenKind::Duration
+                | TokenKind::Date
+                | TokenKind::Time
+                | TokenKind::DateTime
+                | TokenKind::Blob => true,
+                // identifiers, but do NOT swallow repeat aliases
+                TokenKind::Ident => !matches!(t.value.as_deref(), Some("as")),
+                // `:say :upper(x)`: a builtin call as the argument
+                // (the colon stands apart from the name before it and touches
+                // the one after it, so `items: x` stays a key and its value)
+                TokenKind::Op(s) if s == ":" => self.i > 0
+                    && t.span.start > self.toks[self.i - 1].span.end
+                    && self.toks.get(self.i + 1).is_some_and(|n| matches!(n.kind, TokenKind::Ident) && n.span.start == t.span.end),
+                // grouping / collection / prefix ops that begin an expr
+                TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" || s == "@" => true,
+                _ => false,
+            },
+            None => false,
+        }
     }
 
     fn expand_condition(subject: &PExpr, cond: &PExpr, using_enum: &Option<String>) -> PExpr {
@@ -2343,7 +2393,7 @@ impl<'t> Parser<'t> {
                     PExpr::Ident(name) => {
                         // emit: FreeCall("is_bound_name", [Str(name)])
                         ast::Expr::FreeCall(
-                            "is_bound_name".into(),
+                            ":is_bound_name".into(),
                             vec![ast::Expr::Str(name, sp.clone())],
                             sp,
                         )
@@ -2352,7 +2402,7 @@ impl<'t> Parser<'t> {
                         // If ever produced on a non-ident (shouldn’t happen), stringify as a fallback.
                         let text = format!("{:?}", other);
                         ast::Expr::FreeCall(
-                            "is_bound_name".into(),
+                            ":is_bound_name".into(),
                             vec![ast::Expr::Str(text, sp.clone())],
                             sp,
                         )
@@ -7139,7 +7189,11 @@ impl<'t> Parser<'t> {
     /// `tick()` and its block, closed with `xx` under `tick`.
     fn parse_tick_block(&mut self) -> Result<ast::Stmt, String> {
         let tok = self.toks[self.i].clone();
-        let col = tok.span.col_start;
+        // `:tick()`: the block closes under the colon.
+        let col = match self.i.checked_sub(1).map(|j| &self.toks[j]) {
+            Some(c) if matches!(&c.kind, goblin_lexer::TokenKind::Op(o) if o == ":") && c.span.end == tok.span.start => c.span.col_start,
+            _ => tok.span.col_start,
+        };
         self.i += 3; // tick ( )
         let body = self.parse_indented_block(col, &["end"])?;
         self.skip_stmt_separators();
@@ -7168,24 +7222,28 @@ impl<'t> Parser<'t> {
     fn parse_stmt(&mut self) -> Result<ast::Stmt, String> {
         use goblin_lexer::TokenKind;
 
-        // Strip leading : from builtin calls at statement level
-        if self.peek_op(":") {
-            if let Some(next) = self.toks.get(self.i + 1) {
-                if matches!(next.kind, TokenKind::Ident) {
-                    self.i += 1; // consume the colon
-                }
-            }
-        }
-
-        // `tick()` with a block below: one tick that runs the phases named
-        // in it.
-        if self.peek_ident() == Some("tick")
-            && self.toks.get(self.i + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "("))
-            && self.toks.get(self.i + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ")"))
-            && self.toks.get(self.i + 3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
-            && self.toks.get(self.i + 4).is_some_and(|t| matches!(t.kind, TokenKind::Indent))
+        // `:tick()` with a block below: one tick that runs the phases named
+        // in it. A builtin is always written with its colon (owner,
+        // 2026-11-11), so `tick()` with a block is an error naming the fix.
         {
-            return self.parse_tick_block();
+            let colon = self.peek_op(":");
+            let at = if colon { self.i + 1 } else { self.i };
+            let is_tick_block = self.toks.get(at).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("tick"))
+                && self.toks.get(at + 1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == "("))
+                && self.toks.get(at + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ")"))
+                && self.toks.get(at + 3).is_some_and(|t| matches!(t.kind, TokenKind::Newline))
+                && self.toks.get(at + 4).is_some_and(|t| matches!(t.kind, TokenKind::Indent));
+            if is_tick_block {
+                if !colon {
+                    return Err(s_help_site!(
+                        "P0717",
+                        "`tick()` is a Goblin builtin: write it `:tick()`",
+                        "Builtins always take their colon: `:tick()` with the phases below it.",
+                    ));
+                }
+                self.i += 1; // the colon
+                return self.parse_tick_block();
+            }
         }
 
         // --- block-local bind: local <name> = <expr>
@@ -7363,9 +7421,18 @@ impl<'t> Parser<'t> {
         //   world | grid("world", 1024, 1024, 8)
         //       tile 32 by 32
         //       regions 16
-        if self.peek_word("grid") {
+        let colon_grid = self.peek_op(":")
+            && self.toks.get(self.i + 1).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("grid"));
+        if self.peek_word("grid") && matches!(self.toks.get(self.i + 1).map(|t| &t.kind), Some(TokenKind::Op(o)) if o == "(") {
+            return Err(s_help_site!(
+                "P0718",
+                "`grid(...)` is a Goblin builtin: write it `:grid(...)`",
+                "Builtins always take their colon: `:grid(\"world\", 64, 64)` with `tile` and `regions` below it.",
+            ));
+        }
+        if colon_grid {
             let start_i = self.i;
-            self.i += 1; // consume 'grid'
+            self.i += 2; // consume ':' and 'grid'
 
             if !self.eat_op("(") {
                 // Not a call — reset and fall through
@@ -7477,7 +7544,7 @@ impl<'t> Parser<'t> {
                 lowered.push(self.lower_expr(PExpr::Int(regions.to_string())));
 
                 return Ok(ast::Stmt::Expr(ast::Expr::FreeCall(
-                    "grid".to_string(),
+                    ":grid".to_string(),
                     lowered,
                     sp,
                 )));
@@ -7876,7 +7943,7 @@ impl<'t> Parser<'t> {
                     match lhs {
                         ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
                             let call = ast::Expr::FreeCall(
-                                "update_at!".to_string(),
+                                ":update_at!".to_string(),
                                 vec![*base, *index, rhs],
                                 op_sp.clone(),
                             );
@@ -7885,7 +7952,7 @@ impl<'t> Parser<'t> {
 
                         ast::Expr::Index2(base, x, y, _) => {
                             let call = ast::Expr::FreeCall(
-                                "update_at2!".to_string(),
+                                ":update_at2!".to_string(),
                                 vec![*base, *x, *y, rhs],
                                 op_sp.clone(),
                             );
@@ -7894,7 +7961,7 @@ impl<'t> Parser<'t> {
 
                         ast::Expr::Ident(_, _) => {
                             let call = ast::Expr::FreeCall(
-                                "update!".to_string(),
+                                ":update!".to_string(),
                                 vec![lhs, rhs],
                                 op_sp.clone(),
                             );
@@ -7921,7 +7988,7 @@ impl<'t> Parser<'t> {
                     match lhs {
                         ast::Expr::Index(base, index, _) | ast::Expr::IndexMap(base, index, _) => {
                             let call = ast::Expr::FreeCall(
-                                "delete_at!".to_string(),
+                                ":delete_at!".to_string(),
                                 vec![*base, *index],
                                 op_sp.clone(),
                             );
@@ -7930,7 +7997,7 @@ impl<'t> Parser<'t> {
 
                         ast::Expr::Ident(_, _) => {
                             let call = ast::Expr::FreeCall(
-                                "delete!".to_string(),
+                                ":delete!".to_string(),
                                 vec![lhs],
                                 op_sp.clone(),
                             );
@@ -7998,7 +8065,7 @@ impl<'t> Parser<'t> {
                             match lhs_expr {
                                 ast::Expr::Index(base, index, _) => {
                                     let call = ast::Expr::FreeCall(
-                                        "update_at!".to_string(),
+                                        ":update_at!".to_string(),
                                         vec![*base, *index, rhs],
                                         op_sp.clone(),
                                     );
@@ -8007,7 +8074,7 @@ impl<'t> Parser<'t> {
 
                                 _ => {
                                     let call = ast::Expr::FreeCall(
-                                        "update!".to_string(),
+                                        ":update!".to_string(),
                                         vec![lhs_expr, rhs],
                                         op_sp.clone(),
                                     );
@@ -11004,7 +11071,7 @@ impl<'t> Parser<'t> {
                         if next_is_paren {
                             self.i += 1; // consume '!'
                             self.i += 1; // consume '('
-                            let bang_name = format!("{}!", name);
+                            let bang_name = format!(":{}!", name);
                             let mut args = Vec::new();
                             self.skip_layout();
                             while !self.peek_op(")") {
@@ -11034,6 +11101,16 @@ impl<'t> Parser<'t> {
                         }
                         self.eat_op(")");
                         return Ok(PExpr::FreeCall(builtin_name, args));
+                    }
+                    // `:say "hi"`, `:upper name`: a builtin that takes one
+                    // argument without parentheses.
+                    if is_no_parens_builtin(&name) && self.starts_no_parens_arg() {
+                        if name == "say" {
+                            let arg = self.parse_additive()?;
+                            return Ok(PExpr::FreeCall(builtin_name, vec![arg]));
+                        }
+                        let arg = self.parse_coalesce()?;
+                        return self.apply_postfix_ops(PExpr::FreeCall(builtin_name, vec![arg]));
                     }
                     return Ok(PExpr::Ident(builtin_name));
                 }
@@ -11450,25 +11527,12 @@ impl<'t> Parser<'t> {
                     args.push(PExpr::Ident(src_ident));
                     if let Some(c) = count_opt { args.push(c); }
 
-                    return self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args));
+                    return self.apply_postfix_ops(PExpr::FreeCall(":reap!".to_string(), args));
                 }
 
                 // ---- NO-PARENS FREE-CALL WHITELIST (one-arg) ----
                 // Allow: upper "x", lower "x", title "x", slug "x", mixed "x"
-                fn is_no_parens_freecall(name: &str) -> bool {
-                    matches!(
-                        name,
-                        "say" | "sweep" | "sweep_all" |
-                        "upper" | "lower" | "title" | "slug" | "mixed" | "raw" |
-                        "trim" | "trim_lead" | "trim_trail" | "minimize" |
-                        "reverse" | "reverse_chars" | "lines" | "words" | "chars" |
-                        "keys" | "values" | "items" |
-                        "count" | "len" |
-                        "parse_bool" | "json_parse" | "json_stringify" | "json_stringify_pretty" |
-                        "is_even" | "is_odd" | "is_positive" | "is_negative" |
-                        "is_alpha" | "is_digit" | "is_alnum" | "is_whitespace"
-                    )
-                }
+                fn is_no_parens_freecall(name: &str) -> bool { is_no_parens_builtin(name) }
 
                 let bare = name.strip_prefix(':').unwrap_or(&name);
                 // `trim!(s)` is the bang call, not `trim` applied to `!(s)`.
@@ -11481,36 +11545,7 @@ impl<'t> Parser<'t> {
                 let bound_var = !name.starts_with(':') && self.bound_names.contains(bare)
                     && matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Op(o)) if o == "[" || o == "+" || o == "-");
                 if is_no_parens_freecall(bare) && !bang_call && !bound_var {
-                    self.skip_newlines();
-
-                    // Inline: does the next token start an expression?
-                    let starts_expr = match self.peek() {
-                        Some(t) => match &t.kind {
-                            // literals
-                            TokenKind::String
-                            | TokenKind::Int
-                            | TokenKind::Float
-                            | TokenKind::Money
-                            | TokenKind::Duration
-                            | TokenKind::Date
-                            | TokenKind::Time
-                            | TokenKind::DateTime
-                            | TokenKind::Blob => true,
-
-                            // identifiers, but do NOT swallow repeat aliases
-                            TokenKind::Ident => {
-                                !matches!(t.value.as_deref(), Some("as"))
-                            }
-
-                            // grouping / collection / prefix ops that begin an expr
-                            TokenKind::Op(s) if s == "(" || s == "[" || s == "{" || s == "-" || s == "+" || s == "!" || s == "@" => true,
-
-                            _ => false,
-                        },
-                        None => false,
-                    };
-
-                    if starts_expr {
+                    if self.starts_no_parens_arg() {
                         // Special-case: `say` should consume a FULL expression as its single arg,
                         // and must NOT allow postfix chaining on the call itself.
                         if name == "say" {
@@ -11519,8 +11554,11 @@ impl<'t> Parser<'t> {
                         }
 
                         // All other bare calls keep the existing behavior.
+                        // `raw "…"` and `sweep x` are syntax, so they reach the
+                        // builtin without a colon.
                         let arg = self.parse_coalesce()?;
-                        return self.apply_postfix_ops(PExpr::FreeCall(bare.to_string(), vec![arg]));
+                        let call = if matches!(bare, "raw" | "sweep" | "sweep_all") { format!(":{bare}") } else { bare.to_string() };
+                        return self.apply_postfix_ops(PExpr::FreeCall(call, vec![arg]));
                     }
                     // else: fall through to ident handling below
                 }
@@ -12149,7 +12187,7 @@ impl<'t> Parser<'t> {
             
             // Generate: :provoke(condition)
             let provoke_call = ast::Expr::FreeCall(
-                "provoke".to_string(),
+                ":provoke".to_string(),
                 vec![condition],
                 span.clone()
             );
@@ -12261,7 +12299,7 @@ impl<'t> Parser<'t> {
         let mut stmts = Vec::new();
         for condition in conditions {
             let provoke_call = ast::Expr::FreeCall(
-                "provoke".to_string(),
+                ":provoke".to_string(),
                 vec![condition],
                 span.clone()
             );
@@ -13448,7 +13486,7 @@ impl<'t> Parser<'t> {
                         } else if !count_txt.is_empty() {
                             args.push(PExpr::Int(count.to_string()));
                         }
-                        return self.apply_postfix_ops(PExpr::FreeCall("reap!".to_string(), args));
+                        return self.apply_postfix_ops(PExpr::FreeCall(":reap!".to_string(), args));
                     }
                 }
 
@@ -13479,7 +13517,7 @@ impl<'t> Parser<'t> {
                 }
 
                 let cfg = PExpr::Object(props);
-                return self.apply_postfix_ops(PExpr::FreeCall(verb, vec![cfg]));
+                return self.apply_postfix_ops(PExpr::FreeCall(format!(":{}", verb), vec![cfg]));
             }
 
             // ---- roll / roll_detail (syntax-only; contiguous dice + extras) ----
@@ -13816,7 +13854,7 @@ impl<'t> Parser<'t> {
 
                     let cfg = PExpr::Object(props);
                     let call = PExpr::FreeCall(
-                        if is_detail { "roll_detail".to_string() } else { "roll".to_string() },
+                        if is_detail { ":roll_detail".to_string() } else { ":roll".to_string() },
                         vec![cfg],
                     );
                     return self.apply_postfix_ops(call);
@@ -14405,7 +14443,14 @@ impl<'t> Parser<'t> {
             }
 
             // ---------- colon-call: target : arg, arg, ... ----------
-            if self.suspend_colon_call == 0 && self.eat_op(":") {
+            // A colon that starts a new line begins the next statement
+            // (`:say(r)` after a `judge` block), not a colon-call.
+            let colon_on_new_line = self.peek_op(":") && {
+                let prev = self.toks[..self.i].iter().rev().find(|t| !matches!(t.kind,
+                    goblin_lexer::TokenKind::Newline | goblin_lexer::TokenKind::Indent | goblin_lexer::TokenKind::Dedent));
+                prev.is_some_and(|p| self.toks[self.i].span.line_start > p.span.line_end)
+            };
+            if self.suspend_colon_call == 0 && !colon_on_new_line && self.eat_op(":") {
                 let mut args = Vec::new();
                 while matches!(self.toks.get(self.i), Some(t) if matches!(t.kind, goblin_lexer::TokenKind::Newline)) { self.i += 1; }
                 if self.peek_newline_or_eof() { return Err(s_help_site!("P0507", "Expected an argument after ':'", "Add at least one argument after ':': calculate: price, tax")); }

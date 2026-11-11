@@ -3,4 +3,4 @@
     gold: 3
 xx
 a <> Land | gold: 3
-say(a >> {3})
+:say(a >> {3})

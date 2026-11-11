@@ -3,6 +3,6 @@ while i < 5
     i |= i + 1
     if i == 2 => skip
     if i == 4 => stop
-    say(i)
+    :say(i)
 xx
-say("end")
+:say("end")

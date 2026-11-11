@@ -1,2 +1,2 @@
 parts | :split("x-y-z", "-")
-say(:join(parts, "+"))
+:say(:join(parts, "+"))

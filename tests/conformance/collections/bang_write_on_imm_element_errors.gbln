@@ -4,6 +4,6 @@ imm m | {a: 1}
 attempt
     :update!(m{"a"}, 2)
 rescue
-    say("error")
+    :say("error")
 xx
-say(m)
+:say(m)

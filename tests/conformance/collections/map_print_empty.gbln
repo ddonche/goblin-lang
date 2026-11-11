@@ -1,3 +1,3 @@
-say {}
+:say {}
 m | {}
-say(:len(m))
+:say(:len(m))

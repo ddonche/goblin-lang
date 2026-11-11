@@ -17,5 +17,5 @@ while i < 200000
     i |= i + 1
 xx
 fa | box{"count"}
-say(fa())
-say(fa())
+:say(fa())
+:say(fa())

@@ -13,6 +13,6 @@ overlay short
 xx
 p <> P | n: 0
 :overlay!(p, short)
-tick()
-tick()
-say(p >> n)
+:tick()
+:tick()
+:say(p >> n)

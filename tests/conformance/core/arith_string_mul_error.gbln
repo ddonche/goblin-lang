@@ -1,2 +1,2 @@
-say("start")
-say("a" * 3)
+:say("start")
+:say("a" * 3)

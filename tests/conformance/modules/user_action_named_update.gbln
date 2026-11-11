@@ -2,4 +2,4 @@
 act update(x)
     return "user-update"
 xx
-say(update([1, 2]))
+:say(update([1, 2]))

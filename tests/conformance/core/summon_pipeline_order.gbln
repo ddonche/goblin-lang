@@ -5,6 +5,6 @@ xx
 act double(x)
     return x * 2
 xx
-say(:summon(5, ["inc", "double"]))
-say(:summon(5, ["double", "inc"]))
-say(:summon(5, []))
+:say(:summon(5, ["inc", "double"]))
+:say(:summon(5, ["double", "inc"]))
+:say(:summon(5, []))

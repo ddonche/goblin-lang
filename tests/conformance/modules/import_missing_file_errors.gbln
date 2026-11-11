@@ -1,3 +1,3 @@
-say("before")
+:say("before")
 import _support/modules/does_not_exist as m
-say("after")
+:say("after")

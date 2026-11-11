@@ -7,4 +7,4 @@ act build(n)
     xx
     return out
 xx
-say(build(3))
+:say(build(3))

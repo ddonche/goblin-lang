@@ -17,11 +17,11 @@ act make(i)
     return [m, r]
 xx
 meadows | [:actor(make(1)), :actor(make(2))]
-tick()
-tick()
-say(:len(:objects("Rabbit", it >> age == 2)))
+:tick()
+:tick()
+:say(:len(:objects("Rabbit", it >> age == 2)))
 attempt
     :post(meadows[0], "hi")
 rescue e
-    say(:has("{e}", "C0107"))
+    :say(:has("{e}", "C0107"))
 xx

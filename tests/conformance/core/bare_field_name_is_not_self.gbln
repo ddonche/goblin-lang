@@ -4,8 +4,8 @@
 <>P |
     hp: 5
     act show()
-        say("start")
-        say(hp)
+        :say("start")
+        :say(hp)
     xx
 xx
 p <> P | hp: 5

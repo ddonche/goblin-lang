@@ -2,5 +2,5 @@
 act f()
     return [1]
 xx
-say(:put_last!([1, 2], 3))
-say(:put_last!(f(), 3))
+:say(:put_last!([1, 2], 3))
+:say(:put_last!(f(), 3))

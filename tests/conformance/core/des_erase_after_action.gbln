@@ -22,13 +22,13 @@ act strike(f, t)
     b | t >> name
     t >> hp |= t >> hp - 5
     h | t >> hp
-    say("{a} hits {b}, hp {h}")
+    :say("{a} hits {b}, hp {h}")
 xx
 act fall(f)
     a | f >> name
-    say("{a} falls")
+    :say("{a} falls")
 xx
 x <> F | name: "x", side: 0, hp: 9
 y <> F | name: "y", side: 1, hp: 3
 z <> F | name: "z", side: 1, hp: 8
-tick()
+:tick()

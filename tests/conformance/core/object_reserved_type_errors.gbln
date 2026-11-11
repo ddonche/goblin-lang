@@ -2,6 +2,6 @@
 <>Hero |
     hp: 10
 xx
-say("before")
+:say("before")
 h <> Hero | type: "abc", hp: 3
-say(h >> hp)
+:say(h >> hp)

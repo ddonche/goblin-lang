@@ -9,5 +9,5 @@
     xx
 xx
 p <> Point | x: 3, y: 4
-say(p.sum_xy())
-say(p.plus(10))
+:say(p.sum_xy())
+:say(p.plus(10))

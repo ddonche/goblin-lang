@@ -1,0 +1,6 @@
+/// known-gap: interp does not enforce the colon rule; the interpreter is being retired (VM only, 0.51.26)
+/// Owner ruling 2026-11-11: `:name(...)` calls only what Goblin provides; `:shout` is the program's own action (R1261).
+act shout(s)
+    send s
+xx
+:say(:shout("a"))

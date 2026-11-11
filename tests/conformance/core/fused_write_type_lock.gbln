@@ -3,6 +3,6 @@
 act f()
     x.u8 | {"n": 1}
     :update!(x{"n"}, x{"n"} + 299)
-    say(x)
+    :say(x)
 xx
 f()

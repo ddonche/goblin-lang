@@ -2,5 +2,5 @@ enum Status
     Idle
     Busy
 xx
-say("before")
-say(Status::Nope)
+:say("before")
+:say(Status::Nope)

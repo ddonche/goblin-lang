@@ -22,6 +22,6 @@ v1 <> Village | n: 1, food: 10
 a <> P | village: 0
 b <> P | village: 0
 c <> P | village: 1
-tick()
-say(v0 >> food)
-say(v1 >> food)
+:tick()
+:say(v0 >> food)
+:say(v1 >> food)

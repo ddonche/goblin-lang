@@ -54,7 +54,7 @@ old_town | :actor(make_workers(2, 1), day)
 new_town | :actor(make_workers(1, 0), day)
 :post(old_town, {"new_home": new_town})
 repeat :range(1, 4) as t
-    tick()
+    :tick()
     cash | 0
     repeat :objects(it >> cash > -1)
         c | it >> cash
@@ -70,5 +70,5 @@ repeat :range(1, 4) as t
     n | :await(:request(new_town, {"ask": 1}))
     oh | o{"have"}
     nh | n{"have"}
-    say("tick {t}: shop {cash}, workers {paid}, total {total}; old town {oh}, new town {nh}")
+    :say("tick {t}: shop {cash}, workers {paid}, total {total}; old town {oh}, new town {nh}")
 xx

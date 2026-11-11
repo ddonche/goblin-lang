@@ -22,4 +22,4 @@ counts | []
 repeat :range(0, 5) as t
     :put_last!(counts, :len(:objects("Item", it >> owner == bags >> get_random)))
 xx
-say(counts)
+:say(counts)

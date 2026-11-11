@@ -11,6 +11,6 @@ act make()
         hp: 12
     xx
     h <> Hero | name: "h"
-    say("{h >> might} {h >> hp}")
+    :say("{h >> might} {h >> hp}")
 xx
 make()

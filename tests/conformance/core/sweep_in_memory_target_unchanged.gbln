@@ -3,6 +3,6 @@ text | "aaa [x] bbb"
 sweep text
     "[" ... "]" :
         :update_where!(self, "x", "y")
-        say(self)
+        :say(self)
 xx
-say(text)
+:say(text)

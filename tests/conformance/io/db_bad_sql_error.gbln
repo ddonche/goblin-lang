@@ -1,5 +1,5 @@
 /// requires: db
 /// Invalid SQL is a runtime error.
-say("start")
+:say("start")
 r | :db_query("SELEKT nonsense", [])
-say("unreachable")
+:say("unreachable")

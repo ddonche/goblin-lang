@@ -10,32 +10,32 @@ c | :actor(0, count, {stop_when: enough})
 :post(c, "a")
 :post(c, "b")
 :post(c, "c")
-say(:await(c))
+:say(:await(c))
 quiet | :actor(0, count, {idle: 0.5s})
 :post(quiet, 1)
-say(:await(quiet))
+:say(:await(quiet))
 attempt
     :post(quiet, 1)
 rescue e
-    say(:has("{e}", "C0111: actor-stopped"))
+    :say(:has("{e}", "C0111: actor-stopped"))
 xx
 attempt
     :actor(0, count, {restart: "always"})
 rescue e
-    say(:has("{e}", "C0108: actor-policy: restart must be"))
+    :say(:has("{e}", "C0108: actor-policy: restart must be"))
 xx
 attempt
     :actor(0, count, {max_restarts: 3})
 rescue e
-    say(:has("{e}", "C0109: actor-restart-policy"))
+    :say(:has("{e}", "C0109: actor-restart-policy"))
 xx
 attempt
     :actor(0, count, {colour: 1})
 rescue e
-    say(:has("{e}", "C0108: actor-policy: unknown policy key"))
+    :say(:has("{e}", "C0108: actor-policy: unknown policy key"))
 xx
 attempt
     :actor(0, count, {mailbox: 0})
 rescue e
-    say(:has("{e}", "C0108"))
+    :say(:has("{e}", "C0108"))
 xx

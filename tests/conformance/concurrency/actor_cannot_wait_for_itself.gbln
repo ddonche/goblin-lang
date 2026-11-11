@@ -8,5 +8,5 @@ s | :actor(0, selfish)
 attempt
     :await(s)
 rescue e
-    say(:has("{e}", "C0119: actor-self-wait"))
+    :say(:has("{e}", "C0119: actor-self-wait"))
 xx

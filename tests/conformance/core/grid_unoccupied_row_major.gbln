@@ -2,4 +2,4 @@
 m | :grid("m", 3, 2)
 :grid_set("m", 0, 0, "owner", "red")
 :grid_void("m", 2, 1)
-say(:grid_unoccupied("m"))
+:say(:grid_unoccupied("m"))

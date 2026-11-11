@@ -2,5 +2,5 @@ import _support/modules/left as l
 act name()
     return "main"
 xx
-say(name())
-say(l::name())
+:say(name())
+:say(l::name())

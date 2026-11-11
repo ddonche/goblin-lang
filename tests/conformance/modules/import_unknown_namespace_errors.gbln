@@ -1,2 +1,2 @@
-say("before")
-say(nope::add(1))
+:say("before")
+:say(nope::add(1))

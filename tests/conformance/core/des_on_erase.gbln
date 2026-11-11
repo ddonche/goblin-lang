@@ -24,7 +24,7 @@ xx
     transition erase where @age > 2
     act bury()
         a | self >> age
-        say("the dog is buried at age {a}")
+        :say("the dog is buried at age {a}")
     end
 xx
 act settle_estate(p)
@@ -32,15 +32,15 @@ act settle_estate(p)
         it >> cash |= it >> cash + (p >> money)
     xx
     a | p >> age
-    say("estate settled at age {a}")
+    :say("estate settled at age {a}")
 xx
 fund <> Fund | cash: 0
 old <> Person | age: 2, money: 500
 young <> Person | age: 0, money: 40
 rex <> Dog | age: 1
 repeat :range(1, 4) as d
-    tick()
+    :tick()
     c | fund >> cash
     n | :len(:objects(it >> age >= 0))
-    say("tick {d}: fund {c}, {n} people")
+    :say("tick {d}: fund {c}, {n} people")
 xx

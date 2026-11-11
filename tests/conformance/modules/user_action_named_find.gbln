@@ -2,4 +2,4 @@
 act find(x)
     return "user-find"
 xx
-say(find([1, 2]))
+:say(find([1, 2]))

@@ -1,4 +1,4 @@
 l | [3, 1, 2]
 s | :sort(l)
-say l
-say s
+:say l
+:say s

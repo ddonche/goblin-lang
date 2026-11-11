@@ -8,5 +8,5 @@ import _support/modules/faith_hooks as fh
 t <> Town | name: "Varn"
 fh::found(t)
 repeat 3
-    tick()
+    :tick()
 xx

@@ -3,41 +3,41 @@
 a | {"x": 1, "y": 2}
 b | a
 :update!(a{"x"}, a{"x"} + 1)
-say(a)
-say(b)
+:say(a)
+:say(b)
 e | {"n": 1}
 m | {"es": [e, {"n": 5}]}
 :update!(m{"es"}[0]{"n"}, m{"es"}[0]{"n"} + 1)
 :update!(m{"es"}[1]{"n"}, m{"es"}[1]{"n"} * 3)
-say(e)
-say(m)
+:say(e)
+:say(m)
 rows | [{"a": 1, "b": 2}, {"b": 20, "a": 10}, {"c": 0, "b": 7, "a": 3}]
 i | 0
 while i < :len(rows)
     :update!(rows[i]{"b"}, rows[i]{"b"} + rows[i]{"a"})
     i |= i + 1
 xx
-say(rows)
+:say(rows)
 f | {"v": 1.5, "w": 2}
 :update!(f{"v"}, f{"v"} + f{"w"})
 :update!(f{"w"}, f{"w"} + 0.25)
-say(f)
+:say(f)
 s | {"t": "ab"}
 :update!(s{"t"}, s{"t"} + "cd")
-say(s)
+:say(s)
 big | {"n": 9223372036854775807}
 :update!(big{"n"}, big{"n"} * 2)
-say(big)
+:say(big)
 low | {"n": -9223372036854775807}
 :update!(low{"n"}, low{"n"} - 5)
-say(low)
+:say(low)
 r | :update!(a{"y"}, a{"y"} + 10)
-say(a)
+:say(a)
 ks | ["x", "y"]
 for k in ks
     :update!(a{k}, a{k} - 1)
 xx
-say(a)
+:say(a)
 grid | [[1, 2], [3, 4]]
 j | 0
 while j < 2
@@ -46,16 +46,16 @@ while j < 2
     xx
     j |= j + 1
 xx
-say(grid)
+:say(grid)
 miss | {"p": {"q": 1}}
-say(miss{"p"}{"q"})
-say(miss{"z"})
+:say(miss{"p"}{"q"})
+:say(miss{"z"})
 n | {"k": nil}
 :update!(n{"k"}, 5)
-say(n)
+:say(n)
 shrink | [{"a": 1, "b": 2, "c": 3}, {"c": 4}]
 t | 0
 while t < 2
-    say(shrink[t]{"c"})
+    :say(shrink[t]{"c"})
     t |= t + 1
 xx

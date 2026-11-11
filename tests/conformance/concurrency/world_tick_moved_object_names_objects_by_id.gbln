@@ -66,12 +66,12 @@ all |= [west, east]
 :post(west, {"all": all})
 :post(east, {"all": all})
 repeat :range(1, 5) as t
-    tick()
+    :tick()
     repeat :objects("Realm") as r
         g | 0
         repeat :objects("Lord", it >> owner == r) as l
             g |= l >> gold
         xx
-        say("tick {t}: {r >> name} arrived {r >> arrived}, lord's gold {g}")
+        :say("tick {t}: {r >> name} arrived {r >> arrived}, lord's gold {g}")
     xx
 xx

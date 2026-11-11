@@ -7,6 +7,6 @@
     xx
 xx
 c <> Counter | n: 5
-say(c.bump())
-say(c.bump())
-say(c >> n)
+:say(c.bump())
+:say(c.bump())
+:say(c >> n)

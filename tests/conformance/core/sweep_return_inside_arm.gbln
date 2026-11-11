@@ -6,5 +6,5 @@ act first_tag(text)
     xx
     return "none"
 xx
-say(first_tag("a <b> <c>"))
-say(first_tag("plain"))
+:say(first_tag("a <b> <c>"))
+:say(first_tag("plain"))

@@ -13,9 +13,9 @@
     on split => grow(self)
 xx
 act grow(old)
-    say("old size {old >> size}")
+    :say("old size {old >> size}")
     old >> size |= 9
-    say("not reached")
+    :say("not reached")
 xx
 c <> Cell | size: 4
-tick()
+:tick()

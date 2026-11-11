@@ -10,7 +10,7 @@ act f(x)
         return "other"
     xx
 xx
-say(f(1))
-say(f(2))
-say(f(3))
-say(f(4))
+:say(f(1))
+:say(f(2))
+:say(f(3))
+:say(f(4))

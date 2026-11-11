@@ -17,6 +17,6 @@ rome <> Polity | stability: .8
 athens <> Polity | stability: .8
 :overlay!(rome, stunned, .5)
 :overlay!(rome, plague, .2)
-say(:sort(:overlays_of("rome")))
-say(:overlays_of("athens"))
-say(:overlays_of("nobody"))
+:say(:sort(:overlays_of("rome")))
+:say(:overlays_of("athens"))
+:say(:overlays_of("nobody"))

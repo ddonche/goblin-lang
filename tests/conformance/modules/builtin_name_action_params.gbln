@@ -11,6 +11,6 @@ xx
 act echo_join(join)
     return join
 xx
-say(loop_keys([1, 2, 3]))
-say(twice_len(4))
-say(echo_join("j"))
+:say(loop_keys([1, 2, 3]))
+:say(twice_len(4))
+:say(echo_join("j"))

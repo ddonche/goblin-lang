@@ -6,12 +6,12 @@ act outer()
         x |= v
     xx
     bump(5)
-    say(x)
+    :say(x)
     attempt
         bump(300)
     rescue e
-        say("error")
+        :say("error")
     xx
-    say(x)
+    :say(x)
 xx
 outer()

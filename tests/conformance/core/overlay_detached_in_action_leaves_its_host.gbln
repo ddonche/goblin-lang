@@ -15,6 +15,6 @@ act stun_then_free(target)
 end
 rome <> Polity | stability: .8
 stun_then_free(rome)
-say(:overlays_of("rome"))
-say(:len(:overlays()))
-say(rome >> stability)
+:say(:overlays_of("rome"))
+:say(:len(:overlays()))
+:say(rome >> stability)

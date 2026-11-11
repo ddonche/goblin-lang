@@ -35,7 +35,7 @@ repeat :range(1, 6) as d
     if d == 3
         :actor(make_region("north", 1), region_day)
     xx
-    tick()
+    :tick()
     all | :len(:objects(it >> age >= 0))
-    say("tick {d}: all {all}")
+    :say("tick {d}: all {all}")
 xx

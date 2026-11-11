@@ -1,8 +1,8 @@
 attempt
-    say("a")
+    :say("a")
     x | 1 / 0
-    say("b")
+    :say("b")
 rescue err
-    say("rescued")
+    :say("rescued")
 xx
-say("after")
+:say("after")

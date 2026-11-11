@@ -61,7 +61,7 @@ east | :actor(make_region("east", false), region_day)
 repeat :range(1, 5) as d
     w | :await(:request(west, {"ask": 1})){"seen"}
     e | :await(:request(east, {"ask": 1})){"seen"}
-    say("before tick {d}: west {w}, east {e}")
-    tick()
+    :say("before tick {d}: west {w}, east {e}")
+    :tick()
 xx
-say(:len(:objects("Coin")))
+:say(:len(:objects("Coin")))

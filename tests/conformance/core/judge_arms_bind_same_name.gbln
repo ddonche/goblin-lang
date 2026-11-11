@@ -11,6 +11,6 @@ act f(a)
     xx
     return parts
 xx
-say(f(1))
-say(f(2))
-say(f(3))
+:say(f(1))
+:say(f(2))
+:say(f(3))

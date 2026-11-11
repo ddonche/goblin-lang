@@ -49,11 +49,11 @@ const CANCEL_AFTER_A_SECOND: &str = r#"nap | :channel(1)
 :receive(nap, 1s)
 :cancel(a)
 attempt
-    say(:await(f))
+    :say(:await(f))
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
-say("end")
+:say("end")
 "#;
 
 fn cancel_case(name: &str, setup: &str) {
@@ -173,9 +173,9 @@ nap | :channel(1)
 :cancel(a)
 for f in [f1, f2]
     attempt
-        say(:await(f))
+        :say(:await(f))
     rescue e
-        say("{e}")
+        :say("{e}")
     xx
 xx
 "#, Duration::from_secs(10));
@@ -295,14 +295,14 @@ act wait_stop(state)
     return false
 xx
 a | :actor(0, count, {stop_when: wait_stop})
-say(:await(:request(a, 1)))
+:say(:await(:request(a, 1)))
 nap | :channel(1)
 :receive(nap, 1s)
 :cancel(a)
 attempt
     :await(a)
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 "#, Duration::from_secs(10));
     let lines: Vec<&str> = out.lines().collect();

@@ -7,6 +7,6 @@ act halt(i)
     return i
 xx
 for i in [1, 2, 3]
-    say(halt(i))
+    :say(halt(i))
 xx
-say("after")
+:say("after")

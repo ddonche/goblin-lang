@@ -1575,7 +1575,32 @@ impl Compiler {
                 // on an `imm` variable it is an error (owner, 2026-10-07),
                 // raised before anything is changed.
                 let bang = name.trim_start_matches(':');
-                if bang_mutates_target(bang) && !self.user_actions.contains(bang) {
+                let colon = name.starts_with(':');
+                // `name(...)` calls the program's own action; `:name(...)`
+                // calls what Goblin provides (owner, 2026-11-11). A bare call
+                // to a builtin's name that is no action (and no variable
+                // holding a function) is R1260.
+                if !colon && !KEYWORD_FORMS.contains(&bang) && !self.user_actions.contains(bang) && is_goblin_builtin(bang) {
+                    // resolve_load also falls back to the builtin itself (or,
+                    // in a method, a program variable); only a real variable counts.
+                    let var_op = match self.resolve_load(bang) {
+                        Ok(Opcode::ProgramVar(_)) => None,
+                        Ok(Opcode::LoadConst(i)) if matches!(self.scope().constants.get(i as usize), Some(Value::Builtin(_))) => None,
+                        other => other.ok(),
+                    };
+                    match var_op.ok_or(()) {
+                        Ok(load_op) => {
+                            self.note_callee(&load_op);
+                            self.emit(load_op);
+                            for arg in args { self.compile_expr(arg)?; }
+                            self.emit(Opcode::Call(args.len() as u8));
+                            return Ok(());
+                        }
+                        Err(_) => return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1260: no action named `{bang}`. `{bang}` is a Goblin builtin: write it `:{bang}`.")))),
+                    }
+                }
+                if bang_mutates_target(bang) && (colon || !self.user_actions.contains(bang)) {
                     if let Some(root) = args.first().and_then(lvalue_root) {
                         self.emit_mut_guard(&root)?;
                     }
@@ -1586,7 +1611,7 @@ impl Compiler {
                 }
                 // A user-defined action shadows any builtin of the same name.
                 let bare_name = name.trim_start_matches(':');
-                if self.user_actions.contains(bare_name) {
+                if !colon && self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
                     self.note_callee(&load_op);
                     self.emit(load_op);
@@ -1661,8 +1686,8 @@ impl Compiler {
                 if let Some(pos_name) = reap_bang_position(bare_name) {
                     if let Some(target) = args.first().filter(|t| is_lvalue(t)) {
                         let sp = target.span().clone();
-                        self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
-                        self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
+                        self.compile_expr(&Expr::FreeCall(format!(":reap_{pos_name}"), args.clone(), sp.clone()))?;
+                        self.compile_expr(&Expr::FreeCall(format!(":delete_{pos_name}"), args.clone(), sp))?;
                         self.compile_store_from_stack(target)?;
                         return Ok(());
                     }
@@ -1750,6 +1775,13 @@ impl Compiler {
                             }
                         }
                     }
+                } else if colon {
+                    let msg = if self.user_actions.contains(bare_name) {
+                        format!("R1261: `:{bare_name}` names no Goblin builtin. `{bare_name}` is your own action: call it without the colon, `{bare_name}(...)`.")
+                    } else {
+                        format!("R1261: `:{bare_name}` names no Goblin builtin, and no action is named `{bare_name}`.")
+                    };
+                    return Err(self.locate_err(GoblinError::Runtime(msg)));
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                     self.note_callee(&load_op);
@@ -2146,14 +2178,25 @@ impl Compiler {
             match rhs {
                 Expr::FreeCall(name, args, _) => {
                     let argc = (args.len() + 1) as u8;
-                    if let Some(id) = builtin_by_name(name) {
+                    let bare = name.trim_start_matches(':');
+                    let colon = name.starts_with(':');
+                    if !colon && !self.user_actions.contains(bare) && is_goblin_builtin(bare) {
+                        return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1260: no action named `{bare}`. `{bare}` is a Goblin builtin: write it `:{bare}`."))));
+                    }
+                    if colon && builtin_by_name(bare).is_none() {
+                        return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1261: `:{bare}` names no Goblin builtin."))));
+                    }
+                    if let Some(id) = builtin_by_name(bare).filter(|_| colon) {
                         // Builtins: push lhs first, then rest of args
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
                         self.emit(Opcode::CallBuiltin(id, argc));
                     } else {
                         // User function: stack layout must be [func, lhs, args...]
-                        self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        self.emit(load_op);
                         self.scope_mut().calls_values = true;
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
@@ -3809,7 +3852,7 @@ fn mentions_it(e: &Expr) -> bool {
 pub(crate) fn read_calls_rolling(e: &Expr) -> Option<Vec<String>> {
     fn walk(e: &Expr, names: &mut Vec<String>) -> bool {
         match e {
-            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.as_str()) => args.iter().all(|a| walk(a, names)),
+            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.trim_start_matches(':')) => args.iter().all(|a| walk(a, names)),
             Expr::Object(fields, _) => fields.iter().all(|(_, v)| walk(v, names)),
             Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => walk(l, names) && walk(r, names),
             Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => walk(x, names),
@@ -4420,6 +4463,19 @@ fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String
 /// A mutating bang (`:put_last!(xs, 4)`, `:update!`, `:int!(x)`) changes the
 /// thing its first argument names, not a copy. A destructive bang acts on
 /// something else (files, objects, overlays) and leaves its arguments alone.
+/// Statement words the parser hands over as calls; they are syntax, not
+/// builtins, so they never take a colon.
+pub const KEYWORD_FORMS: &[&str] = &["if", "unless", "while", "repeat", "for", "skip", "stop", "return", "collect", "attempt"];
+
+/// Whether Goblin itself provides `name` (so a call to it takes `:`).
+pub fn is_goblin_builtin(name: &str) -> bool {
+    builtin_by_name(name).is_some()
+        || name.strip_suffix('!').is_some_and(|b| builtin_by_name(b).is_some() || CAST_BANG_FREE.contains(&b))
+        || reap_bang_position(name).is_some()
+        || matches!(name, "say" | "update!" | "schedule!" | "unschedule!" | "due!" | "reap!"
+            | "delete_object!" | "delete_overlays_on!" | "is_bound_name")
+}
+
 fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
         "write_text!", "write_json!", "append_file!",

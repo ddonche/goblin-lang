@@ -15,14 +15,14 @@ xx
 a <> Land | piety: 1, gold: 3
 :overlay!(a, blessed)
 t | "piety"
-say("{a >> {t}} {:field(a, t)}")
+:say("{a >> {t}} {:field(a, t)}")
 repeat ["piety", "gold"] as f
-    say("{f}: {a >> {f}}")
+    :say("{f}: {a >> {f}}")
 xx
 a >> {"gold"} |= 10
-say(a >> gold)
+:say(a >> gold)
 act bump(x, f)
     x >> {f} |= (x >> {f}) + 1
 xx
 bump(a, "gold")
-say(a >> {"go" + "ld"})
+:say(a >> {"go" + "ld"})

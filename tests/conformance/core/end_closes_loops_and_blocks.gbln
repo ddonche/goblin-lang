@@ -1,20 +1,20 @@
 /// `end` closes `for`, `while`, `repeat`, `unless` and `attempt` like `xx`
 for i in [1, 2]
-    say(i)
+    :say(i)
 end
 n | 0
 while n < 2
     n |= n + 1
 end
-say(n)
+:say(n)
 repeat 2
-    say("r")
+    :say("r")
 end
 unless false
-    say("u")
+    :say("u")
 end
 attempt
-    say("a")
+    :say("a")
 rescue
-    say("rescued")
+    :say("rescued")
 end

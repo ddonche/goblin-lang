@@ -6,5 +6,5 @@ root | "{d}/w"
 :write_text!("{root}/sub/lib.gbln", "2")
 :write_text!("{root}/sub/readme.md", "3")
 for f in :sort(:walk(root, "**/*.gbln"))
-    say(:path_relative_to(f, root))
+    :say(:path_relative_to(f, root))
 xx

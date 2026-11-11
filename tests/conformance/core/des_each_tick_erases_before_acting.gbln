@@ -19,11 +19,11 @@ xx
 act yell(g, t)
     a | g >> name
     b | t >> name
-    say("{a} yells at {b}")
+    :say("{a} yells at {b}")
 xx
 p <> G | name: "p", hp: 2
 q <> G | name: "q", hp: 9
 r <> G | name: "r", hp: 9
 :overlay!(p, bleeding)
-tick()
-say(:len(:objects(it >> name == "p")))
+:tick()
+:say(:len(:objects(it >> name == "p")))

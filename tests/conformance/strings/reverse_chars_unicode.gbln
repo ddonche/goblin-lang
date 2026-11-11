@@ -1,2 +1,2 @@
-say(:reverse_chars("héllo"))
-say(:reverse_chars(""))
+:say(:reverse_chars("héllo"))
+:say(:reverse_chars(""))

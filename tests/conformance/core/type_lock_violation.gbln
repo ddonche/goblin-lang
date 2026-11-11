@@ -1,4 +1,4 @@
 n.int | 5
-say(n)
+:say(n)
 n |= "s"
-say(n)
+:say(n)

@@ -22,15 +22,15 @@ xx
 :halt(ch)
 :halt(a)
 :halt(b)
-say(:await(a) + :await(b))
-say(:receive(ch))
+:say(:await(a) + :await(b))
+:say(:receive(ch))
 attempt
     :post(ch, 1)
 rescue e
-    say(:has("{e}", "C0117: channel-closed"))
+    :say(:has("{e}", "C0117: channel-closed"))
 xx
 attempt
     :post(:channel(1), nil)
 rescue e
-    say(:has("{e}", "C0117: channel-nil"))
+    :say(:has("{e}", "C0117: channel-nil"))
 xx

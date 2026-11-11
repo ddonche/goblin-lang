@@ -13,6 +13,6 @@ xx
 rome <> Polity | stability: .8
 athens <> Polity | stability: .8
 :overlay!(rome, stunned, .5)
-say(:overlay_strength("stunned", "rome"))
-say(:overlay_strength("stunned", "athens"))
-say(:overlay_strength("plague", "rome"))
+:say(:overlay_strength("stunned", "rome"))
+:say(:overlay_strength("stunned", "athens"))
+:say(:overlay_strength("plague", "rome"))

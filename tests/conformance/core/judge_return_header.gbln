@@ -4,7 +4,7 @@ r |
         x > 5:
         else: "ok"
     xx
-say(r)
+:say(r)
 y | 4
 s |
     judge return "fb"
@@ -12,4 +12,4 @@ s |
         y > 2: "mid"
         else: "ok"
     xx
-say(s)
+:say(s)

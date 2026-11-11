@@ -9,4 +9,4 @@ sweep text
         if inner == "end" => stop
         :put_last!(got, inner)
 xx
-say(got)
+:say(got)

@@ -4,4 +4,4 @@ act fx()
     xx
     return 0
 xx
-say(fx())
+:say(fx())

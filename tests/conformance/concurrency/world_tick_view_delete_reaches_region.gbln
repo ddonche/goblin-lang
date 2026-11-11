@@ -9,7 +9,7 @@
     on erase => farewell(self)
 xx
 act farewell(p)
-    say("region: {p >> n} erased")
+    :say("region: {p >> n} erased")
 xx
 overlay hurt
     hosts: Person
@@ -24,19 +24,19 @@ xx
 act day(st, msg)
     p | :len(:objects(Person))
     h | :len(:overlays(hurt))
-    say("region: {p} people, {h} hurt")
+    :say("region: {p} people, {h} hurt")
     return st
 xx
 r | :actor(make_two(), day)
-tick()
+:tick()
 repeat :objects(Person) as x
     if x >> n == 1
-        delete_object!(x)
+        :delete_object!(x)
     else
-        delete_overlays_on!(x)
+        :delete_overlays_on!(x)
     xx
 xx
 p | :len(:objects(Person))
 h | :len(:overlays(hurt))
-say("program: {p} people, {h} hurt")
-tick()
+:say("program: {p} people, {h} hurt")
+:tick()

@@ -14,13 +14,13 @@
     xx
 xx
 act hit(f, t)
-    say("hit")
+    :say("hit")
 xx
 a <> F | side: 0
 b <> F | side: 1
 attempt
-    tick()
+    :tick()
 rescue e
-    say(:has("{e}", "R1220: decision-formula: decision `foe` of F"))
-    say(:has("{e}", "got bool"))
+    :say(:has("{e}", "R1220: decision-formula: decision `foe` of F"))
+    :say(:has("{e}", "got bool"))
 xx

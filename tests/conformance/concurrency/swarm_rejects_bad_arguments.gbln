@@ -6,15 +6,15 @@ xx
 attempt
     :swarm([1], id, 0)
 rescue e
-    say(:has("{e}", "C0104"))
+    :say(:has("{e}", "C0104"))
 xx
 attempt
     :swarm([1], 5, 2)
 rescue e
-    say(:has("{e}", "C0105"))
+    :say(:has("{e}", "C0105"))
 xx
 attempt
     :swarm(5, id, 2)
 rescue e
-    say("not a list")
+    :say("not a list")
 xx

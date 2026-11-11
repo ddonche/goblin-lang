@@ -2,4 +2,4 @@
 act count(x)
     return "user-count"
 xx
-say(count([1, 2]))
+:say(count([1, 2]))

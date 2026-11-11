@@ -8,6 +8,6 @@ act size(x)
         return "small"
     end
 end
-say(size(5))
-say(size(1))
-say(size(0))
+:say(size(5))
+:say(size(1))
+:say(size(0))

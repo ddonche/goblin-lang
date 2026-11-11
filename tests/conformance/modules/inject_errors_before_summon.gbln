@@ -3,9 +3,9 @@
 import "_support/eval/site/manifest.imports"
 act show(sources)
     attempt
-        say(:eval(sources))
+        :say(:eval(sources))
     rescue e
-        say(:after("{e}", "runtime error: "))
+        :say(:after("{e}", "runtime error: "))
     xx
 xx
 s | "_support/eval/site/schedule.yall"
@@ -19,5 +19,5 @@ show(["_support/eval/cases/missing.gob"])
 attempt
     :inject("extra::tail", "after", "core::render")
 rescue e
-    say(:after("{e}", "runtime error: "))
+    :say(:after("{e}", "runtime error: "))
 xx

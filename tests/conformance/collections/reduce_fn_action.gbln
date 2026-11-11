@@ -2,4 +2,4 @@
 act add2(a, b)
     return a + b
 xx
-say(:reduce_fn([1, 2, 3], 10, "add2"))
+:say(:reduce_fn([1, 2, 3], 10, "add2"))

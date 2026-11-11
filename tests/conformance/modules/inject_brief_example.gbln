@@ -4,8 +4,8 @@
 import "_support/eval/all.imports"
 b | :load(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob"])
 r | :eval(b)
-say(r >> pre)
-say(r >> schedule)
-say(r >> post)
-say(:keys(r))
-say(b[0] >> data >> schedule)
+:say(r >> pre)
+:say(r >> schedule)
+:say(r >> post)
+:say(:keys(r))
+:say(b[0] >> data >> schedule)

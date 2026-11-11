@@ -6,6 +6,6 @@ xx
 attempt
   f()
 rescue e
-  say("caught")
+  :say("caught")
 xx
-say("after")
+:say("after")

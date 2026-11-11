@@ -3,15 +3,15 @@ for i in [1, 2, 3]
     if i == 2
         skip
     xx
-    say(i)
+    :say(i)
 xx
 act f(xs)
     for x in xs
         if x == 2
             stop
         xx
-        say(x)
+        :say(x)
     xx
     return "done"
 xx
-say(f([1, 2, 3]))
+:say(f([1, 2, 3]))

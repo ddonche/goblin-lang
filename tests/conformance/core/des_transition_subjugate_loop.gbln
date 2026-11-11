@@ -10,4 +10,4 @@
 xx
 lord <> Realm | name: "Lord", power: 1
 vassal <> Realm | name: "Vassal", power: 9, owner: lord
-tick()
+:tick()

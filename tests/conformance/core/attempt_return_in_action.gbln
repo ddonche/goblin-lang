@@ -13,5 +13,5 @@ act bad()
     xx
     return 3
 xx
-say(ok())
-say(bad())
+:say(ok())
+:say(bad())

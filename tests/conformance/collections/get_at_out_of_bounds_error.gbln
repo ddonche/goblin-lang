@@ -1,2 +1,2 @@
-say "before"
-say(:get_at([1], 5))
+:say "before"
+:say(:get_at([1], 5))

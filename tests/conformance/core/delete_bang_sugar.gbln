@@ -1,11 +1,11 @@
 /// `x !|` empties x, `a[i] !|` / `m{"k"} !|` delete one entry in place; `m{"k"} |! v` updates a map key
 names | ["a", "b", "c"]
 names[1] !|
-say(names)
+:say(names)
 m | {"k": 1, "j": 2}
 m{"k"} !|
-say(m)
+:say(m)
 m{"j"} |! 5
-say(m)
+:say(m)
 names !|
-say(names)
+:say(names)

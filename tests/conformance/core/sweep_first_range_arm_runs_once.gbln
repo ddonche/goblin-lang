@@ -7,5 +7,5 @@ sweep text
         :update!(fm, :trim(:keep_between(self, "^^^^", "^^^^")))
         n += 1
 xx
-say(fm)
-say(n)
+:say(fm)
+:say(n)

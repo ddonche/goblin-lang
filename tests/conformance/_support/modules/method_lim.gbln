@@ -3,7 +3,7 @@ lim | 3
 <>Gauge |
     v: 1
     act check()
-        say("lim {lim}")
+        :say("lim {lim}")
         return @v < lim
     xx
 xx

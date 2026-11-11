@@ -11,7 +11,7 @@
         if self >> age == 3 + self >> n
             repeat :objects(it >> n != self >> n) as o
                 v | :link_score(self, o, "trust")
-                say("{self >> n} to {o >> n}: {v}")
+                :say("{self >> n} to {o >> n}: {v}")
             xx
         xx
     end
@@ -46,5 +46,5 @@ west | :actor(make_west(), region_day)
 east | :actor(make_east(), region_day)
 :post(west, {"peer": east})
 repeat :range(1, 6)
-    tick()
+    :tick()
 xx

@@ -13,5 +13,5 @@ act measure(p)
     p >> x |= 100
     return p.sum_xy()
 xx
-say(:swarm([a, b], measure, 2))
-say(a >> x)
+:say(:swarm([a, b], measure, 2))
+:say(a >> x)

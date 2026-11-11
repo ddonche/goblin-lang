@@ -520,7 +520,7 @@ if mode == "actors"
     xx
 xx
 
-say("town: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days, seed {seed}, mode {mode}")
+:say("town: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days, seed {seed}, mode {mode}")
 births | 0
 d_births | []
 d_deaths | []
@@ -608,14 +608,14 @@ repeat :range(1, days + 1) as t
     xx
     if sum{"money"} != total_money
         have | sum{"money"}
-        say("day {t}: money is {have}, should be {total_money}")
+        :say("day {t}: money is {have}, should be {total_money}")
     xx
     if t % 30 == 0
         pop | sum{"pop"}
         adults | sum{"adults"}
         employed | sum{"employed"}
         open | sum{"open"}
-        say("day {t}: pop {pop}, adults {adults}, employed {employed}, open businesses {open}, births {births}, deaths {deaths}, moves {moves}, money ok")
+        :say("day {t}: pop {pop}, adults {adults}, employed {employed}, open businesses {open}, births {births}, deaths {deaths}, moves {moves}, money ok")
     xx
 
     /// History: a checkpoint every year, and live states to check rebuilds.
@@ -668,9 +668,9 @@ repeat :range(0, :len(checks)) as i
     same | rebuilt[i] == live[i]
     cd | checks[i][0]
     cday | checks[i][1]
-    say("rebuild district {cd} day {cday} from history: {same}")
+    :say("rebuild district {cd} day {cday} from history: {same}")
 xx
-say("done: births {births}, deaths {deaths}, moves {moves}")
+:say("done: births {births}, deaths {deaths}, moves {moves}")
 
 /// ---------- end-of-run report ----------
 
@@ -714,29 +714,29 @@ repeat final as st
 xx
 mail_money | total_money - people_money - biz_money - treasuries
 
-say("")
-say("=== End of run: day {days} ===")
-say("")
-say("Where the money is (total {total_money}):")
+:say("")
+:say("=== End of run: day {days} ===")
+:say("")
+:say("Where the money is (total {total_money}):")
 m1 | pad(people_money, 8)
 m2 | pad(share(people_money, total_money), 4)
-say("  people             {m1}  {m2}")
+:say("  people             {m1}  {m2}")
 m1 |= pad(biz_money, 8)
 m2 |= pad(share(biz_money, total_money), 4)
-say("  businesses         {m1}  {m2}")
+:say("  businesses         {m1}  {m2}")
 m1 |= pad(treasuries, 8)
 m2 |= pad(share(treasuries, total_money), 4)
-say("  district funds     {m1}  {m2}")
+:say("  district funds     {m1}  {m2}")
 m1 |= pad(mail_money, 8)
 m2 |= pad(share(mail_money, total_money), 4)
-say("  in the mail        {m1}  {m2}")
+:say("  in the mail        {m1}  {m2}")
 
 wealth |= :sort(wealth)
 n | :len(wealth)
 adult_total | :sum(wealth)
-say("")
-say("Wealth of the {n} adults, poorest fifth to richest:")
-say("  fifth   holds   average   lowest   highest")
+:say("")
+:say("Wealth of the {n} adults, poorest fifth to richest:")
+:say("  fifth   holds   average   lowest   highest")
 repeat :range(0, 5) as q
     lo | :floor(n * q / 5)
     hi | :floor(n * (q + 1) / 5)
@@ -752,7 +752,7 @@ repeat :range(0, 5) as q
     c2 | pad(avg, 7)
     c3 | pad(lowest, 6)
     c4 | pad(highest, 7)
-    say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
+    :say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
 xx
 mid | :floor(n / 2)
 median | wealth[mid]
@@ -762,7 +762,7 @@ repeat wealth as w
         broke |= broke + 1
     xx
 xx
-say("  median {median}; {broke} adults have under 50")
+:say("  median {median}; {broke} adults have under 50")
 
 rows | []
 repeat final as st
@@ -771,9 +771,9 @@ repeat final as st
     xx
 xx
 rows |= :reverse(:sort_by(rows, sales_of))
-say("")
-say("Businesses, best sales first (sales over the whole run):")
-say("   id  district  open  staff  price  wage     cash     sales")
+:say("")
+:say("Businesses, best sales first (sales over the whole run):")
+:say("   id  district  open  staff  price  wage     cash     sales")
 repeat rows as bz
     op | "yes"
     if not bz{"open"}
@@ -787,12 +787,12 @@ repeat rows as bz
     c6 | pad(bz{"wage"}, 4)
     c7 | pad(bz{"cash"}, 7)
     c8 | pad(bz{"sales"}, 8)
-    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}")
+    :say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}")
 xx
 
-say("")
-say("Districts:")
-say("  district  people  adults  employed  avg adult money  funds  open biz  biz cash  biz sales  births  deaths  moved out")
+:say("")
+:say("Districts:")
+:say("  district  people  adults  employed  avg adult money  funds  open biz  biz cash  biz sales  births  deaths  moved out")
 repeat final as st
     dd | st{"d"}
     pop | 0
@@ -837,5 +837,5 @@ repeat final as st
     c10 | pad(d_births[dd], 6)
     c11 | pad(d_deaths[dd], 6)
     c12 | pad(d_moves[dd], 9)
-    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}  {c9}  {c10}  {c11}  {c12}")
+    :say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}  {c7}  {c8}  {c9}  {c10}  {c11}  {c12}")
 xx

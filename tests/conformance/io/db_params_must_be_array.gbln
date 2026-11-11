@@ -1,5 +1,5 @@
 /// requires: db
 /// The params argument must be an array.
-say("start")
+:say("start")
 r | :db_query("SELECT 1", "nope")
-say("unreachable")
+:say("unreachable")

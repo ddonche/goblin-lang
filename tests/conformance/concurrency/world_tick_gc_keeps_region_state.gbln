@@ -21,10 +21,10 @@ act make_region()
 xx
 act day(st, msg)
     next | st{"count"}
-    say(next())
+    :say(next())
     return st
 xx
 r | :actor(make_region(), day)
 repeat 3
-    tick()
+    :tick()
 xx

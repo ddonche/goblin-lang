@@ -1,1 +1,1 @@
-say(:map(["a", "b"], "upper"))
+:say(:map(["a", "b"], "upper"))

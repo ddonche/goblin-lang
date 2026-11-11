@@ -3,5 +3,5 @@ act over_one(n)
 xx
 l | [1, 2, 3]
 x | :reap_where!(l, "over_one")
-say x
-say l
+:say x
+:say l

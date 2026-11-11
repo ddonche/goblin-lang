@@ -18,7 +18,7 @@ xx
 r <> Realm | name: "Arveth", wars: 1
 k <> Person | name: "Toren", age: 70
 :event_log("des_event.log.txt")
-tick()
+:tick()
 t | :event(r, "ruler died", k, {"fell in battle": r >> wars * .5, "of the plague": 0.0, "of old age": k >> age / 80.0})
 :say(:has(["fell in battle", "of old age"], t))
 :event(r, "succeeded by", k, "the eldest son")

@@ -1,15 +1,15 @@
 /// `=> a => b` runs each statement in turn: inline if, inline act, and `?? =>` / `!! =>` guards
 x | 3
-if x > 1 => say("a") => say("b")
-if x > 9 => say("no") => say("no2")
-act f() => say("c") => say("d")
+if x > 1 => :say("a") => :say("b")
+if x > 9 => :say("no") => :say("no2")
+act f() => :say("c") => :say("d")
 f()
 act g(n) => n * 2
-say(g(4))
+:say(g(4))
 act k(n)
-  if n > 1 => say("big") => send "done"
+  if n > 1 => :say("big") => send "done"
   return "small"
 xx
-say(k(5))
-say(k(0))
-y | nil ?? => say("nil") => say("again")
+:say(k(5))
+:say(k(0))
+y | nil ?? => :say("nil") => :say("again")

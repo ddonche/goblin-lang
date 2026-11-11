@@ -38,7 +38,7 @@ xx
 north | :actor(make_town(0, 3, 1), town_day)
 south | :actor(make_town(.5, 2, 0), town_day)
 repeat :range(1, 4) as d
-    n | tick()
+    n | :tick()
     ill | :len(:overlays(flu))
     hit_n | 0
     hit_s | 0
@@ -50,5 +50,5 @@ repeat :range(1, 4) as d
         xx
     xx
     all | :len(:objects((it >> health) > 0))
-    say("tick {n}: flu {ill}, north {hit_n}, south {hit_s}, people {all}")
+    :say("tick {n}: flu {ill}, north {hit_n}, south {hit_s}, people {all}")
 xx

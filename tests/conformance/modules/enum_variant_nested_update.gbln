@@ -7,5 +7,5 @@ enum Outer
 xx
 o | Outer::A { inner: Inner::B { v: 1 }, n: 7 }
 :update!(o >> inner >> v, 2)
-say(o >> inner >> v)
-say(o >> n)
+:say(o >> inner >> v)
+:say(o >> n)

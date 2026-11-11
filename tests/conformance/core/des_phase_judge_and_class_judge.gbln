@@ -24,7 +24,7 @@
 xx
 c <> Cell | n: 0
 d <> Cell | n: 0
-tick()
+:tick()
     grow
 xx
-say(c >> n)
+:say(c >> n)

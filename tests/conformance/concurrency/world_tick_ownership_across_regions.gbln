@@ -13,7 +13,7 @@
         @age |= @age + 1
     xx
     transition erase where @name == "Empire" and @age >= 3
-    on erase => say("the Empire falls, owning {:len(:objects(\"Realm\", it >> owner == self))} realms")
+    on erase => :say("the Empire falls, owning {:len(:objects(\"Realm\", it >> owner == self))} realms")
     transition subjugate
         targets: Realm where @name == "Empire" and (target >> name) == "Kalor"
     xx
@@ -65,5 +65,5 @@ repeat :range(2, 5) as t
             :put_last!(rows, "{o >> name}<{holder(o)}")
         xx
     xx
-    say("tick {t}: {rows}")
+    :say("tick {t}: {rows}")
 xx

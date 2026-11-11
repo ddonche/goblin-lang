@@ -1,8 +1,8 @@
 unless false
-    say("u")
+    :say("u")
 xx
 unless true
-    say("no")
+    :say("no")
 else
-    say("e")
+    :say("e")
 xx

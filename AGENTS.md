@@ -80,8 +80,14 @@ act first_word(text)
 xx
 ```
 
-Builtins are called with a colon, `:len(x)`, `:say(x)`; your own actions
-without one, `greet("Bo")`. A module's actions are `name::action()`.
+Builtins are called with a colon, `:len(x)`, `:say(x)`, `:tick()`; your own
+actions without one, `greet("Bo")`. A module's actions are `name::action()`.
+The compiler holds you to it (owner, 2026-11-11): a builtin called without
+its colon is R1260, a colon on your own action is R1261. "Builtin" means
+anything Goblin provides. Statement words (`if`, `repeat`, `judge`,
+`collect`, `attempt`, ...) and sentence forms (`pick 1 from xs`, `roll 2d6`,
+`raw "..."`, `sweep`) are syntax and take no colon. `goblin fix colons <dir>`
+rewrites older code (`--md` also fixes Goblin samples in Markdown).
 
 Some values have properties, read without parentheses: `s.len`, `s.title`,
 `s.upper`, `s.trim`, `x.nix?`.

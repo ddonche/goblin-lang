@@ -1,4 +1,4 @@
 /// env requires a string name.
-say("start")
+:say("start")
 v | :env(42)
-say("unreachable")
+:say("unreachable")

@@ -108,7 +108,7 @@ xx
 
 /// Prehistory: only the land.
 repeat prehistory
-    tick()
+    :tick()
         land
     xx
 xx
@@ -167,7 +167,7 @@ lived  | 0
 fought | 0
 repeat :range(0, years + 1) as year
     if year > 0
-        tick()
+        :tick()
             land
             polity::account(lands, pairs)
             family::account(year)

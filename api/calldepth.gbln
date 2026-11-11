@@ -1,7 +1,7 @@
 act main
     x | [[[[[[[[[9]]]]]]]]]
-    say x
-    say "Success"
+    :say x
+    :say "Success"
 end
 
 main()

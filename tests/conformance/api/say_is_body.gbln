@@ -1,2 +1,2 @@
 /// env: GOBLIN_NONINTERACTIVE=1
-say "from say"
+:say "from say"

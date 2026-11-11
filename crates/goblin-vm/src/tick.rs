@@ -1695,7 +1695,7 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
             let (imin, imax) = derive_link_formula_range(inner);
             (-imax, -imin)
         }
-        Expr::FreeCall(name, args, _) if name == "abs" => {
+        Expr::FreeCall(name, args, _) if name.trim_start_matches(':') == "abs" => {
             if let Some(arg) = args.first() {
                 let (amin, amax) = derive_link_formula_range(arg);
                 let abs_min = if amin <= 0.0 && amax >= 0.0 { 0.0 } else { amin.abs().min(amax.abs()) };
@@ -1984,7 +1984,7 @@ fn erase_changed(vm: &mut Vm, touched: Vec<crate::value::ObjId>) -> Result<(), G
 fn uses_chance(e: &goblin_ast::Expr) -> bool {
     use goblin_ast::Expr as E;
     let random_name = |n: &str| {
-        let n = n.trim_end_matches('!');
+        let n = n.trim_start_matches(':').trim_end_matches('!');
         matches!(n, "pick" | "reap" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str"
             | "shuffle" | "sample_weighted" | "uuid_v4" | "uuid_v7")
             || n.starts_with("secure_") || n.ends_with("_random") || n.ends_with("_sample")
@@ -1992,7 +1992,7 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
     // A call to the program's own code (an action, a method, `:invoke`)
     // may roll dice inside, so it counts as chance too: checked once a tick.
     let own_code = |n: &str| {
-        let n = n.trim_end_matches('!');
+        let n = n.trim_start_matches(':').trim_end_matches('!');
         matches!(n, "invoke" | "summon" | "provoke" | "eval") || crate::compiler::builtin_by_name(n).is_none()
     };
     match e {

@@ -4,5 +4,5 @@ act lab(x)
         else: return "small"
     xx
 xx
-say(lab(9))
-say(lab(1))
+:say(lab(9))
+:say(lab(1))

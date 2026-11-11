@@ -1,5 +1,5 @@
 a | [1, 2]
 b | a
-say(a == b)
+:say(a == b)
 :put_last!(b, 3)
-say(a == b)
+:say(a == b)

@@ -37,17 +37,17 @@ xx
 a <> Land | food: 0
 b <> Land | food: 1
 repeat 3
-    tick()
+    :tick()
         grow
         eat
     xx
-    say("{a >> food} {b >> food} {a >> log} {b >> log} {:metrics(){"ticks"}}")
+    :say("{a >> food} {b >> food} {a >> log} {b >> log} {:metrics(){"ticks"}}")
 xx
-tick()
+:tick()
     repeat 2
         grow
     xx
 xx
-say("{a >> food} {b >> food} {a >> log} {:metrics(){"ticks"}}")
-tick()
-say("{a >> food} {a >> log} {:metrics(){"ticks"}} {a >> phase}")
+:say("{a >> food} {b >> food} {a >> log} {:metrics(){"ticks"}}")
+:tick()
+:say("{a >> food} {a >> log} {:metrics(){"ticks"}} {a >> phase}")

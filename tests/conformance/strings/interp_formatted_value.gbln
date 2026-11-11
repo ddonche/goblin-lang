@@ -1,2 +1,2 @@
 x | :format(2.5, 2)
-say("v={x}")
+:say("v={x}")

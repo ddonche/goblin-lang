@@ -2,4 +2,4 @@
 act all(x)
     return "user-all"
 xx
-say(all([true, false]))
+:say(all([true, false]))

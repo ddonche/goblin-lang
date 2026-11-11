@@ -1,2 +1,2 @@
 /// tokenize treats regex metacharacters in the delimiter set literally.
-say(:tokenize("a-b]c^d", "-]^"))
+:say(:tokenize("a-b]c^d", "-]^"))

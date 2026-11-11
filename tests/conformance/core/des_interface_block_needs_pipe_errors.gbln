@@ -5,4 +5,4 @@ interface govern
         p >> gold |= p >> gold + 3
     xx
 xx
-say("never printed")
+:say("never printed")

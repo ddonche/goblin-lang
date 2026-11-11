@@ -34,12 +34,12 @@ xx
 a | :actor(make(1), day)
 b | :actor(make(2), day)
 c | :actor(make(3), day)
-tick()
+:tick()
 far | :objects("Field", it >> name == "far")[0]
 far >> owner |= :objects("Lord", it >> name == "doomed")[0]
 moved | false
 repeat :range(2, 7) as t
-    tick()
+    :tick()
     if !moved and :len(:objects("Lord")) == 1
         :move!(:objects("Field", it >> name == "far")[0], c)
         moved |= true
@@ -48,5 +48,5 @@ repeat :range(2, 7) as t
     o | f >> owner
     shown | "nil"
     if o != nil => shown |= o >> name
-    say("tick {t}: far owned by {shown}; lords {:len(:objects(\"Lord\"))}")
+    :say("tick {t}: far owned by {shown}; lords {:len(:objects(\"Lord\"))}")
 xx

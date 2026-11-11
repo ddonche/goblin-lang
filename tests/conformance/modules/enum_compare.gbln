@@ -3,9 +3,9 @@ enum Status
     Busy
 xx
 s | Status::Busy
-say(s == Status::Busy)
-say(s == Status::Idle)
-say(s != Status::Idle)
+:say(s == Status::Busy)
+:say(s == Status::Idle)
+:say(s != Status::Idle)
 if s == Status::Busy
-    say("busy")
+    :say("busy")
 xx

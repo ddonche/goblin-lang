@@ -17,7 +17,7 @@ fn run(name: &str, files: &[(&str, &str)]) -> (String, String) {
 #[test]
 fn import_cycle_warns_with_its_files() {
     let (out, err) = run("cycle", &[
-        ("main.gbln", "import a as a\nsay(a::f())\n"),
+        ("main.gbln", "import a as a\n:say(a::f())\n"),
         ("a.gbln", "import b as b\nact f()\n    return \"a\"\nxx\n"),
         ("b.gbln", "import a as a\nact g()\n    return \"b\"\nxx\n"),
     ]);
@@ -28,7 +28,7 @@ fn import_cycle_warns_with_its_files() {
 #[test]
 fn diamond_import_says_nothing() {
     let (_, err) = run("diamond", &[
-        ("main.gbln", "import l as l\nimport r as r\nsay(l::f() + r::g())\n"),
+        ("main.gbln", "import l as l\nimport r as r\n:say(l::f() + r::g())\n"),
         ("l.gbln", "import base as base\nact f()\n    return base::v()\nxx\n"),
         ("r.gbln", "import base as base\nact g()\n    return base::v()\nxx\n"),
         ("base.gbln", "act v()\n    return \"x\"\nxx\n"),

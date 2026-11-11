@@ -8,4 +8,4 @@ sweep text
     "<i>" ... "</i>" :
         :put_last!(seen, "italic " + self)
 xx
-say(seen)
+:say(seen)

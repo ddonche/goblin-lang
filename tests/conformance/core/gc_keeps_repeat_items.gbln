@@ -14,5 +14,5 @@ act make_all()
 xx
 repeat make_all() as bump_it
     :gc()
-    say(bump_it(1))
+    :say(bump_it(1))
 xx

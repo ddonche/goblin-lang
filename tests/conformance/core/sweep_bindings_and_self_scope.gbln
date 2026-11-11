@@ -5,10 +5,10 @@ act f(text)
         "(" ... ")" :
             sweep self
                 "x" :
-                    say("inner self: " + self)
+                    :say("inner self: " + self)
             xx
-            say("outer self: " + self)
+            :say("outer self: " + self)
     xx
     return "done"
 xx
-say(f("a (x) b"))
+:say(f("a (x) b"))

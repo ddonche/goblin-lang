@@ -1,8 +1,8 @@
 if ""
-    say("truthy")
+    :say("truthy")
 else
-    say("falsy")
+    :say("falsy")
 xx
 if " "
-    say("truthy")
+    :say("truthy")
 xx

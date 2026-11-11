@@ -42,10 +42,10 @@ repeat :range(1, 3) as i
     :put_last!(meadows, :actor(make(i)))
 xx
 repeat :range(1, 4) as t
-    tick()
+    :tick()
     bites | []
     repeat :objects("Grass") as g
         :put_last!(bites, "{g >> owner >> n}:{g >> bites}")
     xx
-    say("tick {t}: {bites}")
+    :say("tick {t}: {bites}")
 xx

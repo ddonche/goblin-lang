@@ -19,9 +19,9 @@ xx
 a <> Land | name: "Varn"
 b <> Land | name: "Oss"
 c <> Land | name: "Tal"
-say(found(a, 1))
-say(found(b, 2))
-say(found(c, 3))
+:say(found(a, 1))
+:say(found(b, 2))
+:say(found(c, 3))
 repeat :overlays() as o
-    say("{o >> overlay_name} on {o >> host_var}: zeal {o >> zeal}, parents {o >> parents}")
+    :say("{o >> overlay_name} on {o >> host_var}: zeal {o >> zeal}, parents {o >> parents}")
 xx

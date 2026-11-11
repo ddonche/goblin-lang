@@ -10,4 +10,4 @@ act churn(n)
     return :stash_count(){"total"}
 xx
 total | :invoke("churn", 400000)
-say(total < 200000)
+:say(total < 200000)

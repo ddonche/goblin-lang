@@ -1,9 +1,9 @@
 /// `stop` ends a `sweep_all`; `return` inside it returns from the action
 t | "abc"
 sweep_all t
-    say(self)
+    :say(self)
     if true => stop
-    say("not reached")
+    :say("not reached")
 xx
 act f(s)
     sweep_all s
@@ -11,4 +11,4 @@ act f(s)
     xx
     return "none"
 end
-say(f("xyz"))
+:say(f("xyz"))

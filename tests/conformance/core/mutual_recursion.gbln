@@ -6,5 +6,5 @@ act is_od(n)
     if n == 0 => return false
     return is_ev(n - 1)
 xx
-say(is_ev(10))
-say(is_od(7))
+:say(is_ev(10))
+:say(is_od(7))

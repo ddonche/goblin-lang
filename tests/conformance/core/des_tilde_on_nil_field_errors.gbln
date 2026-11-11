@@ -2,4 +2,4 @@
 <>Bag |
     ~owner: nil
 xx
-say("never printed")
+:say("never printed")

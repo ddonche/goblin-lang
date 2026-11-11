@@ -6,13 +6,13 @@ xx
 a <> Unit | name: "a", hp: 7
 b <> Unit | name: "b", hp: 12
 c <> Unit | name: "c", hp: 3
-say(:len(:objects()))
+:say(:len(:objects()))
 names | []
 for u in :objects()
     :put_last!(names, u >> name)
 xx
-say(:sort(names))
-say(:valtype(:objects()[0]))
+:say(:sort(names))
+:say(:valtype(:objects()[0]))
 weak | :objects(it >> hp < 10)
-say(:len(weak))
-say(:len(:objects(it >> hp > 100)))
+:say(:len(weak))
+:say(:len(:objects(it >> hp > 100)))

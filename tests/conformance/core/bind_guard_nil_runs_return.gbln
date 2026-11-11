@@ -3,4 +3,4 @@ act f(v)
     x | v ?? => return "early"
     return "late"
 xx
-say(f(nil))
+:say(f(nil))

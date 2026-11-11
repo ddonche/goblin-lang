@@ -10,5 +10,5 @@ map | 9
 next | 10
 close | 11
 payload | 12
-say(version + data + mask + text + value + result + index + list + map + next + close + payload)
-say(list)
+:say(version + data + mask + text + value + result + index + list + map + next + close + payload)
+:say(list)

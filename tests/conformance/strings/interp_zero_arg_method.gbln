@@ -1,4 +1,4 @@
 /// known-gap: interp leaves an expression in braces as written
 /// `{name.slug}` is an expression (a zero-argument method), filled in like `{x + 1}` (approved 2026-10-26).
 name | "Hello World"
-say("/users/{name.slug}")
+:say("/users/{name.slug}")

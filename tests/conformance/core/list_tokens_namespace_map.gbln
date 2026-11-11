@@ -2,6 +2,6 @@
 /// list_tokens() returns {namespace: {id: value}} for all.
 :register_token("THEME", "ACCENT", "purple")
 :register_token("THEME", "BG", "black")
-say(:list_tokens("THEME"))
-say(:list_tokens("NOPE"))
-say(:list_tokens())
+:say(:list_tokens("THEME"))
+:say(:list_tokens("NOPE"))
+:say(:list_tokens())

@@ -2,4 +2,4 @@
 act upper(x)
     return "user-upper"
 xx
-say(upper("ab"))
+:say(upper("ab"))

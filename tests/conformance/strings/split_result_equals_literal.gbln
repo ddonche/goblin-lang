@@ -1,1 +1,1 @@
-say(:split("a b", " ") == ["a", "b"])
+:say(:split("a b", " ") == ["a", "b"])

@@ -83,15 +83,15 @@ c <> Town | gold: 3
 :overlay!(a, flu, .8)
 :overlay!(b, calm, .3)
 :overlay!(b, unrest)
-tick()
+:tick()
 :detach!(b, unrest)
-tick()
-tick()
+:tick()
+:tick()
 :event_log(nil)
-tick()
-say(:read_text(log))
+:tick()
+:say(:read_text(log))
 attempt
     :event_log(3)
 rescue e
-    say(e)
+    :say(e)
 xx

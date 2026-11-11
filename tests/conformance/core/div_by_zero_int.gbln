@@ -1,2 +1,2 @@
-say("start")
-say(5 / 0)
+:say("start")
+:say(5 / 0)

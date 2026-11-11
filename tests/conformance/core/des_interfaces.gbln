@@ -15,10 +15,10 @@ interface diplomacy |
     act trade(p, t)
         p >> gold |= p >> gold + 2
         t >> gold |= t >> gold + 1
-        say("{p >> name} trades with {t >> name}")
+        :say("{p >> name} trades with {t >> name}")
     xx
     act rest(p)
-        say("{p >> name} rests")
+        :say("{p >> name} rests")
     xx
     decision partner
         targets: uses diplomacy where (target >> name) != @name
@@ -46,10 +46,10 @@ xx
 a <> Tribe | name: "tribe", openness: .9
 b <> Kingdom | name: "kingdom", openness: .2
 r <> Rock | name: "rock"
-say(:len(:objects(uses diplomacy)))
-tick()
+:say(:len(:objects(uses diplomacy)))
+:tick()
     between
 xx
-say("{a >> gold} {b >> gold}")
-tick()
-say("{a >> gold} {b >> gold}")
+:say("{a >> gold} {b >> gold}")
+:tick()
+:say("{a >> gold} {b >> gold}")

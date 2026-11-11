@@ -52,15 +52,15 @@ xx
 a | :actor(make_zone(1, 0), zone_day)
 b | :actor(make_zone(0, 1), zone_day)
 repeat :range(1, 6) as d
-    tick()
+    :tick()
     repeat :objects(it >> hunger == .5)
         saw | it >> saw
         m | it >> seen_mood
-        say("tick {d}: the wolf saw fat {saw}, mood {m}")
+        :say("tick {d}: the wolf saw fat {saw}, mood {m}")
     xx
     repeat :objects(it >> fat > 0)
         f | it >> fat
         m | it >> mood
-        say("tick {d}: the sheep has {f}, mood {m}")
+        :say("tick {d}: the sheep has {f}, mood {m}")
     xx
 xx

@@ -33,7 +33,7 @@ l <> Land | name: "Varn"
 :overlay!(l, hill_speech, .6)
 :overlay!(l, sea_speech, .4)
 repeat 4
-    tick()
+    :tick()
 xx
 repeat :overlays(l) as o
     :say("{o >> overlay_name} {o >> intensity}")

@@ -21,6 +21,6 @@ repeat :range(0, 5000) as i
     xx
 xx
 repeat :range(0, 10)
-    tick()
+    :tick()
 xx
-say(:len(:overlays(sick)))
+:say(:len(:overlays(sick)))

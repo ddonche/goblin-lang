@@ -8,9 +8,9 @@ act go()
     s | :actor(settings, on_message)
     attempt
         settings
-        say("no error")
+        :say("no error")
     rescue e
-        say(:has("{e}", "C0115"))
+        :say(:has("{e}", "C0115"))
     xx
 xx
 go()
@@ -18,7 +18,7 @@ other | {"theme": "light"}
 s2 | :actor(other, on_message)
 attempt
     other
-    say("no error")
+    :say("no error")
 rescue e
-    say(:has("{e}", "C0115"))
+    :say(:has("{e}", "C0115"))
 xx

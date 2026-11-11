@@ -1,6 +1,6 @@
 /// `provoke(cond, msg)` works as a statement, not only inside an expression
 :provoke(1 == 1)
-provoke(2 > 1, "fine")
-say("mid")
-provoke(1 > 2, "stop")
-say("never")
+:provoke(2 > 1, "fine")
+:say("mid")
+:provoke(1 > 2, "stop")
+:say("never")

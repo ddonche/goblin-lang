@@ -1,1 +1,1 @@
-say(:yall_minify({"a": 1, "b": [true, "x"]}))
+:say(:yall_minify({"a": 1, "b": [true, "x"]}))

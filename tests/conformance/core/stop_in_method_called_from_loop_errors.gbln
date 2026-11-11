@@ -10,6 +10,6 @@
 xx
 c <> C | n: 1
 for i in [1, 2, 3]
-    say(c.halt(i))
+    :say(c.halt(i))
 xx
-say("after")
+:say("after")

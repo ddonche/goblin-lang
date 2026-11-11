@@ -11,7 +11,7 @@ act level(b)
 xx
 act fill(a, b)
     b >> n |= b >> n + 1
-    say("{a >> name} fills the box")
+    :say("{a >> name} fills the box")
 xx
 <>Agent |
     name: ""
@@ -27,8 +27,8 @@ box <> Box | n: 0
 a1 <> Agent | name: "first"
 a2 <> Agent | name: "second"
 a3 <> Agent | name: "third"
-tick()
-say(box >> n)
+:tick()
+:say(box >> n)
 box >> n |= 0
-tick()
-say(box >> n)
+:tick()
+:say(box >> n)

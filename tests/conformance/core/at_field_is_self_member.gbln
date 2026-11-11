@@ -6,7 +6,7 @@
     hp: 10
     side: 0
     act report()
-        say("{@name}: hp {@hp}, same as {self >> hp}")
+        :say("{@name}: hp {@hp}, same as {self >> hp}")
     xx
     every 1 tick
         @hp |= @hp - 1
@@ -23,11 +23,11 @@ xx
 act strike(f, t)
     a | f >> name
     b | t >> name
-    say("{a} strikes {b}")
+    :say("{a} strikes {b}")
 xx
 x <> F | name: "x", side: 0
 y <> F | name: "y", side: 1, hp: 4
 x.report()
-tick()
+:tick()
 x.report()
 y.report()

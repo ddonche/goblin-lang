@@ -4,5 +4,5 @@ act addone(xs)
 xx
 a | [1, 2]
 b | addone(a)
-say a
-say b
+:say a
+:say b

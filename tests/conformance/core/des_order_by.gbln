@@ -32,7 +32,7 @@ xx
 xx
 act go(f, t)
     a | f >> name
-    say("{a}")
+    :say("{a}")
 xx
 t <> T | n: 1
 a <> F | name: "slow", speed: 1
@@ -41,4 +41,4 @@ c <> F | name: "fast", speed: 9
 d <> F | name: "tie-1", speed: 5
 e <> S | name: "s-a", rank: "a"
 f <> F | name: "tie-2", speed: 5
-tick()
+:tick()

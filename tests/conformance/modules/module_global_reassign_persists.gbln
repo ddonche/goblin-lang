@@ -1,4 +1,4 @@
 import _support/modules/state as st
 st::bump()
 st::bump()
-say(st::get_counter())
+:say(st::get_counter())

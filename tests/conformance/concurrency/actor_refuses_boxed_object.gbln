@@ -11,6 +11,6 @@ lobby <> Room | name: "lobby"
 attempt
     a | :actor(lobby, h)
 rescue e
-    say(:has("{e}", "C0113"))
+    :say(:has("{e}", "C0113"))
 xx
-say(lobby >> name)
+:say(lobby >> name)

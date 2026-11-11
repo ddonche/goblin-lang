@@ -17,4 +17,4 @@ aspect Proud |
     army: 10
 xx
 t <> Town | name: "a"
-say("{t >> gold} {t >> pride} {t >> army}")
+:say("{t >> gold} {t >> pride} {t >> army}")

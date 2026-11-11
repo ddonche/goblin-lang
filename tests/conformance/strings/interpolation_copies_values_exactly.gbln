@@ -13,11 +13,11 @@ while i < 200
     big |= big + "<li>" + :str(i) + "</li>"
     i |= i + 1
 xx
-say("[{inner}] [{name}] [{n}] [{f}] [{flag}] [{xs}] [{missing}] \{literal}")
-say(:len("<ul>{big}</ul>"))
+:say("[{inner}] [{name}] [{n}] [{f}] [{flag}] [{xs}] [{missing}] \{literal}")
+:say(:len("<ul>{big}</ul>"))
 act card(who)
     body | "by " + who
     return "<p>{who}: {body}</p>"
 xx
-say(card(name))
-say('Z' + "oë" + '!')
+:say(card(name))
+:say('Z' + "oë" + '!')

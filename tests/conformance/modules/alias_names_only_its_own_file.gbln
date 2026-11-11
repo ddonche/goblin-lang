@@ -2,5 +2,5 @@
 /// actions of other files in the same directory.
 import _support/modules/mathy as m
 import _support/modules/left as l
-say(l::name())
-say(l::double(2))
+:say(l::name())
+:say(l::double(2))

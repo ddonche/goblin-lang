@@ -7,19 +7,19 @@ act flaky(state, msg)
     return state + [msg, seen]
 xx
 a | :actor([], flaky, {restart: "on_failure", max_restarts: 2})
-say(:await(:request(a, "a")))
-say(:await(:request(a, "b")))
+:say(:await(:request(a, "a")))
+:say(:await(:request(a, "b")))
 attempt
     :await(:request(a, "boom"))
 rescue e
-    say(:has("{e}", "division by zero"))
+    :say(:has("{e}", "division by zero"))
 xx
-say(:await(:request(a, "c")))
+:say(:await(:request(a, "c")))
 :post(a, "boom")
-say(:await(:request(a, "d")))
+:say(:await(:request(a, "d")))
 :post(a, "boom")
 attempt
     :await(:request(a, "e"))
 rescue e
-    say(:has("{e}", "C0112: actor-failed"))
+    :say(:has("{e}", "C0112: actor-failed"))
 xx

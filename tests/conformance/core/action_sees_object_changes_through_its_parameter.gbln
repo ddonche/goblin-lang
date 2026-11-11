@@ -12,13 +12,13 @@ xx
 act frighten(target)
     :overlay!(target, dread, .5)
     target >> fear |= target >> fear + .1
-    say(target >> fear)
+    :say(target >> fear)
 end
 act read(target)
     rome >> fear |= .9
-    say(target >> fear)
+    :say(target >> fear)
 end
 rome <> Polity | fear: .3
 frighten(rome)
-say(rome >> fear)
+:say(rome >> fear)
 read(rome)

@@ -20,9 +20,9 @@ overlay council <^> Government
     term: 10
 xx
 repeat :objects(Government) as g
-    say("{g >> overlay_name}: rule {g >> rule}, term {g >> term}, parents {g >> parents}")
+    :say("{g >> overlay_name}: rule {g >> rule}, term {g >> term}, parents {g >> parents}")
 xx
-say(:len(:objects(Government, it >> term > 5)))
+:say(:len(:objects(Government, it >> term > 5)))
 act found(r)
     overlay junta <^> Government
         rule: "army"
@@ -33,5 +33,5 @@ r <> Realm | rank: 1
 found(r)
 found(r)
 repeat :objects(Government, it >> rule == "army") as g
-    say(g >> overlay_name)
+    :say(g >> overlay_name)
 xx

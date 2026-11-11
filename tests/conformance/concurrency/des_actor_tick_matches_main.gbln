@@ -36,13 +36,13 @@ act report(label)
         :put_last!(hs, :round(h * 1000))
     xx
     ill | :len(:overlays(sick))
-    say("{label}: {hs} sick {ill}")
+    :say("{label}: {hs} sick {ill}")
 xx
 act run(st, msg)
     first | st{"people"}[0]
     :overlay!(first, sick, .9)
     repeat 8
-        tick()
+        :tick()
     xx
     report("actor")
     return st
@@ -51,7 +51,7 @@ here | world(4)
 first | here{"people"}[0]
 :overlay!(first, sick, .9)
 repeat 8
-    tick()
+    :tick()
 xx
 report("main")
 :delete!(here, "people")

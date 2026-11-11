@@ -4,5 +4,5 @@ enum Status
     Busy
 xx
 s | Status::Idle()
-say(s == Status::Idle)
-say(s)
+:say(s == Status::Idle)
+:say(s)

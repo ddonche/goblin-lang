@@ -20,8 +20,8 @@ xx
 a <> Shop | stock: 10
 x <> Buyer | margin: 0
 attempt
-    tick()
-    say("no error")
+    :tick()
+    :say("no error")
 rescue e
-    say(:has("{e}", "no field 'stok'"))
+    :say(:has("{e}", "no field 'stok'"))
 xx

@@ -5,4 +5,4 @@ import _support/modules/des_pond as pond
 big <> Frog | name: "big", size: 5
 mid <> Frog | name: "mid", size: 3
 :tick()
-say("{big >> size} {mid >> size}")
+:say("{big >> size} {mid >> size}")

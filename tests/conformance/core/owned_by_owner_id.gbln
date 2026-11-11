@@ -9,7 +9,7 @@ squire <> Unit | name: "squire"
 knight >> owner_id |= king >> uuid
 squire >> owner_id |= knight >> uuid
 o | :owned_by(king)
-say(:len(o))
-say(o[0] >> name)
-say(:owned_by(knight)[0] >> name)
-say(:len(:owned_by(squire)))
+:say(:len(o))
+:say(o[0] >> name)
+:say(:owned_by(knight)[0] >> name)
+:say(:len(:owned_by(squire)))

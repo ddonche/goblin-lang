@@ -1,4 +1,4 @@
 act probe(action)
     return action
 xx
-say(probe(1))
+:say(probe(1))

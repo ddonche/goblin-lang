@@ -3,6 +3,6 @@
     name: "r"
 xx
 d <> Dog | name: "x"
-say(d >> name)
+:say(d >> name)
 d |= 5
-say(d)
+:say(d)

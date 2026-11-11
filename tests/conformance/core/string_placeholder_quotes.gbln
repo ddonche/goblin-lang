@@ -12,15 +12,15 @@ xx
 lord <> Lord | name: "Ash"
 e1 <> Estate | n: 1, owner: lord
 e2 <> Estate | n: 2
-say("estates {:len(:objects("Estate"))}")
-say("estates {:len(:objects(\"Estate\"))}")
-say("{lord >> name} holds {:len(:objects("Estate", it >> owner == lord))}")
+:say("estates {:len(:objects("Estate"))}")
+:say("estates {:len(:objects(\"Estate\"))}")
+:say("{lord >> name} holds {:len(:objects("Estate", it >> owner == lord))}")
 m | {"a": 5, "b": {"c": "deep"}}
-say("a is {m{"a"}}, c is {m{"b"}{"c"}}")
-say("{:upper("it's")} and {:split("a-b", "-")}")
-say("{ not code } {\"json\": 1}")
-say("css a { color: red; } b")
+:say("a is {m{"a"}}, c is {m{"b"}{"c"}}")
+:say("{:upper("it's")} and {:split("a-b", "-")}")
+:say("{ not code } {\"json\": 1}")
+:say("css a { color: red; } b")
 x | 3
-say("{x} \{x\} {x + 1}")
+:say("{x} \{x\} {x + 1}")
 /// Unbalanced braces in text don't reach into the next string.
-say(["{not {code}", "}"])
+:say(["{not {code}", "}"])

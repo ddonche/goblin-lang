@@ -8,8 +8,8 @@ repeat :range(1, 21) as i
     :put_last!(files, "_support/eval/many/e{n}.gob")
 xx
 r | :eval(:load(files))
-say(:len(r >> schedule))
-say(r >> schedule[0])
-say(r >> schedule[10])
-say(r >> schedule[19])
-say(:len(:keys(r)))
+:say(:len(r >> schedule))
+:say(r >> schedule[0])
+:say(r >> schedule[10])
+:say(r >> schedule[19])
+:say(:len(:keys(r)))

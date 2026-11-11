@@ -11,15 +11,15 @@ a <> F | hp: 10, power: 6
 rounds | 2
 :overlay!(a, stunned, a >> power / 10, rounds + 1)
 s | :overlay_strength("stunned", a)
-say("strength {s}")
+:say("strength {s}")
 repeat :range(1, 5) as d
-    tick()
+    :tick()
     left | :overlays_of(a)
-    say("tick {d}: {left}")
+    :say("tick {d}: {left}")
 xx
 act stun(f, n)
     :overlay!(f, stunned, .5, n)
 xx
 stun(a, 1)
-tick()
-say(:overlays_of(a))
+:tick()
+:say(:overlays_of(a))

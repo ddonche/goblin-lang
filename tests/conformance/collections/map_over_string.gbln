@@ -5,5 +5,5 @@ xx
 act one(c)
     return 1
 xx
-say(:map("ab", "up"))
-say(:map("ab", "one"))
+:say(:map("ab", "up"))
+:say(:map("ab", "one"))

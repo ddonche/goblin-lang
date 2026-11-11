@@ -9,8 +9,8 @@
     xx
 xx
 p <> Point | x: 3, y: 4
-say(p >> x)
-say(p >> y)
+:say(p >> x)
+:say(p >> y)
 q <> Point | x: 1
-say(q >> y)
-say(p.x)
+:say(q >> y)
+:say(p.x)

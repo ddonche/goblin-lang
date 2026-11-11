@@ -9,4 +9,4 @@ xx
 <>Kingdom |
     uses Political, Order
 xx
-say("never printed")
+:say("never printed")

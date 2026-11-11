@@ -5,8 +5,8 @@ act shout(x)
     while i < (5 - x) * 500
         i |= i + 1
     xx
-    say("task {x}")
+    :say("task {x}")
     return x
 xx
 r | :swarm([1, 2, 3, 4], shout, 4)
-say(r)
+:say(r)

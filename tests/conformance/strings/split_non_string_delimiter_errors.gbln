@@ -1,2 +1,2 @@
-say("start")
-say(:split("abc", 1))
+:say("start")
+:say(:split("abc", 1))

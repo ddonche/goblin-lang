@@ -31,10 +31,10 @@ a | :actor(make_sender(), send)
 b | :actor(make_receiver(), recv)
 :post(a, {"peer": b})
 repeat 3
-    tick()
+    :tick()
 xx
 ns | []
 repeat :objects(it >> n > 0)
     :put_last!(ns, it >> n)
 xx
-say(:sort(ns))
+:say(:sort(ns))

@@ -1,1 +1,1 @@
-say(:md_to_html("# Hi\n\nsome *em* text"))
+:say(:md_to_html("# Hi\n\nsome *em* text"))

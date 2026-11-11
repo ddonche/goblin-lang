@@ -6,5 +6,5 @@ act fib(n)
     if n < 2 => return n
     return fib(n - 1) + fib(n - 2)
 xx
-say(fact(10))
-say(fib(15))
+:say(fact(10))
+:say(fib(15))

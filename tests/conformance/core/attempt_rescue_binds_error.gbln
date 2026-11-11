@@ -2,5 +2,5 @@
 attempt
     x | 1 / 0
 rescue err
-    say(:is_nix(err))
+    :say(:is_nix(err))
 xx

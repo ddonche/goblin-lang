@@ -31,12 +31,12 @@ act apply(p, s)
     p >> jobs |= p >> jobs + 1
 xx
 act wait(p, s)
-    say("waiting")
+    :say("waiting")
 xx
 s <> Shop | open: 1
 p <> Person | bought: 0
-tick()
-tick()
+:tick()
+:tick()
 b | p >> bought
 j | p >> jobs
-say("bought {b}, jobs {j}")
+:say("bought {b}, jobs {j}")

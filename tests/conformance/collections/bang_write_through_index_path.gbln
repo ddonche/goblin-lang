@@ -7,15 +7,15 @@ rows | m{"rows"}
 :put_first!(m{"rows"}, 0)
 :trim!(m{"tags"}{"a"})
 :update_at!(m{"rows"}, 0, 9)
-say(m)
-say(keep)
-say(rows)
+:say(m)
+:say(keep)
+:say(rows)
 grid | [[1, 2], [3]]
 :put_last!(grid[1], 4)
-say(grid)
+:say(grid)
 i | 0
 while i < 3
     :put_last!(grid[0], i)
     i |= i + 1
 xx
-say(grid)
+:say(grid)

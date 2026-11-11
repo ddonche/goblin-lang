@@ -29,14 +29,14 @@ xx
 xx
 act sit(w, s, score)
     s >> picked |= s >> picked + 1
-    say("sat, score {score}")
+    :say("sat, score {score}")
 xx
 act pass(w, s, score)
-    say("passed, score {score}")
+    :say("passed, score {score}")
 xx
 a <> Spot | shade: .9
 w <> Walker | steps: 0
-tick()
+:tick()
 k <> Child | steps: 0
-delete_object!(w)
-tick()
+:delete_object!(w)
+:tick()

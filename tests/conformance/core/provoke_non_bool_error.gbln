@@ -1,4 +1,4 @@
 /// provoke's condition must be a bool.
-say("start")
+:say("start")
 r | :provoke(1)
-say("unreachable")
+:say("unreachable")

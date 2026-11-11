@@ -2,4 +2,4 @@
 /// [] on a map in an update! path is an error, also when the value is plain arithmetic.
 m | {"a": {"b": 1}}
 :update!(m{"a"}["b"], m{"a"}{"b"} + 1)
-say("not reached")
+:say("not reached")

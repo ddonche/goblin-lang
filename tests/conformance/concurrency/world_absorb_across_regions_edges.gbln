@@ -37,12 +37,12 @@ act day(st, msg)
 xx
 a | :actor(make(1), day)
 b | :actor(make(2), day)
-tick()
+:tick()
 d | :objects("Realm", it >> name == "Duke")[0]
 d >> owner |= :objects("Realm", it >> name == "King")[0]
 d >> power |= 9
 repeat :range(1, 5) as t
-    tick()
+    :tick()
     d |= :objects("Realm", it >> name == "Duke")[0]
     o | d >> owner
     shown | "nil"

@@ -3,6 +3,6 @@
     hp: 10
 xx
 h <> Hero | hp: 3
-say("before")
+:say("before")
 :update!(h.mana, 4)
-say(h >> hp)
+:say(h >> hp)

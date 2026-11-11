@@ -20,9 +20,9 @@ a <> Town |
 :overlay!(a, fair)
 t | 0
 repeat 4
-    tick()
+    :tick()
         market
     xx
     t |= t + 1
-    say("tick {t}: inside {a >> inside}, outside {a >> outside}")
+    :say("tick {t}: inside {a >> inside}, outside {a >> outside}")
 xx

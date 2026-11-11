@@ -5,4 +5,4 @@
     size: 2
 xx
 a <> Land | size: 2
-say(a)
+:say(a)

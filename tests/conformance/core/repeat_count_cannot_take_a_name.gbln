@@ -2,12 +2,12 @@
 /// `repeat N as name` is an error with a clear message: a count has no
 /// items to name. The pass number is in `idx`.
 repeat 2
-    say(idx)
+    :say(idx)
 xx
 attempt
     repeat 3 as d
-        say(d)
+        :say(d)
     xx
 rescue e
-    say(:has("{e}", "a count has none to name"))
+    :say(:has("{e}", "a count has none to name"))
 xx

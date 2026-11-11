@@ -5,5 +5,5 @@ act inc(x)
 xx
 items | [1, 2, 3]
 out | :swarm!(items, inc, 2)
-say(out)
-say(items)
+:say(out)
+:say(items)

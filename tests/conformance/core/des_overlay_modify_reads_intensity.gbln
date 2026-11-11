@@ -15,13 +15,13 @@ overlay fade
 xx
 f <> F | def: 10
 :overlay!(f, fade)
-say(f >> def)
-tick()
-say(f >> def)
+:say(f >> def)
+:tick()
+:say(f >> def)
 f >> def |= f >> def + 1
-say(f >> def)
-tick()
-say(f >> def)
-tick()
-tick()
-say(f >> def)
+:say(f >> def)
+:tick()
+:say(f >> def)
+:tick()
+:tick()
+:say(f >> def)

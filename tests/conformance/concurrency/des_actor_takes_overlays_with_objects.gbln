@@ -16,17 +16,17 @@ act make()
     return p
 xx
 act region(st, msg)
-    say(:len(:overlays(sick)))
-    tick()
+    :say(:len(:overlays(sick)))
+    :tick()
     repeat st{"people"}
         h | it >> health
-        say(h)
+        :say(h)
     xx
     return st
 xx
 st | {"people": [make()]}
-say(:len(:overlays()))
+:say(:len(:overlays()))
 r | :actor(st, region)
-say(:len(:overlays()))
+:say(:len(:overlays()))
 :post(r, "tick")
 :halt(r)

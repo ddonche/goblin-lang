@@ -9,5 +9,5 @@ act work(n)
     xx
     return total
 xx
-say(:swarm([4000, 10, 3000, 1, 2000, 5], work, 3))
-say(:swarm([], work, 2))
+:say(:swarm([4000, 10, 3000, 1, 2000, 5], work, 3))
+:say(:swarm([], work, 2))

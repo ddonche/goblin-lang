@@ -1,4 +1,4 @@
 l | [1]
-say "before"
+:say "before"
 :update!(l[5], 2)
-say "after"
+:say "after"

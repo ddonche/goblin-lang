@@ -30,11 +30,11 @@ xx
     v: 0
 xx
 act show(s, t, sc)
-    say("{s >> name} picks {t >> v} with score {sc}")
+    :say("{s >> name} picks {t >> v} with score {sc}")
 xx
 :rand_seed(7)
 s <> Seer | name: "Sib"
 a <> Spot | v: 1
 b <> Spot | v: 2
-tick()
-say(:shuffle([1, 2, 3, 4, 5, 6, 7, 8]))
+:tick()
+:say(:shuffle([1, 2, 3, 4, 5, 6, 7, 8]))

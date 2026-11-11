@@ -1,2 +1,2 @@
-say("start")
-say(:json_parse("[1,"))
+:say("start")
+:say(:json_parse("[1,"))

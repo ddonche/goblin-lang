@@ -47,5 +47,5 @@ repeat 3
     :tick()
 xx
 repeat :objects(Town) as t
-    say("{t >> name}: {t >> goods} goods, gave to {t >> sent}")
+    :say("{t >> name}: {t >> goods} goods, gave to {t >> sent}")
 xx

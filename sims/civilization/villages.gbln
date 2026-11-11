@@ -193,9 +193,9 @@ repeat villages as vl
     :post(vl, {"villages": villages})
 xx
 
-say("civilization: {n_villages} villages, {months} months")
+:say("civilization: {n_villages} villages, {months} months")
 repeat :range(1, months + 1) as m
-    tick()
+    :tick()
     if m % 60 == 0 or m == months
         line | "year {:floor(m / 12)}:"
         total | 0
@@ -203,6 +203,6 @@ repeat :range(1, months + 1) as m
             total |= total + v >> pop
             line |= line + " [{v >> pop} people, {v >> huts} huts, {v >> food} food, {v >> sent} food sent, {v >> born} born, {v >> graves} dead]"
         xx
-        say("{line} total {total}")
+        :say("{line} total {total}")
     xx
 xx

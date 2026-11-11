@@ -16,5 +16,5 @@ a <> Land | name: "a"
 :overlay!(a, sun_cult)
 :overlay!(a, fog)
 repeat :overlays(a) as o
-    say("{o >> overlay_name}: Faith {:is_type(o, "Faith")}, its kind {:is_type(o, o >> overlay_name)}, Land {:is_type(o, "Land")}")
+    :say("{o >> overlay_name}: Faith {:is_type(o, "Faith")}, its kind {:is_type(o, o >> overlay_name)}, Land {:is_type(o, "Land")}")
 xx

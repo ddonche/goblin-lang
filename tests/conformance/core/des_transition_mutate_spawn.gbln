@@ -17,8 +17,8 @@
             name: "{@name} Hamlet"
         xx
     xx
-    on mutate => say("{self >> name} now has walls {self >> walls}")
-    on spawn => say("{self >> name} founds {child >> name} with {child >> people}")
+    on mutate => :say("{self >> name} now has walls {self >> walls}")
+    on spawn => :say("{self >> name} founds {child >> name} with {child >> people}")
 xx
 <>Town |
     name: ..
@@ -28,8 +28,8 @@ xx
 v <> Village | name: "Oak", people: 60
 w <> Village | name: "Elm", people: 30
 same | v
-tick()
-say("{v >> name} {v >> people} walls {v >> walls}")
-say("same object: {same >> name}")
-say(:len(:objects("Village")))
-say(:len(:objects("Town")))
+:tick()
+:say("{v >> name} {v >> people} walls {v >> walls}")
+:say("same object: {same >> name}")
+:say(:len(:objects("Village")))
+:say(:len(:objects("Town")))

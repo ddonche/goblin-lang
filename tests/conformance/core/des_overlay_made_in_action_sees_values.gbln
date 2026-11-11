@@ -23,7 +23,7 @@ act found_faith(f, l, boost)
             @piety + intensity * (f >> zeal) * boost
         xx
         every 1 ticks
-            say("{l >> realm}: zeal {f >> zeal}, fervor {fervor}, boost {boost}")
+            :say("{l >> realm}: zeal {f >> zeal}, fervor {fervor}, boost {boost}")
         xx
     xx
     :overlay!(l, new_faith, 1)
@@ -33,10 +33,10 @@ fa <> Faction | zeal: .5
 a <> Land | realm: "A"
 b <> Land | realm: "A"
 found_faith(fa, a, 2)
-say(a >> piety)
+:say(a >> piety)
 fa >> zeal |= .25
-tick()
-say("{a >> piety} {b >> piety}")
+:tick()
+:say("{a >> piety} {b >> piety}")
 repeat :overlays() as o
-    say("{o >> overlay_name} on {o >> host_var} fervor {o >> fervor}")
+    :say("{o >> overlay_name} on {o >> host_var} fervor {o >> fervor}")
 xx

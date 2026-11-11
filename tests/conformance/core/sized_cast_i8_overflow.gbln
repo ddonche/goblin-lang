@@ -1,2 +1,2 @@
-say("start")
-say(:i8(128))
+:say("start")
+:say(:i8(128))

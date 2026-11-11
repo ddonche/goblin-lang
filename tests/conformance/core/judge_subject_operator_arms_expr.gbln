@@ -5,4 +5,4 @@ r |
         > 5: "gt5"
         else: "le5"
     xx
-say(r)
+:say(r)

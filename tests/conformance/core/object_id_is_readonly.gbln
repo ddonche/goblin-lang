@@ -4,6 +4,6 @@
     hp: 10
 xx
 h <> Hero | name: "Ann"
-say(:len(h >> id) == 36)
+:say(:len(h >> id) == 36)
 :update!(h.id, "zzz")
-say(h >> id)
+:say(h >> id)

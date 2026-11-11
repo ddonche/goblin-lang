@@ -4,4 +4,4 @@ act outer()
     xx
     return inner() + 1
 xx
-say(outer())
+:say(outer())

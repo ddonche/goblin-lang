@@ -10,7 +10,7 @@ act walk(n)
     xx
     return out
 xx
-say(walk(2))
+:say(walk(2))
 act first_big(xs)
     repeat xs as x
         if x > 2
@@ -19,16 +19,16 @@ act first_big(xs)
     xx
     return 0
 xx
-say(first_big([1, 5, 9]))
-say(first_big([7]))
+:say(first_big([1, 5, 9]))
+:say(first_big([7]))
 k | 0
 repeat k < 3
     k |= k + 1
 xx
-say(k)
+:say(k)
 repeat 2
     repeat [10, 20] as y
-        say("{idx} {y}")
+        :say("{idx} {y}")
         stop
     xx
 xx

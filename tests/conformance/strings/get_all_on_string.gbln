@@ -1,2 +1,2 @@
 /// get_all on a string returns the whole string.
-say(:get_all("abc"))
+:say(:get_all("abc"))

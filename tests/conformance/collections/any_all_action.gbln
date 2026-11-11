@@ -2,5 +2,5 @@
 act over_one(n)
     return n > 1
 xx
-say(:any([1, 2], "over_one"))
-say(:all([1, 2], "over_one"))
+:say(:any([1, 2], "over_one"))
+:say(:all([1, 2], "over_one"))

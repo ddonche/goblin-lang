@@ -24,15 +24,15 @@ act held(c)
     xx
     return out
 xx
-say(held(a))
-say(held(b))
-say(:len(:objects("Item", it >> owner == a)))
+:say(held(a))
+:say(held(b))
+:say(:len(:objects("Item", it >> owner == a)))
 counts | []
 repeat [a, b, a] as g
     :put_last!(counts, :len(:objects("Item", it >> owner == g)))
 xx
-say(counts)
+:say(counts)
 c <> Bag | name: "c"
 w <> Item | name: "w", owner: c
-delete_object!(c)
-say(:len(:objects("Item", it >> owner == c)))
+:delete_object!(c)
+:say(:len(:objects("Item", it >> owner == c)))

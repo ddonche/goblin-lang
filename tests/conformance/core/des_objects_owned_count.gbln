@@ -26,25 +26,25 @@ u <> Tag | owner: b, bag: b
 act count_in(h)
     return :len(:objects("Item", it >> owner == h))
 xx
-say(count_in(a))
-say(count_in(b))
-say(:len(:objects("Item", it >> owner == z >> owner)))
-say(:len(:objects("Bag", it >> owner == a)))
-say(:count(:objects("Item", it >> owner == a)))
+:say(count_in(a))
+:say(count_in(b))
+:say(:len(:objects("Item", it >> owner == z >> owner)))
+:say(:len(:objects("Bag", it >> owner == a)))
+:say(:count(:objects("Item", it >> owner == a)))
 n | 5
-say(:len(:objects("Item", it >> owner == n)))
+:say(:len(:objects("Item", it >> owner == n)))
 bag | a
-say(:len(:objects("Tag", it >> owner == bag)))
+:say(:len(:objects("Tag", it >> owner == bag)))
 x >> owner |= b
-say(count_in(a))
-say(count_in(b))
+:say(count_in(a))
+:say(count_in(b))
 c <> Bag | name: "c"
 w <> Item | name: "w", owner: c
-delete_object!(c)
-say(:len(:objects("Item", it >> owner == c)))
+:delete_object!(c)
+:say(:len(:objects("Item", it >> owner == c)))
 /// A count is a number: counting it again is an error, as without the shortcut.
 attempt
-    say(:len(:len(:objects("Item", it >> owner == a))))
+    :say(:len(:len(:objects("Item", it >> owner == a))))
 rescue err
-    say("len of a count fails")
+    :say("len of a count fails")
 xx

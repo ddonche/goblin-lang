@@ -1,2 +1,2 @@
-say("start")
-say(nil + 1)
+:say("start")
+:say(nil + 1)

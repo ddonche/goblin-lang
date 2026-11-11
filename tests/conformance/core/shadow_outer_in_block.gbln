@@ -2,6 +2,6 @@
 a | 1
 if true
     a [= 5
-    say(a)
+    :say(a)
 end
-say(a)
+:say(a)

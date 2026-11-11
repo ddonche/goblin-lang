@@ -2,4 +2,4 @@
 act first(x)
     return "user-first"
 xx
-say(first([1, 2]))
+:say(first([1, 2]))

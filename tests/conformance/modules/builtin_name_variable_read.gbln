@@ -1,6 +1,6 @@
 len | 5
-say(len)
+:say(len)
 count | "c"
-say(count)
+:say(count)
 find | "abc"
-say(:len(find))
+:say(:len(find))

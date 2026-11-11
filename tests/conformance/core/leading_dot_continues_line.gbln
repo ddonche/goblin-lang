@@ -2,7 +2,7 @@
 x | "Hello"
 y | x
     .upper()
-say(y)
+:say(y)
 t | "A,B"
     .lower
-say(t)
+:say(t)

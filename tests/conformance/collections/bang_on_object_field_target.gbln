@@ -5,6 +5,6 @@
 xx
 b <> Bag | stuff: [1], meta: {"k": [1]}
 :put_last!(b >> stuff, 2)
-say(b >> stuff)
+:say(b >> stuff)
 :put_last!(b >> meta{"k"}, 5)
-say(b >> meta)
+:say(b >> meta)

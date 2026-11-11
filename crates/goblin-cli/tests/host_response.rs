@@ -29,7 +29,7 @@ fn vm_responses_on_the_wire() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("www/api")).unwrap();
     let w = |p: &str, src: &str| std::fs::write(dir.join("www").join(p), src).unwrap();
-    w("api/plain.gbln", "say(\"hello\")\n");
+    w("api/plain.gbln", ":say(\"hello\")\n");
     w("api/headers.gbln", concat!(
         ":set_status(201)\n",
         ":set_header(\"X-Zeta\", \"last\")\n",
@@ -37,9 +37,9 @@ fn vm_responses_on_the_wire() {
         ":set_header(\"X-Alpha\", \"first\")\n",
         ":set_cookie(\"a\", \"1\")\n",
         ":set_cookie(\"b\", \"2\", {\"http_only\": true, \"path\": \"/\"})\n",
-        "say(\"<p>h\u{e9}llo \\\"quoted\\\" \\\\ back</p>\")\n"));
-    w("api/redirect.gbln", ":set_status(303)\n:set_header(\"Location\", \"/somewhere\")\nsay(\"ignored body\")\n");
-    w("page.gbln", ":set_header(\"X-Page\", \"yes\")\nsay(\"static page\")\n");
+        ":say(\"<p>h\u{e9}llo \\\"quoted\\\" \\\\ back</p>\")\n"));
+    w("api/redirect.gbln", ":set_status(303)\n:set_header(\"Location\", \"/somewhere\")\n:say(\"ignored body\")\n");
+    w("page.gbln", ":set_header(\"X-Page\", \"yes\")\n:say(\"static page\")\n");
 
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let child = Command::new(PathBuf::from(env!("CARGO_BIN_EXE_goblin")))

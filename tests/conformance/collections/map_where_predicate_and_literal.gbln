@@ -2,6 +2,6 @@
 act big(v)
     return v > 1
 xx
-say(:get_where({"a": 1, "b": 2, "c": 3}, "big"))
-say(:update_where({"a": 1, "b": 2}, "big", 0))
-say(:delete_where({"a": "x-y", "b": "z"}, "x-y"))
+:say(:get_where({"a": 1, "b": 2, "c": 3}, "big"))
+:say(:update_where({"a": 1, "b": 2}, "big", 0))
+:say(:delete_where({"a": "x-y", "b": "z"}, "x-y"))

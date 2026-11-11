@@ -6,11 +6,11 @@ r |
         x > 5: "mid"
         else: "small"
     xx
-say(r)
+:say(r)
 y | 1
 s |
     judge_all
         y > 10: "big"
         else: "small"
     xx
-say(s)
+:say(s)

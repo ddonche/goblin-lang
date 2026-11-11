@@ -7,6 +7,6 @@ act bump(x)
     :put_last!(seen, x)
     return [count, seen.len]
 xx
-say(:swarm([1, 2, 3], bump, 1))
-say(count)
-say(seen)
+:say(:swarm([1, 2, 3], bump, 1))
+:say(count)
+:say(seen)

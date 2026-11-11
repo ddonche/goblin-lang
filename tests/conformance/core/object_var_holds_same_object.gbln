@@ -17,32 +17,32 @@ act root(x)
     return x
 xx
 r | root(low)
-say(r >> name)
+:say(r >> name)
 r >> gold |= 7
-say(top >> gold)
-say(root(low) == top)
-say(low >> owner >> owner == top)
-say(low >> owner == top)
-say(low >> owner != top)
+:say(top >> gold)
+:say(root(low) == top)
+:say(low >> owner >> owner == top)
+:say(low >> owner == top)
+:say(low >> owner != top)
 y | mid
 y >> gold |= 3
-say(mid >> gold)
+:say(mid >> gold)
 z | low >> owner
 z >> owner |= nil
-say(root(low) >> name)
-say(:is_type(low >> owner, "Box"))
+:say(root(low) >> name)
+:say(:is_type(low >> owner, "Box"))
 up | low >> owner
-delete_object!(mid)
-say(low >> owner == nil)
+:delete_object!(mid)
+:say(low >> owner == nil)
 /// A builtin called through a variable, and a cast into a typed variable,
 /// get the object itself.
 hold <> Box | name: "hold"
 item <> Box | name: "item", owner: hold
 render | str
-say(render(item >> owner) == :str(hold))
+:say(render(item >> owner) == :str(hold))
 act lock_it(x)
     s.str | ""
     s |= x >> owner
     return s
 xx
-say(lock_it(item))
+:say(lock_it(item))

@@ -19,7 +19,7 @@ act buy(p, s)
 xx
 s <> Shop | cheap: .8
 p <> Person | bought: 0
-tick()
-tick()
+:tick()
+:tick()
 b | p >> bought
-say("bought {b}")
+:say("bought {b}")

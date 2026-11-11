@@ -3,4 +3,4 @@ act reset()
     :update!(log, [9])
 xx
 reset()
-say log
+:say log

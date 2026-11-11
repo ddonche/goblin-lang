@@ -14,13 +14,13 @@ xx
 act region(st, msg)
     if msg == "count"
         c <> Person | health: .5
-        say(:len(:objects(it >> health > 0)))
+        :say(:len(:objects(it >> health > 0)))
     elif msg == "bob"
         attempt
             h | bob >> health
-            say(h)
+            :say(h)
         rescue e
-            say(:has("{e}", "C0122: actor-not-owned: `bob` belongs to the program that started this actor"))
+            :say(:has("{e}", "C0122: actor-not-owned: `bob` belongs to the program that started this actor"))
         xx
     xx
     return st
@@ -29,4 +29,4 @@ r | :actor({"people": [make(.3), make(.4)]}, region)
 :post(r, "count")
 :post(r, "bob")
 :halt(r)
-say(:len(:objects(it >> health > 0)))
+:say(:len(:objects(it >> health > 0)))

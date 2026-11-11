@@ -19,8 +19,8 @@ xx
 t <> T | heat: 0
 :overlay!(t, fire, .5)
 :overlay!(t, ice, .5)
-say("{:overlays_of(t)} heat {t >> heat}")
+:say("{:overlays_of(t)} heat {t >> heat}")
 :overlay!(t, ice, .6)
-say("{:overlays_of(t)} heat {t >> heat}")
+:say("{:overlays_of(t)} heat {t >> heat}")
 :overlay!(t, fire, .4)
-say("{:overlays_of(t)} heat {t >> heat}")
+:say("{:overlays_of(t)} heat {t >> heat}")

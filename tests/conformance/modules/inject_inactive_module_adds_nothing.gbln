@@ -4,6 +4,6 @@
 /// nothing. An imported file's top level still runs once at import (zeta prints a line).
 import "_support/eval/all.imports"
 r | :eval(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob"])
-say(r >> schedule)
-say(:has(r >> schedule, "extra::tail"))
-say(:eval("_support/eval/base.yall") >> schedule)
+:say(r >> schedule)
+:say(:has(r >> schedule, "extra::tail"))
+:say(:eval("_support/eval/base.yall") >> schedule)

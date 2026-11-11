@@ -5,18 +5,18 @@
     name: "Ash"
 xx
 ash <> Town | people: 10, name: "Ash"
-say(ash >> people)
+:say(ash >> people)
 ash >> people |= ash >> people + 5
-say(ash >> people)
+:say(ash >> people)
 act grow(t)
     t >> people |= t >> people * 2
     t >> people
 end
-say(grow(ash))
-say(ash >> people)
+:say(grow(ash))
+:say(ash >> people)
 act local_read()
     b <> Town | people: 3, name: "Birch"
     b >> name ++ "!"
 end
-say(local_read())
-say(ash >> name >> upper)
+:say(local_read())
+:say(ash >> name >> upper)

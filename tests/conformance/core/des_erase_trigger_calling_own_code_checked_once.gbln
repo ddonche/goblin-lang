@@ -11,12 +11,12 @@
         self >> age |= self >> age + 1
     end
     act risky()
-        say("checked")
+        :say("checked")
         return (pick 1 from 1...1000000) == 0
     end
     transition erase where self.risky()
 xx
 :rand_seed(1)
 m <> Mote | age: 0
-tick()
-say(m >> age)
+:tick()
+:say(m >> age)

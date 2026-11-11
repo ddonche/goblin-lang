@@ -3,6 +3,6 @@ act name()
     return #cfg::name
 xx
 #cfg::name | "n1"
-say(name())
+:say(name())
 #cfg::name |= "n2"
-say(name())
+:say(name())

@@ -1,2 +1,2 @@
-say("start")
-say(:yall_parse("a: [1, 2", "bad.yall"))
+:say("start")
+:say(:yall_parse("a: [1, 2", "bad.yall"))

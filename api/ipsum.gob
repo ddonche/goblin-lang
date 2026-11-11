@@ -34,7 +34,7 @@ act goblin_ipsum_sentence
     rest_words | pick {wc} from gbln_words with dups
     common_words | pick {wc2} from commons with dups
 
-    all | shuffle(rest_words + common_words) 
+    all | :shuffle(rest_words + common_words) 
     
     /// capitalize the first word of each sentence
     all[0] |! :title(all[0])
@@ -57,10 +57,10 @@ act goblin_ipsum
 
         if (para_count >= 1) and (para_count <= 5)
             repeat para_count
-                say goblin_ipsum_paragraph() + "\n"
+                :say goblin_ipsum_paragraph() + "\n"
             xx
         else
-            say "Please enter a number between 1 and 5."
+            :say "Please enter a number between 1 and 5."
         xx
     xx
 xx

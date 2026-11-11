@@ -11,17 +11,17 @@ act inner(x)
 xx
 
 act step(ctx)
-    say("inner gave " + inner({}))
+    :say("inner gave " + inner({}))
     return ctx
 xx
 
 act runner()
     c | {"a": 1}
     ret | :summon(c, ["step"])
-    say("after summon")
+    :say("after summon")
     ret2 | :invoke("step", c)
-    say("after invoke")
+    :say("after invoke")
     return c
 xx
 
-say(runner(){"a"})
+:say(runner(){"a"})

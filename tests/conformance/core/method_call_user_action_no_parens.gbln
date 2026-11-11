@@ -3,4 +3,4 @@
 act inc(x)
     return x + 1
 xx
-say(4.inc)
+:say(4.inc)

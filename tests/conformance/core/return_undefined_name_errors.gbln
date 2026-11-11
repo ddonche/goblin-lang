@@ -2,6 +2,6 @@
 act f()
     return nosuchname
 end
-say("before")
-say(f())
-say("after")
+:say("before")
+:say(f())
+:say("after")

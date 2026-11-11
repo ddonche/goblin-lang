@@ -40,13 +40,13 @@ act captured(h)
     xx
     return inner()
 xx
-say(names(:objects("Item", it >> owner == a)))
-say(local_holder())
-say(captured(a))
-say(names(:objects("Item", it >> owner == t >> owner)))
-say(names(:objects("Item", it >> owner == 5)))
+:say(names(:objects("Item", it >> owner == a)))
+:say(local_holder())
+:say(captured(a))
+:say(names(:objects("Item", it >> owner == t >> owner)))
+:say(names(:objects("Item", it >> owner == 5)))
 n | nil
-say(names(:objects("Item", it >> owner == n)))
+:say(names(:objects("Item", it >> owner == n)))
 bag | a
-say(names(:objects("Tag", it >> owner == bag)))
-say(names(:objects("Tag", it >> owner == x >> owner >> owner)))
+:say(names(:objects("Tag", it >> owner == bag)))
+:say(names(:objects("Tag", it >> owner == x >> owner >> owner)))

@@ -3,4 +3,4 @@ r |
     judge
         x > 5: "big"
     xx
-say(r)
+:say(r)

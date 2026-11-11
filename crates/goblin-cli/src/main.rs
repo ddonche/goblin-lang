@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod fix_colons;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -159,6 +160,7 @@ fn main() {
              \n  goblin start [--host <host>] [--port <port>]\n\
              \n  goblin lex --check\n\
              \n  goblin parse <file>\n\
+             \n  goblin fix colons [--check] [--md] <dir|file>...\n\
              \n  goblin gql-parse <file|->\n\
              \nOptions:\n  -h, --help       Show this help\n  -v, --version    Show version\n  --interp         Use the interpreter instead of the VM (run/repl/start; the VM is the default)"
         );
@@ -267,6 +269,11 @@ fn main() {
         }
         eprintln!("usage: goblin-cli lex --check");
         std::process::exit(2);
+    }
+
+    // `goblin fix colons [--check] [--md] <dir|file>...`
+    if args.len() >= 2 && args[0] == "fix" && args[1] == "colons" {
+        std::process::exit(fix_colons::run(&args[2..]));
     }
 
     // `goblin-cli parse <file>`
@@ -417,7 +424,7 @@ fn main() {
     }
 
     eprintln!(
-        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name> [--test]\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin gql-parse <file|->"
+        "usage:\n  goblin new <project-name>\n  goblin run [<file>]\n  goblin repl\n  goblin glam run <glam_name>::<action_name> [--test]\n  goblin box dump [<dir>]\n  goblin start [--host <host>] [--port <port>]\n  goblin lex --check\n  goblin parse <file>\n  goblin fix colons [--check] [--md] <dir|file>...\n  goblin gql-parse <file|->"
     );
     std::process::exit(2);
 }

@@ -1,5 +1,5 @@
 act two(a, b)
     return a
 xx
-say("start")
-say(two(1))
+:say("start")
+:say(two(1))

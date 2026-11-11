@@ -8,7 +8,7 @@ sweep t
     "c":
         :put_last!(got, "c")
 xx
-say(got)
+:say(got)
 got2 | []
 sweep t
     "a":
@@ -17,4 +17,4 @@ sweep t
     "c":
         :put_last!(got2, "c")
 xx
-say(got2)
+:say(got2)

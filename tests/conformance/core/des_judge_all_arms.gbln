@@ -25,18 +25,18 @@ xx
 act hit(f, t)
     a | f >> name
     b | t >> name
-    say("{a} hits {b}")
+    :say("{a} hits {b}")
 xx
 act mend(f, t)
     a | f >> name
     b | t >> name
-    say("{a} heals {b}")
+    :say("{a} heals {b}")
 xx
 act taunt(f, t)
     a | f >> name
-    say("{a} shouts")
+    :say("{a} shouts")
 xx
 x <> F | name: "x", side: 0, hp: 4
 y <> F | name: "y", side: 0, hp: 10
 z <> F | name: "z", side: 1, hp: 10
-tick()
+:tick()

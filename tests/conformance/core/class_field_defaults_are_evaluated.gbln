@@ -10,9 +10,9 @@ xx
 a <> Room | name: "a"
 b <> Room | name: "b"
 :put_last!(a >> messages, "hi")
-say(a >> messages)
-say(b >> messages)
-say(a >> tags)
-say(a >> level)
-say(b >> pair)
-say(a >> n)
+:say(a >> messages)
+:say(b >> messages)
+:say(a >> tags)
+:say(a >> level)
+:say(b >> pair)
+:say(a >> n)

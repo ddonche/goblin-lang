@@ -1,2 +1,2 @@
-say("start")
-say(:float("x"))
+:say("start")
+:say(:float("x"))

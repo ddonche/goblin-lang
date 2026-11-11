@@ -2,6 +2,6 @@
 /// A schedule evaluated with no event files comes back as loaded (acceptance 1).
 base | :load("_support/eval/base.yall")
 r | :eval(base)
-say(r == base[0] >> data)
-say(r >> pre)
-say(:eval("_support/eval/base.yall") == r)
+:say(r == base[0] >> data)
+:say(r >> pre)
+:say(:eval("_support/eval/base.yall") == r)

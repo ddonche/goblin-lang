@@ -2,5 +2,5 @@
 /// known-gap: interp still accepts [] on maps
 m | {"a": [1]}
 :update!(m{"a"}[0], 5)
-say(m)
+:say(m)
 :update!(m["a"][0], 6)

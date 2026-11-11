@@ -8,7 +8,7 @@ act classify(x)
         return "small"
     xx
 xx
-say(classify(9))
-say(classify(5))
-say(classify(3))
-say(classify(1))
+:say(classify(9))
+:say(classify(5))
+:say(classify(3))
+:say(classify(1))

@@ -1,14 +1,14 @@
 /// format_basic.gbln
-say "=== testing formatting ==="
+:say "=== testing formatting ==="
 treasure_hoard_amount | 1234567.89
 
 /// Full spec (US style): (decimals, thousands, decimal)
 gbln_format_smoke_us | treasure_hoard_amount.format(2 , .)
-say gbln_format_smoke_us        /// expect: 1,234,567.89
+:say gbln_format_smoke_us        /// expect: 1,234,567.89
 
 /// Short form: decimals only (no thousands separator)
 gbln_format_smoke_plain | treasure_hoard_amount.format(2)
-say gbln_format_smoke_plain     /// expect: 1234567.89
+:say gbln_format_smoke_plain     /// expect: 1234567.89
 
 /// format_rewrap_and_clear.gbln
 
@@ -16,21 +16,21 @@ gbln_format_base_number | 10000
 
 /// US grouping (thousands ',', decimal '.')
 gbln_format_us | gbln_format_base_number.format(0 , .)
-say gbln_format_us              /// expect: 10,000
+:say gbln_format_us              /// expect: 10,000
 
 /// Re-wrap: European style (thousands '.', decimal ',')
 gbln_format_eu | gbln_format_us.format(3 . ,)
-say gbln_format_eu              /// expect: 10.000,000
+:say gbln_format_eu              /// expect: 10.000,000
 
 /// Clear back to raw number
-gbln_format_raw | clear_format(gbln_format_eu)
-say gbln_format_raw + "\n"            /// expect: 10000
+gbln_format_raw | :clear_format(gbln_format_eu)
+:say gbln_format_raw + "\n"            /// expect: 10000
 
 
 /// pull 4 codes
-say "=== testing pick with letters ==="
+:say "=== testing pick with letters ==="
 repeat 4
-    say upper pick 4 from "a"..."z" without dups
+    :say :upper pick 4 from "a"..."z" without dups
 xx
 
 /// single return
@@ -39,7 +39,7 @@ action calculate_tax(income, rate)
     return tax_amount
 xx
 total | calculate_tax(50000, 0.15)
-say "tax=" ++ total
+:say "tax=" ++ total
 
 /// multiple returns
 action divide_with_remainder(a, b)
@@ -48,7 +48,7 @@ action divide_with_remainder(a, b)
     return q, r
 xx
 res | divide_with_remainder(17, 5)
-say "q=" ++ (res >> q) ++ " r=" ++ (res >> r)
+:say "q=" ++ (res >> q) ++ " r=" ++ (res >> r)
 
 /// bare return (early exit)
 action early_exit(flag)
@@ -60,8 +60,8 @@ action early_exit(flag)
 xx
 v1 | early_exit(true)
 v2 | early_exit(false)
-say "early_nil?=" ++ (v1 == nil)
-say "early_x=" ++ v2
+:say "early_nil?=" ++ (v1 == nil)
+:say "early_x=" ++ v2
 
 /// fallthrough = nil
 action falloff()
@@ -69,14 +69,14 @@ action falloff()
     b | 20
 xx
 f | falloff()
-say "falloff_nil?=" ++ (f == nil)
+:say "falloff_nil?=" ++ (f == nil)
 
 /// bound method reference 
 <>Player |
     name: "{name}",
     health: 50
     act heal_by(amount)
-        self >> health |= min(100, health + amount)
+        self >> health |= :min(100, health + amount)
         return health
     xx
 end
@@ -142,7 +142,7 @@ user2.show_email
 /// Test 1: Basic class with string interpolation and actions
 <> Person | name: "{name}", age: 25
     act greet()
-        say "Hello, I'm {name} and I'm {age} years old"
+        :say "Hello, I'm {name} and I'm {age} years old"
     end
 end
 
@@ -178,13 +178,13 @@ end
 c <> Counter | { value: 5 }
 
 /// Test 9: Method that reads a field
-say c.get()
+:say c.get()
 
 /// Test 10: Method that modifies a field
 c.increment()
 
 /// Test 11: Verify field modification persisted
-say c.get()
+:say c.get()
 
 ////
 Other tests
@@ -206,38 +206,38 @@ enum Priority
     critical
 end
 
-say "=== testing judge with enum ==="
+:say "=== testing judge with enum ==="
 status | Status::idle
 judge status using Status
-    idle:    say "System is idle"
-    loading: say "Processing..."
-    ready:   say "Ready to proceed"
-    error:   say "Error occurred"
+    idle:    :say "System is idle"
+    loading: :say "Processing..."
+    ready:   :say "Ready to proceed"
+    error:   :say "Error occurred"
 end
 
 priority | Priority::high
 judge priority using Priority
-    low:      say "Low priority"
-    medium:   say "Medium priority"
-    high:     say "High priority alert"
-    critical: say "CRITICAL - Immediate action required"
+    low:      :say "Low priority"
+    medium:   :say "Medium priority"
+    high:     :say "High priority alert"
+    critical: :say "CRITICAL - Immediate action required"
 end
 
-say "=== testing judge ==="
+:say "=== testing judge ==="
 score | 95
 judge using score
-    >= 90: say "A"
-    >= 80: say "B"
-    >= 70: say "C"
-    else:  say "F"
+    >= 90: :say "A"
+    >= 80: :say "B"
+    >= 70: :say "C"
+    else:  :say "F"
 end
 
 x | 42
 judge
-    x > 100: say "large"
-    x > 50:  say "medium"
-    x > 0:   say "small"
-    else:    say "invalid"
+    x > 100: :say "large"
+    x > 50:  :say "medium"
+    x > 0:   :say "small"
+    else:    :say "invalid"
 end
 
 a | -1
@@ -248,7 +248,7 @@ judge
 end
 
 /// judge_all test
-say "=== testing judge_all ==="
+:say "=== testing judge_all ==="
 balance | 45
 trial_days | 5
 has_new_features | true
@@ -263,82 +263,82 @@ notifications |
         else: "All systems normal"
     end
 
-say notifications
+:say notifications
 
 /// repeat loop tests
 repeat 3
-    say "Loading..."
+    :say "Loading..."
 end
 
 enemy_count | 5
 repeat enemy_count
-    say "Spawning enemy"
+    :say "Spawning enemy"
 end
 
 repeat 10
-    say "Attempt"
+    :say "Attempt"
     stop
 end
-say "Done"
+:say "Done"
 
 repeat 5
-    say "Before"
+    :say "Before"
     skip
-    say "After (shouldn't print)"
+    :say "After (shouldn't print)"
 end
 
 /// repeat with conditionals
-say "=== Testing skip with conditional ==="
+:say "=== Testing skip with conditional ==="
 i | 0
 repeat 5
     i | i + 1
     if i == 3
-        say "Skipping iteration 3"
+        :say "Skipping iteration 3"
         skip
     end
-    say "Completed iteration" ++ i
+    :say "Completed iteration" ++ i
 end
 
-say ""
-say "=== Testing stop with conditional ==="
+:say ""
+:say "=== Testing stop with conditional ==="
 total2 | 0
 repeat 10
     total2 |= total2 + 1
-    say "Iteration" ++ total2
+    :say "Iteration" ++ total2
     if total2 == 4
-        say "Stopping at iteration 4"
+        :say "Stopping at iteration 4"
         stop
     end
 end
-say "Final total:" ++ total2
+:say "Final total:" ++ total2
 
 ///stop
 
-say ""
-say "=== Testing skip and stop together ==="
+:say ""
+:say "=== Testing skip and stop together ==="
 n | 0
 repeat 10
     n |= n + 1
     if n == 3 or n == 5
-        say "Skipping" ++ n
+        :say "Skipping" ++ n
         skip
     end
     if n == 7
-        say "Stopping at" ++ n
+        :say "Stopping at" ++ n
         stop
     end
-    say "Processing" ++ n
+    :say "Processing" ++ n
 end
 
 /// for loop tests
 names | ["Alice", "Bob", "Charlie"]
 for name in names
-    say "Hello," ++ name
+    :say "Hello," ++ name
 end
 
 word | "Goblin"
 for char in word
-    say char
+    :say char
 end
 
 numbers | [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
@@ -347,10 +347,10 @@ for num in numbers
         skip
     end
     if num == 9
-        say "Stopping at" ++ num
+        :say "Stopping at" ++ num
         stop
     end
-    say "Number:" ++ num
+    :say "Number:" ++ num
 end
 
 
@@ -368,27 +368,27 @@ alice *>>            /// { name: "Alice", age: 41 }
 alice *>> show_ids   /// { id: "uuid-...", name: "Alice", age: 41 }
 
 /// TESTING MIN
-say "scalars"
-say min(100, 80)
-say max(100, 80)
+:say "scalars"
+:say :min(100, 80)
+:say :max(100, 80)
 
-say "array"
-say min([90, 30, 2])
-say max([90, 30, 2])
+:say "array"
+:say :min([90, 30, 2])
+:say :max([90, 30, 2])
 
-say "mixed ints/floats"
-say min([10, 3.5, 7])
-say max(3.5, 7, 2)
+:say "mixed ints/floats"
+:say :min([10, 3.5, 7])
+:say :max(3.5, 7, 2)
 
-say "big numbers"
-a2 | big(12345678901234567890)
-b2 | big(12345678901234567889)
-say min([a2, b2])
-say max(a2, b2)
+:say "big numbers"
+a2 | :big(12345678901234567890)
+b2 | :big(12345678901234567889)
+:say :min([a2, b2])
+:say :max(a2, b2)
 
 /// sneaky: will trigger T0205 (map index must be a string key)
 garbage | {"name": "Alice"}
 
-say "errors"
+:say "errors"
 ///say min([])          /// expect R0404: min of empty array
 ///say min("nope")      /// expect T0401: expects array with 1 arg

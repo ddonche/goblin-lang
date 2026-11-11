@@ -16,12 +16,12 @@
             people: @people - @people / 4
         xx
     xx
-    on fracture => say("{self >> name} keeps {self >> people}; {fragment >> name} takes {fragment >> people}")
+    on fracture => :say("{self >> name} keeps {self >> people}; {fragment >> name} takes {fragment >> people}")
 xx
 k <> Kingdom | name: "Varn", strain: 9
-tick()
-tick()
+:tick()
+:tick()
 repeat :objects("Kingdom") as x
-    say("{x >> name} strain {x >> strain} people {x >> people}")
+    :say("{x >> name} strain {x >> strain} people {x >> people}")
 xx
-say(k >> name)
+:say(k >> name)
