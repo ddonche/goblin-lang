@@ -45,8 +45,10 @@
     xx
     act move_people(to, gain)
         n | @people * @leaving * gain
+        before | to >> people
         @people |= @people - n
         to >> people |= to >> people + n
+        carry(self, to, n / (before + n))
     xx
 xx
 
@@ -55,6 +57,33 @@ xx
 link border
     hosts: Land, Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: bool
+xx
+
+/// Settlers bring their tongue and faith: on land `to`, where `share` of
+/// the people have just come from `from`, each tongue and faith is held
+/// by the settlers' share of what they held and the rest of what was held
+/// there (Slavs, Saxons and Bantu spread their speech by settling).
+act carry(from, to, share)
+    if share < .005 => send nil
+    brought | {}
+    repeat :overlays(from) as o
+        if !(:is_type(o, "Tongue") or :is_type(o, "Faith")) or o >> intensity < .02 => skip
+        :update!(brought{o >> overlay_name}, o >> intensity)
+    xx
+    if :len(brought) == 0 => send nil
+    repeat :overlays(to) as o
+        if !(:is_type(o, "Tongue") or :is_type(o, "Faith")) => skip
+        n | o >> overlay_name
+        o >> intensity |= :clamp(o >> intensity * (1.0 - share) + (brought{n} ?? 0.0) * share, 0.0, 1.0)
+        :update!(brought{n}, -1.0)
+    xx
+    repeat brought as n, x
+        if x < 0.0 or x * share < .02 => skip
+        :overlay!(to, n, x * share)
+        repeat :overlays(to, n) as c
+            c >> at |= to >> name
+        xx
+    xx
 xx
 
 /// The share of the land's food not yet eaten.

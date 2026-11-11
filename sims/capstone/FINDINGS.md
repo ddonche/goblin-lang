@@ -1025,3 +1025,64 @@ Flagged:
 3. Breakaways do not yet seek a neighbour of their own faith or tongue,
    and a realm does not yet claim land of its own people (that is mostly
    a modern, national idea).
+
+## 0.51.25: a few great faiths and tongues, many small ones
+
+Daniel 11-10 23:43: by year 500 faiths and tongues should look very
+different, some very strong and some not, and lands can speak many
+tongues. Measured at 0.51.24, year 500: 46 tongues and 55 faiths, the
+largest of each held by 6.5% and 7.7% of all people, all of similar size;
+30 of 395 lands with two tongues each held by a fifth or more. The top
+faiths at year 300 were all year-0 cults and folk faiths: founded faiths
+were crushed by the court's pressure everywhere.
+
+In real life:
+- The great faiths spread from the top: Constantine, Ashoka, Clovis,
+  Vladimir, Mieszko, the Khazar khagans, the Mongol khans; a ruler took
+  the faith of a stronger neighbour or one that had grown in his realm,
+  and the people followed over generations. Neighbours converted as
+  their neighbours had (alliances, marriages). Old-faith reactions came
+  within a generation where few had converted (Poland 1030s, Hungary
+  1046).
+- Universal faiths with scripture and clergy (Christianity, Islam,
+  Buddhism, Manichaeism) seek converts; the gods of a people do not and
+  give way when the court converts. Universal faiths grew first in towns
+  (early Christianity about 40% a decade; `pagan` meant country people).
+- Tongues spread mostly by settlers (Slavs, Saxons, Bantu) and by
+  empire: officials, garrisons and towns first (Latin in Gaul). A world
+  faith's scripture carries its tongue (Arabic, Church Slavonic, Pali).
+  Without a prestige gap, lands stay bilingual for centuries (Coptic and
+  Arabic, Greek and Aramaic, the Balkans).
+
+Built: Faith `seeks` and `tongue`; `missions × (.1 + 1.8 × seeks)`;
+`standing` = 1 + 2 × world share (+ 3 × court pull) + 2 × seeks × pace
+for faiths + the holy-tongue weight for tongues; shift speed `× (.2 + 1.6
+× |status gap|)` for tongues and faiths; `convert` at `.03 × pull × (1 -
+own seeks) × (.5 + openness)`, pull = neighbours' `seeks × power share`
+summed per faith or `seeks × 2 × share` for a faith inside the realm
+(5%+), × `(.3 + 2 × world share)`; reaction `.02 × (1 - court faith
+share)` while under .3 and within 40 years; `land::carry` on every move;
+court tongue and faith arrive in towns at .05 (.05 a year), a world
+faith's tongue at .05 (.03 × seeks).
+
+500 years: the largest faith 27% of all people, then 18%, then under 5%
+each (101 faiths, most tiny); the three largest were founded in years
+38-147. 58 court conversions, 4 reactions. 37 of 68 bordering pairs
+share a faith. Lands with two tongues at .2+: 59 of 397. Tongues 40, the
+largest 8.5%. 217 s.
+
+Flagged:
+1. Tongues stay spread out (largest 8.5%). In real life a tongue gets
+   very big by a long-lived large empire (Latin, Arabic, Chinese) or by
+   settling; here no realm holds more than about 15% of the land and few
+   last centuries, so no tongue is pressed on many lands for long.
+   That is the political balance (whole-sim tuning).
+2. No creed split this run (the check fails): creeds need cities and
+   there are fewer since 0.51.23 (15 creeds at the end, 19 copies at
+   year 150). Creeds need another look in the tuning pass.
+3. Year-0 faiths are all cults and folk faiths; world faiths only come
+   from groups founding them. A world could start with one already.
+4. An action named `lower` (or `raise`) cannot be called with three
+   arguments (P0715, the parser treats `lower(` as the builtin): renamed
+   `cut_down`/`firm_up`. A user action shadowing a builtin name should
+   either work or give a clear error.
