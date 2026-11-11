@@ -1,0 +1,9 @@
+/// Owner ruling 2026-11-11: `tick()` is a Goblin builtin, so its phase-block form is `:tick()` too (P0717).
+<>Land |
+    food: 0
+xx
+a <> Land | food: 0
+tick()
+    grow
+xx
+:say(1)

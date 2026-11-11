@@ -17,5 +17,5 @@ overlay tongue
 xx
 rome <> Polity | stability: .8
 :overlay!(rome, tongue, .9)
-tick()
-say(:overlays(dialect)[0] >> host_var)
+:tick()
+:say(:overlays(dialect)[0] >> host_var)

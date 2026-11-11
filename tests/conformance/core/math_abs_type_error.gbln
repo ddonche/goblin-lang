@@ -1,2 +1,2 @@
-say("start")
-say(:abs("x"))
+:say("start")
+:say(:abs("x"))

@@ -1,4 +1,4 @@
 m | {"a": 1}
-say "before"
+:say "before"
 :update_at!(m, "z", 2)
-say "after"
+:say "after"

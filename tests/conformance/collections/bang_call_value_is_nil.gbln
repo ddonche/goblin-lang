@@ -2,9 +2,9 @@
 /// first argument is a statement; its own value is nil.
 m | {"a": 1}
 r | :update_at!(m, "a", 2)
-say(r)
-say(m)
+:say(r)
+:say(m)
 l | [1]
 r2 | :put_last!(l, 2)
-say(r2)
-say(l)
+:say(r2)
+:say(l)

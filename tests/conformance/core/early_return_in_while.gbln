@@ -5,4 +5,4 @@ act fx()
         if i == 3 => return i
     xx
 xx
-say(fx())
+:say(fx())

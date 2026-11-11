@@ -3,10 +3,10 @@ word_count | 5
 all_words | pick {word_count} from fi_words with dups
 first_word | "Test"
 packed | :pack(all_words)
-say "Packed result:"
-say packed
-say "First word:"
-say first_word
+:say "Packed result:"
+:say packed
+:say "First word:"
+:say first_word
 result | first_word ++ packed
-say "Result:"
-say result
+:say "Result:"
+:say result

@@ -63,7 +63,7 @@ xx
 
 act lower_shield(f)
     if loud
-        say("  {f >> name} lowers the shield")
+        :say("  {f >> name} lowers the shield")
     xx
 xx
 
@@ -71,7 +71,7 @@ act mend(f, t)
     amount | :min(6 + (pick 1 from 0...4), t >> max_hp - t >> hp)
     t >> hp |= t >> hp + amount
     if loud
-        say("  {f >> name} heals {t >> name} for {amount}")
+        :say("  {f >> name} heals {t >> name} for {amount}")
     xx
 xx
 
@@ -79,25 +79,25 @@ act strike(f, t)
     dmg | :max(1, f >> atk - t >> def + (pick 1 from 0...3))
     t >> hp |= t >> hp - dmg
     if loud
-        say("  {f >> name} hits {t >> name} for {dmg} ({:max(0, t >> hp)} left)")
+        :say("  {f >> name} hits {t >> name} for {dmg} ({:max(0, t >> hp)} left)")
     xx
     if t >> hp > 0 and f >> role == "shaman" and (pick 1 from 1...2) == 1
         :overlay!(t, poisoned)
         if loud
-            say("  {t >> name} is poisoned")
+            :say("  {t >> name} is poisoned")
         xx
     xx
     if t >> hp > 0 and t >> role == "knight" and t >> hp * 2 < t >> max_hp and :len(:overlays(t, guarded)) == 0
         :overlay!(t, guarded)
         if loud
-            say("  {t >> name} raises a shield")
+            :say("  {t >> name} raises a shield")
         xx
     xx
 xx
 
 act fall(f)
     if loud
-        say("  {f >> name} falls")
+        :say("  {f >> name} falls")
     xx
 xx
 
@@ -112,7 +112,7 @@ act battle(seed)
     :rand_seed(seed)
     /// Start from an empty field: the last battle's survivors go.
     repeat :objects() as o
-        delete_object!(o)
+        :delete_object!(o)
     xx
     fighter("Knight", 0, "knight", 40, 7, 4, 3)
     fighter("Archer", 0, "archer", 28, 8, 2, 6)
@@ -128,9 +128,9 @@ act battle(seed)
     repeat party > 0 and monsters > 0 and round < 50
         round |= round + 1
         if loud
-            say("round {round}")
+            :say("round {round}")
         xx
-        tick()
+        :tick()
         party |= :len(:objects(it >> side == 0))
         monsters |= :len(:objects(it >> side == 1))
     xx
@@ -166,15 +166,15 @@ repeat results as r
     k | 3 - r{"party"}
     :update!(lost[k], lost[k] + 1)
 xx
-say("{n} battles: the party wins {wins}, the monsters {n - wins}")
-say("average length: {:round(rounds / n, 1)} rounds")
-say("party members lost: none {lost[0]}, one {lost[1]}, two {lost[2]}, all {lost[3]}")
+:say("{n} battles: the party wins {wins}, the monsters {n - wins}")
+:say("average length: {:round(rounds / n, 1)} rounds")
+:say("party members lost: none {lost[0]}, one {lost[1]}, two {lost[2]}, all {lost[3]}")
 
-say("")
-say("battle 7, round by round:")
+:say("")
+:say("battle 7, round by round:")
 loud |= true
 r | battle(7)
-say("{r{"winner"}} in {r{"rounds"}} rounds")
+:say("{r{"winner"}} in {r{"rounds"}} rounds")
 repeat :objects(Fighter) as f
-    say("  {f >> name}: {f >> hp} hp")
+    :say("  {f >> name}: {f >> hp} hp")
 xx

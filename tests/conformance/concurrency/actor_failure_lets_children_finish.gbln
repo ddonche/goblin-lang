@@ -5,7 +5,7 @@ act child(state, msg)
     while i < 300000
         i |= i + 1
     xx
-    say("child " + :str(msg))
+    :say("child " + :str(msg))
     return state
 xx
 act parent(state, msg)
@@ -20,5 +20,5 @@ p | :actor(0, parent)
 attempt
     :await(p)
 rescue e
-    say("parent failed")
+    :say("parent failed")
 xx

@@ -5,22 +5,22 @@ act risky(state, msg)
     return state + 1
 xx
 h | :actor(0, risky)
-say(:await(:request(h, "ok")))
+:say(:await(:request(h, "ok")))
 f | :request(h, "boom")
 attempt
     :await(f)
 rescue e
-    say(:has("{e}", "division by zero"))
+    :say(:has("{e}", "division by zero"))
 xx
 attempt
     :post(h, "ok")
 rescue e
-    say(:has("{e}", "C0112: actor-failed"))
+    :say(:has("{e}", "C0112: actor-failed"))
 xx
 attempt
     :await(h)
 rescue e
-    say(:has("{e}", "C0112: actor-failed"))
+    :say(:has("{e}", "C0112: actor-failed"))
 xx
 act forgetful(state, msg)
     return nil
@@ -29,5 +29,5 @@ g | :actor(0, forgetful)
 attempt
     :await(:request(g, 1))
 rescue e
-    say(:has("{e}", "returned nil"))
+    :say(:has("{e}", "returned nil"))
 xx

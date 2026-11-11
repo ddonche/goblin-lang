@@ -1,1 +1,1 @@
-say(nope_not_defined(1))
+:say(nope_not_defined(1))

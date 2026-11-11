@@ -3,9 +3,9 @@
 x | 1
 if true
     x [= 2
-    say("in {x}")
+    :say("in {x}")
 xx
-say("out {x}")
+:say("out {x}")
 act outer()
     n | 5
     act inner()
@@ -13,4 +13,4 @@ act outer()
     xx
     return inner()
 xx
-say(outer())
+:say(outer())

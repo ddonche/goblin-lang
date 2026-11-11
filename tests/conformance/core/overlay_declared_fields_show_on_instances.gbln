@@ -11,5 +11,5 @@ overlay latin
 xx
 rome <> Polity | stability: .8
 :overlay!(rome, latin, .9)
-say(:overlays()[0] >> kind)
-say(:len(:overlays(it >> kind == "language")))
+:say(:overlays()[0] >> kind)
+:say(:len(:overlays(it >> kind == "language")))

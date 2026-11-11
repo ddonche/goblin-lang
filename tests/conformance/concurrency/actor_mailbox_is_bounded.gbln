@@ -19,15 +19,15 @@ while k < 50
     xx
     k |= k + 1
 xx
-say(refused)
+:say(refused)
 :cancel(h)
 attempt
     :await(h)
 rescue e
-    say(:has("{e}", "C0116: actor-cancelled"))
+    :say(:has("{e}", "C0116: actor-cancelled"))
 xx
 attempt
     :post(h, 1)
 rescue e
-    say(:has("{e}", "C0116"))
+    :say(:has("{e}", "C0116"))
 xx

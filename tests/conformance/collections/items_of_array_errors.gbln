@@ -1,3 +1,3 @@
 /// items is for maps only; an array is a type error.
-say("before")
-say(:items([1]))
+:say("before")
+:say(:items([1]))

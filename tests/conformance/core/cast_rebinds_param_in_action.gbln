@@ -3,4 +3,4 @@ act fx(v)
     t | :str(v)
     return v + 1
 xx
-say(fx(1))
+:say(fx(1))

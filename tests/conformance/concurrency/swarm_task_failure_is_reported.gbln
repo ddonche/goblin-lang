@@ -9,6 +9,6 @@ xx
 attempt
     :swarm([1, 2, 3], risky, 1)
 rescue e
-    say(:has("{e}", "C0103: swarm-task-failed: the task for item 1 failed"))
-    say(:has("{e}", "division by zero"))
+    :say(:has("{e}", "C0103: swarm-task-failed: the task for item 1 failed"))
+    :say(:has("{e}", "division by zero"))
 xx

@@ -18,9 +18,9 @@ xx
 xx
 act go(f, t)
     a | f >> name
-    say("{a}")
+    :say("{a}")
 xx
 t <> T | n: 1
 a <> F | name: "lower", key: :int("9007199254740992")
 b <> F | name: "higher", key: :int("9007199254740993")
-tick()
+:tick()

@@ -1231,7 +1231,7 @@ act event(target)
 end
 
 act population_pressure(target)
-    if is_nil(target) == false
+    if :is_nil(target) == false
         if (target >> population) > 0
             farm_output | ((target >> population) * .00031) * (.55 + (((target >> stability) + (target >> cohesion) + (target >> discipline)) * .14))
             food_need | (target >> population) * .00022
@@ -2920,11 +2920,11 @@ xx
 :overlay!(Drakmoor, ashen_rite_faith, .8)
 :overlay!(Kharum, ashen_rite_faith, .7)
 
-say "=== Memory Starting ==="
-say mem_human()
+:say "=== Memory Starting ==="
+:say :mem_human()
 
 repeat 300
-    tick()
+    :tick()
 
     repeat :objects(it>>kind == "polity")
         population_pressure(it)
@@ -2936,20 +2936,20 @@ repeat 300
     xx
 end
 
-say "=== Memory Ending ==="
-say mem_human()
+:say "=== Memory Ending ==="
+:say :mem_human()
 
-say "=== POLITIES ==="
+:say "=== POLITIES ==="
 repeat :objects(it>>kind == "polity")
-    say it
+    :say it
 xx
 
-say "=== FACTIONS ==="
+:say "=== FACTIONS ==="
 repeat factions
-    say it
+    :say it
 xx
 
-say "=== ALL OVERLAYS ==="
+:say "=== ALL OVERLAYS ==="
 repeat :overlays()
-    say it
+    :say it
 xx

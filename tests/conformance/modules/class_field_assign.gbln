@@ -3,4 +3,4 @@
 xx
 p <> Pet | name: "Rex"
 p >> name |= "Max"
-say(p >> name)
+:say(p >> name)

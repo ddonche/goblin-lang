@@ -17,5 +17,5 @@ while i < 3000
     i |= i + 1
 xx
 :gc()
-say(:stash_count(){"total"} < 500)
-say(kept(1))
+:say(:stash_count(){"total"} < 500)
+:say(kept(1))

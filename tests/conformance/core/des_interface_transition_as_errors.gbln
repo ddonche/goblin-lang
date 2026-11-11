@@ -3,4 +3,4 @@
 transition absorb as conquest
     targets: Kingdom where (target >> power) < @power
 xx
-say("never printed")
+:say("never printed")

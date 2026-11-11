@@ -1,4 +1,4 @@
 /// known-gap: interp makes :pct(25) the percent 2500% (owner's percent spec, 2026-10-07: pct(25) is 25%)
 /// `:pct(25)` and `:percent(25)` are 25%.
-say(:pct(25) == (25%))
-say(:percent(25) == (25%))
+:say(:pct(25) == (25%))
+:say(:percent(25) == (25%))

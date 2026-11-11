@@ -3,4 +3,4 @@ enum Shape
     Dot
 xx
 import _support/modules/Shape as Shape
-say(Shape::area(3))
+:say(Shape::area(3))

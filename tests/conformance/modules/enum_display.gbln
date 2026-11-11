@@ -3,5 +3,5 @@ enum Status
     Idle
     Busy
 xx
-say(Status::Idle)
-say(:str(Status::Busy))
+:say(Status::Idle)
+:say(:str(Status::Busy))

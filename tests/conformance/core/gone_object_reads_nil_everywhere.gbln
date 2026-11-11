@@ -11,10 +11,10 @@ a >> next |= b
 lst | [a, b]
 keep | b
 :delete_object!(b)
-say(a >> next)
-say(lst[1].nix?)
+:say(a >> next)
+:say(lst[1].nix?)
 repeat lst as x
-    say(x.nix?)
+    :say(x.nix?)
 xx
-say(keep.nix?)
-say(keep ?? "gone")
+:say(keep.nix?)
+:say(keep ?? "gone")

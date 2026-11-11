@@ -8,5 +8,5 @@ sweep dir
     "OLD" :
         :update_where!(self, "OLD", "NEW")
 xx
-say(:read_text("{d}/sw/a.txt"))
-say(:read_text("{d}/sw/sub/b.txt"))
+:say(:read_text("{d}/sw/a.txt"))
+:say(:read_text("{d}/sw/sub/b.txt"))

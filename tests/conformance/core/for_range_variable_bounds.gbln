@@ -5,4 +5,4 @@ s | 0
 for i in a..b
     s |= s + i
 xx
-say(s)
+:say(s)

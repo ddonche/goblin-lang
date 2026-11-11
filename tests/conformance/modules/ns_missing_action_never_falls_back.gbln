@@ -3,16 +3,16 @@
 /// has one: a call, :summon and :invoke never run another module's action of that name.
 import _support/ns/a as a
 import _support/ns/b as b
-say(b::render(""))
-say(:summon("", ["a::hello", "b::render"]))
+:say(b::render(""))
+:say(:summon("", ["a::hello", "b::render"]))
 attempt
-    say(:summon("", ["a::render"]))
+    :say(:summon("", ["a::render"]))
 rescue e
-    say(:has("{e}", "a::render"))
+    :say(:has("{e}", "a::render"))
 xx
 attempt
-    say(:invoke("a::render", ""))
+    :say(:invoke("a::render", ""))
 rescue e
-    say(:has("{e}", "a::render"))
+    :say(:has("{e}", "a::render"))
 xx
-say(a::render(""))
+:say(a::render(""))

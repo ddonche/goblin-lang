@@ -137,6 +137,10 @@ pub enum Opcode {
     GuardRebindLocal(u16, u16),
     /// Like GetIndex but key is constants[idx] (string member access).
     GetMember(u16),
+    /// `obj >> {name}`: the field named by the value on top (then the object).
+    GetMemberDyn,
+    /// `obj >> {name} |= v`: stack [obj, name, v]; leaves the object.
+    SetFieldDyn,
     /// Pop new_val, pop object → push updated object with field set. Key is constants[idx].
     SetField(u16),
     /// Nested `update!` through an lvalue path of `n` segments.
@@ -236,6 +240,14 @@ pub enum Opcode {
     /// actions under the namespace alias so `ns::action` dispatch works.
     /// constants[path_idx] = file path, constants[ns_idx] = namespace alias string.
     ImportFileAs(u16, u16),
+
+    /// `import "...{x}..." [as ns]` — the path is computed at run time: pops the
+    /// path string. constants[ns_idx] is the alias, or ns_idx == u16::MAX for none.
+    ImportDynamic(u16),
+
+    /// `import path as {expr}` — pops the alias string, then the path string,
+    /// and imports like `import path as alias`.
+    ImportDynamicAs,
 
     /// Load a GLAM: constants[ns_idx] is the glam namespace string.
     /// Reads glams/<ns>/glam.toml (if present) to populate session.action_needs,
@@ -416,6 +428,8 @@ impl Opcode {
             Opcode::GuardRebindLocal(..) => "GuardRebindLocal",
             Opcode::SetIndex        => "SetIndex",
             Opcode::GetMember(_)    => "GetMember",
+            Opcode::GetMemberDyn    => "GetMemberDyn",
+            Opcode::SetFieldDyn     => "SetFieldDyn",
             Opcode::SetField(_)     => "SetField",
             Opcode::UpdatePath(..)  => "UpdatePath",
             Opcode::UpdatePathMut(..) => "UpdatePathMut",
@@ -447,6 +461,8 @@ impl Opcode {
             Opcode::TryEnd            => "TryEnd",
             Opcode::ImportFile(_)     => "ImportFile",
             Opcode::ImportFileAs(..)  => "ImportFileAs",
+            Opcode::ImportDynamic(_)  => "ImportDynamic",
+            Opcode::ImportDynamicAs   => "ImportDynamicAs",
             Opcode::UseGlam(_)        => "UseGlam",
             Opcode::OverlayDef(_)     => "OverlayDef",
             Opcode::OverlayApply(_) => "OverlayApply",

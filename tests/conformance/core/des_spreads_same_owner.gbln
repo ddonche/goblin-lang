@@ -18,8 +18,8 @@ first <> P | owner: a
 same <> P | owner: a
 other <> P | owner: b
 :overlay!(first, flu)
-tick()
-say([:len(:overlays(same)), :len(:overlays(other))])
+:tick()
+:say([:len(:overlays(same)), :len(:overlays(other))])
 other >> owner |= a
-tick()
-say(:len(:overlays(other)))
+:tick()
+:say(:len(:overlays(other)))

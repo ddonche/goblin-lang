@@ -10,9 +10,9 @@ interface conquest |
     transition absorb
         targets: uses conquest where (target >> power) < @power and (target >> beaten_by) == self
     xx
-    on absorb => say("{self >> name} takes {target >> name}")
+    on absorb => :say("{self >> name} takes {target >> name}")
     transition erase where @power <= 0
-    on erase => say("{self >> name} falls")
+    on erase => :say("{self >> name} falls")
 xx
 <>Kingdom |
     name: ..
@@ -41,9 +41,9 @@ k <> Kingdom | name: "Varn", power: 9
 t <> Tribe | name: "Oss", power: 2
 d <> Tribe | name: "Dust", power: 0
 t >> beaten_by |= k
-tick()
+:tick()
     settle
 xx
-say(:len(:objects(Tribe)))
-tick()
-say(:len(:objects(Tribe)))
+:say(:len(:objects(Tribe)))
+:tick()
+:say(:len(:objects(Tribe)))

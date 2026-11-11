@@ -1,0 +1,31 @@
+/// known-gap: interp has no decision blocks (decision name ... xx); the interpreter is being retired
+/// `where target == x`: only x can pass, so a later condition that would
+/// fail on another target never runs for it; x itself, a nil x, and x of
+/// another class.
+<>Lord |
+    name: ""
+    seat: nil
+    decision visit
+        targets: Hall where target == @seat and 10 / (target >> guests) > 1
+        score => target >> guests
+    xx
+    judge
+        !visit.nix?: visit(self, visit >> target)
+    xx
+xx
+<>Hall |
+    name: ""
+    guests: 0
+xx
+act visit(l, h)
+    :say("{l >> name} visits {h >> name}")
+    h >> guests |= h >> guests + 1
+xx
+h1 <> Hall | name: "Oak", guests: 2
+h2 <> Hall | name: "Elm", guests: 0
+a <> Lord | name: "Ash", seat: h1
+b <> Lord | name: "Bel"
+c <> Lord | name: "Cai", seat: a
+:tick()
+:tick()
+:say(h1 >> guests)

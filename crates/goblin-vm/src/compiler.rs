@@ -383,6 +383,9 @@ pub struct Compiler {
     /// stored as `<prefix><name>` so they cannot collide with the importer's
     /// (or another module's) globals and actions. None for the entry script.
     global_prefix: Option<String>,
+    /// A GLAM's file: names resolve only to its own globals (a GLAM has no
+    /// dependencies; outside information reaches it through the Box).
+    glam_isolated: bool,
     /// Top-level names whose `x | v` has been compiled (module globals), and
     /// which of them are `imm`.
     bound_globals: std::collections::HashSet<String>,
@@ -411,7 +414,7 @@ struct LoopCtx {
 
 impl Compiler {
     pub fn new() -> Self {
-        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new(), in_tick_block: false }
+        Compiler { scopes: Vec::new(), globals: Vec::new(), unit_globals: Default::default(), collected_classes: Vec::new(), collected_enums: Vec::new(), current_line: 0, is_class_method: false, start_error: None, repl_mode: false, repl_known_globals_count: 0, loop_stack: Vec::new(), loop_floors: Vec::new(), glam_namespace: None, source_file: String::new(), user_actions: Default::default(), global_prefix: None, glam_isolated: false, bound_globals: Default::default(), imm_globals: Default::default(), in_path: false, attempt_depth: 0, take_arg: None, lazy_picks: Vec::new(), in_tick_block: false }
     }
 
     /// Set the source file name stamped onto compiled functions (for error messages).
@@ -445,6 +448,23 @@ impl Compiler {
         self
     }
 
+    /// Undefined name; in a GLAM's file, a name that exists outside the GLAM
+    /// says so (B0111) instead.
+    fn undef_err(&self, name: impl Into<String>) -> GoblinError {
+        let name = name.into();
+        if self.glam_isolated && self.globals.iter().any(|g| *g == name) {
+            return GoblinError::Runtime(format!(
+                "B0111: glam-outside-name: a GLAM cannot use '{name}' from outside the GLAM. A GLAM reads outside information from the Box."));
+        }
+        GoblinError::UndefinedVariable { name }
+    }
+
+    /// Compile a GLAM's file: it sees only its own globals (and `args`).
+    pub fn with_glam_isolation(mut self, on: bool) -> Self {
+        self.glam_isolated = on;
+        self
+    }
+
     /// Slot of a global visible from this module: its own name first, then a
     /// shared (unprefixed) one such as `args`.
     fn global_index(&self, name: &str) -> Option<usize> {
@@ -452,6 +472,7 @@ impl Compiler {
             let own = format!("{p}{name}");
             if let Some(i) = self.globals.iter().position(|g| *g == own) { return Some(i); }
         }
+        if self.glam_isolated && name != "args" { return None; }
         self.globals.iter().position(|g| g == name)
     }
 
@@ -701,7 +722,7 @@ impl Compiler {
             return Ok(Opcode::LoadConst(idx));
         }
 
-        Err(GoblinError::UndefinedVariable { name: name.to_string() })
+        Err(self.undef_err(name.to_string()))
     }
 
     /// Recursively walk outer scopes to build an upvalue capture chain.
@@ -857,7 +878,7 @@ impl Compiler {
                         }
                         self.emit_obj_rebind_guard(name)?;
                         let op = self.resolve_store(name)
-                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name.clone() }))?;
+                            .ok_or_else(|| self.locate_err(self.undef_err(name.clone())))?;
                         self.emit(op);
                     }
                     BindMode::Shadow => {
@@ -969,7 +990,7 @@ impl Compiler {
                                 self.emit_imm_guard(name_str)?;
                                 self.emit_obj_rebind_guard(name_str)?;
                                 self.resolve_store(name_str)
-                                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: name_str.to_string() }))?
+                                    .ok_or_else(|| self.locate_err(self.undef_err(name_str.to_string())))?
                             }
                             BindMode::Shadow => {
                                 self.compile_shadow_store(&name.0, tb.is_imm, &None)?;
@@ -1000,6 +1021,21 @@ impl Compiler {
             // ── Import / Use ──────────────────────────────────────────────────
             Stmt::Import(import_stmt) => {
                 use goblin_ast::ImportItems;
+                if let Some(alias_expr) = &import_stmt.alias_expr {
+                    // `import path as {expr}`: path and alias are both strings on
+                    // the stack when the statement runs.
+                    match &import_stmt.items {
+                        ImportItems::Path(path) => {
+                            let idx = self.add_constant(Value::Str(path.clone().into()));
+                            self.emit(Opcode::LoadConst(idx));
+                        }
+                        ImportItems::Expr(expr) => self.compile_expr(expr)?,
+                        ImportItems::Named { .. } => unreachable!("grouped imports have no `as`"),
+                    }
+                    self.compile_expr(alias_expr)?;
+                    self.emit(Opcode::ImportDynamicAs);
+                    return Ok(());
+                }
                 match &import_stmt.items {
                     ImportItems::Path(path) => {
                         // Resolve extension: try .gbln then .gob
@@ -1030,8 +1066,15 @@ impl Compiler {
                             self.emit(Opcode::ImportFileAs(path_idx, ns_idx));
                         }
                     }
-                    ImportItems::Expr(_) => {
-                        return Err(GoblinError::NotImplemented { feature: "dynamic import paths" });
+                    ImportItems::Expr(expr) => {
+                        // `import "modules/{n}/{n}" as x`: the path is built when
+                        // the statement runs, then imported like a literal path.
+                        self.compile_expr(expr)?;
+                        let ns_idx = match &import_stmt.alias {
+                            Some(alias) => self.add_constant(Value::Str(alias.clone().into())),
+                            None => u16::MAX,
+                        };
+                        self.emit(Opcode::ImportDynamic(ns_idx));
                     }
                 }
             }
@@ -1532,7 +1575,32 @@ impl Compiler {
                 // on an `imm` variable it is an error (owner, 2026-10-07),
                 // raised before anything is changed.
                 let bang = name.trim_start_matches(':');
-                if bang_mutates_target(bang) && !self.user_actions.contains(bang) {
+                let colon = name.starts_with(':');
+                // `name(...)` calls the program's own action; `:name(...)`
+                // calls what Goblin provides (owner, 2026-11-11). A bare call
+                // to a builtin's name that is no action (and no variable
+                // holding a function) is R1260.
+                if !colon && !KEYWORD_FORMS.contains(&bang) && !self.user_actions.contains(bang) && is_goblin_builtin(bang) {
+                    // resolve_load also falls back to the builtin itself (or,
+                    // in a method, a program variable); only a real variable counts.
+                    let var_op = match self.resolve_load(bang) {
+                        Ok(Opcode::ProgramVar(_)) => None,
+                        Ok(Opcode::LoadConst(i)) if matches!(self.scope().constants.get(i as usize), Some(Value::Builtin(_))) => None,
+                        other => other.ok(),
+                    };
+                    match var_op.ok_or(()) {
+                        Ok(load_op) => {
+                            self.note_callee(&load_op);
+                            self.emit(load_op);
+                            for arg in args { self.compile_expr(arg)?; }
+                            self.emit(Opcode::Call(args.len() as u8));
+                            return Ok(());
+                        }
+                        Err(_) => return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1260: no action named `{bang}`. `{bang}` is a Goblin builtin: write it `:{bang}`.")))),
+                    }
+                }
+                if bang_mutates_target(bang) && (colon || !self.user_actions.contains(bang)) {
                     if let Some(root) = args.first().and_then(lvalue_root) {
                         self.emit_mut_guard(&root)?;
                     }
@@ -1543,7 +1611,7 @@ impl Compiler {
                 }
                 // A user-defined action shadows any builtin of the same name.
                 let bare_name = name.trim_start_matches(':');
-                if self.user_actions.contains(bare_name) {
+                if !colon && self.user_actions.contains(bare_name) {
                     let load_op = self.resolve_load(bare_name).map_err(|e| self.locate_err(e))?;
                     self.note_callee(&load_op);
                     self.emit(load_op);
@@ -1618,8 +1686,8 @@ impl Compiler {
                 if let Some(pos_name) = reap_bang_position(bare_name) {
                     if let Some(target) = args.first().filter(|t| is_lvalue(t)) {
                         let sp = target.span().clone();
-                        self.compile_expr(&Expr::FreeCall(format!("reap_{pos_name}"), args.clone(), sp.clone()))?;
-                        self.compile_expr(&Expr::FreeCall(format!("delete_{pos_name}"), args.clone(), sp))?;
+                        self.compile_expr(&Expr::FreeCall(format!(":reap_{pos_name}"), args.clone(), sp.clone()))?;
+                        self.compile_expr(&Expr::FreeCall(format!(":delete_{pos_name}"), args.clone(), sp))?;
                         self.compile_store_from_stack(target)?;
                         return Ok(());
                     }
@@ -1634,7 +1702,7 @@ impl Compiler {
                     for a in &args[1..] { self.compile_expr(a)?; }
                     self.emit(Opcode::CallBuiltinMutPath(bid, args.len() as u8, keys.len() as u8));
                     let store_op = self.resolve_store(&root)
-                        .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root.clone() }))?;
+                        .ok_or_else(|| self.locate_err(self.undef_err(root.clone())))?;
                     self.emit(store_op);
                     self.emit(Opcode::LoadNil);
                     return Ok(());
@@ -1707,6 +1775,13 @@ impl Compiler {
                             }
                         }
                     }
+                } else if colon {
+                    let msg = if self.user_actions.contains(bare_name) {
+                        format!("R1261: `:{bare_name}` names no Goblin builtin. `{bare_name}` is your own action: call it without the colon, `{bare_name}(...)`.")
+                    } else {
+                        format!("R1261: `:{bare_name}` names no Goblin builtin, and no action is named `{bare_name}`.")
+                    };
+                    return Err(self.locate_err(GoblinError::Runtime(msg)));
                 } else {
                     let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
                     self.note_callee(&load_op);
@@ -1920,7 +1995,7 @@ impl Compiler {
                             { let n = self.name_data(type_name); self.emit(Opcode::CastBangGlobal(pos as u16, n)); }
                             return Ok(());
                         }
-                        return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
+                        return Err(self.locate_err(self.undef_err(var_name)));
                     }
 
                     // Mutation-bang dot-call: var.method! → compute var.method, write back to var.
@@ -1945,7 +2020,7 @@ impl Compiler {
                             self.emit(Opcode::StoreGlobal(pos as u16));
                             return Ok(());
                         }
-                        return Err(self.locate_err(GoblinError::UndefinedVariable { name: var_name }));
+                        return Err(self.locate_err(self.undef_err(var_name)));
                     }
                 }
                 self.compile_expr(inner)?;
@@ -2103,14 +2178,25 @@ impl Compiler {
             match rhs {
                 Expr::FreeCall(name, args, _) => {
                     let argc = (args.len() + 1) as u8;
-                    if let Some(id) = builtin_by_name(name) {
+                    let bare = name.trim_start_matches(':');
+                    let colon = name.starts_with(':');
+                    if !colon && !self.user_actions.contains(bare) && is_goblin_builtin(bare) {
+                        return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1260: no action named `{bare}`. `{bare}` is a Goblin builtin: write it `:{bare}`."))));
+                    }
+                    if colon && builtin_by_name(bare).is_none() {
+                        return Err(self.locate_err(GoblinError::Runtime(format!(
+                            "R1261: `:{bare}` names no Goblin builtin."))));
+                    }
+                    if let Some(id) = builtin_by_name(bare).filter(|_| colon) {
                         // Builtins: push lhs first, then rest of args
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
                         self.emit(Opcode::CallBuiltin(id, argc));
                     } else {
                         // User function: stack layout must be [func, lhs, args...]
-                        self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        let load_op = self.resolve_load(name).map_err(|e| self.locate_err(e))?;
+                        self.emit(load_op);
                         self.scope_mut().calls_values = true;
                         self.compile_expr(lhs)?;
                         for arg in args { self.compile_expr(arg)?; }
@@ -2153,6 +2239,14 @@ impl Compiler {
             return Ok(());
         }
 
+        // Field read by a name worked out as it runs: obj >> {name}
+        if op == ">>{}" {
+            self.compile_expr(lhs)?;
+            self.compile_expr(rhs)?;
+            self.emit(Opcode::GetMemberDyn);
+            return Ok(());
+        }
+
         // Field read: obj >> field
         if op == ">>" {
             self.compile_expr(lhs)?;
@@ -2180,6 +2274,24 @@ impl Compiler {
                 _ => None,
             };
 
+            // `obj >> {name} |= v`
+            if let Expr::Binary(obj_expr, inner_op, key, _) = lhs {
+                if inner_op == ">>{}" {
+                    self.compile_expr(obj_expr)?;
+                    self.compile_expr(key)?;
+                    self.compile_expr(rhs)?;
+                    self.emit(Opcode::SetFieldDyn);
+                    let var_name = match obj_expr.as_ref() {
+                        Expr::Ident(n, _) => n.clone(),
+                        _ => return Ok(()),
+                    };
+                    let store_op = self.resolve_store(&var_name)
+                        .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
+                    self.emit(Opcode::Dup);
+                    self.emit(store_op);
+                    return Ok(());
+                }
+            }
             if let Some((obj_expr, field_name)) = field_target {
                 self.compile_expr(obj_expr)?;
                 self.compile_expr(rhs)?;
@@ -2193,7 +2305,7 @@ impl Compiler {
                     _ => return Ok(()),
                 };
                 let store_op = self.resolve_store(&var_name)
-                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                    .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
                 self.emit(Opcode::Dup);
                 self.emit(store_op);
                 return Ok(());
@@ -2207,7 +2319,7 @@ impl Compiler {
             self.compile_expr(rhs)?;
             self.emit_obj_rebind_guard(&var_name)?;
             let store_op = self.resolve_store(&var_name)
-                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
             self.emit(Opcode::Dup);
             self.emit(store_op);
             return Ok(());
@@ -2565,7 +2677,7 @@ impl Compiler {
     fn compile_store_from_stack(&mut self, target: &Expr) -> Result<(), GoblinError> {
         if let Expr::Ident(var_name, _) = target {
             let op = self.resolve_store(var_name)
-                .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
             self.emit(op);
             return Ok(());
         }
@@ -2599,7 +2711,7 @@ impl Compiler {
         self.emit(Opcode::LoadLocal(tmp));
         self.emit(Opcode::UpdatePathMut(segs.len() as u8, mask));
         let store_op = self.resolve_store(&root_name)
-            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+            .ok_or_else(|| self.locate_err(self.undef_err(root_name.clone())))?;
         self.emit(store_op);
         Ok(())
     }
@@ -3298,7 +3410,7 @@ impl Compiler {
                         // update!(var, new_val) → compile new_val, store to var
                         self.compile_expr(&args[1])?;
                         let op = self.resolve_store(var_name)
-                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: var_name.clone() }))?;
+                            .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
                         self.emit(op);
                         self.emit(Opcode::LoadNil);
                     }
@@ -3366,7 +3478,7 @@ impl Compiler {
                             None => Opcode::UpdatePathMut(segs.len() as u8, mask),
                         });
                         let store_op = self.resolve_store(&root_name)
-                            .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root_name.clone() }))?;
+                            .ok_or_else(|| self.locate_err(self.undef_err(root_name.clone())))?;
                         self.emit(store_op);
                         if let Some((check, expr)) = quick {
                             // In front of the fused check: the whole statement at once.
@@ -3434,7 +3546,7 @@ impl Compiler {
                 let tmp = self.scope_mut().declare_local("__agenda_tmp__");
                 self.emit(Opcode::StoreLocal(tmp));
                 let store = self.resolve_store(&root)
-                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: root.clone() }))?;
+                    .ok_or_else(|| self.locate_err(self.undef_err(root.clone())))?;
                 self.emit(store);
                 self.emit(Opcode::LoadLocal(tmp));
                 Ok(true)
@@ -3468,7 +3580,7 @@ impl Compiler {
                 self.emit(Opcode::LoadConst(zero_idx));
                 self.emit(Opcode::CallBuiltin(BuiltinId::GetAt, 2));
                 let store_arr = self.resolve_store(&arr_name)
-                    .ok_or_else(|| self.locate_err(GoblinError::UndefinedVariable { name: arr_name.clone() }))?;
+                    .ok_or_else(|| self.locate_err(self.undef_err(arr_name.clone())))?;
                 self.emit(store_arr);
                 // reaped = result[1] → leave on stack as expression value
                 self.emit(Opcode::LoadLocal(tmp_slot));
@@ -3740,7 +3852,7 @@ fn mentions_it(e: &Expr) -> bool {
 pub(crate) fn read_calls_rolling(e: &Expr) -> Option<Vec<String>> {
     fn walk(e: &Expr, names: &mut Vec<String>) -> bool {
         match e {
-            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.as_str()) => args.iter().all(|a| walk(a, names)),
+            Expr::FreeCall(name, args, _) if ROLLS.contains(&name.trim_start_matches(':')) => args.iter().all(|a| walk(a, names)),
             Expr::Object(fields, _) => fields.iter().all(|(_, v)| walk(v, names)),
             Expr::Binary(l, _, r, _) | Expr::Index(l, r, _) | Expr::IndexMap(l, r, _) => walk(l, names) && walk(r, names),
             Expr::Prefix(_, x, _) | Expr::Member(x, _, _) | Expr::OptMember(x, _, _) => walk(x, names),
@@ -4130,6 +4242,7 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         // DES tick
         "tick" | "tick_db"               => BuiltinId::Tick,
         "event_log"                      => BuiltinId::EventLog,
+        "event"                          => BuiltinId::Event,
 
         // DES / overlay
         "decision_debug"                 => BuiltinId::DecisionDebug,
@@ -4350,6 +4463,19 @@ fn bang_path_call<'a>(name: &str, args: &'a [Expr]) -> Option<(BuiltinId, String
 /// A mutating bang (`:put_last!(xs, 4)`, `:update!`, `:int!(x)`) changes the
 /// thing its first argument names, not a copy. A destructive bang acts on
 /// something else (files, objects, overlays) and leaves its arguments alone.
+/// Statement words the parser hands over as calls; they are syntax, not
+/// builtins, so they never take a colon.
+pub const KEYWORD_FORMS: &[&str] = &["if", "unless", "while", "repeat", "for", "skip", "stop", "return", "collect", "attempt"];
+
+/// Whether Goblin itself provides `name` (so a call to it takes `:`).
+pub fn is_goblin_builtin(name: &str) -> bool {
+    builtin_by_name(name).is_some()
+        || name.strip_suffix('!').is_some_and(|b| builtin_by_name(b).is_some() || CAST_BANG_FREE.contains(&b))
+        || reap_bang_position(name).is_some()
+        || matches!(name, "say" | "update!" | "schedule!" | "unschedule!" | "due!" | "reap!"
+            | "delete_object!" | "delete_overlays_on!" | "is_bound_name")
+}
+
 fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
         "write_text!", "write_json!", "append_file!",

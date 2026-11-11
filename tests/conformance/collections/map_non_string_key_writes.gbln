@@ -3,4 +3,4 @@ m | {}
 :put_at!(m, true, "a")
 :put_at!(m, 1.5, "b")
 :put_at!(m, 'c', "c")
-say(m)
+:say(m)

@@ -3,4 +3,4 @@
 import _support/modules/state as s1
 import _support/modules/state as s2
 s1::bump()
-say(s2::get_counter())
+:say(s2::get_counter())

@@ -11,11 +11,11 @@ big <> Polity | stability: 1.4
 rome >> stability |= 1.7
 rome >> army |= 5
 rome >> treasury |= 1.7
-say(rome >> stability)
-say(rome >> army)
-say(rome >> treasury)
+:say(rome >> stability)
+:say(rome >> army)
+:say(rome >> treasury)
 rome >> stability |= -2
-say(rome >> stability)
-say(big >> stability)
+:say(rome >> stability)
+:say(big >> stability)
 big >> stability |= 3
-say(big >> stability)
+:say(big >> stability)

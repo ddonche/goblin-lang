@@ -13,22 +13,22 @@ other | lobby
 attempt
     h | :actor(lobby, on_message)
 rescue e
-    say(:has("{e}", "C0113: actor-shared-state"))
+    :say(:has("{e}", "C0113: actor-shared-state"))
 xx
-say(lobby >> name)
+:say(lobby >> name)
 den <> Room | name: "den", messages: []
 d | :actor(den, on_message)
 copy | :await(:request(d, "hi"))
-say(copy >> messages)
+:say(copy >> messages)
 attempt
-    say(den >> name)
+    :say(den >> name)
 rescue e
-    say(:has("{e}", "C0115: actor-handed-off: `den` was handed to an actor"))
+    :say(:has("{e}", "C0115: actor-handed-off: `den` was handed to an actor"))
 xx
 settings | {"theme": "dark"}
 s | :actor(settings, on_message)
 attempt
-    say(settings)
+    :say(settings)
 rescue e
-    say(:has("{e}", "C0115"))
+    :say(:has("{e}", "C0115"))
 xx

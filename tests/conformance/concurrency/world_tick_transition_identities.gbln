@@ -78,7 +78,7 @@ xx
 one | :actor(make({"A": "split", "B": "fracture", "C": "mutate", "D": "spawn"}), day)
 two | :actor(make({"E": "absorb", "F": "absorbed", "G": "merge", "H": "merged"}), day)
 three | :actor(make({"I": "subjugate", "J": "vassal", "K": "erase", "L": "stay"}), day)
-tick()
+:tick()
 act by_name(x)
     return x >> name
 xx
@@ -91,14 +91,14 @@ repeat all as x
     if old == x >> id => kept |= "kept"
     cls | "Thing"
     if :is_type(x, "Other") => cls |= "Other"
-    say("{x >> name} ({cls}) id {kept}; uuid is id: {(x >> uuid) == (x >> id)}")
+    :say("{x >> name} ({cls}) id {kept}; uuid is id: {(x >> uuid) == (x >> id)}")
     :put_last!(ids, x >> id)
 xx
 gone | []
 repeat before as name, want
     if :len(:objects(it >> id == want)) == 0 => :put_last!(gone, name)
 xx
-say("gone: {:sort(gone)}")
-say("{:len(ids)} objects, {:len(:unique(ids))} distinct ids")
+:say("gone: {:sort(gone)}")
+:say("{:len(ids)} objects, {:len(:unique(ids))} distinct ids")
 j | :objects(it >> name == "J")[0]
-say("J held by {j >> owner >> name}")
+:say("J held by {j >> owner >> name}")

@@ -7,4 +7,4 @@ act f(a, b)
     xx
 xx
 f("x1", "yx")
-say(got)
+:say(got)

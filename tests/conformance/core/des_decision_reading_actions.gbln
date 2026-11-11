@@ -48,18 +48,18 @@ act might(l)
 xx
 act note(x)
     looks |= looks + 1
-    say("looking at land {x >> yield}")
+    :say("looking at land {x >> yield}")
     return true
 xx
 act seen()
     return looks
 xx
 act take(l, x)
-    say("{l >> name} takes land {x >> yield}")
+    :say("{l >> name} takes land {x >> yield}")
     x >> owner |= l
 xx
 act show(p, x)
-    say("{p >> name} picks land {x >> yield} after {looks} looks")
+    :say("{p >> name} picks land {x >> yield} after {looks} looks")
 xx
 a <> Lord | name: "Ash"
 b <> Lord | name: "Birch"
@@ -70,11 +70,11 @@ l3 <> Land | yield: 3, owner: a
 l4 <> Land | yield: 4, owner: a
 l5 <> Land | yield: 5, owner: b
 l6 <> Land | yield: 6, owner: c
-tick()
-say("Ash {might(a)}, Birch {might(b)}, Cole {might(c)}")
+:tick()
+:say("Ash {might(a)}, Birch {might(b)}, Cole {might(c)}")
 p <> Peer | name: "Pell"
-tick()
-delete_object!(p)
+:tick()
+:delete_object!(p)
 looks |= 0
 s <> Scout | name: "Sly"
-tick()
+:tick()

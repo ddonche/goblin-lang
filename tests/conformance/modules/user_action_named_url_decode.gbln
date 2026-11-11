@@ -2,4 +2,4 @@
 act url_decode(x)
     return "user-url_decode"
 xx
-say(url_decode("a%20b"))
+:say(url_decode("a%20b"))

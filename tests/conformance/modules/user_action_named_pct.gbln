@@ -2,4 +2,4 @@
 act pct(x)
     return "user-pct"
 xx
-say(pct(5))
+:say(pct(5))

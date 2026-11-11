@@ -3,5 +3,5 @@ enum Shape
     Square { side: int }
 xx
 c | Shape::Circle { r: 2 }
-say(c.r)
-say(c == c)
+:say(c.r)
+:say(c == c)

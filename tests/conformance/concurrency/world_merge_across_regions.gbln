@@ -43,7 +43,7 @@ xx
 r1 | :actor(make(1), day)
 r2 | :actor(make(2), day)
 repeat :range(1, 4) as t
-    tick()
+    :tick()
     names | []
     repeat :objects() as o
         h | o >> owner

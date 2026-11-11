@@ -1,2 +1,2 @@
-say("start")
-say(:max("a", "b"))
+:say("start")
+:say(:max("a", "b"))

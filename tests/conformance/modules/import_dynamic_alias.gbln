@@ -1,0 +1,11 @@
+/// known-gap: interp has no `as {...}` (VM only, 0.51.1)
+/// `import path as {x}` names the module with the string `x` gives when the
+/// import runs, so a loop can import a list of modules under their own names.
+repeat ["left", "right"] as n
+    import "_support/modules/{n}" as {n}
+xx
+:say(left::name())
+:say(right::name())
+m | "mathy"
+import _support/modules/mathy as {"m_" + m}
+:say(:summon(4, ["m_mathy::double", "m_mathy::double"]))

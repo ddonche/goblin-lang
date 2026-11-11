@@ -4,4 +4,4 @@ p | "{d}/log.txt"
 :write_text!(p, "a\n")
 :append_file!(p, "b\n")
 :append_file!(p, "c\n")
-say(:read_text(p))
+:say(:read_text(p))

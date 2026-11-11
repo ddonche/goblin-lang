@@ -1,4 +1,4 @@
-say("script runs")
+:say("script runs")
 total | 0
 repeat [1, 2, 3]
     total |= total + it

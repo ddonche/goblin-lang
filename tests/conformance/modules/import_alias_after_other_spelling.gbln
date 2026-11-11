@@ -3,4 +3,4 @@
 /// answers to the alias.
 import "_support/eval/mods/extra/extra.gbln"
 import "./_support/eval/mods/zeta/../extra/extra.gbln" as ex
-say(ex::tail("ok,"))
+:say(ex::tail("ok,"))

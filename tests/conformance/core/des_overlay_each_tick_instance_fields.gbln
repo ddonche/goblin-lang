@@ -32,7 +32,7 @@ overlay bleed
         @def + 1
     xx
 xx
-tick()
-say(a >> hp)
-say(a >> def)
-say(a >> every)
+:tick()
+:say(a >> hp)
+:say(a >> def)
+:say(a >> every)

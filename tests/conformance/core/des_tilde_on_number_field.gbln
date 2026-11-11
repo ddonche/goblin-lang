@@ -15,4 +15,4 @@ a | f >> age
 g | f >> gold
 l | f >> luck
 m | f >> mood
-say("Hilltop: age {a}, gold {g}, luck {l}, mood {m}")
+:say("Hilltop: age {a}, gold {g}, luck {l}, mood {m}")

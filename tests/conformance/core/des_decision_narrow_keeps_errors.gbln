@@ -18,14 +18,14 @@ xx
     owner: nil
 xx
 act pay(l, k)
-    say("{l >> name} pays {k >> name}")
+    :say("{l >> name} pays {k >> name}")
 xx
 a <> Lord | name: "Ash"
 k1 <> Knight | name: "Kay", deeds: 2, owner: a
 k2 <> Knight | name: "Lot", deeds: 0
 attempt
-    tick()
+    :tick()
 rescue e
-    say(:has("{e}", "R1220"))
-    say(:has("{e}", "division by zero"))
+    :say(:has("{e}", "R1220"))
+    :say(:has("{e}", "division by zero"))
 xx

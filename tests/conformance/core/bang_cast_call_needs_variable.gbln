@@ -1,5 +1,5 @@
 /// `:int!(…)` takes one plain variable; an expression raises R0802.
 k | "5"
-say("before")
+:say("before")
 :int!(k + "1")
-say(k)
+:say(k)

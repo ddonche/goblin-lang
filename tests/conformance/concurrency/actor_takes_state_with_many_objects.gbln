@@ -13,7 +13,7 @@ act make_town(n)
     return {"people": people}
 xx
 act region(st, msg)
-    say(:len(st{"people"}))
+    :say(:len(st{"people"}))
     return st
 xx
 town | make_town(3)
@@ -27,5 +27,5 @@ ppl | []
 attempt
     r2 | :actor({"people": ppl}, region)
 rescue e
-    say(:has("{e}", "C0113"))
+    :say(:has("{e}", "C0113"))
 xx

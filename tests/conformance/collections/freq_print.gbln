@@ -1,1 +1,1 @@
-say(:freq(["x", "y", "x"]))
+:say(:freq(["x", "y", "x"]))

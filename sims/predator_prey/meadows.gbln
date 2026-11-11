@@ -123,9 +123,9 @@ repeat :range(0, n_meadows) as n
     :actor(make_meadow(n))
 xx
 
-say("predator and prey: {n_meadows} meadows, {days} days")
+:say("predator and prey: {n_meadows} meadows, {days} days")
 repeat :range(1, days + 1) as t
-    tick()
+    :tick()
     if t % 10 == 0 or t == days
         grass | 0
         repeat :objects(Grass) as g
@@ -133,6 +133,6 @@ repeat :range(1, days + 1) as t
         xx
         rabbits | :len(:objects(Rabbit))
         foxes | :len(:objects(Fox))
-        say("day {t}: rabbits {rabbits}, foxes {foxes}, grass {grass}")
+        :say("day {t}: rabbits {rabbits}, foxes {foxes}, grass {grass}")
     xx
 xx

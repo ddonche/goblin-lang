@@ -53,7 +53,7 @@ end
 a <> F | hp: 20
 overlay Poison on a at 1      -- hp 18
 a >> hp |= a >> hp - 1        -- each round something else hits for 1
-tick()                        -- hp 17, 16, then 20 when Poison ends
+:tick()                        -- hp 17, 16, then 20 when Poison ends
 ```
 
 The 3 points of damage taken meanwhile vanish. A shield (`def + 3`) has
@@ -190,7 +190,7 @@ written. The sim reads the map into a variable first:
 
 ```goblin
 w | r{"winner"}
-say("{w} in {rr} rounds")
+:say("{w} in {rr} rounds")
 ```
 
 Fixed later (feudal finding): placeholders count nested braces and

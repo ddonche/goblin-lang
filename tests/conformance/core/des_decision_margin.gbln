@@ -36,10 +36,10 @@ c <> Shop | stock: 6
 repeat 20
     x <> Buyer | margin: 0
 xx
-tick()
+:tick()
 repeat :objects(it >> stock > 0)
     st | it >> stock
     bought | it >> sold > 0
     v | it >> visits
-    say("stock {st}: has buyers {bought}, visits {v}")
+    :say("stock {st}: has buyers {bought}, visits {v}")
 xx

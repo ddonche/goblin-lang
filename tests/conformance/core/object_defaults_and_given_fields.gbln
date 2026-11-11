@@ -5,7 +5,7 @@
 xx
 a <> Hero | hp: 3
 b <> Hero | name: "Ann", extra: 1
-say(a >> name)
-say(a >> hp)
-say(b >> name)
-say(b >> hp)
+:say(a >> name)
+:say(a >> hp)
+:say(b >> name)
+:say(b >> hp)

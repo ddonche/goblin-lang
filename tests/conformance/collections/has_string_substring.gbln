@@ -1,2 +1,2 @@
-say(:has("hello", "ell"))
-say(:has("hello", "xyz"))
+:say(:has("hello", "ell"))
+:say(:has("hello", "xyz"))

@@ -1,1 +1,1 @@
-say(:count_matching("a1b22", "[0-9]"))
+:say(:count_matching("a1b22", "[0-9]"))

@@ -1,4 +1,4 @@
 c | :trim("\t\n hi \n")
-say("[{c}]")
+:say("[{c}]")
 d | " x ".trim
-say("[{d}]")
+:say("[{d}]")

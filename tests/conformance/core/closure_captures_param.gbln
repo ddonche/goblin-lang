@@ -6,4 +6,4 @@ act mk(n)
     return add
 xx
 adder | mk(3)
-say(adder(4))
+:say(adder(4))

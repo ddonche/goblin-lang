@@ -13,8 +13,8 @@ xx
 c <> C | n: :int("9223372036854775807")
 :overlay!(c, up)
 attempt
-    tick()
+    :tick()
 rescue e
-    say("stopped")
+    :say("stopped")
 xx
-say(c >> n)
+:say(c >> n)

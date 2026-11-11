@@ -6,5 +6,5 @@ xx
 act twice(x)
     return x * 2
 xx
-say(:swarm([1, 2, 3], add, 2, {"step": 10}))
-say(:swarm([1, 2, 3], twice, 8))
+:say(:swarm([1, 2, 3], add, 2, {"step": 10}))
+:say(:swarm([1, 2, 3], twice, 8))

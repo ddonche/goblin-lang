@@ -1,0 +1,13 @@
+/// `name?:` makes a field nullable, so the object can be made with nil in
+/// it; `name!:` makes it readonly; both go together in either order.
+<>Ruler |
+    name: ..
+    house?: nil
+    born!: 0
+    seal!?: nil
+    crest?!: nil
+xx
+r <> Ruler | name: "Toren", house: nil, born: 812, seal: nil, crest: nil
+:say(r >> house.nix?)
+:say(r >> born)
+:say(r >> seal.nix? and r >> crest.nix?)

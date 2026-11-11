@@ -1,4 +1,4 @@
 l | [1, 2]
 :delete_all!(l)
-say l
-say(:len(l))
+:say l
+:say(:len(l))

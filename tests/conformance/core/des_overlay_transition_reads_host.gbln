@@ -1,0 +1,41 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// An overlay's transition lines read the object the copy is on as `host`
+/// (`self` is the copy, so `@field` reads the copy's own field): a famine
+/// ends when the land's people are down to what it feeds, and two tongues
+/// held side by side on a trading land merge.
+<>Land |
+    name: ..
+    people: 120.0
+    food: 100.0
+    trade: .5
+xx
+overlay famine
+    hosts: Land
+    every 1 tick => @people |= @people - 10.0
+    transition erase where host >> people <= host >> food
+xx
+<^>Tongue |
+    hosts: Land
+    note: "own"
+    transition merge
+        targets: Tongue where (target >> intensity) >= .3 and host >> trade > .4 and @note == "own"
+        carries:
+            intensity: :max(intensity, target >> intensity)
+        xx
+    xx
+xx
+overlay hill_speech <^> Tongue
+xx
+overlay sea_speech <^> Tongue
+xx
+l <> Land | name: "Varn"
+:overlay!(l, famine, 1)
+:overlay!(l, hill_speech, .6)
+:overlay!(l, sea_speech, .4)
+repeat 4
+    :tick()
+xx
+repeat :overlays(l) as o
+    :say("{o >> overlay_name} {o >> intensity}")
+xx
+:say("people {l >> people}")

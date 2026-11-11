@@ -1,6 +1,6 @@
 n.int | 5
-say(n)
+:say(n)
 n |= 7
-say(n)
+:say(n)
 m.int | "5"
-say(m + 1)
+:say(m + 1)

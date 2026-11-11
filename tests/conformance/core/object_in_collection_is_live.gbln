@@ -18,18 +18,18 @@ put | []
 :put_last!(put, b)
 all | :objects(Land)
 a >> people |= 5
-say("{lst[0] >> people} {m{"k"} >> people} {all[0] >> people}")
+:say("{lst[0] >> people} {m{"k"} >> people} {all[0] >> people}")
 :tick()
-say("{a >> people} {lst[0] >> people} {put[0] >> people} {:get_first(all) >> people}")
+:say("{a >> people} {lst[0] >> people} {put[0] >> people} {:get_first(all) >> people}")
 repeat all as e
-    say(e >> people)
+    :say(e >> people)
 xx
 x | lst[0]
-say("{a >> people} {x >> people}")
-say(:has(:str(lst), "people: 6"))
+:say("{a >> people} {x >> people}")
+:say(:has(:str(lst), "people: 6"))
 :delete_object!(b)
-say(put[0])
-say(:len(put))
-say(put[0] == nil)
+:say(put[0])
+:say(:len(put))
+:say(put[0] == nil)
 c <> Land | people: 9, near: [a]
-say(:has(:str(c), "people: 6"))
+:say(:has(:str(c), "people: 6"))

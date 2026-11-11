@@ -1,2 +1,2 @@
-say(:find("hello", "l"))
-say(:find("hello", "z"))
+:say(:find("hello", "l"))
+:say(:find("hello", "z"))

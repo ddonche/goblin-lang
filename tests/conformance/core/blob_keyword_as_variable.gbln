@@ -1,2 +1,2 @@
 blob | 1
-say(blob)
+:say(blob)

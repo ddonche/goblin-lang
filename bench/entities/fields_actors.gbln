@@ -67,7 +67,7 @@ xx
 t1 | :epoch_ms()
 dt | t1 - t0
 per | dt / ticks
-say("{w} actors: {ticks} ticks in {dt} ms, {per} ms per tick")
+:say("{w} actors: {ticks} ticks in {dt} ms, {per} ms per tick")
 repeat hs as h
     :halt(h)
 xx

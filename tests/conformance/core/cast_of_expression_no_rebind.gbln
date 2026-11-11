@@ -1,4 +1,4 @@
 i | 5
 s | :str(i + 0)
-say(s)
-say(i + 1)
+:say(s)
+:say(i + 1)

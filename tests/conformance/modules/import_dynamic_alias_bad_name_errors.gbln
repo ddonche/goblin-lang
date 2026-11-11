@@ -1,0 +1,4 @@
+/// `as {...}` must give a string that can be a module name.
+bad | "my module"
+import _support/modules/loud as {bad}
+:say("not reached")

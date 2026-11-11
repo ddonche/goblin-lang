@@ -46,7 +46,7 @@ fn check_scaling(case: &str, n: usize, body: &str) {
     let dir = std::env::temp_dir().join(format!("goblin-perf-{}-{case}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // Process start-up and the empty program are the same at both sizes.
-    let base = run(&bin, &dir, "empty.gbln", "say(1)\n");
+    let base = run(&bin, &dir, "empty.gbln", ":say(1)\n");
     let small = run(&bin, &dir, "small.gbln", &expand(body, n));
     let large = run(&bin, &dir, "large.gbln", &expand(body, 8 * n));
     let _ = std::fs::remove_dir_all(&dir);
@@ -63,12 +63,12 @@ fn check_scaling(case: &str, n: usize, body: &str) {
 
 #[test]
 fn list_push_is_linear() {
-    check_scaling("push", 20_000, "l | []\ni | 0\nwhile i < N\n    :put_last!(l, i)\n    i |= i + 1\nxx\nsay(:len(l))\n");
+    check_scaling("push", 20_000, "l | []\ni | 0\nwhile i < N\n    :put_last!(l, i)\n    i |= i + 1\nxx\n:say(:len(l))\n");
 }
 
 #[test]
 fn list_push_front_is_linear() {
-    check_scaling("push_front", 20_000, "l | []\ni | 0\nwhile i < N\n    :put_first!(l, i)\n    i |= i + 1\nxx\nsay(:len(l))\n");
+    check_scaling("push_front", 20_000, "l | []\ni | 0\nwhile i < N\n    :put_first!(l, i)\n    i |= i + 1\nxx\n:say(:len(l))\n");
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn list_index_read_is_linear() {
     check_scaling(
         "read",
         20_000,
-        "l | []\ni | 0\nwhile i < N\n    :put_last!(l, i)\n    i |= i + 1\nxx\ns | 0\nj | 0\nwhile j < N\n    s |= s + l[j]\n    j |= j + 1\nxx\nsay(s)\n",
+        "l | []\ni | 0\nwhile i < N\n    :put_last!(l, i)\n    i |= i + 1\nxx\ns | 0\nj | 0\nwhile j < N\n    s |= s + l[j]\n    j |= j + 1\nxx\n:say(s)\n",
     );
 }
 
@@ -85,7 +85,7 @@ fn list_update_is_linear() {
     check_scaling(
         "update",
         20_000,
-        "l | []\ni | 0\nwhile i < N\n    :put_last!(l, 0)\n    i |= i + 1\nxx\nj | 0\nwhile j < N\n    :update!(l[j], j)\n    j |= j + 1\nxx\nsay(l[N - 1])\n",
+        "l | []\ni | 0\nwhile i < N\n    :put_last!(l, 0)\n    i |= i + 1\nxx\nj | 0\nwhile j < N\n    :update!(l[j], j)\n    j |= j + 1\nxx\n:say(l[N - 1])\n",
     );
 }
 
@@ -94,7 +94,7 @@ fn list_build_in_action_is_linear() {
     check_scaling(
         "action",
         20_000,
-        "act build(n)\n    l | []\n    i | 0\n    while i < n\n        :put_last!(l, i)\n        i |= i + 1\n    xx\n    return l\nxx\nact total(l)\n    s | 0\n    for x in l\n        s |= s + x\n    xx\n    return s\nxx\nsay(total(build(N)))\n",
+        "act build(n)\n    l | []\n    i | 0\n    while i < n\n        :put_last!(l, i)\n        i |= i + 1\n    xx\n    return l\nxx\nact total(l)\n    s | 0\n    for x in l\n        s |= s + x\n    xx\n    return s\nxx\n:say(total(build(N)))\n",
     );
 }
 
@@ -103,7 +103,7 @@ fn map_update_is_linear() {
     check_scaling(
         "map",
         5_000,
-        "m | {}\ni | 0\nwhile i < N\n    :update!(m{\"k\" + :str(i)}, i)\n    i |= i + 1\nxx\nsay(:len(:keys(m)))\n",
+        "m | {}\ni | 0\nwhile i < N\n    :update!(m{\"k\" + :str(i)}, i)\n    i |= i + 1\nxx\n:say(:len(:keys(m)))\n",
     );
 }
 
@@ -112,7 +112,7 @@ fn nested_update_is_linear() {
     check_scaling(
         "nested",
         10_000,
-        "rows | []\ni | 0\nwhile i < N\n    :put_last!(rows, 0)\n    i |= i + 1\nxx\nm | {\"rows\": rows}\nrows |= []\nj | 0\nwhile j < N\n    :update!(m{\"rows\"}[j], j)\n    j |= j + 1\nxx\nsay(m{\"rows\"}[N - 1])\n",
+        "rows | []\ni | 0\nwhile i < N\n    :put_last!(rows, 0)\n    i |= i + 1\nxx\nm | {\"rows\": rows}\nrows |= []\nj | 0\nwhile j < N\n    :update!(m{\"rows\"}[j], j)\n    j |= j + 1\nxx\n:say(m{\"rows\"}[N - 1])\n",
     );
 }
 
@@ -121,7 +121,7 @@ fn nested_push_is_linear() {
     check_scaling(
         "nested_push",
         10_000,
-        "m | {\"rows\": []}\ni | 0\nwhile i < N\n    :put_last!(m{\"rows\"}, i)\n    i |= i + 1\nxx\nsay(:len(m{\"rows\"}))\n",
+        "m | {\"rows\": []}\ni | 0\nwhile i < N\n    :put_last!(m{\"rows\"}, i)\n    i |= i + 1\nxx\n:say(:len(m{\"rows\"}))\n",
     );
 }
 
@@ -132,7 +132,7 @@ fn string_literals_lex_linearly() {
     check_scaling(
         "lex",
         2_000,
-        "s | \"\"\nREPEATsay(:len(s))\n",
+        "s | \"\"\nREPEAT:say(:len(s))\n",
     );
 }
 
@@ -144,7 +144,7 @@ fn reading_a_string_does_not_copy_it() {
     check_scaling(
         "string_read",
         8_000,
-        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"line {i} with some text to make the page longer\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nact one(t)\n    return 1\nxx\ntotal | 0\nj | 0\nwhile j < N\n    copy | page\n    total |= total + one(copy) + one(page)\n    j |= j + 1\nxx\nsay(total)\n",
+        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"line {i} with some text to make the page longer\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nact one(t)\n    return 1\nxx\ntotal | 0\nj | 0\nwhile j < N\n    copy | page\n    total |= total + one(copy) + one(page)\n    j |= j + 1\nxx\n:say(total)\n",
     );
 }
 
@@ -156,6 +156,6 @@ fn sweep_with_idle_arms_is_linear() {
     check_scaling(
         "sweep",
         2_000,
-        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"<h2>Heading {i}</h2> some text about it\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nn | 0\nsweep page\n    \"<h2>\" ... \"</h2>\" :\n        n += 1\n    \"<h9>\" ... \"</h9>\" :\n        n += 100\n    \"[[\" ... \"]]\" :\n        n += 1000\nxx\nsay(n)\n",
+        "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"<h2>Heading {i}</h2> some text about it\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nn | 0\nsweep page\n    \"<h2>\" ... \"</h2>\" :\n        n += 1\n    \"<h9>\" ... \"</h9>\" :\n        n += 100\n    \"[[\" ... \"]]\" :\n        n += 1000\nxx\n:say(n)\n",
     );
 }

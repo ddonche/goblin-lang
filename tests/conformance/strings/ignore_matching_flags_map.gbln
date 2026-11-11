@@ -1,2 +1,2 @@
 r | :ignore_matching("ABC abc", "abc", {"i": true})
-say("[{r}]")
+:say("[{r}]")

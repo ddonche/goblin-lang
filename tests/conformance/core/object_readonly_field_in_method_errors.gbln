@@ -8,6 +8,6 @@
     xx
 xx
 h <> Hero | name: "Ann"
-say("before")
+:say("before")
 h.rename("Bob")
-say(h >> name)
+:say(h >> name)

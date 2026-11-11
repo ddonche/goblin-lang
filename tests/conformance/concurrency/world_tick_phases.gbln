@@ -38,7 +38,7 @@ xx
 north | :actor(make("north", 0), day)
 south | :actor(make("south", 5), day)
 repeat 3
-    tick()
+    :tick()
         grow
         take
     xx
@@ -46,6 +46,6 @@ repeat 3
     repeat :objects(Land) as l
         :put_last!(fs, "{l >> name} {l >> food}")
     xx
-    say(:join(fs, ", "))
+    :say(:join(fs, ", "))
 xx
-say(:await(:request(north, {"ask": 1})){"ticks"})
+:say(:await(:request(north, {"ask": 1})){"ticks"})

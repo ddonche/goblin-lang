@@ -7,7 +7,7 @@ interface diplomacy |
         score => 1
     xx
     judge
-        partner: say("deal")
+        partner: :say("deal")
     xx
 xx
 <>Kingdom |
@@ -17,7 +17,7 @@ xx
         score => 1
     xx
     judge
-        rival: say("feud")
+        rival: :say("feud")
     xx
 xx
-say("never printed")
+:say("never printed")

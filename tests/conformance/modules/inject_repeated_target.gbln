@@ -4,11 +4,11 @@
 /// 4th argument (acceptance 9).
 import "_support/eval/site/manifest.imports"
 r | :eval(["_support/eval/site/schedule.yall", "_support/eval/mods/cool/site_events.gob"])
-say(r >> pre)
-say(r >> schedule)
+:say(r >> pre)
+:say(r >> schedule)
 attempt
     :eval(["_support/eval/cases/two.yall", "_support/eval/cases/in_two.gob"])
 rescue e
-    say(:after("{e}", "runtime error: "))
+    :say(:after("{e}", "runtime error: "))
 xx
-say(:eval(["_support/eval/cases/two.yall", "_support/eval/cases/in_two_named.gob"]))
+:say(:eval(["_support/eval/cases/two.yall", "_support/eval/cases/in_two_named.gob"]))

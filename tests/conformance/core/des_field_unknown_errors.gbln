@@ -4,4 +4,4 @@
     gold: 10
 xx
 a <> Town | gold: 1
-say(:field(a, "silver"))
+:say(:field(a, "silver"))

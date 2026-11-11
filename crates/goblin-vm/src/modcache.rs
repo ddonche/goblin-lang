@@ -77,6 +77,7 @@ pub fn compile_import(
     globals_before: &[String],
     module_prefix: &str,
     owner_glam: Option<String>,
+    glam_isolated: bool,
     quicken: impl FnOnce(&mut FunctionObject),
 ) -> Result<ImportedModule, GoblinError> {
     let key = (path.to_string_lossy().into_owned(), module_prefix.to_string(), owner_glam.clone());
@@ -85,7 +86,7 @@ pub fn compile_import(
     let source = std::fs::read_to_string(path)
         .map_err(|e| GoblinError::Runtime(format!("import '{}': {}", path.display(), e)))?;
     let (entry, compiled_classes, compiled_enums, global_names) =
-        compile_text(&source, path, globals_before, module_prefix, owner_glam, quicken)?;
+        compile_text(&source, path, globals_before, module_prefix, owner_glam, glam_isolated, quicken)?;
     if let Some(st) = st {
         CACHE.with(|c| c.borrow_mut().insert(key, Cached {
             stamp: st,
@@ -109,7 +110,7 @@ pub fn compile_source(
     quicken: impl FnOnce(&mut FunctionObject),
 ) -> Result<ImportedModule, GoblinError> {
     let (entry, classes, enums, global_names) =
-        compile_text(source, path, globals_before, module_prefix, None, quicken)?;
+        compile_text(source, path, globals_before, module_prefix, None, false, quicken)?;
     Ok(ImportedModule { entry, classes, enums, global_names })
 }
 
@@ -120,6 +121,7 @@ fn compile_text(
     globals_before: &[String],
     module_prefix: &str,
     owner_glam: Option<String>,
+    glam_isolated: bool,
     quicken: impl FnOnce(&mut FunctionObject),
 ) -> Result<(Rc<FunctionObject>, Vec<goblin_ast::ClassDecl>, Vec<goblin_ast::EnumDecl>, Rc<Vec<String>>), GoblinError> {
     let tokens = goblin_lexer::lex(source, &path.to_string_lossy())
@@ -130,6 +132,7 @@ fn compile_text(
         .with_initial_globals(globals_before.to_vec())
         .with_global_prefix(Some(module_prefix.to_string()))
         .with_glam_namespace(owner_glam)
+        .with_glam_isolation(glam_isolated)
         .for_file(&path.to_string_lossy())
         .compile_module(&module)
         .map_err(|e| GoblinError::Runtime(format!("import compile error: {:?}", e)))?;

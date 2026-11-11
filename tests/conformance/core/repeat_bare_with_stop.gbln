@@ -3,4 +3,4 @@ repeat
     i |= i + 1
     if i > 2 => stop
 xx
-say(i)
+:say(i)

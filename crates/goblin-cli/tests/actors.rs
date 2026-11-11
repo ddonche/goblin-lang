@@ -57,7 +57,7 @@ while i < n
 xx
 for l in :lines(:read_text("/proc/self/status"))
     if :starts_with(l, "Threads:")
-        say(l)
+        :say(l)
     xx
 xx
 i |= 0
@@ -72,7 +72,7 @@ while i < n
     total |= total + :await(hs[i])
     i |= i + 1
 xx
-say(total)
+:say(total)
 "#;
     let out = run("many", src, 2, &[]);
     assert!(out.trim_end().ends_with("10000"), "{out}");
@@ -101,7 +101,7 @@ while i < 500
     i |= i + 1
 xx
 :halt(a)
-say(:await(a){"n"})
+:say(:await(a){"n"})
 "#;
     assert_eq!(run("same-worker", src, 1, &[]).trim(), "500");
 }
@@ -136,7 +136,7 @@ c | :actor(0, consume)
 :post(p, {"ch": ch, "n": 20000})
 :halt(p)
 :halt(c)
-say(:await(c))
+:say(:await(c))
 "#;
     assert_eq!(run("pipeline", src, 1, &[]).trim(), "199990000");
 }
@@ -162,8 +162,8 @@ s | :actor(0, slow)
 q | :actor(0, quick)
 :post(s, ch)
 :post(q, ch)
-say(:receive(ch))
-say(:receive(ch))
+:say(:receive(ch))
+:say(:receive(ch))
 "#;
     assert_eq!(run("fair", src, 1, &[]).trim(), "quick\nslow");
 }
@@ -187,7 +187,7 @@ act gather(state, msg)
 xx
 hs | [:actor(0, double), :actor(0, double), :actor(0, double)]
 g | :actor(hs, gather)
-say(:await(:request(g, 0)))
+:say(:await(:request(g, 0)))
 "#;
     assert_eq!(run("callback", src, 1, &[]).trim(), "[42, 42, 42]");
 }
@@ -210,7 +210,7 @@ act asker(state, msg)
 xx
 b | :actor(1, broken)
 a | :actor({"b": b, "seen": nil}, asker)
-say(:await(:request(a, 1)){"seen"})
+:say(:await(:request(a, 1)){"seen"})
 "#;
     assert_eq!(run("rescue", src, 1, &[]).trim(), "true");
 }
@@ -230,8 +230,8 @@ ch | :channel(1)
 w | :actor({"got": 0}, waiter)
 e | :actor(0, echo)
 :post(w, ch)
-say(:await(:request(e, 7)))
-say(:await(:request(w, ch)){"got"})
+:say(:await(:request(e, 7)))
+:say(:await(:request(w, ch)){"got"})
 "#;
     let t = Instant::now();
     let out = run("limit", src, 1, &[]);
@@ -254,9 +254,9 @@ xx
 g | :actor([], gather)
 e | :actor(0, echo)
 f | :request(g, "one")
-say(:await(:request(e, 7)))
+:say(:await(:request(e, 7)))
 :post(g, "two")
-say(:await(f))
+:say(:await(f))
 "#;
     let out = run("own-mailbox", src, 1, &[]);
     assert_eq!(out.trim(), "7\n[one, two]");
@@ -278,8 +278,8 @@ nap | :channel(1)
 :receive(nap, 0.3s)
 :post(g, "two")
 :receive(nap, 0.3s)
-say(:await(f))
-say(:await(g))
+:say(:await(f))
+:say(:await(g))
 "#;
     let t0 = Instant::now();
     let out = run("idle-receive", src, 1, &[]);
@@ -300,8 +300,8 @@ f | :request(g, "one")
 nap | :channel(1)
 :receive(nap, 0.3s)
 :halt(g)
-say(:await(f))
-say(:await(g))
+:say(:await(f))
+:say(:await(g))
 h | :actor([], gather)
 f2 | :request(h, "one")
 :receive(nap, 0.3s)
@@ -309,7 +309,7 @@ f2 | :request(h, "one")
 attempt
     :await(f2)
 rescue e
-    say(:has("{e}", "C0116"))
+    :say(:has("{e}", "C0116"))
 xx
 "#;
     let out = run("own-mailbox-halt", src, 1, &[]);
@@ -330,8 +330,8 @@ xx
 a | :actor(0, count, {stop_when: peek})
 f1 | :request(a, 1)
 f2 | :request(a, 2)
-say(:await(f1))
-say(:await(f2))
+:say(:await(f1))
+:say(:await(f2))
 "#;
     let out = run("stop-when-pull", src, 1, &[]);
     assert_eq!(out.trim(), "1\n1");
@@ -383,10 +383,10 @@ total | 0
 for h in hs
     total |= total + :await(:request(h, "key-7"))
 xx
-say(total)
+:say(total)
 for l in :lines(:read_text("/proc/self/status"))
     if :starts_with(l, "VmHWM:")
-        say(l)
+        :say(l)
     xx
 xx
 "#;
@@ -420,12 +420,12 @@ act read(state, msg)
 xx
 a | :actor({}, change)
 b | :actor({}, read)
-say(:await(:request(a, "dee")))
-say(:await(:request(a, "eve")))
-say(:await(:request(b, 0)))
+:say(:await(:request(a, "dee")))
+:say(:await(:request(a, "eve")))
+:say(:await(:request(b, 0)))
 c | :actor({}, read)
-say(:await(:request(c, 0)))
-say(:len(NAMES))
+:say(:await(:request(c, 0)))
+:say(:len(NAMES))
 "#;
     assert_eq!(run("cow", src, 1, &[]).trim(),
         "{n: 4, t: 603}\n{n: 5, t: 606}\n{n: 3, t: 600}\n{n: 3, t: 600}\n3");
@@ -440,15 +440,15 @@ fn actors_started_after_an_import_see_it() {
     return msg + 1
 xx
 a | :actor(0, first)
-say(:await(:request(a, 1)))
+:say(:await(:request(a, 1)))
 import extra as ex
 act second(state, msg)
     return ex::triple(msg)
 xx
 b | :actor(0, second)
-say(:await(:request(b, 5)))
+:say(:await(:request(b, 5)))
 c | :actor(0, first)
-say(:await(:request(c, 9)))
+:say(:await(:request(c, 9)))
 "#;
     assert_eq!(run_files("import", src, &[("extra.gbln", lib)], 1, &[]).trim(), "2\n15\n10");
 }
@@ -471,10 +471,10 @@ total | 0
 for h in hs
     total |= total + :await(:request(h, 1))
 xx
-say(total)
+:say(total)
 for l in :lines(:read_text("/proc/self/status"))
     if :starts_with(l, "VmHWM:")
-        say(l)
+        :say(l)
     xx
 xx
 "#;
@@ -509,7 +509,7 @@ act handle(state, msg)
     return show(n, 0)
 xx
 a | :actor(0, handle)
-say(:await(:request(a, 1)))
+:say(:await(:request(a, 1)))
 "#;
     assert_eq!(run_files("globals-used", src, &[("extra.gbln", lib)], 1, &[]).trim(), "total: 114 after 1");
 }
@@ -528,7 +528,7 @@ act handle(state, msg)
     return b >> size
 xx
 a | :actor(0, handle)
-say(:await(:request(a, "x")))
+:say(:await(:request(a, "x")))
 "#;
     assert_eq!(run_files("class-defaults", src, &[], 1, &[]).trim(), "3");
 }

@@ -2,4 +2,4 @@
 if true
     z | 2
 xx
-say(z)
+:say(z)

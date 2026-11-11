@@ -2,5 +2,5 @@
 act h(x)
     return x
 xx
-say(:is_function(h))
-say(:is_function(5))
+:say(:is_function(h))
+:say(:is_function(5))

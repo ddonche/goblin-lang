@@ -7,23 +7,23 @@ act run()
         :update!(es[1]{"a"}, 2 * es[1]{"a"} - es[0]{"b"})
     xx
     :update!(es[1]{"c"}, es[0]{"b"} + 10)
-    say(es)
+    :say(es)
     :update!(es[0]{"b"}, es[0]{"b"} + 0.5)
-    say(es[0])
+    :say(es[0])
     s | {"n": "x"}
     attempt
         :update!(s{"n"}, s{"n"} + 1)
     rescue e
-        say("error")
+        :say("error")
     xx
-    say(s)
+    :say(s)
     m | {"k": 1}
     attempt
         :update!(m{"z"}, m{"z"} + 1)
     rescue e
-        say("error 2")
+        :say("error 2")
     xx
-    say(m)
+    :say(m)
     return 0
 xx
 run()

@@ -2,4 +2,4 @@
 act fx()
     return 1, 2
 xx
-say(fx())
+:say(fx())

@@ -27,9 +27,9 @@ b <> Shop | price: 10
 c <> Shop | price: 20
 m <> Buyer | hunger: .5
 n <> Buyer | hunger: .5
-tick()
+:tick()
 repeat :objects(it >> price > 0)
     p | it >> price
     s | it >> sold
-    say("price {p}: sold {s}")
+    :say("price {p}: sold {s}")
 xx

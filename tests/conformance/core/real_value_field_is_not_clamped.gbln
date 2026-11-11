@@ -11,5 +11,5 @@ t >> n |= t >> n + 1
 t >> total |= t >> total + 1
 t >> total |= t >> total + 1
 t >> total |= t >> total + 1
-say(t >> n)
-say(t >> total)
+:say(t >> n)
+:say(t >> total)

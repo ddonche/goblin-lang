@@ -1,2 +1,2 @@
 import "_support/modules/mathy" as m
-say(m::add(2, 3))
+:say(m::add(2, 3))

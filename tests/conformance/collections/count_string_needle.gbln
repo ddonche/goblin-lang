@@ -1,1 +1,1 @@
-say(:count("banana", "a"))
+:say(:count("banana", "a"))

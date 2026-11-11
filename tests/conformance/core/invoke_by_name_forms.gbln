@@ -6,9 +6,9 @@ xx
 act double(x)
     return x * 2
 xx
-say(:invoke("add2", [3, 4]))
-say(:invoke("add2", 3, 4))
-say(:invoke("double", 21))
-say(:invoke("double", [5]))
+:say(:invoke("add2", [3, 4]))
+:say(:invoke("add2", 3, 4))
+:say(:invoke("double", 21))
+:say(:invoke("double", [5]))
 name | "dou" + "ble"
-say(:invoke(name, 8))
+:say(:invoke(name, 8))

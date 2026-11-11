@@ -3,5 +3,5 @@ import {
     mathy as m,
     loud,
 } from "_support/modules"
-say(m::double(4))
-say(loud::hi())
+:say(m::double(4))
+:say(loud::hi())

@@ -3,5 +3,5 @@ act fx(a)
     return a
 xx
 v | 1
-say(fx(v))
-say(v)
+:say(fx(v))
+:say(v)

@@ -3,4 +3,4 @@ act bump()
     :update!(cfg{"a"}, 2)
 xx
 bump()
-say(cfg{"a"})
+:say(cfg{"a"})

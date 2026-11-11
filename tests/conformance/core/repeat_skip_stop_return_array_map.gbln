@@ -6,17 +6,17 @@ repeat [1, 2, 3, 4] as x
     if x == 4
         stop
     xx
-    say(x)
+    :say(x)
 xx
 repeat {"a": 1, "b": 2} as k, v
     if k == "b"
         stop
     xx
-    say(k)
+    :say(k)
 xx
 act f()
     repeat [5, 6] as y
         return y
     xx
 xx
-say(f())
+:say(f())

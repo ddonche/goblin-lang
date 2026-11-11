@@ -25,7 +25,7 @@ xx
 r1 | :actor(make(1), day)
 r2 | :actor(make(2), day)
 repeat 3
-    tick()
+    :tick()
 xx
 m | :metrics()
 :say("objects {m{"objects"}} made {m{"objects_made"}} gone {m{"objects_gone"}}")

@@ -2,6 +2,6 @@
 <>Hero |
     hp: 10
 xx
-say("before")
+:say("before")
 h <> Hero | hp: nil
-say(h >> hp)
+:say(h >> hp)

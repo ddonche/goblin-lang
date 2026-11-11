@@ -1,7 +1,7 @@
 repeat 3
-    say("r")
+    :say("r")
 xx
 n | 2
 repeat n
-    say(n)
+    :say(n)
 xx

@@ -4,11 +4,11 @@ interface conquest |
     transition absorb
         targets: Kingdom where (target >> power) < @power
     xx
-    on absorb => say("taken")
+    on absorb => :say("taken")
 xx
 <>Kingdom |
     power: 0
     uses conquest
-    on absorb => say("mine")
+    on absorb => :say("mine")
 xx
-say("never printed")
+:say("never printed")

@@ -5,5 +5,5 @@ act f(x)
         else: return "small"
     xx
 xx
-say(f(9))
-say(f(1))
+:say(f(9))
+:say(f(1))

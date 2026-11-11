@@ -1,4 +1,4 @@
-say("abc" == "abc")
-say("abc" != "ABC")
-say("abc" == "abd")
-say("" == "")
+:say("abc" == "abc")
+:say("abc" != "ABC")
+:say("abc" == "abd")
+:say("" == "")

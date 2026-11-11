@@ -2,4 +2,4 @@
 <>Farm |
     ~name: "Hilltop"
 xx
-say("never printed")
+:say("never printed")

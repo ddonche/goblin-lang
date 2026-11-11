@@ -3,5 +3,5 @@ d | :env("GOBLIN_CONF_TMP")
 p | "{d}/u.txt"
 :write_text!(p, "héllo wörld ✓")
 s | :read_text(p)
-say(s)
-say(s == "héllo wörld ✓")
+:say(s)
+:say(s == "héllo wörld ✓")

@@ -49,19 +49,19 @@ log | "{d}/world_events.log"
 :event_log(log)
 north | :actor(make("north", 0))
 south | :actor(make("south", 5))
-tick()
+:tick()
     grow
     take
 xx
 :overlay!(:get_first(:objects(Land, it >> name == "north")), rumor)
 repeat 2
-    tick()
+    :tick()
         grow
         take
     xx
 xx
 s | :get_first(:objects(Land, it >> name == "south"))
 :detach!(s, rumor)
-tick()
+:tick()
 :event_log(nil)
-say(:read_text(log))
+:say(:read_text(log))

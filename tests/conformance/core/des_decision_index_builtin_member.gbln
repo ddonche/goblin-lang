@@ -17,10 +17,10 @@ xx
     is_int: true
 xx
 act take(h, p)
-    say("{h >> name} takes {p >> n}")
+    :say("{h >> name} takes {p >> n}")
 xx
 h <> Hunter | name: "Ash"
 repeat :range(0, 40) as i
     p <> Prey | n: i
 xx
-tick()
+:tick()

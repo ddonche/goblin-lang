@@ -101,6 +101,25 @@ fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<S
     } else {
         vm.session.object_store.of_class_ids(class).cloned().collect()
     };
+    // `targets: Kind where (target >> realm) == @realm and ...`: only the
+    // objects that can pass the first test on `target` are tried, in the
+    // same order (see `tick::narrow`).
+    let ids: Vec<ObjId> = match vm.session.object_store.get_index_of(me.as_str()) {
+        Some(me_at) if ids.len() > 1 && vm.session.region.is_none() => {
+            let all: Vec<(Value, usize)> = ids.iter()
+                .filter_map(|u| vm.session.object_store.get_index_of(u.as_str()).map(|i| (Value::Ref(u.clone()), i)))
+                .collect();
+            match crate::tick::narrow(vm, &t.trigger, false, class, &Value::Ref(me.clone()), me_at, &all) {
+                Some(fewer) => {
+                    let keep: FxHashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
+                    all.into_iter().filter(|(_, i)| keep.contains(i))
+                        .filter_map(|(v, _)| if let Value::Ref(u) = v { Some(u) } else { None }).collect()
+                }
+                None => ids,
+            }
+        }
+        _ => ids,
+    };
     // A target with a partner may run in another region: subjugate's change
     // goes there; an absorb or merge of it is a claim the world settles
     // (see `claim`).
@@ -592,7 +611,7 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
                 let target = if alone(&t.kind) {
-                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None)) { continue; }
+                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None, &def.maker)) { continue; }
                     None
                 } else {
                     match find_overlay_target(vm, &inst, &me, t, &done) { Some(x) => Some(x), None => continue }
@@ -635,15 +654,25 @@ fn self_record(inst: &OverlayInstance) -> Value {
     }))
 }
 
-fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>) -> Vec<(&'a str, Value)> {
+/// What an overlay's transition lines read: `self` is the copy (its kind,
+/// intensity, age and fields, also read as `@field`), `host` the object it
+/// is on, `target` the other copy a merge or absorb picked.
+fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>, maker: &'a [(String, Value)]) -> Vec<(&'a str, Value)> {
     let mut l = vec![
         ("self", me.clone()),
+        ("host", Value::Ref(inst.host_uuid.clone().into())),
         ("strength", Value::Float(inst.strength)),
         ("intensity", Value::Float(inst.strength)),
         ("age", Value::Int(inst.age as i64)),
     ];
     if let Some(t) = target { l.push(("target", t.clone())); }
+    for (n, v) in maker { l.push((n.as_str(), v.clone())); }
     l
+}
+
+/// The variables of the action that made this copy's kind (see `OverlayDef::maker`).
+fn maker_of(vm: &Vm, inst: &OverlayInstance) -> Vec<(String, Value)> {
+    vm.session.overlay_defs.get(&inst.overlay_name).map(|d| d.maker.clone()).unwrap_or_default()
 }
 
 /// Another overlay on the same host, of the overlay (or overlay class)
@@ -658,9 +687,10 @@ fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &Tran
             .filter(|o| o.overlay_name == wanted || defs.get(&o.overlay_name).is_some_and(|d| d.class.as_deref() == Some(wanted)))
             .cloned().collect()
     };
+    let maker = maker_of(vm, inst);
     for o in others {
         let rec = vm.overlay_record(&o);
-        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec))) { return Some(o); }
+        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec), &maker)) { return Some(o); }
     }
     None
 }
@@ -669,10 +699,11 @@ fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &Tran
 fn overlay_overrides(vm: &mut Vm, list: &[(String, goblin_ast::Expr)], me: &Value, inst: &OverlayInstance, target: Option<&OverlayInstance>)
     -> Result<(Option<f64>, Vec<(String, Value)>), GoblinError> {
     let rec = target.map(|t| vm.overlay_record(t));
+    let maker = maker_of(vm, inst);
     let mut intensity = None;
     let mut out = Vec::new();
     for (k, e) in list {
-        let v = vm.eval_tick_expr(e, overlay_locals(me, inst, rec.as_ref()))?;
+        let v = vm.eval_tick_expr(e, overlay_locals(me, inst, rec.as_ref(), &maker))?;
         if k == "intensity" {
             let f = match v {
                 Value::Float(f) => f,
@@ -730,8 +761,9 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
     // Its blocks take one argument per field, so a field the parent lacked
     // means compiling them again.
     if !inst.extra_fields.keys().eq(d.extra_fields.keys()) {
-        let names: Vec<String> = inst.extra_fields.keys().cloned().collect();
-        seeded.methods = crate::tick::compile_overlay_methods(&seeded.name, &seeded.actions, &names).unwrap_or_default();
+        let fields = &seeded.extra_fields;
+        seeded.maker.retain(|(n, _)| !fields.contains_key(n));
+        seeded.methods = crate::tick::compile_overlay_methods(&vm.session, &seeded.name, &seeded.actions, &seeded.own_names()).unwrap_or_default();
     }
     vm.session.overlay_defs.insert(inst.overlay_name.clone(), Rc::new(seeded));
 }
@@ -767,8 +799,27 @@ fn new_kind(vm: &mut Vm, parent: &str) -> Result<String, GoblinError> {
         if !vm.session.overlay_defs.contains_key(&name) { break name; }
     };
     let made = OverlayDef { name: name.clone(), generated: true, parents: vec![parent.to_string()], ..(*def).clone() };
+    vm.session.kind_order.push(name.clone());
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok(name)
+}
+
+/// The name of a new kind with no parent, made by a run of an `overlay`
+/// line (see the `OverlayDef` opcode): its family, numbered as a declared
+/// overlay's children are (`faith_1`, `faith_2`), from the same count, so
+/// no two kinds share a name.
+pub(crate) fn new_root_name(vm: &mut Vm, family: &str) -> String {
+    let (k, n) = match vm.session.region.as_ref() {
+        Some(c) => (c.regions.iter().position(|r| *r == c.me).map_or(0, |p| p + 1) as u64, c.regions.len() as u64 + 1),
+        None => (0, crate::world::world_size(&vm.session).map_or(1, |r| r as u64 + 1)),
+    };
+    loop {
+        let c = vm.session.kind_counts.entry(family.to_string()).or_insert(0);
+        let num = *c * n + k + 1;
+        *c += 1;
+        let name = format!("{family}_{num}");
+        if !vm.session.overlay_defs.contains_key(&name) { return name; }
+    }
 }
 
 /// The kind a merge with no `into:` makes: named after both, as merged
@@ -787,6 +838,7 @@ fn merged_kind(vm: &mut Vm, a: &str, b: &str) -> Result<(String, bool), GoblinEr
     };
     if vm.session.overlay_defs.contains_key(&name) { return Ok((name, false)); }
     let made = OverlayDef { name: name.clone(), generated: true, parents: vec![a.to_string(), b.to_string()], ..(*def).clone() };
+    vm.session.kind_order.push(name.clone());
     vm.session.overlay_defs.insert(name.clone(), Rc::new(made));
     Ok((name, true))
 }
@@ -931,13 +983,11 @@ fn olog(vm: &mut Vm, inst: &OverlayInstance, kind: K, whom: Vec<String>) -> Resu
 fn overlay_hook(vm: &mut Vm, def: &Rc<OverlayDef>, kind: K, inst: &OverlayInstance, recs: Vec<Value>) -> Result<(), GoblinError> {
     let Some(f) = def.methods.get(&format!("on {}", word(&kind))).cloned() else { return Ok(()) };
     if !vm.session.object_store.contains_key(&inst.host_uuid) { return Ok(()); }
-    let mut args = Vec::with_capacity(2 + recs.len() + inst.extra_fields.len());
+    let mut args = Vec::with_capacity(2 + recs.len() + inst.extra_fields.len() + def.maker.len());
     args.push(Value::Ref(inst.host_uuid.clone().into()));
     args.push(Value::Float(inst.strength));
     args.extend(recs);
-    for k in def.extra_fields.keys() {
-        args.push(inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil));
-    }
+    args.extend(def.own_values(&inst.extra_fields));
     crate::tick::with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), args).map(|_| ()))
 }
 

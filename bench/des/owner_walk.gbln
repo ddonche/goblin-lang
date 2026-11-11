@@ -21,4 +21,4 @@ t | 0
 repeat 20000
     t |= t + walk(cur)
 xx
-say(t)
+:say(t)

@@ -1,0 +1,20 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// An overlay is an object of its class: a copy read with `:overlays`
+/// is of its own kind and of the overlay class the kind belongs to.
+<>Land |
+    name: ..
+xx
+<^>Faith |
+    hosts: Land
+xx
+overlay sun_cult <^> Faith
+xx
+overlay fog
+    hosts: Land
+xx
+a <> Land | name: "a"
+:overlay!(a, sun_cult)
+:overlay!(a, fog)
+repeat :overlays(a) as o
+    :say("{o >> overlay_name}: Faith {:is_type(o, "Faith")}, its kind {:is_type(o, o >> overlay_name)}, Land {:is_type(o, "Land")}")
+xx

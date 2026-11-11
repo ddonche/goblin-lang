@@ -23,13 +23,13 @@ y <> Person | health: 1
 :overlay!(y, flu, .9)
 d | 1
 repeat d <= 3
-    tick()
+    :tick()
     repeat :overlays(flu)
         s | :round((it >> intensity) * 1000) / 1000
-        say("tick {d}: flu {s}")
+        :say("tick {d}: flu {s}")
     xx
     n | :len(:objects(it >> health > -1))
     all | :len(:objects())
-    say("tick {d}: people {n}, objects {all}")
+    :say("tick {d}: people {n}, objects {all}")
     d |= d + 1
 xx

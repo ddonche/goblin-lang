@@ -3,4 +3,4 @@ act ident(x)
     return x
 xx
 g | ident
-say(g(3))
+:say(g(3))

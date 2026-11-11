@@ -24,6 +24,6 @@ act strike(a, b, me)
 xx
 d <> Dummy | hp: 10
 f <> Fighter | want: 1
-tick()
-say(d >> hp)
-say(f >> seen)
+:tick()
+:say(d >> hp)
+:say(f >> seen)

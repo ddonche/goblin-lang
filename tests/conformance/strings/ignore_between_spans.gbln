@@ -1,1 +1,1 @@
-say(:ignore_between("a<!--x-->b<!--y-->c", "<!--", "-->"))
+:say(:ignore_between("a<!--x-->b<!--y-->c", "<!--", "-->"))

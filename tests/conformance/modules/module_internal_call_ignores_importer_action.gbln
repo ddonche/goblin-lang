@@ -3,6 +3,6 @@ import _support/modules/mathy as m
 act add(a, b)
     return "main-add"
 xx
-say(add(1, 2))
-say(m::add(1, 2))
-say(m::twice_add(1, 2))
+:say(add(1, 2))
+:say(m::add(1, 2))
+:say(m::twice_add(1, 2))

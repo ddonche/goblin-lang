@@ -85,15 +85,15 @@ xx
 s | :actor("", slow)
 p | :actor(0, echo)
 :await(:request(p, 0))
-say("start")
+:say("start")
 f | :request(s, "http://127.0.0.1:{port}/800")
 j | 0
 while j < 20
     :await(:request(p, j))
     j |= j + 1
 xx
-say("pings")
-say(:await(f))
+:say("pings")
+:say(:await(f))
 "#);
     let lines = run_timed("http-free", &src, &[]);
     let (start, pings, done) = (at(&lines, "start"), at(&lines, "pings"), at(&lines, "ok"));
@@ -115,7 +115,7 @@ while i < 20
     i |= i + 1
 xx
 :await(:request(hs[0], "http://127.0.0.1:{port}/0"))
-say("start")
+:say("start")
 fs | []
 for h in hs
     :put_last!(fs, :request(h, "http://127.0.0.1:{port}/300"))
@@ -124,7 +124,7 @@ total | 0
 for f in fs
     total |= total + :await(f)
 xx
-say("total {{total}}")
+:say("total {{total}}")
 "#);
     // The first call leaves an idle thread behind, so the burst after it
     // finds one thread already waiting: more must still start.
@@ -155,8 +155,8 @@ rescue e
 xx
 a | :actor("", fetch)
 inside | :await(:request(a, url))
-say(:has(inside, "http error"))
-say(inside == outside)
+:say(:has(inside, "http error"))
+:say(inside == outside)
 "#);
     let lines = run_timed("http-error", &src, &[]);
     let out: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
@@ -176,7 +176,7 @@ act fetch_all(state, urls)
 xx
 a | :actor([], fetch_all)
 u | "http://127.0.0.1:{port}/50"
-say(:await(:request(a, [u, u, u])))
+:say(:await(:request(a, [u, u, u])))
 "#);
     let lines = run_timed("http-callback", &src, &[]);
     assert_eq!(lines.last().unwrap().1, "[ok, ok, ok]");
@@ -206,7 +206,7 @@ while i < 10
     :put_last!(hs, :actor(0, q))
     i |= i + 1
 xx
-say("start")
+:say("start")
 fs | []
 i |= 0
 while i < 10
@@ -217,10 +217,10 @@ rows | []
 for f in fs
     :put_last!(rows, :await(f))
 xx
-say("done")
-say(rows[3] == :db_query("select $1::int + 1 as n, 'x' as t", [3]))
-say(:await(:request(:actor(0, one), "hi")) == :db_query_one("select $1::text as v", ["hi"]))
-say(:await(:request(:actor(0, ex), 0)) == :db_exec("select 1", []))
+:say("done")
+:say(rows[3] == :db_query("select $1::int + 1 as n, 'x' as t", [3]))
+:say(:await(:request(:actor(0, one), "hi")) == :db_query_one("select $1::text as v", ["hi"]))
+:say(:await(:request(:actor(0, ex), 0)) == :db_exec("select 1", []))
 "#;
     let lines = run_timed("db-overlap", src, &[("DATABASE_URL", &url), ("GOBLIN_DB_POOL_MAX", "20")]);
     let took = at(&lines, "done") - at(&lines, "start");
@@ -244,11 +244,11 @@ xx
 s | :actor("", slow)
 p | :actor(0, echo)
 :await(:request(p, 0))
-say("start")
+:say("start")
 f | :request(s, "http://127.0.0.1:{port}/800")
 :await(:request(p, 1))
-say("ping")
-say(:await(f))
+:say("ping")
+:say(:await(f))
 "#);
     let lines = run_timed("http-value", &src, &[]);
     let (start, ping, done) = (at(&lines, "start"), at(&lines, "ping"), at(&lines, "ok"));
@@ -282,11 +282,11 @@ xx
 d | :actor("", q)
 p | :actor(0, echo)
 :await(:request(p, 0))
-say("start")
+:say("start")
 f | :request(d, 0)
 :await(:request(p, 1))
-say("ping")
-say(:await(f))
+:say("ping")
+:say(:await(f))
 "#;
     let url = format!("postgres://nobody@127.0.0.1:{port}/none");
     let lines = run_timed("db-connect", src, &[("DATABASE_URL", &url)]);
@@ -325,7 +325,7 @@ nap | :channel(1)
 :receive(nap, 0.5s)
 for l in :lines(:read_text("/proc/self/status"))
     if :starts_with(l, "Threads:")
-        say(l)
+        :say(l)
     xx
 xx
 failed | 0
@@ -334,7 +334,7 @@ for f in fs
         failed |= failed + 1
     xx
 xx
-say("failed {failed}")
+:say("failed {failed}")
 "#;
     let url = format!("postgres://nobody@127.0.0.1:{port}/none");
     let lines = run_timed("db-connect-burst", src, &[("DATABASE_URL", &url)]);

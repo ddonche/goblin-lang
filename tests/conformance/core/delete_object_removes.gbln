@@ -4,7 +4,7 @@
 xx
 a <> Unit | name: "a"
 b <> Unit | name: "b"
-say(:len(:objects()))
-delete_object!(a)
-say(:len(:objects()))
-say(:objects()[0] >> name)
+:say(:len(:objects()))
+:delete_object!(a)
+:say(:len(:objects()))
+:say(:objects()[0] >> name)

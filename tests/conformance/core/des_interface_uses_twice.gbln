@@ -15,5 +15,5 @@ xx
     uses mortal, mortal
 xx
 a <> Mob | name: "a"
-tick()
-say(checks)
+:tick()
+:say(checks)

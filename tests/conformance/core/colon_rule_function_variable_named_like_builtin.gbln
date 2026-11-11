@@ -1,0 +1,8 @@
+/// known-gap: interp does not enforce the colon rule; the interpreter is being retired (VM only, 0.51.26)
+/// Owner ruling 2026-11-11: a variable that holds a function may share a builtin's name; `upper(...)` calls the variable.
+act exclaim(s)
+    send s + "!"
+xx
+upper | exclaim
+:say(upper("a"))
+:say(:upper("a"))

@@ -21,8 +21,8 @@ fn phase_mistakes_are_errors() {
         ("field_in_phase", "<>F |\n    hp: 1\n    phase: a\n        act hit()\n            @hp |= 2\n        xx\n    xx\nxx\n", "P1581"),
         ("twice", "<>F |\n    hp: 1\n    phase: a\n        every 1 tick\n            @hp |= 2\n        xx\n    xx\n    phase: a\n        every 1 tick\n            @hp |= 3\n        xx\n    xx\nxx\n", "P1582"),
         ("overlay_line_in_phase", "<>F |\n    hp: 1\nxx\noverlay flu\n    hosts: F\n    phase: a\n        lasts: 3\n    xx\nxx\n", "P1581"),
-        ("unknown_phase", "<>F |\n    hp: 1\n    phase: grow\n        every 1 tick\n            @hp |= 2\n        xx\n    xx\nxx\ntick()\n    rain\nxx\n", "R1250"),
-        ("tick_args", "tick(1)\n", "arity"),
+        ("unknown_phase", "<>F |\n    hp: 1\n    phase: grow\n        every 1 tick\n            @hp |= 2\n        xx\n    xx\nxx\n:tick()\n    rain\nxx\n", "R1250"),
+        ("tick_args", ":tick(1)\n", "arity"),
     ];
     for (name, src, code) in cases {
         let err = error_of(name, src);

@@ -13,5 +13,5 @@ act make()
     return fs
 xx
 repeat make() as s
-    say(s())
+    :say(s())
 xx

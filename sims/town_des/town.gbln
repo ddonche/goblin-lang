@@ -305,10 +305,10 @@ act share(part, whole)
     return :str(:round(part * 100 / whole)) + "%"
 xx
 
-say("town on DES: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days")
-say("money at the start: {start_money}")
+:say("town on DES: {n_residents} residents, {n_businesses} businesses, {n_districts} districts, {days} days")
+:say("money at the start: {start_money}")
 repeat :range(1, days + 1) as t
-    tick()
+    :tick()
     if t % 30 == 0 or t == days
         pop | :len(:objects(it >> age > -1))
         adults | :len(:objects(it >> age >= adult))
@@ -321,7 +321,7 @@ repeat :range(1, days + 1) as t
         repeat :objects(it >> moves > 0)
             moved |= moved + (it >> moves)
         xx
-        say("day {t}: population {pop}, adults {adults}, working {working}, open businesses {open_b}, money {money}; born {born}, died {died}, moved {moved}")
+        :say("day {t}: population {pop}, adults {adults}, working {working}, open businesses {open_b}, money {money}; born {born}, died {died}, moved {moved}")
     xx
 xx
 
@@ -347,25 +347,25 @@ repeat :objects(it >> fund_of > -1)
 xx
 total | people_money + biz_money + funds
 gone | start_money - total
-say("")
-say("=== End of run: day {days} ===")
-say("Where the money is (total {total}; {gone} in flight between districts):")
+:say("")
+:say("=== End of run: day {days} ===")
+:say("Where the money is (total {total}; {gone} in flight between districts):")
 m1 | pad(people_money, 8)
 m2 | pad(share(people_money, total), 4)
-say("  people          {m1}  {m2}")
+:say("  people          {m1}  {m2}")
 m1 |= pad(biz_money, 8)
 m2 |= pad(share(biz_money, total), 4)
-say("  businesses      {m1}  {m2}")
+:say("  businesses      {m1}  {m2}")
 m1 |= pad(funds, 8)
 m2 |= pad(share(funds, total), 4)
-say("  district funds  {m1}  {m2}")
+:say("  district funds  {m1}  {m2}")
 
 wealth |= :sort(wealth)
 n | :len(wealth)
 adult_total | :sum(wealth)
-say("")
-say("Wealth of the {n} adults, poorest fifth to richest:")
-say("  fifth   holds   average   lowest   highest")
+:say("")
+:say("Wealth of the {n} adults, poorest fifth to richest:")
+:say("  fifth   holds   average   lowest   highest")
 repeat :range(0, 5) as q
     lo | :floor(n * q / 5)
     hi | :floor(n * (q + 1) / 5)
@@ -381,12 +381,12 @@ repeat :range(0, 5) as q
     c2 | pad(avg, 7)
     c3 | pad(lowest, 6)
     c4 | pad(highest, 7)
-    say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
+    :say("  {fifth}       {c1}   {c2}   {c3}   {c4}")
 xx
 
-say("")
-say("Businesses by price:")
-say("  price  businesses  open  staff  avg cash  avg sales")
+:say("")
+:say("Businesses by price:")
+:say("  price  businesses  open  staff  avg cash  avg sales")
 repeat :range(15, 25) as p
     nb | 0
     op | 0
@@ -412,13 +412,13 @@ repeat :range(15, 25) as p
         c4 | pad(st, 5)
         c5 | pad(:floor(cash / nb), 8)
         c6 | pad(:floor(sales / nb), 9)
-        say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
+        :say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
     xx
 xx
 
-say("")
-say("Districts:")
-say("  district  people  adults  working  avg adult money    fund")
+:say("")
+:say("Districts:")
+:say("  district  people  adults  working  avg adult money    fund")
 repeat :range(0, n_districts) as d
     pop | 0
     ad | 0
@@ -451,5 +451,5 @@ repeat :range(0, n_districts) as d
     c4 | pad(share(emp, ad), 7)
     c5 | pad(avg_m, 15)
     c6 | pad(fund, 7)
-    say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
+    :say("  {c1}  {c2}  {c3}  {c4}  {c5}  {c6}")
 xx

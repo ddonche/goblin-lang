@@ -2,7 +2,7 @@
 /// A transition's `targets: uses NAME` takes the objects of every class
 /// that uses that interface, as a decision's does.
 act greet(p) as dealings
-    say("{p >> name}")
+    :say("{p >> name}")
 xx
 <>Kingdom |
     name: ..
@@ -12,7 +12,7 @@ xx
     transition subjugate
         targets: uses dealings where (target >> power) < @power and (target >> owner).nix?
     xx
-    on subjugate => say("{self >> name} holds {target >> name}")
+    on subjugate => :say("{self >> name} holds {target >> name}")
 xx
 <>Tribe |
     name: ..
@@ -28,5 +28,5 @@ xx
 k <> Kingdom | name: "Varn", power: 9
 t <> Tribe | name: "Oss", power: 2
 w <> Wolf | name: "Grey", power: 1
-tick()
-say("{t >> owner >> name} {(w >> owner).nix?}")
+:tick()
+:say("{t >> owner >> name} {(w >> owner).nix?}")

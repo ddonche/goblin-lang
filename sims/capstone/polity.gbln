@@ -12,6 +12,9 @@
 /// the polity is.
 import land as land
 import government as government
+import family as family
+import factions as factions
+import overlays as overlays
 
 aspect Polity |
     name: ..
@@ -59,6 +62,23 @@ aspect Polity |
     lean_settle: 1.0
     lean_league: 1.0
     lean_revolt: 1.0
+    lean_match: 1.0
+    /// Its ruler, its ruling dynasty and succession law, its ruling
+    /// family as numbers (the heir's age, -1 for none; other kin who
+    /// could contend), how many claims other houses hold on it, whether
+    /// a divided succession owes a son a share, the years left of a term
+    /// leader's term, the form of government its ruler was seated under,
+    /// and how many rulers have had each name.
+    ruler: nil
+    dynasty: nil
+    law: ..
+    heir: -1
+    kin: 0
+    claimants: 0
+    partition: false
+    term: 0
+    seated: ..
+    reigns: {}
     /// Years since it was founded (as this polity).
     age: 0
     /// Its form of government and the years it has had it.
@@ -79,8 +99,8 @@ aspect Polity |
     rebel: nil
     /// Settled free provinces bordering its land.
     frontier: 0
-    /// Peoples under its rule: a polity of another culture taken in adds
-    /// one (until tongues and faiths, step 6).
+    /// Tongues spoken by at least 15% of its people (set each year by
+    /// overlays::account).
     peoples: 1
     /// For a League: its members, and the years one member has held more
     /// than half of the members' land.
@@ -123,6 +143,15 @@ aspect Polity |
     relics: 0.0
     prestige: 0.0
     debt: 0.0
+    /// What its people's ideas pull its culture toward, by trait (set each
+    /// year by factions::account).
+    bends: {}
+    /// This year's coup plotting and unrest stirred by its factions.
+    plot: 0.0
+    unrest: 0.0
+    /// The strongest group of believers' hold on the realm this year
+    /// (its power times its zeal, 0 to 1; set by factions::account).
+    clergy: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -207,6 +236,7 @@ xx
     ~learning: .02
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -242,6 +272,7 @@ xx
     ~learning: .05
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -281,7 +312,9 @@ xx
     ~learning: .25
     phase: inside
         uses govern
+        uses answers
         uses realm
+        uses court
     xx
     phase: between
         uses dealings
@@ -318,7 +351,9 @@ xx
     ~learning: .15
     phase: inside
         uses govern
+        uses answers
         uses realm
+        uses court
     xx
     phase: between
         uses dealings
@@ -343,6 +378,32 @@ xx
             into: CityState
             carries:
                 rank: 3
+            xx
+        xx
+        transition split where @partition
+            into: Kingdom, Kingdom
+            first:
+                rank: 4
+                wars: 0
+                gold: @gold * .5
+                army: @army * .5
+                food: @food * .5
+            xx
+            second:
+                name: next_name()
+                rank: 4
+                owner: nil
+                wars: 0
+                age: 0
+                peoples: 1
+                beaten_by: nil
+                submits_to: nil
+                union_with: nil
+                colony_at: nil
+                gold: @gold * .5
+                army: @army * .5
+                food: @food * .5
+                debt: 0.0
             xx
         xx
         transition split where chance(shatter(self))
@@ -468,7 +529,9 @@ xx
     ~learning: .25
     phase: inside
         uses govern
+        uses answers
         uses realm
+        uses court
     xx
     phase: between
         uses dealings
@@ -487,6 +550,32 @@ xx
             into: NationState
             carries:
                 rank: 6
+            xx
+        xx
+        transition split where @partition
+            into: Kingdom, Kingdom
+            first:
+                rank: 4
+                wars: 0
+                gold: @gold * .5
+                army: @army * .5
+                food: @food * .5
+            xx
+            second:
+                name: next_name()
+                rank: 4
+                owner: nil
+                wars: 0
+                age: 0
+                peoples: 1
+                beaten_by: nil
+                submits_to: nil
+                union_with: nil
+                colony_at: nil
+                gold: @gold * .5
+                army: @army * .5
+                food: @food * .5
+                debt: 0.0
             xx
         xx
         transition split where chance(civil_war(self))
@@ -585,7 +674,9 @@ xx
     ~learning: .45
     phase: inside
         uses govern
+        uses answers
         uses realm
+        uses court
     xx
     phase: between
         uses dealings
@@ -694,6 +785,7 @@ xx
     ~centralization: .1
     phase: inside
         uses govern
+        uses answers
         uses realm
     xx
     phase: between
@@ -737,6 +829,12 @@ xx
 /// or two. Easing it (envoy, aid, treaty) lasts 40 years too: a change
 /// with no end only moves the part of a link that has no end, so it
 /// could not lower a grievance that will fade.
+/// Ties of marriage between two realms' ruling families; they fade
+/// over two generations unless renewed.
+link kinship
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
 link grievance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
@@ -938,12 +1036,14 @@ interface govern |
         take | (l >> people) * .05 * (.5 + (p >> centralization) * .5) * (.5 + (p >> discipline) * .5)
         p >> gold |= p >> gold + take
         p >> legitimacy |= p >> legitimacy - .01
+        overlays::stir(p, .01)
     xx
     act relieve(p, l)
         cost | :min(p >> gold * .2, (l >> people) * .05)
         p >> gold |= p >> gold - cost
         p >> legitimacy |= p >> legitimacy + .02
         p >> stability |= p >> stability + .01
+        overlays::stir(p, -.05)
     xx
 
     /// What it builds is drawn by need: a granary where people are near what
@@ -981,6 +1081,7 @@ interface govern |
             kind == "harbour": l >> harbour |= l >> harbour + 1
         xx
         p >> prestige |= p >> prestige + 1.0
+        family::famed(p, .5)
     xx
     act levy(p, l)
         n | (l >> people) * .05
@@ -1006,7 +1107,7 @@ xx
 interface dealings |
     decision trade
         targets: uses dealings where :link_score(self, target, "border")
-        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * @lean_trade
+        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * @lean_trade
     xx
     decision envoy
         targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
@@ -1014,15 +1115,15 @@ interface dealings |
     xx
     decision aid
         targets: uses dealings where :link_score(self, target, "border") and (@food >= @people * .1 or @gold >= @people * .1) and ((target >> food) < (target >> people) * .02 or (target >> wars) > 0)
-        score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * @lean_aid
+        score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_aid
     xx
     decision ally
         targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
-        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * @lean_ally
+        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_ally
     xx
     decision treaty
         targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
-        score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * @lean_treaty
+        score => (@fear + weariness(self) + @cooperation + @honor) / 4 * (1.0 - @aggression * @ambition) * (.5 + edge(target, self) * .5) * (.7 + :link_score(self, target, "shared_faith") * .6) * @lean_treaty
     xx
 
     /// Pressure: spy, denounce, embargo, demand.
@@ -1033,7 +1134,7 @@ interface dealings |
     xx
     decision denounce
         targets: uses dealings where :link_score(self, target, "border")
-        score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade"))
+        score => (grudge(self, target) + (1.0 - @cohesion) * .3) * (1.0 - @cooperation) * (1.0 - :link_score(self, target, "trade")) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .5)
     xx
     decision embargo
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
@@ -1060,7 +1161,7 @@ interface dealings |
     xx
     decision war
         targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-        score => (@aggression + @ambition + grudge(self, target)) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * .6 * @lean_war
+        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * .6 * @lean_war
     xx
     decision break_treaty
         targets: uses dealings where :link_score(self, target, "alliance") > 0
@@ -1068,7 +1169,7 @@ interface dealings |
     xx
     decision sue_for_peace
         targets: uses dealings where @wars > 0 and !(war_between(self, target).nix?)
-        score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5)
+        score => (weariness(self) + (1.0 - edge(self, target)) + short(@food, @people * .05)) / 3 * (1.0 - @ambition * .5) * (.7 + :link_score(self, target, "shared_faith") * .6)
     xx
 
     /// One decision a year toward another polity, drawn by weight among the
@@ -1327,6 +1428,7 @@ act fight(w)
     a >> army |= a >> army * (1.0 - .08 * (1.0 - share))
     d >> army |= d >> army * (1.0 - .08 * share)
     at >> people |= at >> people * .97
+    overlays::ravage(at)
     judge
         w >> standing >= 1.0 or (d >> army < 1.0 and share > .5): end_war(w, a)
         w >> standing <= -1.0 or a >> army < 1.0: end_war(w, d)
@@ -1348,9 +1450,13 @@ act end_war(w, winner)
     if winner == d => loser |= a
     winner >> prestige |= winner >> prestige + 5.0
     loser >> prestige |= loser >> prestige - 5.0
+    family::famed(winner, 5.0)
+    family::famed(loser, -3.0)
     loser >> legitimacy |= loser >> legitimacy - .05
     winner >> won_years |= 10
     loser >> lost_years |= 10
+    overlays::stir(winner, -.1)
+    overlays::stir(loser, .3)
     :link!(loser, winner, "grievance", .4, 80)
     aim | w >> aim
     if winner == a and !(aim.nix?) and aim >> owner == d => aim >> owner |= a
@@ -1525,24 +1631,15 @@ act settle_accounts(p)
     drift_traits(p)
 xx
 
-/// Pulls each trait 2% of the way back toward its baseline.
+/// Pulls each trait 2% of the way back toward its baseline, moved by
+/// what its people's ideas teach (`bends`).
+traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stability", "honor", "spirituality",
+    "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 act drift_traits(p)
-    p >> aggression |= drift(p >> aggression, :field(p, "aggression"), :field(p, "base_aggression"))
-    p >> cooperation |= drift(p >> cooperation, :field(p, "cooperation"), :field(p, "base_cooperation"))
-    p >> fear |= drift(p >> fear, :field(p, "fear"), :field(p, "base_fear"))
-    p >> ambition |= drift(p >> ambition, :field(p, "ambition"), :field(p, "base_ambition"))
-    p >> cohesion |= drift(p >> cohesion, :field(p, "cohesion"), :field(p, "base_cohesion"))
-    p >> stability |= drift(p >> stability, :field(p, "stability"), :field(p, "base_stability"))
-    p >> succession |= drift(p >> succession, :field(p, "succession"), :field(p, "base_succession"))
-    p >> honor |= drift(p >> honor, :field(p, "honor"), :field(p, "base_honor"))
-    p >> spirituality |= drift(p >> spirituality, :field(p, "spirituality"), :field(p, "base_spirituality"))
-    p >> openness |= drift(p >> openness, :field(p, "openness"), :field(p, "base_openness"))
-    p >> discipline |= drift(p >> discipline, :field(p, "discipline"), :field(p, "base_discipline"))
-    p >> legitimacy |= drift(p >> legitimacy, :field(p, "legitimacy"), :field(p, "base_legitimacy"))
-    p >> centralization |= drift(p >> centralization, :field(p, "centralization"), :field(p, "base_centralization"))
-    p >> tolerance |= drift(p >> tolerance, :field(p, "tolerance"), :field(p, "base_tolerance"))
-    p >> tradition |= drift(p >> tradition, :field(p, "tradition"), :field(p, "base_tradition"))
-    p >> learning |= drift(p >> learning, :field(p, "learning"), :field(p, "base_learning"))
+    b | p >> bends
+    repeat traits as t
+        p >> {t} |= drift(p >> {t}, :field(p, t), :clamp(:field(p, "base_{t}") + (b{t} ?? 0.0), 0.0, 1.0))
+    xx
 xx
 
 /// Starts a polity of `class` holding `homes` (the first is its capital):
@@ -1638,6 +1735,45 @@ xx
 /// revolt. Settle and union only choose: the colony (spawn) and the union
 /// (merge) are the settle phase's transitions.
 
+/// answers: the realm's answer to one of its groups, once a year or
+/// none: crush it (likelier the more it is feared and defied, the less
+/// tolerant the realm), concede what it wants (likelier the more
+/// cooperative the realm and the angrier and stronger the group), or
+/// take up its idea (likelier the more of its people hold it and the
+/// less sure the realm's rule).
+interface answers |
+    decision crush
+        targets: Group where (target >> realm) == self and @army >= 10.0
+        score => (target >> power) * ((target >> grievance) + (target >> defied)) * (1.0 - @tolerance) * (.5 + .5 * @fear)
+    xx
+    decision concede
+        targets: Group where (target >> realm) == self and :len(target >> wants) > 0
+        score => (target >> power) * (target >> grievance) * @cooperation
+    xx
+    decision patronize
+        targets: Group where (target >> realm) == self and (target >> idea) != .. and (target >> held) > .2
+        score => (target >> held) * (1.0 - @legitimacy) * (1.0 - target >> grievance) * .5
+    xx
+    judge
+        true:
+            names   | [""]
+            weights | [1.0]
+            repeat {"crush": crush, "concede": concede, "patronize": patronize} as k, d
+                if d.nix? or (d >> score) <= 0 => skip
+                :put_last!(names, k)
+                :put_last!(weights, d >> score)
+            xx
+            if :len(names) > 1
+                name | :sample_weighted({"src": names, "weights": weights})[0]
+                judge
+                    name == "crush": factions::crush(self, crush >> target)
+                    name == "concede": factions::concede(self, concede >> target)
+                    name == "patronize": factions::patronize(self, patronize >> target)
+                xx
+            xx
+    xx
+xx
+
 interface realm |
     decision reform
         targets: Land where target == @capital and @cities >= 1
@@ -1653,7 +1789,7 @@ interface realm |
     xx
     decision union
         targets: uses govern where :link_score(self, target, "border") and @rank >= 3 and (target >> rank) >= 3 and :link_score(self, target, "alliance") >= .5 and @union_with.nix? and (target >> union_with).nix? and (target >> owner) == @owner
-        score => past(closeness(self, target), .8) * shared_enemy(self, target) * (@cooperation + target >> cooperation) / 2 * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+        score => past(closeness(self, target), .8) * :max(shared_enemy(self, target), :link_score(self, target, "kinship")) * (@cooperation + target >> cooperation) / 2 * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
     xx
     decision cede
         targets: uses govern where :link_score(self, target, "border") and @wars > 0 and @lands >= 2 and !(war_between(self, target).nix?)
@@ -1698,6 +1834,12 @@ interface realm |
     /// toward its culture undoes a reform that is not kept up.
     act reform(p, l)
         p >> tradition |= p >> tradition - .05
+        /// A realm divided among sons, or fought over by kin, may fix
+        /// the succession on the eldest.
+        if (p >> law == "divided" or p >> law == "strongest_kin") and chance(p >> learning)
+            p >> law |= "eldest_son"
+            if p >> openness > .5 => p >> law |= "eldest_child"
+        xx
         d | p >> discipline
         c | p >> centralization
         g | p >> legitimacy
@@ -1781,14 +1923,42 @@ interface realm |
         t >> owner |= nil
         p >> prestige |= p >> prestige - 2.0
         :link!(t, p, "grievance", -.3, 40)
-        if t >> form == "client_regime" => government::rule(t, government::choose(t))
+        if government::rule_of(t >> form) == "client" => government::rule(t, government::choose(t))
     xx
     act revolt(p, t)
         p >> owner |= nil
         p >> prestige |= p >> prestige + 2.0
         :link!(t, p, "grievance", .3, 60)
-        if p >> form == "client_regime" => government::rule(p, government::choose(p))
+        if government::rule_of(p >> form) == "client" => government::rule(p, government::choose(p))
     xx
+xx
+
+/// court: its ruler's marriage (the inside phase, for a city-state and
+/// up). A match with another realm's ruling family weighs that family's
+/// prestige, the kinship already between them, a grievance a match could
+/// end, and the ruler's ambition. One a year, or none.
+
+interface court |
+    decision match
+        targets: uses court where target != self and family::free(self) and !((target >> dynasty).nix?) and (:link_score(self, target, "border") or :link_score(self, target, "alliance") > 0)
+        score => (family::prestige_of(target) + :link_score(self, target, "kinship") + :max(grudge(self, target), grudge(target, self)) + .2) / 2.2 * (.5 + @ambition * .5) * (.5 + :link_score(self, target, "shared_faith")) * @lean_match
+    xx
+
+    /// Waiting weighs a half.
+    judge
+        !match.nix? and (match >> score) > 0:
+            if :sample_weighted({"src": [false, true], "weights": [.5, match >> score]})[0] => match(self, match >> target)
+    xx
+    act match(p, t)
+        family::wed(p, t)
+    xx
+xx
+
+/// Whether `p`'s ruling dynasty claims `t`'s throne: 1 or 0.
+act claim(p, t)
+    d | p >> dynasty ?? => send 0.0
+    if family::claims_to(d, t) => send 1.0
+    return 0.0
 xx
 
 /// the settle phase: the year's change of form and the transitions
@@ -1801,6 +1971,14 @@ act under(v, at)
 xx
 
 /// How alike two cultures are: 1 less the mean gap between baselines.
+/// How alike two realms' peoples are: their ways (`closeness`), raised
+/// up to .2 by a shared tongue and faith and lowered as much by neither.
+/// A conqueror takes in land of its own kind and keeps other peoples as
+/// vassals.
+act akin(a, b)
+    return :clamp(closeness(a, b) + (:link_score(a, b, "shared_tongue") + :link_score(a, b, "shared_faith") - 1.0) * .2, 0.0, 1.0)
+xx
+
 act closeness(a, b)
     d | :abs(a >> base_aggression - b >> base_aggression) + :abs(a >> base_cooperation - b >> base_cooperation)
     d |= d + :abs(a >> base_fear - b >> base_fear) + :abs(a >> base_ambition - b >> base_ambition)
@@ -1846,7 +2024,7 @@ act settle_year(p)
         if p >> lost_years == 0 => p >> beaten_by |= nil
     xx
     if :is_type(p, "League") and p >> lands == 0
-        if (p >> form) != "confederation" => government::rule(p, "confederation")
+        if (p >> form) != government::league_form() => government::rule(p, government::league_form())
     else
         armed  | (p >> army) / ((p >> people) * .1 + 1.0)
         unpaid | 0.0
@@ -1936,13 +2114,13 @@ xx
 act civil_war(p)
     if p >> lands < 4 => send 0.0
     gap | .3
-    if p >> form == "interregnum" => gap |= 1.0
+    if government::contested(p >> form) => gap |= 1.0
     return odds(under(p >> cohesion, .5) * under(p >> succession, .45) * gap)
 xx
 /// A kingdom breaks into city-states: an interregnum that drags on,
 /// centralization collapsed, cities strong.
 act shatter(p)
-    if p >> cities < 2 or p >> form != "interregnum" => send 0.0
+    if p >> cities < 2 or !government::contested(p >> form) => send 0.0
     return odds(:min(p >> form_years / 20.0, 1.0) * under(p >> centralization, .3) * :min((p >> cities - 1) / 2.0, 1.0))
 xx
 /// Its far province breaks away: far from the capital and a loose hold;
@@ -1953,17 +2131,17 @@ act breakaway(p, city)
     if p >> lands < 3 or land::is_city(r) != city => send 0.0
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
-    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0))
-    return odds(far * loose * (1.0 - p >> cohesion))
+    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
+    return odds(far * loose * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)
-    return odds(closeness(p, t) * edge(p, t))
+    return odds(akin(p, t) * edge(p, t))
 xx
 /// A broken loser made a vassal; one that offered to serve is taken.
 act vassal_odds(p, t)
     if t >> submits_to == p => send .9
-    return odds((1.0 - closeness(p, t)) * edge(p, t))
+    return odds((1.0 - akin(p, t)) * edge(p, t))
 xx
 /// The independent allies beside `p` that share an enemy with it.
 act league_partners(p)
@@ -2041,16 +2219,12 @@ xx
 /// A new class: a form it can't have is replaced now.
 act mutated(p)
     f | government::form_of(p)
-    if f.nix? or !government::allowed(p, f) => government::rule(p, government::choose(p))
+    if f.nix? or !government::allowed(p, f) => government::rule(p, government::keep(p, f ?? p >> form))
 xx
 
-/// Conquest: the loser's peoples join if their culture is far off.
+/// Conquest: the loser's army and treasury join (its tongues are counted
+/// with the land, by overlays::account).
 act annexed(p, t)
-    if closeness(p, t) < .85
-        p >> peoples |= p >> peoples + t >> peoples
-    else
-        p >> peoples |= :max(p >> peoples, t >> peoples)
-    xx
     p >> army |= p >> army + (t >> army) * .5
     p >> gold |= p >> gold + t >> gold
 xx
@@ -2059,10 +2233,10 @@ xx
 act vassal_made(p, t)
     t >> submits_to |= nil
     t >> beaten_by |= nil
-    government::rule(t, "client_regime")
+    government::rule(t, government::client_form())
 xx
 
-/// A union: both treasuries and armies, both peoples, a form drawn anew.
+/// A union: both treasuries and armies, a form drawn anew.
 act united(p, t, m)
     m >> union_with |= nil
     m >> gold |= p >> gold + t >> gold
@@ -2070,12 +2244,11 @@ act united(p, t, m)
     m >> food |= p >> food + t >> food
     m >> debt |= p >> debt + t >> debt
     m >> prestige |= :max(p >> prestige, t >> prestige)
-    if closeness(p, t) < .85
-        m >> peoples |= p >> peoples + t >> peoples
-    else
-        m >> peoples |= :max(p >> peoples, t >> peoples)
-    xx
-    government::rule(m, government::choose(m))
+    government::rule(m, government::keep(m, m >> form))
+    /// Its ruler is the first's; the other's ruling house keeps a claim.
+    family::moved(m)
+    family::joined(t, m)
+    family::hand(m)
 xx
 
 /// A spawn: a league (its founder and partners join it) or a colony (it
@@ -2090,7 +2263,7 @@ act founded_child(p, c)
             q >> owner |= c
         xx
         c >> members |= 1 + :len(ps)
-        government::rule(c, "confederation")
+        government::rule(c, government::league_form())
         send nil
     xx
     l | p >> colony_at ?? => send nil
@@ -2117,6 +2290,7 @@ xx
 /// A breakaway: the far province (and for a kingdom, its held neighbours)
 /// go to the fragment, which takes a form of its own.
 act broke_away(p, f)
+    family::fresh(f)
     r | p >> rebel
     r >> owner |= f
     n | 1
@@ -2142,18 +2316,24 @@ xx
 act divided(p, a, b)
     c | p >> capital
     r | p >> rebel
-    if c.nix? or r.nix? => send nil
-    repeat :objects(Land, it >> owner == a) as l
-        dc | (l >> x - c >> x) * (l >> x - c >> x) + (l >> y - c >> y) * (l >> y - c >> y)
-        dr | (l >> x - r >> x) * (l >> x - r >> x) + (l >> y - r >> y) * (l >> y - r >> y)
-        if dr < dc => l >> owner |= b
+    if !c.nix? and !r.nix?
+        repeat :objects(Land, it >> owner == a) as l
+            dc | (l >> x - c >> x) * (l >> x - c >> x) + (l >> y - c >> y) * (l >> y - c >> y)
+            dr | (l >> x - r >> x) * (l >> x - r >> x) + (l >> y - r >> y) * (l >> y - r >> y)
+            if dr < dc => l >> owner |= b
+        xx
+        a >> capital |= c
+        b >> capital |= r
+        b >> cx |= r >> x
+        b >> cy |= r >> y
     xx
-    a >> capital |= c
-    b >> capital |= r
-    b >> cx |= r >> x
-    b >> cy |= r >> y
     :link!(a, b, "grievance", .4, 60)
     :link!(b, a, "grievance", .4, 60)
-    government::rule(a, government::choose(a))
-    government::rule(b, government::choose(b))
+    government::rule(a, government::keep(a, a >> form))
+    government::rule(b, government::keep(b, b >> form))
+    /// The first keeps the ruler. The second is ruled by the son owed it
+    /// (a divided succession), or a ruler is seated next year.
+    family::moved(a)
+    family::fresh(b)
+    family::shared(a, b)
 xx

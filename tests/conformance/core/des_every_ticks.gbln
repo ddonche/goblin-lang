@@ -24,16 +24,16 @@ xx
 a <> Person | age: 5
 b <> Person | age: 40
 repeat :range(1, 7) as t
-    tick()
+    :tick()
     x | a >> age
     y | b >> age
     m | a >> money
-    say("tick {t}: ages {x} {y}, money {m}")
+    :say("tick {t}: ages {x} {y}, money {m}")
 xx
 c <> Clock | left: 1
-tick()
+:tick()
 attempt
-    tick()
+    :tick()
 rescue e
-    say(:has("{e}", "division"))
+    :say(:has("{e}", "division"))
 xx

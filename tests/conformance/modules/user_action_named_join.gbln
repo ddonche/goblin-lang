@@ -2,4 +2,4 @@
 act join(x)
     return "user-join"
 xx
-say(join(["a", "b"]))
+:say(join(["a", "b"]))

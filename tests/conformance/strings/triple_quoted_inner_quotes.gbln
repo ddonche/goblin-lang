@@ -1,2 +1,2 @@
-say("""a "quoted" b""")
-say('''alt form''')
+:say("""a "quoted" b""")
+:say('''alt form''')

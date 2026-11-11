@@ -26,12 +26,12 @@ act names(xs)
     xx
     return out
 xx
-say(names(:objects("Item", it >> owner == a)))
-say(names(:objects("Item", it >> owner == y >> owner)))
-say(names(:objects("Item", it >> owner == y >> owner and it >> heavy)))
-say(names(:objects("Bag", it >> owner == z >> owner)))
+:say(names(:objects("Item", it >> owner == a)))
+:say(names(:objects("Item", it >> owner == y >> owner)))
+:say(names(:objects("Item", it >> owner == y >> owner and it >> heavy)))
+:say(names(:objects("Bag", it >> owner == z >> owner)))
 x >> owner |= a
-say(names(:objects("Item", it >> owner == a)))
-say(names(:objects("Item", it >> owner == b)))
-say(names(:objects("Item", it >> owner == a >> owner)))
-say(names(:objects("Item", it >> owner == inner >> owner >> owner)))
+:say(names(:objects("Item", it >> owner == a)))
+:say(names(:objects("Item", it >> owner == b)))
+:say(names(:objects("Item", it >> owner == a >> owner)))
+:say(names(:objects("Item", it >> owner == inner >> owner >> owner)))

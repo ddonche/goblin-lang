@@ -1,2 +1,2 @@
 stop | 2
-say(stop)
+:say(stop)

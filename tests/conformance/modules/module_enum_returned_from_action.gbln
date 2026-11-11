@@ -1,3 +1,3 @@
 import _support/modules/shapes as sh
-say(sh::favorite() == Color::Green)
-say(sh::is_red(sh::favorite()))
+:say(sh::favorite() == Color::Green)
+:say(sh::is_red(sh::favorite()))

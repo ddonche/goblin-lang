@@ -1,15 +1,15 @@
 /// an `if`/`elif`/`elif` chain without `else` runs nothing when no arm is true
 x | 9
 if x == 1
-    say("one")
+    :say("one")
 elif x == 2
-    say("two")
+    :say("two")
 elif x == 9
-    say("nine")
+    :say("nine")
 xx
 if x == 1
-    say("one")
+    :say("one")
 elif x == 2
-    say("two")
+    :say("two")
 xx
-say("done")
+:say("done")

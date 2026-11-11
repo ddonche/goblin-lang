@@ -33,7 +33,7 @@ xx
 end
 
 s <> Shop | cheap: .8
-tick()
+:tick()
 b | ann >> bought
 j | ann >> jobs
-say("bought {b}, jobs {j}")
+:say("bought {b}, jobs {j}")

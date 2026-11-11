@@ -7,5 +7,5 @@ root | "{d}/w"
 :write_text!("{root}/a/b/three.gbln", "3")
 :write_text!("{root}/noext", "4")
 for f in :sort(:walk(root, "**/*"))
-    say(:path_relative_to(f, root))
+    :say(:path_relative_to(f, root))
 xx

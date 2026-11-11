@@ -13,24 +13,24 @@ xx
 a <> Rabbit | age: 1
 b <> Fox | age: 2
 c <> Rabbit | age: 5
-say(:len(:objects("Rabbit")))
-say(:len(:objects("Fox")))
-say(:len(:objects()))
-say(:len(:objects("Rabbit", it >> age > 2)))
-say(:is_type(a, "Rabbit"))
-say(:is_type(b, "Rabbit"))
+:say(:len(:objects("Rabbit")))
+:say(:len(:objects("Fox")))
+:say(:len(:objects()))
+:say(:len(:objects("Rabbit", it >> age > 2)))
+:say(:is_type(a, "Rabbit"))
+:say(:is_type(b, "Rabbit"))
 n | 0
 repeat Rabbit as r
     n |= n + r >> age
 end
-say(n)
-delete_object!(a)
+:say(n)
+:delete_object!(a)
 d <> Rabbit | age: 9
 repeat :objects("Rabbit") as r
-    say(r >> age)
+    :say(r >> age)
 end
 attempt
     :objects("Rabit")
 rescue e
-    say("error")
+    :say("error")
 end

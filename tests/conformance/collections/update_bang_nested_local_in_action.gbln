@@ -3,4 +3,4 @@ act go()
     :update!(m{"a"}{"b"}, 4)
     return m{"a"}{"b"}
 xx
-say(go())
+:say(go())

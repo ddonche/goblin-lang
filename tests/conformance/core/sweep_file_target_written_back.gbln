@@ -12,4 +12,4 @@ sweep p
     "Tail" :
         :update_where!(self, "Tail", "TAIL")
 xx
-say(:read_text(p))
+:say(:read_text(p))

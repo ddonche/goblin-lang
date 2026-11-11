@@ -8,6 +8,6 @@ act step_two(ctx)
     return ctx
 xx
 out | :summon({"initial": "hello"}, ["step_one", "step_two"])
-say(out{"initial"})
-say(out{"step1"})
-say(out{"step2"})
+:say(out{"initial"})
+:say(out{"step1"})
+:say(out{"step2"})

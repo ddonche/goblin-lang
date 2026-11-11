@@ -2,4 +2,4 @@
 act sort(x)
     return "user-sort"
 xx
-say(sort([2, 1]))
+:say(sort([2, 1]))

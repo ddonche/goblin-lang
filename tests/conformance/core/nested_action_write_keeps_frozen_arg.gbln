@@ -12,10 +12,10 @@ act outer()
         return a
     xx
     attempt
-        say(mutate(x, change()))
+        :say(mutate(x, change()))
     rescue e
-        say(e)
+        :say(e)
     xx
-    say(x)
+    :say(x)
 xx
 outer()

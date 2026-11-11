@@ -19,4 +19,4 @@ act rewrite(n)
     xx
     return :stash_count(){"total"}
 xx
-say(rewrite(3000) < 1500)
+:say(rewrite(3000) < 1500)

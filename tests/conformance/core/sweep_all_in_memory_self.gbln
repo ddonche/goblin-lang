@@ -3,7 +3,7 @@ text | "hello world"
 n | 0
 sweep_all text
     n += :len(self)
-    say(self)
+    :say(self)
 xx
-say(n)
-say(text)
+:say(n)
+:say(text)

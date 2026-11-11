@@ -23,7 +23,7 @@ xx
     color: ""
 xx
 act eat(w, s)
-    say("{w >> name} eats {s >> name} in pen {w >> pen}")
+    :say("{w >> name} eats {s >> name} in pen {w >> pen}")
     /// The sheep runs to pen 2: the next wolf in pen 1 can't find it.
     /// (Losing a little fat keeps Dot the fattest, so Cy's pick is not a tie.)
     s >> pen |= 2
@@ -35,11 +35,11 @@ c <> Wolf | name: "Cy", pen: 2
 s1 <> Sheep | name: "Dot", pen: 1, fat: 9, color: "white"
 s2 <> Sheep | name: "Eve", pen: 1, fat: 5, color: "black"
 s3 <> Sheep | name: "Fay", pen: 3, fat: 7, color: "white"
-tick()
+:tick()
 f | 2
-say(:len(:objects("Sheep", it >> pen == f)))
+:say(:len(:objects("Sheep", it >> pen == f)))
 color | "white"
-say(:len(:objects("Sheep", it >> color == color)))
-say(:len(:objects("Sheep", it >> color == "black" and it >> pen == 2)))
+:say(:len(:objects("Sheep", it >> color == color)))
+:say(:len(:objects("Sheep", it >> color == "black" and it >> pen == 2)))
 fat | 100
-say(:len(:objects("Sheep", it >> fat == fat)))
+:say(:len(:objects("Sheep", it >> fat == fat)))

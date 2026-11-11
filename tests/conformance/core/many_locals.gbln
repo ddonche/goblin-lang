@@ -299,12 +299,12 @@ v296 | 296
 v297 | 297
 v298 | 298
 v299 | 299
-say(v0 + v1 + v254 + v255 + v256 + v299)
+:say(v0 + v1 + v254 + v255 + v256 + v299)
 total | 0
 repeat 300
     total |= total + idx
 xx
-say(total)
+:say(total)
 act many_locals()
     w0 | 0
     w1 | 2
@@ -588,6 +588,6 @@ act many_locals()
     w279 | 558
     return w0 + w255 + w279
 xx
-say(many_locals())
+:say(many_locals())
 s | "v299 is {v299}"
-say(s)
+:say(s)

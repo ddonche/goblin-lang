@@ -13,17 +13,17 @@ act make()
     a <> Person | hunger: .4
     b <> Person | hunger: .4
     :link!(a, b, contact, .3, 2)
-    say(:link_score(a, b, "contact"))
+    :say(:link_score(a, b, "contact"))
     return [a, b]
 xx
 act region(st, msg)
     a | st{"people"}[0]
     b | st{"people"}[1]
-    say(:link_score(a, b, "contact"))
-    tick()
-    say(:link_score(a, b, "contact"))
-    tick()
-    say(:link_score(a, b, "contact"))
+    :say(:link_score(a, b, "contact"))
+    :tick()
+    :say(:link_score(a, b, "contact"))
+    :tick()
+    :say(:link_score(a, b, "contact"))
     return st
 xx
 r | :actor({"people": make()}, region)

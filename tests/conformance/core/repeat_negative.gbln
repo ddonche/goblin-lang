@@ -1,5 +1,5 @@
 /// Decided 2026-10-06 (D-repeat-negative, option A; see DECISIONS.md).
 repeat -1
-    say("no")
+    :say("no")
 xx
-say("done")
+:say("done")

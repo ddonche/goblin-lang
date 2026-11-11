@@ -2,4 +2,4 @@
 act ident(n)
     return n
 xx
-say(:sort_by([10, 9, 100], "ident"))
+:say(:sort_by([10, 9, 100], "ident"))

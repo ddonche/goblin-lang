@@ -1,0 +1,3 @@
+act f()
+    return outside_act()
+xx

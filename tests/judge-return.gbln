@@ -1,21 +1,21 @@
 act main()
-    say "=== Test 1: header used ==="
+    :say "=== Test 1: header used ==="
     href1 |
         judge return "fallback"
-            is_nix(""):
+            :is_nix(""):
             else: "ok"
         xx
-    say href1   /// EXPECT: "fallback"
+    :say href1   /// EXPECT: "fallback"
 
-    say "=== Test 2: else used ==="
+    :say "=== Test 2: else used ==="
     href2 |
         judge return "fallback"
-            is_nix("hi"):
+            :is_nix("hi"):
             else: "ok"
         xx
-    say href2   /// EXPECT: "ok"
+    :say href2   /// EXPECT: "ok"
 
-    say "=== Test 3: multiple arms, first match wins ==="
+    :say "=== Test 3: multiple arms, first match wins ==="
     val | 10
     res |
         judge return "none"
@@ -24,7 +24,7 @@ act main()
                 "big"
             else: "small"
         xx
-    say res     /// EXPECT: "big"
+    :say res     /// EXPECT: "big"
 xx
 
 main()

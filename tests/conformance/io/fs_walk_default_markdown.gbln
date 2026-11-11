@@ -6,5 +6,5 @@ root | "{d}/w"
 :write_text!("{root}/sub/b.md", "2")
 :write_text!("{root}/sub/c.txt", "3")
 for f in :sort(:walk(root))
-    say(:path_relative_to(f, root))
+    :say(:path_relative_to(f, root))
 xx

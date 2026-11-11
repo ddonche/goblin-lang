@@ -5,5 +5,5 @@ enum Shape
     Dot
 xx
 c | Shape::Circle { r: 3 }
-say(c)
-say("got {c}")
+:say(c)
+:say("got {c}")

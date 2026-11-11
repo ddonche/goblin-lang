@@ -10,12 +10,12 @@ lost | [3, 5]
     hp: 7
 xx
 p <> P | name: "pip"
-say("{x + 1}")
-say("{lost[0]} and {lost[x]}")
-say("{p >> name} has {p >> hp * 2}")
-say("{:upper(p >> name)} {:len([1, 2, 3])}")
-say("css { color: red; }, {nope + 1} and {1,3} stay")
+:say("{x + 1}")
+:say("{lost[0]} and {lost[x]}")
+:say("{p >> name} has {p >> hp * 2}")
+:say("{:upper(p >> name)} {:len([1, 2, 3])}")
+:say("css { color: red; }, {nope + 1} and {1,3} stay")
 act f(n)
-    say("{n * 3}")
+    :say("{n * 3}")
 xx
 f(5)

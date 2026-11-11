@@ -49,19 +49,19 @@ repeat all as a
         xx
     xx
 xx
-say(:link_score(usa, canada, "respect"))
-say(:link_score(canada, usa, "respect"))
-say(:link_score(usa, mexico, "respect"))
+:say(:link_score(usa, canada, "respect"))
+:say(:link_score(canada, usa, "respect"))
+:say(:link_score(usa, mexico, "respect"))
 usa >> praise(mexico)
-say(:link_score(usa, mexico, "respect"))
-say(:link_score(mexico, usa, "respect"))
-say(:link_score(usa, canada, "border"))
+:say(:link_score(usa, mexico, "respect"))
+:say(:link_score(mexico, usa, "respect"))
+:say(:link_score(usa, canada, "border"))
 :link!(usa, canada, border, 1)
-say(:link_score(usa, canada, "border"))
-tick()
-say("{canada >> gold} {mexico >> gold} {usa >> gold}")
+:say(:link_score(usa, canada, "border"))
+:tick()
+:say("{canada >> gold} {mexico >> gold} {usa >> gold}")
 attempt
-    say(:link_score(usa, canada, "trade"))
+    :say(:link_score(usa, canada, "trade"))
 rescue e
-    say(:has("{e}", "R1228"))
+    :say(:has("{e}", "R1228"))
 xx

@@ -6,7 +6,7 @@ xs | []
 xx
 :put_last!(xs, 1)
 a <> Box | name: "a"
-say(a >> size)
+:say(a >> size)
 :put_last!(xs, 2)
 b <> Box | name: "b"
-say(b >> size)
+:say(b >> size)

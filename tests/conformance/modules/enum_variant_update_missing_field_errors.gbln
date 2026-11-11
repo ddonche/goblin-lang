@@ -5,6 +5,6 @@ enum Shape
     Dot
 xx
 c | Shape::Circle { r: 3 }
-say("before")
+:say("before")
 :update!(c.w, 5)
-say(c)
+:say(c)

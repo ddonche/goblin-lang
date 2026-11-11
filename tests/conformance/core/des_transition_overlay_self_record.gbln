@@ -29,7 +29,7 @@ xx
 b <> Land | name: "Oss"
 :overlay!(b, plague)
 repeat 3
-    tick()
+    :tick()
 xx
 :say("hits {b >> hits}")
 repeat :overlays() as o

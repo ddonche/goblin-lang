@@ -2,4 +2,4 @@
 act url_encode(x)
     return "user-url_encode"
 xx
-say(url_encode("a b"))
+:say(url_encode("a b"))

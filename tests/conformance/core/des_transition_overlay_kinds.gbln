@@ -9,7 +9,7 @@ xx
 <^>Language |
     hosts: Land
     transition mutate where age >= 2
-    on mutate => say("in {@name} a new language")
+    on mutate => :say("in {@name} a new language")
 xx
 overlay old_imperial <^> Language
     ~intensity: .8
@@ -27,7 +27,7 @@ overlay plague
             strain: "b"
         xx
     xx
-    on split => say("plague splits into {first >> overlay_name} {first >> intensity} and {second >> overlay_name} {second >> intensity}")
+    on split => :say("plague splits into {first >> overlay_name} {first >> intensity} and {second >> overlay_name} {second >> intensity}")
 xx
 a <> Land | name: "Varn"
 b <> Land | name: "Oss"
@@ -35,13 +35,13 @@ b <> Land | name: "Oss"
 :overlay!(b, old_imperial)
 :overlay!(b, plague)
 repeat 3
-    tick()
+    :tick()
 xx
 repeat :objects("Land") as l
     repeat :overlays_of(l) as o
-        say("{l >> name}: {o}")
+        :say("{l >> name}: {o}")
     xx
 xx
 repeat :overlays() as o
-    say("{o >> overlay_name} on {o >> host_var} intensity {o >> intensity} age {o >> age}")
+    :say("{o >> overlay_name} on {o >> host_var} intensity {o >> intensity} age {o >> age}")
 xx

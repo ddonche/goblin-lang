@@ -1,0 +1,23 @@
+/// A GLAM imports its own files; everything else from outside is an error.
+import glams/_conf_nodeps/lib/helper as helper
+act own(c)
+    return helper::wrap("own")
+xx
+act load_glam(c)
+    use _conf_base
+    return c
+xx
+act load_project_file(c)
+    import _support/modules/loud as loud
+    return c
+xx
+act read_project_var(c)
+    return project_secret
+xx
+act write_other_ns(c)
+    #site::title |= "changed"
+    return c
+xx
+act call_project_action(c)
+    return :invoke("project_act", [])
+xx

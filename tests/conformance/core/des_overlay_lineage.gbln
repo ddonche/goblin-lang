@@ -60,10 +60,10 @@ log | "{:env("GOBLIN_CONF_TMP")}/lineage.log"
 :overlay!(a, old_tongue)
 :overlay!(a, flu)
 repeat 5
-    tick()
+    :tick()
 xx
 :event_log(nil)
-say(:read_text(log))
+:say(:read_text(log))
 repeat :overlays() as o
-    say("{o >> overlay_name} on {o >> host_var} from {o >> parents}")
+    :say("{o >> overlay_name} on {o >> host_var} from {o >> parents}")
 xx

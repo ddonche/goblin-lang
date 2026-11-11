@@ -22,26 +22,26 @@ act day(st, msg)
     repeat :objects(Person) as p
         g | p >> gold
         h | p >> health
-        say("region sees gold {g}, health {h}")
+        :say("region sees gold {g}, health {h}")
     xx
     n | :len(:overlays(hurt))
-    say("region sees {n} hurt")
+    :say("region sees {n} hurt")
     return st
 xx
 r | :actor(make_one(), day)
-tick()
+:tick()
 repeat :objects(Person) as p
     p >> health |= .2
     p >> gold |= p >> gold + 5
     g | p >> gold
-    say("program reads gold {g}")
+    :say("program reads gold {g}")
     :overlay!(p, hurt, .5)
 xx
 n | :len(:overlays(hurt))
-say("program sees {n} hurt")
-tick()
+:say("program sees {n} hurt")
+:tick()
 repeat :objects(Person) as p
     h | p >> health
     g | p >> gold
-    say("after: health {h}, gold {g}")
+    :say("after: health {h}, gold {g}")
 xx

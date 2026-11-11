@@ -4,6 +4,6 @@
 import "_support/eval/all.imports"
 one | :eval(["_support/eval/base.yall", "_support/eval/mods/cool/events.gob", "_support/eval/mods/extra/events.gob"])
 two | :eval(["_support/eval/base.yall", "_support/eval/mods/extra/events.gob", "_support/eval/mods/cool/events.gob"])
-say(one >> schedule)
-say(two >> schedule)
-say(one >> pre == two >> pre)
+:say(one >> schedule)
+:say(two >> schedule)
+:say(one >> pre == two >> pre)

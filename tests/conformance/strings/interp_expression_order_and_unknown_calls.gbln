@@ -7,9 +7,9 @@ act bump(x)
     n |= n + 1
     return n
 xx
-say("{bump(n)} {n}")
+:say("{bump(n)} {n}")
 x | 1
-say("template {nope(x)} stays")
-say("css stays {unknown_fn()}")
-say("len {:len([1,2])}")
-say("{n} then {bump(n)} then {n}")
+:say("template {nope(x)} stays")
+:say("css stays {unknown_fn()}")
+:say("len {:len([1,2])}")
+:say("{n} then {bump(n)} then {n}")

@@ -1,2 +1,2 @@
-say("start")
-say(true + 1)
+:say("start")
+:say(true + 1)

@@ -19,11 +19,11 @@ xx
 act region(st, msg)
     p <> Person | health: .8, hunger: .4
     :overlay!(p, sick, .9)
-    tick()
+    :tick()
     h | p >> health
-    say("health {h}")
-    say(:len(:overlays_of("p")))
-    say(:link_score(p, p, contact))
+    :say("health {h}")
+    :say(:len(:overlays_of("p")))
+    :say(:link_score(p, p, contact))
     return st
 xx
 r | :actor({"n": 1}, region)

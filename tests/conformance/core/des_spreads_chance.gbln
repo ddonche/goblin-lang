@@ -21,7 +21,7 @@ xx
 act day_one(name)
     :rand_seed(3)
     repeat :objects() as o
-        delete_object!(o)
+        :delete_object!(o)
     xx
     first | nil
     repeat :range(0, 200) as i
@@ -31,10 +31,10 @@ act day_one(name)
         xx
     xx
     :overlay!(first, name)
-    tick()
+    :tick()
     return :len(:overlays(name)) - 1
 xx
 colds | day_one("cold")
-say(colds > 0 and colds < 25)
-say(day_one("flu"))
-say(day_one("pox"))
+:say(colds > 0 and colds < 25)
+:say(day_one("flu"))
+:say(day_one("pox"))

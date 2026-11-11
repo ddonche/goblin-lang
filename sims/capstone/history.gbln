@@ -11,6 +11,9 @@ import map as map
 import land as land
 import polity as polity
 import government as government
+import family as family
+import factions as factions
+import overlays as overlays
 
 act food_of(p)
     return p >> food
@@ -42,7 +45,7 @@ act free_beside(p, min_people)
 xx
 
 cfg | {
-    "seed": 42,
+    "seed": :int(:env("SEED") ?? "42"),
     "provinces": 400,
     "kingdoms": 20,
     "prehistory": 1200,
@@ -105,7 +108,7 @@ xx
 
 /// Prehistory: only the land.
 repeat prehistory
-    tick()
+    :tick()
         land
     xx
 xx
@@ -136,6 +139,7 @@ repeat :reverse(:sort_by(lands, "people_of")) as l
     polity::found(class, polity::next_name(), held, 0)
     made |= made + 1
 xx
+overlays::seed(:objects(Kingdom), :objects(uses govern, !:is_type(it, "Kingdom")), pairs)
 nk | :len(:objects(Kingdom))
 nv | :len(:objects(Village))
 nt | :len(:objects(Tribe))
@@ -153,6 +157,8 @@ xx
 :put_last!(head, "largest_share")
 :put_last!(head, "wars_now")
 :put_last!(head, "at_war_share")
+:put_last!(head, "rulers")
+:put_last!(head, "dynasties")
 :write_text!(cfg{"csv"}, "{:join(head, ",")}\n")
 :event_log(cfg{"events"})
 t_run   | :epoch_ms()
@@ -161,9 +167,12 @@ lived  | 0
 fought | 0
 repeat :range(0, years + 1) as year
     if year > 0
-        tick()
+        :tick()
             land
             polity::account(lands, pairs)
+            family::account(year)
+            factions::account(year, lands, :objects(uses govern))
+            overlays::account(year, lands, :objects(uses govern))
             inside
             between
             settle
@@ -205,6 +214,9 @@ repeat :range(0, years + 1) as year
     ws | 0.0
     if lived > 0 => ws |= :float(fought) / lived
     :put_last!(row, :round(ws, 3))
+    fc | family::counts()
+    :put_last!(row, fc{"rulers"})
+    :put_last!(row, fc{"dynasties"})
     :append_file!(cfg{"csv"}, "{:join(:map(row, "text"), ",")}\n")
     np  | :len(ps)
     now_at_war | :len(:objects(War))
@@ -228,3 +240,37 @@ repeat forms as f, n
     :put_last!(held, "{f} {n}")
 xx
 :say("check: forms at the end: {:join(:sort(held), ", ")}")
+/// What happened in the ruling families, and who rules at the end.
+tl | []
+repeat family::tally as k, n
+    :put_last!(tl, "{k} {n}")
+xx
+:say("check: families: {:join(tl, ", ")}")
+laws | {}
+repeat :objects(uses court) as p
+    w | p >> law
+    if w == .. => w |= "none"
+    :update!(laws{w}, (laws{w} ?? 0) + 1)
+xx
+held |= []
+repeat laws as w, n
+    :put_last!(held, "{w} {n}")
+xx
+:say("check: succession laws at the end: {:join(:sort(held), ", ")}")
+/// What the groups did, and the largest group and idea at the end.
+tl |= []
+repeat factions::tally as k, n
+    :put_last!(tl, "{k} {n}")
+xx
+:say("check: groups: {:join(tl, ", ")}")
+tl |= []
+repeat overlays::tally as k, n
+    :put_last!(tl, "{k} {n}")
+xx
+:say("check: overlays: {:join(tl, ", ")}")
+oc | overlays::counts(lands, :objects(uses govern))
+:say("check: ideas at the end: tongues {oc{"tongues"}} (largest holds {oc{"largest_tongue"}} of all people), faiths {oc{"faiths"}} (largest {oc{"largest_faith"}}), creeds {oc{"creeds"}}; realms of more than one people {oc{"many_peoples"}}")
+kc | overlays::kinship_counts()
+:say("check: bordering realms: {kc{"pairs"}} pairs, sharing a tongue (.5 or more) {kc{"tongue"}}, a faith {kc{"faith"}}; wars under way between faiths {kc{"wars_apart"}} of {kc{"wars"}}")
+gc | factions::counts(lands)
+:say("check: groups at the end: {gc{"groups"}}, largest share of a realm {gc{"largest_group"}}; ideas {gc{"ideas"}}, largest holds {gc{"largest_idea"}} of all people")

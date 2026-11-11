@@ -2,4 +2,4 @@
 act dbl(n)
     return n * 2
 xx
-say(:map_fn([1, 2], "dbl"))
+:say(:map_fn([1, 2], "dbl"))

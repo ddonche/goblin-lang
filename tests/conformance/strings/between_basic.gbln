@@ -1,2 +1,2 @@
-say(:between("<b>Bold</b>!", "<b>", "</b>"))
-say(:between("k=[v1] [v2]", "[", "]"))
+:say(:between("<b>Bold</b>!", "<b>", "</b>"))
+:say(:between("k=[v1] [v2]", "[", "]"))

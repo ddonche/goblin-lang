@@ -2,4 +2,4 @@
 m | {}
 :put_at!(m, true, "a")
 :update!(m{true}, 5)
-say(m)
+:say(m)

@@ -2,4 +2,4 @@ for k in [1, 2, 3]
     part | :str(k)
     k |= 0
 xx
-say("ok")
+:say("ok")

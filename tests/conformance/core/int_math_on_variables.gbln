@@ -5,15 +5,15 @@ big | 9223372036854775807
 small | -9223372036854775807
 one | 1
 two | 2
-say(small - two)
-say(big * two)
+:say(small - two)
+:say(big * two)
 seven | 7
 neg | -7
 three | 3
-say(neg % three)
-say(seven % (0 - three))
-say(seven % three)
-say([seven < three, seven <= seven, seven > three, seven >= 8, seven == 7, seven != 7])
+:say(neg % three)
+:say(seven % (0 - three))
+:say(seven % three)
+:say([seven < three, seven <= seven, seven > three, seven >= 8, seven == 7, seven != 7])
 i | 0
 total | 0
 while i < 10
@@ -22,10 +22,10 @@ while i < 10
     xx
     i |= i + 1
 xx
-say(total)
+:say(total)
 zero | 0
 attempt
-    say(seven % zero)
+    :say(seven % zero)
 rescue e
-    say("error")
+    :say("error")
 xx

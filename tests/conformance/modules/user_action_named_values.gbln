@@ -2,4 +2,4 @@
 act values(x)
     return "user-values"
 xx
-say(values({"a": 1}))
+:say(values({"a": 1}))

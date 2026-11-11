@@ -1,0 +1,3 @@
+/// known-gap: interp does not enforce the colon rule; the interpreter is being retired (VM only, 0.51.26)
+/// Owner ruling 2026-11-11: `say` is a builtin like any other, so it takes its colon (R1260).
+say "hi"

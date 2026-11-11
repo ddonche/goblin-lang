@@ -1,0 +1,7 @@
+/// known-gap: interp does not enforce the colon rule; the interpreter is being retired (VM only, 0.51.26)
+/// Owner ruling 2026-11-11: `len(...)` calls the program's action named len; `:len(...)` always calls the builtin.
+act len(x)
+    send 99
+xx
+:say(len([1, 2]))
+:say(:len([1, 2]))

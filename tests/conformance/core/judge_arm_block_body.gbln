@@ -3,8 +3,8 @@ x | 7
 r |
     judge
         x > 5:
-            say("side")
+            :say("side")
             x + 1
         else: 0
     xx
-say(r)
+:say(r)

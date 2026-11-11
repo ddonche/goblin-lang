@@ -8,4 +8,4 @@ act probe(n)
     xx
     return c
 xx
-say(probe(3))
+:say(probe(3))

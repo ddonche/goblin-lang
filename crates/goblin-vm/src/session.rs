@@ -61,9 +61,23 @@ pub struct OverlayDef {
     /// The kinds a transition made this one from (two for a merge); none
     /// for a declared overlay.
     pub parents: Vec<String>,
+    /// The variables of the action whose code made this overlay, as they
+    /// were when its `overlay` line ran: its lines see them, as code
+    /// written in an action does. None for one made at the top level.
+    pub maker: Vec<(String, Value)>,
 }
 
 impl OverlayDef {
+    /// The names an overlay's code sees after `self` and `intensity`: its
+    /// own fields, then the maker's variables.
+    pub fn own_names(&self) -> Vec<String> {
+        self.extra_fields.keys().cloned().chain(self.maker.iter().map(|(n, _)| n.clone())).collect()
+    }
+    /// Their values for this copy (`fields`: the copy's own).
+    pub fn own_values(&self, fields: &indexmap::IndexMap<String, Value>) -> Vec<Value> {
+        self.extra_fields.keys().map(|k| fields.get(k).cloned().unwrap_or(Value::Nil))
+            .chain(self.maker.iter().map(|(_, v)| v.clone())).collect()
+    }
     /// Its phase's block, in a phase; None at the tick's end (its own lines).
     fn phase_of(&self, phase: Option<&str>) -> Option<Option<&goblin_ast::OverlayPhase>> {
         phase.map(|p| self.phases.iter().find(|x| x.name == p))
@@ -282,6 +296,9 @@ pub struct Session {
 
     /// PRNG state for builtins like shuffle/mixed. LCG/MCG.
     pub rng_state: u128,
+    /// PRNG state for `:event` tellings, apart from `rng_state` so that
+    /// narrating never changes what the program draws.
+    pub event_rng: u128,
 
     /// Token store: namespace → key → value.
     pub token_store: BTreeMap<String, BTreeMap<String, Value>>,
@@ -359,6 +376,11 @@ pub struct Session {
     pub des_overlay_id_counter: u32,
     /// How many overlay kinds each family has made by transitions.
     pub kind_counts: HashMap<String, u64>,
+    /// The `overlay` lines that have run (by their place in the source).
+    pub overlay_lines_run: std::collections::HashSet<String>,
+    /// The overlay kinds in the order they were made (declared, or made
+    /// while the program ran), for `:objects(Government)`.
+    pub kind_order: Vec<String>,
     /// Generated overlay kinds converted to cross threads, made once each.
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     pub des_link_id_counter: u32,
@@ -383,6 +405,9 @@ pub struct Session {
     /// outside them raise B0102/B0105, as in the interpreter.
     pub box_namespace: Option<String>,
     pub box_provides: Option<std::collections::HashSet<String>>,
+    /// Each GLAM's `[provides] values` list: the only names its code may
+    /// publish, at any time (B0105).
+    pub glam_provides: HashMap<String, std::collections::HashSet<String>>,
     /// `import path as alias`: (importing file, alias) → the module's global-name
     /// prefix, so `alias::var` reads the module's live global.
     pub module_aliases: Rc<HashMap<(String, String), String>>,
@@ -525,6 +550,7 @@ impl Session {
             gc_bytes: 0,
             has_cells: false,
             rng_state: seed,
+            event_rng: crate::events::event_seed(seed),
             token_store: BTreeMap::new(),
             sweeps: Default::default(),
             object_store: Default::default(),
@@ -555,6 +581,8 @@ impl Session {
             des_tick_runner: TickRunner::new(),
             des_overlay_id_counter: 0,
             kind_counts: HashMap::new(),
+            overlay_lines_run: Default::default(),
+            kind_order: Vec::new(),
             portable_kinds: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
@@ -564,6 +592,7 @@ impl Session {
             current_glam_ns: None,
             box_namespace: None,
             box_provides: None,
+            glam_provides: Default::default(),
             module_aliases: Default::default(),
             import_paths: HashMap::new(),
             box_store: HashMap::new(),

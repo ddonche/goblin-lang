@@ -20,4 +20,4 @@ act work(item, ctx)
     return fa()
 xx
 shared | :freeze({"count": make_counter()})
-say(:swarm!([1, 2], work, 2, shared))
+:say(:swarm!([1, 2], work, 2, shared))

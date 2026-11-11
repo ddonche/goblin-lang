@@ -1,2 +1,2 @@
 x | :pick({"src": ["a", "b", "c"], "count": 2})
-say(:len(x))
+:say(:len(x))

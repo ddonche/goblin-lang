@@ -323,11 +323,11 @@ repeat :range(0, n_kingdoms) as k
     :actor(make_kingdom(k))
 xx
 
-say("feudal kingdoms: {n_kingdoms} realms, {years} years")
+:say("feudal kingdoms: {n_kingdoms} realms, {years} years")
 repeat :range(1, years + 1) as y
-    tick()
+    :tick()
     if y % 25 == 0 or y == years
-        say("year {y}:")
+        :say("year {y}:")
         repeat :objects(Realm) as r
             king | "none"
             repeat :objects(Noble, it >> owner == r) as k
@@ -345,7 +345,7 @@ repeat :range(1, years + 1) as y
                     lands |= lands + 1
                 xx
             xx
-            say("  {r >> name}: king {king}, {nobles} nobles, {lands} estates; crowned {r >> crowned}, inherited {r >> inherited}, escheated {r >> escheated}, granted {r >> granted}, sold {r >> sold}, seized {r >> seized}, defected {r >> defected}, arrived {r >> arrived}")
+            :say("  {r >> name}: king {king}, {nobles} nobles, {lands} estates; crowned {r >> crowned}, inherited {r >> inherited}, escheated {r >> escheated}, granted {r >> granted}, sold {r >> sold}, seized {r >> seized}, defected {r >> defected}, arrived {r >> arrived}")
         xx
         lost | 0
         repeat :objects(Estate) as e
@@ -354,20 +354,20 @@ repeat :range(1, years + 1) as y
             xx
         xx
         total | :len(:objects(Estate))
-        say("  estates {total}, held by no realm {lost}")
+        :say("  estates {total}, held by no realm {lost}")
     xx
 xx
 
 /// Who holds what at the end: each king, and the vassals sworn to him.
-say("")
-say("the realms at the end:")
+:say("")
+:say("the realms at the end:")
 repeat :objects(Realm) as r
     repeat :objects(Noble, it >> owner == r) as k
-        say("  {r >> name}: king {k >> house}, {estates(k)} estates of his own, gold {k >> gold}")
+        :say("  {r >> name}: king {k >> house}, {estates(k)} estates of his own, gold {k >> gold}")
         repeat :objects(Noble, it >> owner == k) as v
             household | :len(:objects(Noble, it >> owner == v))
             if estates(v) > 0 or household > 0
-                say("    {v >> house} ({v >> age}): {estates(v)} estates, {household} in his household")
+                :say("    {v >> house} ({v >> age}): {estates(v)} estates, {household} in his household")
             xx
         xx
     xx

@@ -4,4 +4,4 @@ act fx(x)
         return "pos"
     xx
 xx
-say(:valtype(fx(-1)))
+:say(:valtype(fx(-1)))

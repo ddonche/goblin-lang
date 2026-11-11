@@ -1,2 +1,2 @@
 import _support/modules/mathy as m
-say(m::scaled(4))
+:say(m::scaled(4))

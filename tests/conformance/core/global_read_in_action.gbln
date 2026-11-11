@@ -2,4 +2,4 @@ x | 41
 act rd()
     return x + 1
 xx
-say(rd())
+:say(rd())

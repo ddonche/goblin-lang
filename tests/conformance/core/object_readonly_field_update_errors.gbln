@@ -5,6 +5,6 @@
 xx
 h <> Hero | name: "Ann"
 :update!(h.hp, 5)
-say(h >> hp)
+:say(h >> hp)
 :update!(h.name, "Bob")
-say(h >> name)
+:say(h >> name)

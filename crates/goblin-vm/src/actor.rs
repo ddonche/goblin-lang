@@ -1287,6 +1287,7 @@ fn incarnate(image: &crate::swarm::Image, handler: &PValue, stop_when: Option<&P
     let mut fp = FromPortable::new().sharing_functions();
     let mut vm = Vm::new(crate::swarm::build_session(image, &mut fp, worker_id));
     vm.session.rng_state = seed | 1;
+    vm.session.event_rng = crate::events::event_seed(seed | 1);
     let handler = fp.value(handler, &mut vm.session);
     let stop_when = stop_when.map(|p| fp.value(p, &mut vm.session));
     // Every object in the state, however deep, lives in the actor's object

@@ -1,4 +1,4 @@
 s | "hello"
-say(s)
-say("")
-say(:len(""))
+:say(s)
+:say("")
+:say(:len(""))

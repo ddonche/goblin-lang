@@ -37,10 +37,10 @@ c <> Town | n: 2
 :overlay!(a, flu)
 :overlay!(c, quiet)
 repeat 4
-    tick()
+    :tick()
         spread
         settle
     xx
     on | :len(:overlays(flu))
-    say("{a >> sick} {b >> sick} {c >> sick} flu on {on}, calm {c >> calm}")
+    :say("{a >> sick} {b >> sick} {c >> sick} flu on {on}, calm {c >> calm}")
 xx

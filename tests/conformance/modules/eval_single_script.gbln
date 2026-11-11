@@ -1,9 +1,9 @@
 /// known-gap: interp has no :load, :eval, :inject or pattern imports (VM only, 0.51.0)
 /// :eval runs one Goblin file and returns what it returns; each eval runs it again,
 /// and a source map from :load works as well as the bundle (acceptance 2, 14).
-say(:eval("_support/eval/script.gob"))
+:say(:eval("_support/eval/script.gob"))
 b | :load("_support/eval/script.gob")
-say(:len(b))
-say(b[0] >> kind)
-say(:eval(b[0]))
-say(:eval(b))
+:say(:len(b))
+:say(b[0] >> kind)
+:say(:eval(b[0]))
+:say(:eval(b))

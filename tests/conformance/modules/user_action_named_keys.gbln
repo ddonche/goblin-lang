@@ -2,4 +2,4 @@
 act keys(x)
     return "user-keys"
 xx
-say(keys({"a": 1}))
+:say(keys({"a": 1}))

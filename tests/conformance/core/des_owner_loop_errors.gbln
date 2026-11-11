@@ -11,7 +11,7 @@ c <> Land | name: "c", owner: b
 attempt
     a >> owner |= c
 rescue e
-    say(:has("{e}", "R1246"))
+    :say(:has("{e}", "R1246"))
 xx
-say(a >> owner == nil)
+:say(a >> owner == nil)
 a >> owner |= a

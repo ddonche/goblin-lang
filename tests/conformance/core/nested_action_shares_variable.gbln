@@ -6,13 +6,13 @@ act a()
         return n
     xx
     n |= 5
-    say(get())
+    :say(get())
     act bump()
         n |= n + 10
     xx
     bump()
-    say(n)
-    say(get())
+    :say(n)
+    :say(get())
 xx
 a()
 act total_of(xs)
@@ -25,7 +25,7 @@ act total_of(xs)
     xx
     return total
 xx
-say(total_of([1, 2, 3]))
+:say(total_of([1, 2, 3]))
 act grow()
     items | []
     act more(v)
@@ -34,7 +34,7 @@ act grow()
     more(1)
     more(2)
     :put_last!(items, 3)
-    say(items)
+    :say(items)
 xx
 grow()
 act early()
@@ -43,7 +43,7 @@ act early()
         n |= n + 1
         return 100
     xx
-    say(n + step())
-    say(n)
+    :say(n + step())
+    :say(n)
 xx
 early()

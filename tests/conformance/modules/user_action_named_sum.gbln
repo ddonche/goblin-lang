@@ -2,4 +2,4 @@
 act sum(x)
     return "user-sum"
 xx
-say(sum([1, 2]))
+:say(sum([1, 2]))

@@ -7,20 +7,20 @@ act small(x)
 xx
 xs | [1, 2, 3, 4]
 lim | 2
-say(:get_where(xs, it > lim))
-say(:delete_where(xs, it % 2 == 0))
-say(:update_where(xs, it == 3, 30))
-say(:reap_where(xs, it < 3))
+:say(:get_where(xs, it > lim))
+:say(:delete_where(xs, it % 2 == 0))
+:say(:update_where(xs, it == 3, 30))
+:say(:reap_where(xs, it < 3))
 :update_where!(xs, it == 1, 10)
-say(xs)
-say(:get_where({"a": 1, "b": 5}, it > 2))
-say(:get_where(["a-b", "c"], "a-b"))
-say(:get_where(xs, "small"))
+:say(xs)
+:say(:get_where({"a": 1, "b": 5}, it > 2))
+:say(:get_where(["a-b", "c"], "a-b"))
+:say(:get_where(xs, "small"))
 /// Code without `it` is a value, as before: here, the action's name a variable holds.
 check | "small"
-say(:get_where(xs, check))
+:say(:get_where(xs, check))
 attempt
     :get_where(xs, it + 1)
 rescue e
-    say(:has("{e}", "R0321"))
+    :say(:has("{e}", "R0321"))
 xx

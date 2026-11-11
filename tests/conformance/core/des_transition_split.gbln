@@ -33,19 +33,19 @@ act holder(x)
     return o >> name
 xx
 act report(old, a, b)
-    say("split: {old >> name} ({old >> gold}) -> {a >> name} ({a >> gold}), {b >> name} ({b >> gold})")
-    say("old still listed: {:len(:objects(\"Kingdom\", it >> gold == 200))}")
-    say("lands of the first: {:len(:objects(\"Land\", it >> owner == a))}")
+    :say("split: {old >> name} ({old >> gold}) -> {a >> name} ({a >> gold}), {b >> name} ({b >> gold})")
+    :say("old still listed: {:len(:objects(\"Kingdom\", it >> gold == 200))}")
+    :say("lands of the first: {:len(:objects(\"Land\", it >> owner == a))}")
 xx
 world <> Kingdom | name: "World"
 k <> Kingdom | name: "Varn", gold: 200, owner: world
 :overlay!(k, plague)
 a <> Land | name: "a", owner: k
 b <> Land | name: "b", owner: k
-tick()
+:tick()
 repeat :objects("Kingdom") as x
-    say("{x >> name} gold {x >> gold} unity {x >> unity} owner {holder(x)} overlays {:len(:overlays_of(x))}")
+    :say("{x >> name} gold {x >> gold} unity {x >> unity} owner {holder(x)} overlays {:len(:overlays_of(x))}")
 xx
 repeat :objects("Land") as l
-    say("{l >> name} owner {l >> owner >> name}")
+    :say("{l >> name} owner {l >> owner >> name}")
 xx

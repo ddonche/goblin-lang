@@ -19,11 +19,11 @@ xx
 a <> Town | name: "a"
 b <> Town | name: "b"
 :overlay!(a, festival)
-say("{a >> calm} {:field(a, "calm")}")
-say("{a >> gold} {:field(a, "gold")}")
+:say("{a >> calm} {:field(a, "calm")}")
+:say("{a >> gold} {:field(a, "gold")}")
 a >> gold |= a >> gold + 1
-say("{a >> gold} {:field(a, "gold")}")
+:say("{a >> gold} {:field(a, "gold")}")
 b >> calm |= :field(a, "calm")
-say(b >> calm)
+:say(b >> calm)
 :detach!(a, festival)
-say("{a >> calm} {a >> gold}")
+:say("{a >> calm} {a >> gold}")

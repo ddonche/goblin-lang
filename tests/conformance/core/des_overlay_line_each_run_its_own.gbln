@@ -1,0 +1,27 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// An `overlay` line makes a new overlay each time it runs, as `<>` makes a
+/// new object: the first run makes the one it names, each later run a kind
+/// of its own with no parent, named after its family (`faith_1`). In the
+/// code that ran the line, the name means the one just made.
+<>Land |
+    name: ..
+xx
+<^>Faith |
+    hosts: Land
+xx
+act found(l, z)
+    overlay new_faith <^> Faith
+        zeal: z
+    xx
+    :overlay!(l, new_faith, .2)
+    send new_faith
+xx
+a <> Land | name: "Varn"
+b <> Land | name: "Oss"
+c <> Land | name: "Tal"
+:say(found(a, 1))
+:say(found(b, 2))
+:say(found(c, 3))
+repeat :overlays() as o
+    :say("{o >> overlay_name} on {o >> host_var}: zeal {o >> zeal}, parents {o >> parents}")
+xx

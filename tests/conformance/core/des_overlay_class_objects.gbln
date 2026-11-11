@@ -1,0 +1,37 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// An overlay is an object: `:objects(Government)` gives the overlays of
+/// an overlay class, declared or made while the program runs, in the
+/// order they were made, each with its `overlay_name`, `parents`, the
+/// `intensity` a new copy starts at and its fields (a member takes the
+/// class's fields it doesn't write). A condition picks among them.
+<>Realm |
+    rank: 1
+xx
+<^>Government |
+    hosts: Realm
+    dup: replace
+    rule: "none"
+    term: 4
+xx
+overlay chiefdom <^> Government
+    rule: "chief"
+xx
+overlay council <^> Government
+    term: 10
+xx
+repeat :objects(Government) as g
+    :say("{g >> overlay_name}: rule {g >> rule}, term {g >> term}, parents {g >> parents}")
+xx
+:say(:len(:objects(Government, it >> term > 5)))
+act found(r)
+    overlay junta <^> Government
+        rule: "army"
+    xx
+    :overlay!(r, junta)
+xx
+r <> Realm | rank: 1
+found(r)
+found(r)
+repeat :objects(Government, it >> rule == "army") as g
+    :say(g >> overlay_name)
+xx

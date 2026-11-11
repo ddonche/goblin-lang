@@ -2,6 +2,6 @@
 x | 1
 if true
     x [= 2
-    say(x)
+    :say(x)
 xx
-say(x)
+:say(x)

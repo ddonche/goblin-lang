@@ -1,5 +1,5 @@
 /// `>=` and `<=` compare strings
-say("b" >= "a")
-say("a" >= "a")
-say("a" >= "b")
-say("a" <= "b")
+:say("b" >= "a")
+:say("a" >= "a")
+:say("a" >= "b")
+:say("a" <= "b")

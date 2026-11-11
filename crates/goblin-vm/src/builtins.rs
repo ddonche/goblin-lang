@@ -12,6 +12,15 @@ use crate::exec::resolve_box_template_vm;
 use crate::session::Session;
 use crate::value::{BuiltinId, CollectionValue, FormatSpec, GoblinDateKind, GoblinDateTime, Value};
 
+/// The help for a field an object doesn't have.
+pub(crate) fn no_field_help(name: &str) -> &'static str {
+    if name == "order" {
+        "`order` is never a field: in a class, `order:` sets the order its objects make their decisions in; name the field another way (`rank`, `standing`)"
+    } else {
+        "check the object's fields or correct the field name"
+    }
+}
+
 /// Whether a value names a stored object (a collection holds objects as
 /// ids) or holds an object whose field names one.
 fn holds_entry_fields(v: &Value) -> bool {
@@ -113,7 +122,7 @@ pub fn call_builtin(
     dispatch(id, args, session)
 }
 
-fn is_math(id: BuiltinId) -> bool {
+pub(crate) fn is_math(id: BuiltinId) -> bool {
     matches!(id,
         BuiltinId::Abs | BuiltinId::Min | BuiltinId::Max | BuiltinId::Avg | BuiltinId::Sum
         | BuiltinId::Floor | BuiltinId::Ceil | BuiltinId::Round | BuiltinId::Sqrt
@@ -2170,6 +2179,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 other => return Err(GoblinError::type_error("number", other.type_name(), "rand_seed")),
             };
             session.rng_state = ((n.to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1;
+            session.event_rng = crate::events::event_seed(session.rng_state);
             Ok(Value::Unit)
         }
         BuiltinId::Roll => {
@@ -2752,8 +2762,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 (Value::Int(_) | Value::Float(_) | Value::Big(_) | Value::Pct(_), "int" | "float" | "big" | "pct") => true,
                 (Value::Str(s), "int") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<i64>().is_ok() }
                 (Value::Str(s), "float") => { let c: String = s.trim().chars().filter(|&c| c != '_').collect(); c.parse::<f64>().is_ok() }
-                // An object is of its class: `:is_type(r, "Rabbit")`.
-                (Value::Object(o), name) => &*o.class_name == name,
+                // An object is of its class: `:is_type(r, "Rabbit")`. An
+                // overlay's record (from `:overlays(host)`) is of its kind
+                // and of the overlay class the kind belongs to.
+                (Value::Object(o), name) => &*o.class_name == name
+                    || (o.uuid.starts_with(crate::vm::OVERLAY_RECORD)
+                        && session.overlay_defs.get(&*o.class_name).and_then(|d| d.class.as_deref()) == Some(name)),
                 (Value::Ref(u), name) => matches!(session.object_store.get(u),
                     Some(Value::Object(o)) if &*o.class_name == name),
                 _ => false,
@@ -3762,6 +3776,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             }
             Ok(Value::Nil)
         }
+        BuiltinId::Event => crate::events::event(args, session),
         BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
@@ -3946,7 +3961,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             match o.fields.stored(&name, o.trait_fields.contains(name.as_ref() as &str)) {
                 Some(v) => Ok(v),
-                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))),
+                None => Err(GoblinError::Runtime(format!("R0403: no-such-field: no field '{name}'; {}", no_field_help(&name)))),
             }
         }
         BuiltinId::OverlaysOf => {

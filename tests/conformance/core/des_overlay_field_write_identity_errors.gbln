@@ -1,0 +1,12 @@
+/// A copy's name, host and age are the runtime's: writing one is R1249.
+<>Land |
+    name: ..
+xx
+overlay sun
+    hosts: Land
+xx
+a <> Land | name: "Varn"
+:overlay!(a, sun)
+repeat :overlays(a) as o
+    o >> age |= 3
+xx

@@ -10,5 +10,5 @@ overlay stunned
 xx
 rome <> Polity | stability: .8
 :overlay!(rome, stunned, .5)
-say(:len(:overlays(intensity > .3)))
-say(:len(:overlays(overlay_name == "plague")))
+:say(:len(:overlays(intensity > .3)))
+:say(:len(:overlays(overlay_name == "plague")))

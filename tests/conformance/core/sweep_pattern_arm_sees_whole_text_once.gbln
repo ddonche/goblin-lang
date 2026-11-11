@@ -7,5 +7,5 @@ sweep text
         hits += 1
         :update!(whole, self)
 xx
-say(hits)
-say(whole)
+:say(hits)
+:say(whole)

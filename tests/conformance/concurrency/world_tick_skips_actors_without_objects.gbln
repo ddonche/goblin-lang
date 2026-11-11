@@ -24,18 +24,18 @@ xx
 region | :actor(make_region(), count)
 helper | :actor({"things": [], "ticks": 0}, count)
 repeat 3
-    tick()
+    :tick()
 xx
-say(:await(:request(region, {"ask": 1})){"ticks"})
-say(:await(:request(helper, {"ask": 1})){"ticks"})
+:say(:await(:request(region, {"ask": 1})){"ticks"})
+:say(:await(:request(helper, {"ask": 1})){"ticks"})
 u <> Thing | n: 100
 :post(helper, u)
 repeat 2
-    tick()
+    :tick()
 xx
-say(:await(:request(helper, {"ask": 1})){"ticks"})
+:say(:await(:request(helper, {"ask": 1})){"ticks"})
 ns | []
 repeat :objects(Thing)
     :put_last!(ns, it >> n)
 xx
-say(:sort(ns))
+:say(:sort(ns))

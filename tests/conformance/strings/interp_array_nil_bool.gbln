@@ -1,6 +1,6 @@
 a | [1, "s", nil]
 n | nil
 b | true
-say("{a}")
-say("[{n}]")
-say("{b}")
+:say("{a}")
+:say("[{n}]")
+:say("{b}")

@@ -1,0 +1,51 @@
+/// known-gap: interp has no link blocks or :link! (new DES syntax); the interpreter is being retired
+/// A decision's `where` and score may call actions and math builtins: an
+/// action that only reads (one with `??` in it too) gives the same answer
+/// as it would on the full VM, an action that rolls dice still rolls, and
+/// `:link_score(self, target, ...)` picks the linked targets.
+<>Town |
+    name: ..
+    goods: 0
+    sent: ..
+    decision trade
+        targets: Town where :link_score(self, target, "road") and short(target) > 0.0
+        score => :min(@goods - target >> goods, 4) + bonus(target) + :clamp(lucky(1), 0, 0)
+    xx
+    judge_all
+        trade: self.give(trade >> target, trade >> score)
+    xx
+    act give(t, s)
+        @goods |= @goods - 1
+        t >> goods |= t >> goods + 1
+        @sent |= "{@sent}{t >> name}{s} "
+    xx
+xx
+link road
+    hosts: Town
+    range: bool
+xx
+act short(t)
+    return 10.0 - :float(t >> goods)
+xx
+act bonus(t)
+    return :overlay_strength("busy", t) ?? 0.5
+xx
+act lucky(n)
+    return (pick 1 from 0...3) * n
+xx
+towns | []
+repeat ["a", "b", "c", "d"] as n
+    t <> Town | name: n, goods: 10 - 3 * idx
+    :put_last!(towns, t)
+xx
+:link!(towns[0], towns[1], road, 1)
+:link!(towns[0], towns[3], road, 1)
+:link!(towns[1], towns[2], road, 1)
+:link!(towns[2], towns[3], road, 1)
+:rand_seed(7)
+repeat 3
+    :tick()
+xx
+repeat :objects(Town) as t
+    :say("{t >> name}: {t >> goods} goods, gave to {t >> sent}")
+xx

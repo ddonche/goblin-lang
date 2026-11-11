@@ -12,23 +12,23 @@ act run()
     y | x
     x |= bump(x)
     x |= bump(x)
-    say("{x} {y}")
+    :say("{x} {y}")
     attempt
         x |= boom(x)
     rescue e
-        say("failed")
+        :say("failed")
     xx
-    say(x)
+    :say(x)
     z | {"n": 5}
     act peek()
         return z{"n"}
     xx
     z |= bump(z)
-    say(z)
-    say(peek())
+    :say(z)
+    :say(peek())
     w | {"n": 7}
     w |= bump(w)
     w |= bump(w)
     return w
 xx
-say(run())
+:say(run())

@@ -1,0 +1,651 @@
+/// Capstone step 5: groups and ideas. An idea (a faith or a creed) is an
+/// overlay on a land: its intensity is how firmly the land's people hold
+/// it. It spreads to bordering land, fades unless it is preached, and
+/// pulls the culture of the realms whose people hold it (its `bends`).
+/// A group is people of a realm who decide: a guild, a sect, a legion, a
+/// club, a gang, a cartel. Every group has the same actions; how likely
+/// each is comes from its traits and state, so a group with no militancy
+/// never stages a coup or rises. The kinds of group are data (`kinds`):
+/// the code reads their fields, never their names. What groups do that
+/// does not change the world is told with `:event`.
+/// The design is in goblin-docs/factions-design.md. The ideas themselves
+/// (Faith, Creed) are in overlays.gbln, which makes new ones: an overlay
+/// class is known only in the file that declares it.
+import overlays as overlays
+
+now | 0
+
+act chance(p)
+    return (pick 1 from 0...9999) < p * 10000.0
+xx
+
+act past(v, at)
+    return :clamp((v - at) / (1.0 - at), 0.0, 1.0)
+xx
+
+/// How far `v` is short of `at` (0 to 1).
+act under(v, at)
+    if at <= 0.0 => send 0.0
+    return :clamp(1.0 - v / at, 0.0, 1.0)
+xx
+
+act jitter(v)
+    return :clamp(v + ((pick 1 from 0...20) - 10) / 100.0, 0.0, 1.0)
+xx
+
+/// What the run's groups did, and how they came and went (printed at the end).
+tally | {"formed": 0, "split": 0, "merged": 0, "ended": 0, "give_gold": 0, "withhold": 0, "give_men": 0, "coup": 0,
+    "preach": 0, "found": 0, "press": 0, "rise": 0, "crush": 0, "concede": 0, "patronize": 0, "coups_won": 0}
+
+act count(k)
+    :update!(tally{k}, tally{k} + 1)
+xx
+
+traits | overlays::traits
+
+/// The kinds of group a realm can have. Each is data: `from`, the realm
+/// field it grows from (read as `realm >> {from}`; "idea" for those who
+/// hold an idea), against `scale` (per 100 people when `per_head`);
+/// `size`, the share of the realm's people it can hold; its traits;
+/// what it wants of its realm; and how much gold its members earn.
+kinds | [
+    {"word": "faithful", "from": "idea", "scale": 1.0, "per_head": false, "size": .5, "earns": .2,
+        "loyalty": .7, "ambition": .2, "militancy": .1, "zeal": .6, "greed": .1, "unity": .6, "wants": {}},
+    {"word": "holy order", "from": "spirituality", "scale": 1.0, "per_head": false, "size": .02, "earns": .5,
+        "loyalty": .6, "ambition": .4, "militancy": .3, "zeal": .9, "greed": .1, "unity": .8, "wants": {"spirituality": .1, "tolerance": -.1}},
+    {"word": "merchant houses", "from": "commerce", "scale": 3.0, "per_head": false, "size": .03, "earns": 3.0,
+        "loyalty": .6, "ambition": .5, "militancy": .05, "zeal": .1, "greed": .7, "unity": .5, "wants": {"openness": .1, "centralization": -.1}},
+    {"word": "guilds", "from": "cities", "scale": 4.0, "per_head": false, "size": .05, "earns": 1.5,
+        "loyalty": .7, "ambition": .3, "militancy": .05, "zeal": .2, "greed": .5, "unity": .6, "wants": {"tradition": .1, "stability": .1}},
+    {"word": "bankers", "from": "gold", "scale": 20.0, "per_head": true, "size": .005, "earns": 8.0,
+        "loyalty": .5, "ambition": .6, "militancy": 0.0, "zeal": 0.0, "greed": .9, "unity": .5, "wants": {"stability": .1, "legitimacy": .1}},
+    {"word": "officers", "from": "army", "scale": 5.0, "per_head": true, "size": .01, "earns": 1.0,
+        "loyalty": .6, "ambition": .5, "militancy": .9, "zeal": .1, "greed": .3, "unity": .7, "wants": {"aggression": .1, "discipline": .1}},
+    {"word": "free companies", "from": "army", "scale": 8.0, "per_head": true, "size": .01, "earns": 2.0,
+        "loyalty": .2, "ambition": .4, "militancy": .9, "zeal": 0.0, "greed": .9, "unity": .5, "wants": {"aggression": .1}},
+    {"word": "great families", "from": "lands", "scale": 12.0, "per_head": false, "size": .01, "earns": 4.0,
+        "loyalty": .6, "ambition": .6, "militancy": .4, "zeal": .1, "greed": .5, "unity": .4, "wants": {"tradition": .1, "centralization": -.1}},
+    {"word": "peasants' league", "from": "fear", "scale": 1.0, "per_head": false, "size": .3, "earns": .1,
+        "loyalty": .6, "ambition": .2, "militancy": .3, "zeal": .3, "greed": .2, "unity": .3, "wants": {"cooperation": .1, "fear": -.1}},
+    {"word": "scholars", "from": "learning", "scale": .5, "per_head": false, "size": .005, "earns": .5,
+        "loyalty": .6, "ambition": .3, "militancy": 0.0, "zeal": .5, "greed": .1, "unity": .5, "wants": {"learning": .1, "tolerance": .1}},
+    {"word": "brotherhood", "from": "openness", "scale": 1.0, "per_head": false, "size": .005, "earns": 2.0,
+        "loyalty": .4, "ambition": .7, "militancy": .2, "zeal": .5, "greed": .3, "unity": .9, "wants": {"openness": .1, "tradition": -.1}},
+    {"word": "outlaws", "from": "fear", "scale": 1.0, "per_head": false, "size": .005, "earns": 1.0,
+        "loyalty": .05, "ambition": .4, "militancy": .7, "zeal": 0.0, "greed": .9, "unity": .5, "wants": {"centralization": -.1}},
+    {"word": "smugglers' ring", "from": "commerce", "scale": 3.0, "per_head": false, "size": .005, "earns": 4.0,
+        "loyalty": .1, "ambition": .6, "militancy": .4, "zeal": 0.0, "greed": 1.0, "unity": .6, "wants": {"centralization": -.1, "openness": .1}},
+    {"word": "benevolent club", "from": "gold", "scale": 20.0, "per_head": true, "size": .005, "earns": 1.0,
+        "loyalty": .9, "ambition": .1, "militancy": 0.0, "zeal": .2, "greed": .1, "unity": .7, "wants": {"cooperation": .1, "honor": .1}}
+]
+
+/// The year's actions: the same for every group, each weighed by the
+/// group's traits and state. A trait or holding at 0 leaves an action out.
+<>Group |
+    name: ..
+    realm: nil
+    word: ..
+    from: ..
+    scale: 1.0
+    per_head: false
+    size: .01
+    earns: 1.0
+    ~loyalty: .5
+    ~ambition: .5
+    ~militancy: .5
+    ~zeal: .5
+    ~greed: .5
+    ~unity: .5
+    /// Its traits when it formed: each drifts back toward its own.
+    born: {}
+    /// Its anger at the realm (0 to 1): rises only from what is done to
+    /// it, and fades each year.
+    ~grievance: 0.0
+    /// The realm's anger at it, from its defiance (fades each year).
+    ~defied: 0.0
+    members: 0.0
+    gold: 0.0
+    arms: 0.0
+    /// Its members against the realm's people, and how much of the
+    /// realm's people hold its idea (both set each year).
+    share: 0.0
+    held: 0.0
+    /// What it can bring to bear (`power`), how far its realm is from what
+    /// it wants (`unmet`) and how weak its realm's rule is (`weak`), each
+    /// 0 to 1, worked out each year.
+    power: 0.0
+    unmet: 0.0
+    weak: 0.0
+    /// How hard the times are in its realm (the realm's discontent, 0 to 1).
+    hard: 0.0
+    /// The idea it holds, by kind name (`..` for none), and the traits
+    /// it pushes its realm toward.
+    idea: ..
+    wants: {}
+    founded: 0
+    /// The year it last plotted a coup (-1 for never).
+    plotted: -1
+    phase: inside
+        decision give_gold
+            targets: uses govern where target == @realm and @gold >= 1.0
+            score => @loyalty * (1.0 - @grievance) * :min(@gold / 50.0, 1.0) * (.2 + .8 * :max(:min(target >> wars, 1), under(target >> gold, (target >> people) * .02 + 1.0)))
+        xx
+        decision withhold
+            targets: uses govern where target == @realm and target >> gold > 0.0
+            score => @greed * @power * (@grievance + .5 * @hard + .2 * @weak)
+        xx
+        decision give_men
+            targets: uses govern where target == @realm and @arms >= 1.0
+            score => @loyalty * (1.0 - @grievance) * :min(@arms / 50.0, 1.0) * (.3 + .7 * :min(target >> wars, 1))
+        xx
+        decision coup
+            targets: uses govern where target == @realm and target >> rank >= 3 and @arms >= 1.0
+            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1))
+        xx
+        decision preach
+            targets: uses govern where target == @realm and @idea != ..
+            score => @zeal * @power * (1.0 - @held)
+        xx
+        decision found
+            targets: uses govern where target == @realm and @idea == .. and !(target >> capital).nix?
+            score => past(@zeal, .4) * @ambition * (.3 + .7 * @power) * .5
+        xx
+        decision press
+            targets: uses govern where target == @realm and :len(@wants) > 0
+            score => @ambition * @unmet * @power
+        xx
+        decision rise
+            targets: uses govern where target == @realm and target >> lands >= 3
+            score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power
+        xx
+        judge
+            true:
+                names   | [""]
+                weights | [1.0 - @power * .5]
+                repeat {"give_gold": give_gold, "withhold": withhold, "give_men": give_men, "coup": coup, "preach": preach, "found": found, "press": press, "rise": rise} as k, d
+                    if d.nix? or (d >> score) <= 0 => skip
+                    :put_last!(names, k)
+                    :put_last!(weights, d >> score)
+                xx
+                if :len(names) > 1
+                    name | :sample_weighted({"src": names, "weights": weights})[0]
+                    judge
+                        name == "give_gold": give_gold(self, give_gold >> target)
+                        name == "withhold": withhold(self, withhold >> target)
+                        name == "give_men": give_men(self, give_men >> target)
+                        name == "coup": coup(self, coup >> target)
+                        name == "preach": preach(self, preach >> target)
+                        name == "found": found(self, found >> target)
+                        name == "press": press(self, press >> target)
+                        name == "rise": rise(self, rise >> target)
+                    xx
+                xx
+        xx
+    xx
+    /// A schism: a group grown large loses its unity and splits (a small
+    /// one does not); the splinter takes part of its members, angrier.
+    transition fracture where chance(.05 * past(1.0 - @unity, .5) * past(@share, .05))
+        fragment:
+            members: @members * .4
+            gold: @gold * .4
+            unity: :min(@unity + .3, 1.0)
+            grievance: :min(@grievance + .1, 1.0)
+            plotted: -1
+            founded: now
+        xx
+        carries:
+            members: @members * .6
+            gold: @gold * .6
+            unity: :min(@unity + .2, 1.0)
+        xx
+    xx
+    on fracture => split_off(self, fragment)
+    /// Two groups of one kind and one idea in one realm, one of them
+    /// small, become one.
+    transition merge
+        targets: Group where (target >> realm) == @realm and (target >> word) == @word and (target >> idea) == @idea and (@share < .02 or (target >> share) < .02) and chance(.05 * @unity)
+        carries:
+            members: @members + (target >> members)
+            gold: @gold + (target >> gold)
+        xx
+    xx
+    on merge => joined(self, target, merged)
+    /// A group with no one left, or no realm, is gone.
+    transition erase where @members < 1.0 or (@realm).nix?
+    on erase => ended(self)
+xx
+
+/// What a group can bring to bear: how much of the realm it holds and
+/// how united it is.
+act power(g)
+    return :min((g >> share) * 5.0, 1.0) * (g >> unity)
+xx
+
+/// How weak the realm's rule is (0 to 1).
+act weakness(p)
+    return ((1.0 - p >> legitimacy) + (1.0 - p >> stability)) / 2.0
+xx
+
+/// How far the realm is from what the group wants (0 to 1).
+act gap(g, p)
+    n | 0
+    far | 0.0
+    repeat g >> wants as t, v
+        n |= n + 1
+        if v > 0.0
+            far |= far + 1.0 - p >> {t}
+        else
+            far |= far + p >> {t}
+        xx
+    xx
+    if n == 0 => send 0.0
+    return far / n
+xx
+
+/// How strong the field a kind grows from is in realm `p` (0 to 1).
+act strength(k, p)
+    v | p >> {k{"from"}}
+    s | k{"scale"}
+    if k{"per_head"} => s |= s * (p >> people / 100.0 + 1.0)
+    return :clamp(v / s, 0.0, 1.0)
+xx
+
+/// A new group of kind `k` in realm `p`.
+act form(k, p, idea, wants, s)
+    born | {}
+    repeat ["loyalty", "ambition", "militancy", "zeal", "greed", "unity"] as t
+        :update!(born{t}, jitter(k{t}))
+    xx
+    g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: now
+    count("formed")
+    :event(g, "formed", p, {"they began to meet": 2.0, "a charter was written": .1 + born{"loyalty"}, "an oath was sworn": .1 + born{"unity"}})
+xx
+
+/// Each year, before the inside phase: what each realm's people hold,
+/// the pull of their ideas on its culture (`bends`, read by
+/// polity::drift_traits), each group's members, gold, arms, traits and
+/// grievance, and new groups, by chance.
+act account(year, lands, realms)
+    now |= year
+    /// Each realm's people, and how much of them hold each idea.
+    people | {}
+    held   | {}
+    bends  | {}
+    repeat lands as l
+        p | l >> owner ?? => skip
+        k | p >> name
+        :update!(people{k}, (people{k} ?? 0.0) + l >> people)
+    xx
+    repeat lands as l
+        p | l >> owner ?? => skip
+        k | p >> name
+        total | people{k} ?? 0.0
+        if total <= 0.0 => skip
+        hs | held{k} ?? {}
+        bs | bends{k} ?? {}
+        repeat :overlays(l) as o
+            if !(:is_type(o, "Faith") or :is_type(o, "Creed")) => skip
+            w | (l >> people) / total * (o >> intensity)
+            n | o >> overlay_name
+            :update!(hs{n}, (hs{n} ?? 0.0) + w)
+            repeat o >> bends as t, v
+                :update!(bs{t}, (bs{t} ?? 0.0) + v * w)
+            xx
+        xx
+        :update!(held{k}, hs)
+        :update!(bends{k}, bs)
+    xx
+    /// The groups of each realm.
+    of | {}
+    repeat :objects(Group) as g
+        p | g >> realm ?? => skip
+        k | p >> name
+        gs | of{k} ?? []
+        :put_last!(gs, g)
+        :update!(of{k}, gs)
+    xx
+    repeat realms as p
+        k  | p >> name
+        hs | held{k} ?? {}
+        p >> bends |= bends{k} ?? {}
+        p >> plot |= 0.0
+        p >> unrest |= 0.0
+        p >> clergy |= 0.0
+        gs | of{k} ?? []
+        taken | 0.0
+        top   | 0.0
+        /// Groups of one kind and one idea share the people they draw on.
+        alike | {}
+        repeat gs as g
+            :update!(alike{"{g >> word}|{g >> idea}"}, (alike{"{g >> word}|{g >> idea}"} ?? 0) + 1)
+        xx
+        repeat gs as g
+            standing(g, p, hs, alike{"{g >> word}|{g >> idea}"} ?? 1)
+            taken |= taken + g >> share
+            top |= :max(top, power(g))
+            p >> clergy |= :max(p >> clergy, (g >> power) * (g >> zeal))
+            /// Plotters who took power: they get what they wanted.
+            if g >> plotted == year - 1 and p >> form_years == 0 => won_coup(g, p)
+        xx
+        /// New groups: likelier the stronger what they grow from, rarer
+        /// as the realm's people are taken up, and likelier against one
+        /// group grown strong.
+        room | :clamp(1.0 - taken, 0.0, 1.0)
+        repeat kinds as kd
+            if kd{"from"} == "idea"
+                repeat hs as n, s
+                    if have(gs, kd{"word"}, n) or (p >> people) * s * kd{"size"} < 10.0 => skip
+                    if !chance(past(s, .05) * .05 * room * (1.0 + top)) => skip
+                    form(kd, p, n, wants_of(n), s)
+                xx
+            else
+                if have(gs, kd{"word"}, ..) => skip
+                s | strength(kd, p)
+                if (p >> people) * s * kd{"size"} < 10.0 => skip
+                if !chance(past(s, .2) * .02 * room * (1.0 + top)) => skip
+                form(kd, p, .., kd{"wants"}, s)
+            xx
+        xx
+    xx
+xx
+
+/// Whether one of `gs` is of kind `word` holding idea `n`.
+act have(gs, word, n)
+    repeat gs as g
+        if g >> word == word and g >> idea == n => send true
+    xx
+    return false
+xx
+
+/// What an idea teaches, read from its kind record.
+act wants_of(n)
+    repeat :objects(Faith) as o
+        if o >> overlay_name == n => send o >> bends
+    xx
+    repeat :objects(Creed) as o
+        if o >> overlay_name == n => send o >> bends
+    xx
+    return {}
+xx
+
+/// A group's year: members follow what it grows from (the people who
+/// hold its idea), shared with the `alike` groups of its kind and idea; gold from its members, arms from its militancy;
+/// grievance rises when the realm is far from what it wants and fades;
+/// traits drift back toward its own; a large group is less united.
+act standing(g, p, hs, alike)
+    people | p >> people
+    s | 0.0
+    if g >> idea != ..
+        s |= hs{g >> idea} ?? 0.0
+    else
+        v | p >> {g >> from}
+        sc | g >> scale
+        if g >> per_head => sc |= sc * (people / 100.0 + 1.0)
+        s |= :clamp(v / sc, 0.0, 1.0)
+    xx
+    want | people * s * (g >> size) / alike
+    g >> members |= g >> members + (want - g >> members) * .1
+    g >> gold |= (g >> gold) * .95 + (g >> members) / 100.0 * (g >> earns)
+    g >> arms |= (g >> members) * (g >> militancy) * .2
+    if people > 0.0
+        g >> share |= :min((g >> members) / people, 1.0)
+    else
+        g >> share |= 0.0
+    xx
+    g >> held |= hs{g >> idea} ?? 0.0
+    hard | :overlay_strength("discontent", p) ?? 0.0
+    g >> grievance |= (g >> grievance) * .95 + :max(gap(g, p) - .5, 0.0) * .02 + hard * .03
+    g >> hard |= hard
+    g >> defied |= (g >> defied) * .9
+    b | g >> born
+    repeat ["loyalty", "ambition", "militancy", "zeal", "greed"] as t
+        g >> {t} |= g >> {t} + ((b{t} ?? .5) - g >> {t}) * .02
+    xx
+    u | :clamp((b{"unity"} ?? .5) - (g >> share), 0.0, 1.0)
+    g >> unity |= g >> unity + (u - g >> unity) * .05
+    g >> power |= power(g)
+    g >> unmet |= gap(g, p)
+    g >> weak |= weakness(p)
+xx
+
+/// give_gold: half its gold to the realm, whose rule is surer.
+act give_gold(g, p)
+    amt | (g >> gold) * .5
+    g >> gold |= g >> gold - amt
+    p >> gold |= p >> gold + amt
+    p >> legitimacy |= p >> legitimacy + .01 * power(g)
+    count("give_gold")
+    :event(g, "gave", p, {"paid for a temple": .1 + g >> zeal, "fed the poor": .1 + g >> loyalty, "lent to the crown": .1 + g >> greed, "built a school": .1 + p >> learning})
+xx
+
+/// withhold: it keeps its part of the taxes; the realm is poorer and
+/// angrier at it.
+act withhold(g, p)
+    kept | (p >> gold) * (g >> share) * .3
+    p >> gold |= p >> gold - kept
+    g >> gold |= g >> gold + kept
+    g >> grievance |= g >> grievance - .05
+    g >> defied |= g >> defied + .2
+    count("withhold")
+    :event(g, "withheld", p, {"refused the tax": .1 + g >> loyalty, "smuggled past the customs": .1 + g >> greed, "bribed the collectors": .1 + g >> ambition})
+xx
+
+/// give_men: its armed members join the realm's army.
+act give_men(g, p)
+    p >> army |= p >> army + (g >> arms) * .5
+    p >> legitimacy |= p >> legitimacy + .005 * power(g)
+    count("give_men")
+xx
+
+/// coup: it makes a coup likelier this year (government::odds reads
+/// `plot`); if the form falls next settle, they took power.
+act coup(g, p)
+    /// A coup is made by the men under arms, not by numbers: plotters who
+    /// hold a twentieth of the realm's soldiers (the guard) can do it.
+    p >> plot |= :max(p >> plot, :min((g >> arms) / ((p >> army) * .05 + 1.0), 1.0) * (g >> militancy))
+    g >> plotted |= now
+    count("coup")
+    :event(g, "plotted", p, {"met in secret": 2.0, "weighed the throne": .5 + g >> ambition, "bought the guard": .1 + g >> greed})
+xx
+
+/// The plotters took power: their anger is gone and the realm takes up
+/// what they want.
+act won_coup(g, p)
+    g >> grievance |= 0.0
+    g >> loyalty |= g >> loyalty + .2
+    repeat g >> wants as t, v
+        p >> {"base_{t}"} |= :clamp(p >> {"base_{t}"} + v * .5, 0.0, 1.0)
+    xx
+    count("coups_won")
+    :event(g, "took power", p, "the plotters took the palace")
+xx
+
+/// preach: its idea takes firmer hold on the realm's lands, and may reach
+/// one of its lands that does not hold it yet.
+act preach(g, p)
+    k | g >> idea
+    gain | .03 * (g >> zeal) * (g >> unity)
+    reached | false
+    repeat :objects(Land, it >> owner == p) as l
+        os | :overlays(l, k)
+        if :len(os) > 0
+            repeat os as o
+                o >> intensity |= o >> intensity + gain
+            xx
+        xx
+        if :len(os) == 0 and !reached and chance(gain * 5.0)
+            :overlay!(l, k, .1)
+            reached |= true
+        xx
+    xx
+    count("preach")
+xx
+
+/// found: a new idea, from nothing, at the realm's capital, teaching what
+/// the group wants and something of its own. A faith where the realm is
+/// spiritual, a creed where it is not.
+act found(g, p)
+    c | p >> capital ?? => send nil
+    b | {}
+    repeat g >> wants as t, v
+        :update!(b{t}, v)
+    xx
+    t1 | traits[(pick 1 from 0...14)]
+    :update!(b{t1}, (b{t1} ?? 0.0) + ((pick 1 from 0...30) - 15) / 100.0)
+    name | overlays::found(chance(p >> spirituality), b, g >> name, c)
+    g >> idea |= name
+    g >> wants |= b
+    count("found")
+    :event(g, "founded", p, {"a teacher gathered followers": 2.0, "a prophet came out of the hills": .1 + p >> spirituality, "a book was written that changed minds": .1 + p >> learning})
+xx
+
+/// press: it asks for what it wants; the realm moves a little toward it,
+/// and its other groups resent it a little.
+act press(g, p)
+    pw | power(g)
+    repeat g >> wants as t, v
+        p >> {t} |= p >> {t} + v * pw * .1
+    xx
+    repeat :objects(Group, it >> realm == p and it != g) as o
+        o >> grievance |= o >> grievance + .01 * pw
+    xx
+    count("press")
+    :event(g, "pressed", p, {"petitioned the court": 2.0, "bribed a minister": .1 + g >> greed, "marched to the palace": .1 + g >> militancy})
+xx
+
+/// rise: its people stir; the land where it is strongest may break away.
+act rise(g, p)
+    best | nil
+    most | 0.0
+    repeat :objects(Land, it >> owner == p) as l
+        w | l >> people
+        if g >> idea != ..
+            w |= 0.0
+            repeat :overlays(l, g >> idea) as o
+                w |= (o >> intensity) * (l >> people)
+            xx
+        xx
+        if l != p >> capital and w > most
+            most |= w
+            best |= l
+        xx
+    xx
+    if !best.nix? => p >> rebel |= best
+    p >> unrest |= :max(p >> unrest, power(g) * (g >> militancy) * 2.0)
+    count("rise")
+    :event(g, "rose", p, {"crowds filled the streets": 1.0, "the villages took up arms": .1 + g >> militancy, "the faithful marched": .1 + g >> zeal})
+xx
+
+/// A splinter: a new name, and its own traits a little apart; one with
+/// little loyalty may go abroad, to a bordering realm.
+act split_off(g, n)
+    n >> name |= "the {n >> word} who left {g >> name}"
+    b | {}
+    repeat n >> born as t, v
+        :update!(b{t}, jitter(v))
+    xx
+    n >> born |= b
+    if chance(1.0 - g >> loyalty)
+        p | g >> realm ?? => send nil
+        c | p >> capital ?? => send nil
+        repeat :objects(Land, :link_score(c, it, "border") and !(it >> owner).nix? and it >> owner != p) as l
+            n >> realm |= l >> owner
+            stop
+        xx
+    xx
+    count("split")
+    :event(g, "split", n, {"they quarrelled over who should lead": 2.0, "the young broke with the old": 1.0, "a rival took half the members": .1 + g >> ambition})
+xx
+
+act joined(g, t, m)
+    count("merged")
+    :event(g, "joined", t, "the two became one")
+xx
+
+act ended(g)
+    count("ended")
+    :event(g, "ended", nil, {"faded away": 2.0, "was forgotten": 1.0})
+xx
+
+/// The realm's answers to its groups (the `answers` interface, in
+/// polity.gbln).
+/// crush: fewer of them, angrier, harder and more united; the realm
+/// grows feared, loses some legitimacy, and spends men and gold; its
+/// other groups grow uneasy.
+act crush(p, g)
+    g >> members |= g >> members * .6
+    g >> grievance |= g >> grievance + .2
+    g >> militancy |= g >> militancy + .05
+    g >> unity |= g >> unity + .05
+    g >> defied |= 0.0
+    p >> fear |= p >> fear + .03
+    p >> legitimacy |= p >> legitimacy - .03
+    p >> army |= p >> army * .97
+    p >> gold |= p >> gold * .95
+    overlays::stir(p, .05)
+    repeat :objects(Group, it >> realm == p and it != g) as o
+        o >> grievance |= o >> grievance + .02
+    xx
+    count("crush")
+    :event(p, "crushed", g, {"soldiers broke up the meetings": 2.0, "the leaders were hanged": .1 + p >> fear, "it was outlawed": 1.0})
+xx
+
+/// concede: the realm takes up what it wants for good (its baseline
+/// moves); its anger falls, and its rivals resent it a little.
+act concede(p, g)
+    repeat g >> wants as t, v
+        p >> {"base_{t}"} |= :clamp(p >> {"base_{t}"} + v * .2, 0.0, 1.0)
+    xx
+    g >> grievance |= g >> grievance - .3
+    g >> defied |= 0.0
+    overlays::stir(p, -.05)
+    repeat :objects(Group, it >> realm == p and it != g) as o
+        o >> grievance |= o >> grievance + .02 * power(g)
+    xx
+    count("concede")
+    :event(p, "conceded", g, {"granted a charter": 2.0, "gave them seats at court": .1 + p >> cooperation})
+xx
+
+/// patronize: the realm takes up its idea: firmer on all its lands, and
+/// the realm's rule blessed by it; groups of other ideas resent it.
+act patronize(p, g)
+    k | g >> idea
+    repeat :objects(Land, it >> owner == p) as l
+        repeat :overlays(l, k) as o
+            o >> intensity |= o >> intensity + .03
+        xx
+    xx
+    p >> legitimacy |= p >> legitimacy + .05
+    g >> grievance |= g >> grievance - .2
+    repeat :objects(Group, it >> realm == p and it >> idea != .. and it >> idea != k) as o
+        o >> grievance |= o >> grievance + .05
+    xx
+    count("patronize")
+    :event(p, "patronized", g, {"the court took up the teaching": 1.0, "the ruler built a great temple": .1 + p >> spirituality})
+xx
+
+/// The largest group's share of its realm, groups alive, and the largest
+/// idea's share of all people (for the checks).
+act counts(lands)
+    big | 0.0
+    n | 0
+    repeat :objects(Group) as g
+        n |= n + 1
+        big |= :max(big, g >> share)
+    xx
+    total | 0.0
+    by | {}
+    repeat lands as l
+        total |= total + l >> people
+        repeat :overlays(l) as o
+            if !(:is_type(o, "Faith") or :is_type(o, "Creed")) => skip
+            :update!(by{o >> overlay_name}, (by{o >> overlay_name} ?? 0.0) + (l >> people) * (o >> intensity))
+        xx
+    xx
+    top | 0.0
+    repeat by as k, v
+        top |= :max(top, v)
+    xx
+    if total > 0.0 => top |= top / total
+    return {"groups": n, "largest_group": :round(big, 3), "ideas": :len(by), "largest_idea": :round(top, 3)}
+xx

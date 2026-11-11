@@ -4,5 +4,5 @@
 import _support/modules/method_lim as ml
 lim | 100
 g | ml::make_gauge(5)
-say(ml::run_check(g))
-say(lim)
+:say(ml::run_check(g))
+:say(lim)

@@ -45,6 +45,9 @@ pub struct CallFrame {
     pub loops: Vec<LoopState>,
     /// What this call does with the decision memo (see memo.rs), if one is on.
     pub(crate) memo: Option<crate::memo::Mark>,
+    /// The overlays this call's `overlay` lines made: the name each line
+    /// gives, and the kind it made (see the `OverlayDef` opcode).
+    pub(crate) made_overlays: Option<Box<Vec<(String, String)>>>,
 }
 
 /// One running `repeat`: its kind (see builtins::repeat_plan), what it
@@ -68,7 +71,7 @@ impl CallFrame {
         CallFrame {
             locals,
             locks: None,
-            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None,
+            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None, made_overlays: None,
         }
     }
 
@@ -206,6 +209,8 @@ pub struct Vm {
     inject_frames: Vec<(String, Vec<crate::evalload::Injection>)>,
     /// The files being imported right now, outermost first (real paths).
     import_stack: Vec<String>,
+    /// Source file -> the GLAM it belongs to (`glams/<name>/...`), if any.
+    glam_files: std::collections::HashMap<String, Option<String>>,
 }
 
 /// What `:objects` keeps for one predicate function.
@@ -230,7 +235,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -1454,6 +1459,7 @@ impl Vm {
                     (ns, name)
                 };
                 let val = self.pop_value()?;
+                self.check_glam_box_write(&ns, &name)?;
                 self.session.box_write(&ns, &name, val, tether)?;
             }
 
@@ -1462,11 +1468,12 @@ impl Vm {
                 let (Value::Str(ns), Value::Str(name)) = (&frame.func.constants[ns_idx as usize], &frame.func.constants[name_idx as usize]) else {
                     return Err(GoblinError::Runtime("BoxCheck: constants are not strings".into()));
                 };
-                self.session.box_check(ns, name)?;
+                let (ns, name) = (ns.clone(), name.clone());
+                self.check_glam_box_write(&ns, &name)?;
+                self.session.box_check(&ns, &name)?;
             }
 
             Opcode::SetField(idx) => {
-                let new_val = self.pop_value()?;
                 let key = {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone()
@@ -1475,40 +1482,7 @@ impl Vm {
                     Value::Str(s) => s.clone(),
                     other => return Err(GoblinError::Runtime(format!("SetField: key must be str, got {}", other.type_name()))),
                 };
-                // The object expression leaves a Ref or Object on the stack.
-                let obj_val = self.stack_pop()?;
-                let uuid = match obj_val {
-                    Value::Ref(u) => u,
-                    Value::Object(o) => o.uuid.clone(),
-                    other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
-                };
-                let new_val = entry_of(&self.session, new_val);
-                if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
-                // Mutate directly in object_store (shared reference semantics, like interpreter).
-                self.session.touch(&uuid);
-                if let Some(obj) = self.session.object_store.get_mut(&uuid) {
-                    check_field_write(obj, &field_name)?;
-                    if let Value::Object(ref mut o) = obj {
-                        // A trait field (a 0..1 number at creation) stays in 0..1.
-                        let new_val = if o.trait_fields.contains(field_name.as_str()) {
-                            match new_val {
-                                Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
-                                Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
-                                other => other,
-                            }
-                        } else { new_val };
-                        std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
-                    }
-                    if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
-                    // A region's object, written by the program that runs
-                    // the world: its region gets the new value next tick.
-                    crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
-                } else {
-                    return Err(GoblinError::Runtime(format!(
-                        "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
-                }
-                // Push ref back so caller can chain / store back.
-                self.stack.push(Operand::Val(Value::Ref(uuid)));
+                return self.set_field_named(field_name);
             }
             Opcode::JumpIfLocalSet(slot, offset) => {
                 let frame = self.call_stack.last_mut().unwrap();
@@ -1580,6 +1554,12 @@ impl Vm {
                     other => return Err(GoblinError::Runtime(format!("class instantiation requires a map, got {}", other.type_name()))),
                 };
 
+                // `order:` in a class sets the order its objects decide in;
+                // it is never a field (owner, 2026-11-09).
+                if provided.contains_key("order") && !class.fields.iter().any(|f| f.name == "order") {
+                    return Err(GoblinError::Runtime(format!(
+                        "R0413: order-not-a-field: {class_name} has no field `order`: in a class, `order:` sets the order its objects make their decisions in, so it can't be a field; name the field another way (`rank`, `standing`)")));
+                }
                 let mut fields = crate::value::FieldMap::default();
                 let mut readonly_fields = std::collections::BTreeSet::new();
 
@@ -1703,6 +1683,28 @@ impl Vm {
                 self.call_stack.push(new_frame);
             }
 
+            Opcode::GetMemberDyn => {
+                let name = match self.pop_value()? {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R0414: field-name-not-text: `obj >> {{name}}` takes the field's name as text, got {}", other.type_name()))),
+                };
+                let obj = self.pop_value()?;
+                let v = member_dispatch(&obj, &name, &mut self.session)?;
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::SetFieldDyn => {
+                // Stack: [obj, name, value] -> SetField's [obj, value] with
+                // the name as a constant would be; reuse its code path.
+                let value = self.stack_pop()?;
+                let name = match self.pop_value()? {
+                    Value::Str(s) => s,
+                    other => return Err(GoblinError::Runtime(format!(
+                        "R0414: field-name-not-text: `obj >> {{name}} |= ...` takes the field's name as text, got {}", other.type_name()))),
+                };
+                self.stack.push(Operand::Val(value));
+                return self.set_field_named(name);
+            }
             Opcode::GetMember(idx) => {
                 let key = {
                     let frame = self.call_stack.last().unwrap();
@@ -2584,40 +2586,7 @@ impl Vm {
                     }
                 };
 
-                // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
-                // which import_file sets to the GLAM entry file's parent). Imports in regular
-                // modules always resolve relative to project_root — this matches the interpreter's
-                // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
-                // inside a subdirectory uses paths that include that subdirectory.
-                let in_glam = self.call_stack.last()
-                    .map(|f| f.func.owner_glam.is_some())
-                    .unwrap_or(false);
-                let full_path = if std::path::Path::new(&path_str).is_absolute() {
-                    std::path::PathBuf::from(&path_str)
-                } else if in_glam {
-                    self.session.base_dir.join(&path_str)
-                } else {
-                    self.session.project_root.join(&path_str)
-                };
-
-                // Clear current_glam_ns while processing an `import` statement so that
-                // actions in the imported file are NOT registered under the importing GLAM's
-                // namespace. `import` is a file merge, not a namespace load — if the user
-                // wants namespace registration they should use `use "ns"` instead.
-                // A path with `*` imports every file it matches, in sorted order.
-                let paths = if path_str.contains('*') {
-                    expand_import_pattern(&full_path)?
-                } else {
-                    vec![full_path]
-                };
-                let prev_ns = self.session.current_glam_ns.take();
-                let mut r = Ok(());
-                for p in paths {
-                    r = self.import_file(p, None, std::collections::HashMap::new());
-                    if r.is_err() { break; }
-                }
-                self.session.current_glam_ns = prev_ns;
-                r?;
+                self.import_path(&path_str)?;
             }
 
             Opcode::ImportFileAs(path_idx, ns_idx) => {
@@ -2636,96 +2605,68 @@ impl Vm {
                     (path, ns)
                 };
 
-                if path_str.contains('*') {
+                self.import_path_as(&path_str, &ns)?;
+            }
+
+            Opcode::ImportDynamicAs => {
+                let ns = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    other => return Err(GoblinError::Runtime(format!(
+                        "import: `as {{...}}` must give a name (a string), got {}", other.type_name()))),
+                };
+                let valid = ns.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                    && ns.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !valid {
                     return Err(GoblinError::Runtime(format!(
-                        "import: `{path_str}` is a pattern, which can match many files; `as {ns}` names one module. Import the pattern without `as`.")));
+                        "import: `as {{...}}` gave \"{ns}\", which can't be a module name (letters, digits and _, not starting with a digit)")));
                 }
-                let in_glam = self.call_stack.last()
-                    .map(|f| f.func.owner_glam.is_some())
-                    .unwrap_or(false);
-                let full_path = if std::path::Path::new(&path_str).is_absolute() {
-                    std::path::PathBuf::from(&path_str)
-                } else if in_glam {
-                    self.session.base_dir.join(&path_str)
+                let raw = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    _ => return Err(GoblinError::Runtime("import expression must evaluate to a string".into())),
+                };
+                let path_str = if raw.ends_with(".gbln") || raw.ends_with(".gob") || raw.ends_with(".imports") {
+                    raw.replace('/', std::path::MAIN_SEPARATOR_STR)
                 } else {
-                    self.session.project_root.join(&path_str)
+                    format!("{}.gbln", raw.replace('/', std::path::MAIN_SEPARATOR_STR))
                 };
-
-                // Remember which module this alias names in the importing file
-                // (the first import under an alias wins).
-                let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
-                let prefix = match self.session.import_paths.get(&full_path) {
-                    Some(hit) => hit.clone(),
-                    None => {
-                        let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
-                            let p = full_path.with_extension("gbln");
-                            if p.exists() { p } else { full_path.clone() }
-                        } else { full_path.clone() };
-                        let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
-                        self.session.import_paths.insert(full_path.clone(), prefix.clone());
-                        prefix
-                    }
-                };
-                match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
-                    Some(first) if *first != prefix => {
-                        // A second module under an alias this file already uses:
-                        // keep the first one and skip this import.
-                        eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
-                            path_str, ns, ns, first.trim_end_matches("::"));
-                        return Ok(());
-                    }
-                    Some(_) => {}
-                    None => { std::rc::Rc::make_mut(&mut self.session.module_aliases).insert((importer, ns.to_string()), prefix); }
+                if path_str.ends_with(".imports") {
+                    return Err(GoblinError::Runtime(format!(
+                        "alias is not allowed when importing a .imports manifest file ('{raw}' as '{ns}')")));
                 }
+                self.import_path_as(&path_str, &ns)?;
+            }
 
-                // Run with current_glam_ns = Some(alias) so RegisterAction registers
-                // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
-                let prev_ns = self.session.current_glam_ns.take();
-                self.session.current_glam_ns = Some(ns.to_string());
-                let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
-                self.session.current_glam_ns = prev_ns;
-                r?;
-
-                // Retroactively register qualified names in case the import guard
-                // fired. Only the imported file's own actions get the alias: this
-                // used to take every file under the module's directory, which
-                // gave `alias::` names to sibling files' actions and, run for
-                // every import, was a large part of a request's time.
-                // A request imports the same modules from many files, so this
-                // runs often: look the file up directly (a scan only for paths
-                // written with backslashes), and add only the names missing.
-                let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
-                let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
-                let files = &self.session.action_file_map;
-                let list = targets.iter().find_map(|t| files.get(t.as_str()).or_else(|| {
-                    files.iter()
-                        .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
-                        .map(|(_, pairs)| pairs)
-                })).or_else(|| {
-                    // The file ran first under another spelling (`./a.gbln`,
-                    // `x/../a.gbln`): imports run a file once by its real path.
-                    let real = |p: &std::path::Path| p.canonicalize().ok();
-                    let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
-                    files.iter()
-                        .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
-                        .map(|(_, pairs)| pairs)
-                });
-                if let Some(list) = list {
-                    let mut qualified = String::new();
-                    let mut missing = Vec::new();
-                    for (bare_name, val) in list {
-                        qualified.clear();
-                        qualified.push_str(&ns);
-                        qualified.push_str("::");
-                        qualified.push_str(bare_name);
-                        if !self.session.named_values.contains_key(qualified.as_str()) {
-                            missing.push((qualified.clone(), val.clone()));
+            Opcode::ImportDynamic(ns_idx) => {
+                let raw = match self.stack_pop()? {
+                    Value::Str(s) => s.to_string(),
+                    _ => return Err(GoblinError::Runtime("import expression must evaluate to a string".into())),
+                };
+                // The same extension rule as a literal path.
+                let path_str = if raw.ends_with(".gbln") || raw.ends_with(".gob") || raw.ends_with(".imports") {
+                    raw.replace('/', std::path::MAIN_SEPARATOR_STR)
+                } else {
+                    format!("{}.gbln", raw.replace('/', std::path::MAIN_SEPARATOR_STR))
+                };
+                let is_manifest = path_str.ends_with(".imports");
+                if ns_idx == u16::MAX {
+                    if !is_manifest && !path_str.contains('*') {
+                        return Err(GoblinError::Runtime(format!(
+                            "import of '{raw}' needs an alias. Write: import <path> as <alias>, then use <alias>::name.")));
+                    }
+                    self.import_path(&path_str)?;
+                } else {
+                    let ns = {
+                        let frame = self.call_stack.last().ok_or_else(|| GoblinError::Runtime("no call frame".into()))?;
+                        match &frame.func.constants[ns_idx as usize] {
+                            Value::Str(s) => s.to_string(),
+                            _ => return Err(GoblinError::Runtime("ImportDynamic: namespace must be a string constant".into())),
                         }
+                    };
+                    if is_manifest {
+                        return Err(GoblinError::Runtime(format!(
+                            "alias is not allowed when importing a .imports manifest file ('{raw}' as '{ns}')")));
                     }
-                    if !missing.is_empty() {
-                        let names = std::rc::Rc::make_mut(&mut self.session.named_values);
-                        for (k, v) in missing { names.entry(k).or_insert(v); }
-                    }
+                    self.import_path_as(&path_str, &ns)?;
                 }
             }
 
@@ -2738,11 +2679,12 @@ impl Vm {
                     }
                 };
 
-                let glam_dir = self.session.project_root.join("glams").join(&ns);
-                // An excluded GLAM is not read at all (not even its glam.toml).
-                if crate::import_excludes::excluded(&glam_dir.join(format!("{ns}.gbln")), &self.session.project_root)? {
-                    return Ok(());
+                // A GLAM has no dependencies: its code never loads another GLAM.
+                if let Some(g) = self.current_glam() {
+                    return Err(GoblinError::Runtime(format!(
+                        "B0109: glam-dependency: GLAM '{g}' cannot `use {ns}`: a GLAM has no dependencies. Read what it needs from the Box, and let the project `use` both GLAMs.")));
                 }
+                let glam_dir = self.session.project_root.join("glams").join(&ns);
                 let toml_path = glam_dir.join("glam.toml");
                 let prev_box_ns = self.session.box_namespace.take();
                 let prev_provides = self.session.box_provides.take();
@@ -2807,8 +2749,19 @@ impl Vm {
                         def.name)));
                 }
                 use crate::session::{OverlayDef, OverlayApplyBehavior};
-                let vm_def = OverlayDef {
-                    name: def.name.clone(),
+                let maker = self.maker_values()?;
+                // The first run of an `overlay` line makes the overlay it
+                // names. Each later run makes a new one, as `<>` makes a new
+                // object each time: a kind of its own, with no parent, named
+                // after its family (`faith_1`). In the code that ran the
+                // line, its name means the one just made.
+                let line = format!("{:?}", def.span);
+                let fresh = self.session.overlay_lines_run.contains(&line);
+                self.session.overlay_lines_run.insert(line);
+                let family = def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone());
+                let kind = if fresh { crate::transition::new_root_name(self, &family) } else { def.name.clone() };
+                let mut vm_def = OverlayDef {
+                    name: kind.clone(),
                     host_types: def.host_types.clone(),
                     decay_rate: def.decay_rate,
                     default_duration: def.default_duration,
@@ -2830,30 +2783,47 @@ impl Vm {
                     intensity: def.intensity,
                     spreads: def.spreads.clone(),
                     conflicts: def.conflicts.clone(),
-                    methods: crate::tick::compile_overlay_methods(&def.name, &def.actions,
-                        &def.extra_fields.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>())?,
+                    methods: std::collections::HashMap::new(),
                     actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
                     phases: def.phases.clone(),
-                    family: def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone()),
-                    generated: false,
+                    family,
+                    generated: fresh,
                     parents: Vec::new(),
-                    // Other fields the overlay declares (`kind: "language"`),
-                    // evaluated once here, as the interpreter does.
+                    // Other fields the overlay declares (`fervor: f >> zeal`),
+                    // worked out once here, where the `overlay` line runs:
+                    // they see the variables of the code that runs it, as
+                    // an object made there (`n <> Nation | name: nm`) does.
+                    maker: Vec::new(),
                     extra_fields: {
                         let mut map = indexmap::IndexMap::new();
                         for (k, expr) in &def.extra_fields {
-                            if let Ok(v) = self.eval_tick_expr(expr, vec![]) {
-                                map.insert(k.clone(), v);
-                            }
+                            let bind: Vec<(&str, Value)> = maker.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+                            let v = self.eval_tick_expr(expr, bind).map_err(|e| GoblinError::Runtime(format!(
+                                "R1233: overlay-field: overlay {}, field `{k}`: {e}", def.name)))?;
+                            map.insert(k.clone(), v);
                         }
                         map
                     },
                 };
+                // The maker's variables its lines see: not the ones its own
+                // fields or the tick's names (`self`, `target`, ...) take.
+                const TICK_NAMES: [&str; 5] = ["self", "target", "intensity", "strength", "age"];
+                vm_def.maker = maker.into_iter()
+                    .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()))
+                    .collect();
+                vm_def.methods = crate::tick::compile_overlay_methods(&self.session, &vm_def.name, &vm_def.actions, &vm_def.own_names())?;
+                if fresh {
+                    let frame = self.call_stack.last_mut().unwrap();
+                    let made = frame.made_overlays.get_or_insert_with(Default::default);
+                    made.retain(|(n, _)| *n != def.name);
+                    made.push((def.name.clone(), kind));
+                }
                 self.tick_exprs.clear();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
+                if !self.session.overlay_defs.contains_key(&vm_def.name) { self.session.kind_order.push(vm_def.name.clone()); }
                 self.session.overlay_defs.insert(vm_def.name.clone(), std::rc::Rc::new(vm_def));
             }
 
@@ -3104,6 +3074,20 @@ impl Vm {
                     None => self.des_name(&name)
                         .ok_or_else(|| GoblinError::UndefinedVariable { name: name.to_string() })?,
                 };
+                // A GLAM's code reaches only its own actions by name; anything
+                // else from outside comes through the Box.
+                if let Some(g) = self.current_glam() {
+                    let src = match &value {
+                        Value::Function(f) => Some(f.source_file.clone()),
+                        Value::Closure(c) => Some(c.func.source_file.clone()),
+                        _ => None,
+                    };
+                    let own = src.map_or(false, |f| self.glam_of_file(&f).as_deref() == Some(g.as_str()));
+                    if !own {
+                        return Err(GoblinError::Runtime(format!(
+                            "B0111: glam-outside-name: GLAM '{g}' cannot use '{name}' from outside the GLAM. A GLAM reads outside information from the Box.")));
+                    }
+                }
                 self.stack.push(Operand::Val(value));
             }
 
@@ -3326,11 +3310,18 @@ impl Vm {
     /// A bare class, overlay or link name (`:objects(Rabbit)`,
     /// `:link_score(a, b, culture)`) stands for that name.
     fn des_name(&self, name: &str) -> Option<Value> {
+        if let Some(kind) = self.made_overlay(name) { return Some(Value::Str(kind.into())); }
         let s = &self.session;
         let known = s.classes.contains_key(name)
             || s.overlay_defs.contains_key(name)
             || s.link_defs.keys().any(|(_, ch)| ch == name);
         known.then(|| Value::Str(name.to_string().into()))
+    }
+
+    /// The overlay a line named `name` made in the running call, if one did.
+    fn made_overlay(&self, name: &str) -> Option<String> {
+        let made = self.call_stack.last()?.made_overlays.as_ref()?;
+        made.iter().rev().find(|(n, _)| n == name).map(|(_, k)| k.clone())
     }
 
     fn not_a_variable(name: &str) -> GoblinError {
@@ -3348,6 +3339,15 @@ impl Vm {
             if let Ok(v) = self.session.read_value(&t) {
                 return Some(v);
             }
+        }
+        // In a GLAM's code, only the GLAM file's own globals: nothing from outside.
+        if self.current_glam().is_some() {
+            let file = self.call_stack.last()?.func.source_file.clone();
+            let p = std::path::Path::new(&file);
+            let own = format!("{}::{name}", p.canonicalize().unwrap_or_else(|_| p.to_path_buf()).display());
+            let t = self.session.global_names.iter().position(|n| *n == own)
+                .and_then(|slot| self.session.globals.get(slot).cloned().flatten())?;
+            return self.session.read_value(&t).ok();
         }
         // 2. Check globals by name — use the current frame's compilation-unit global_names
         //    so GLAM actions find their own globals (not the main file's name table).
@@ -3520,7 +3520,7 @@ impl Vm {
                 && self.session.object_store.contains_key(u) => v,
             v => entry_out(&self.session, v),
         }).ok_or_else(|| GoblinError::Runtime(format!(
-            "R0403: no-such-field: no field '{name}'; check the object's fields or correct the field name"))))
+            "R0403: no-such-field: no field '{name}'; {}", crate::builtins::no_field_help(name)))))
     }
 
     /// When the top two operands are both stored objects: whether they are
@@ -4464,6 +4464,182 @@ impl Vm {
     /// Lex/parse/compile/run a single file, skipping it if already imported.
     /// `owner_glam`, when Some, is stamped onto the top-level actions compiled
     /// from this file (so `:need()` can later identify their owning GLAM).
+    /// `import path` with the path already worked out (constant or computed).
+    fn import_path(&mut self, path_str: &str) -> Result<(), GoblinError> {
+        // Imports inside a GLAM resolve relative to that GLAM's directory (base_dir,
+        // which import_file sets to the GLAM entry file's parent). Imports in regular
+        // modules always resolve relative to project_root — this matches the interpreter's
+        // ImportBaseMode::ProjectRoot default and prevents path-doubling when a module
+        // inside a subdirectory uses paths that include that subdirectory.
+        let in_glam = self.call_stack.last()
+            .map(|f| f.func.owner_glam.is_some())
+            .unwrap_or(false);
+        let full_path = if std::path::Path::new(&path_str).is_absolute() {
+            std::path::PathBuf::from(&path_str)
+        } else if in_glam {
+            self.session.base_dir.join(&path_str)
+        } else {
+            self.session.project_root.join(&path_str)
+        };
+
+        // Clear current_glam_ns while processing an `import` statement so that
+        // actions in the imported file are NOT registered under the importing GLAM's
+        // namespace. `import` is a file merge, not a namespace load — if the user
+        // wants namespace registration they should use `use "ns"` instead.
+        // A path with `*` imports every file it matches, in sorted order.
+        let paths = if path_str.contains('*') {
+            expand_import_pattern(&full_path)?
+        } else {
+            vec![full_path]
+        };
+        let prev_ns = self.session.current_glam_ns.take();
+        let mut r = Ok(());
+        for p in paths {
+            r = self.import_file(p, None, std::collections::HashMap::new());
+            if r.is_err() { break; }
+        }
+        self.session.current_glam_ns = prev_ns;
+        r?;
+        Ok(())
+    }
+
+    /// `import path as ns` with the path and alias already worked out.
+    fn import_path_as(&mut self, path_str: &str, ns: &str) -> Result<(), GoblinError> {
+        if path_str.contains('*') {
+            return Err(GoblinError::Runtime(format!(
+                "import: `{path_str}` is a pattern, which can match many files; `as {ns}` names one module. Import the pattern without `as`.")));
+        }
+        let in_glam = self.call_stack.last()
+            .map(|f| f.func.owner_glam.is_some())
+            .unwrap_or(false);
+        let full_path = if std::path::Path::new(&path_str).is_absolute() {
+            std::path::PathBuf::from(&path_str)
+        } else if in_glam {
+            self.session.base_dir.join(&path_str)
+        } else {
+            self.session.project_root.join(&path_str)
+        };
+
+        // Remember which module this alias names in the importing file
+        // (the first import under an alias wins).
+        let importer = self.call_stack.last().map(|f| f.func.source_file.clone()).unwrap_or_default();
+        let prefix = match self.session.import_paths.get(&full_path) {
+            Some(hit) => hit.clone(),
+            None => {
+                let module_path = if !full_path.exists() && !path_str.ends_with(".gbln") {
+                    let p = full_path.with_extension("gbln");
+                    if p.exists() { p } else { full_path.clone() }
+                } else { full_path.clone() };
+                let prefix = format!("{}::", module_path.canonicalize().unwrap_or_else(|_| module_path.clone()).display());
+                self.session.import_paths.insert(full_path.clone(), prefix.clone());
+                prefix
+            }
+        };
+        match self.session.module_aliases.get(&(importer.clone(), ns.to_string())) {
+            Some(first) if *first != prefix => {
+                // A second module under an alias this file already uses:
+                // keep the first one and skip this import.
+                eprintln!("warning: import of '{}' as '{}' skipped: '{}' already names '{}' in this file",
+                    path_str, ns, ns, first.trim_end_matches("::"));
+                return Ok(());
+            }
+            Some(_) => {}
+            None => { std::rc::Rc::make_mut(&mut self.session.module_aliases).insert((importer, ns.to_string()), prefix); }
+        }
+
+        // Run with current_glam_ns = Some(alias) so RegisterAction registers
+        // under both bare and qualified names (e.g. "copy_assets" AND "stagehand::copy_assets").
+        let prev_ns = self.session.current_glam_ns.take();
+        self.session.current_glam_ns = Some(ns.to_string());
+        let r = self.import_file(full_path.clone(), None, std::collections::HashMap::new());
+        self.session.current_glam_ns = prev_ns;
+        r?;
+
+        // Retroactively register qualified names in case the import guard
+        // fired. Only the imported file's own actions get the alias: this
+        // used to take every file under the module's directory, which
+        // gave `alias::` names to sibling files' actions and, run for
+        // every import, was a large part of a request's time.
+        // A request imports the same modules from many files, so this
+        // runs often: look the file up directly (a scan only for paths
+        // written with backslashes), and add only the names missing.
+        let own = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+        let targets = [own(&full_path), own(&full_path.with_extension("gbln"))];
+        let files = &self.session.action_file_map;
+        let list = targets.iter().find_map(|t| files.get(t.as_str()).or_else(|| {
+            files.iter()
+                .find(|(file, _)| file.contains('\\') && file.replace('\\', "/") == *t)
+                .map(|(_, pairs)| pairs)
+        })).or_else(|| {
+            // The file ran first under another spelling (`./a.gbln`,
+            // `x/../a.gbln`): imports run a file once by its real path.
+            let real = |p: &std::path::Path| p.canonicalize().ok();
+            let want = real(&full_path).or_else(|| real(&full_path.with_extension("gbln")))?;
+            files.iter()
+                .find(|(file, _)| real(std::path::Path::new(file.as_str())).as_ref() == Some(&want))
+                .map(|(_, pairs)| pairs)
+        });
+        if let Some(list) = list {
+            let mut qualified = String::new();
+            let mut missing = Vec::new();
+            for (bare_name, val) in list {
+                qualified.clear();
+                qualified.push_str(&ns);
+                qualified.push_str("::");
+                qualified.push_str(bare_name);
+                if !self.session.named_values.contains_key(qualified.as_str()) {
+                    missing.push((qualified.clone(), val.clone()));
+                }
+            }
+            if !missing.is_empty() {
+                let names = std::rc::Rc::make_mut(&mut self.session.named_values);
+                for (k, v) in missing { names.entry(k).or_insert(v); }
+            }
+        }
+        Ok(())
+    }
+    /// The GLAM a source file belongs to: a file under `glams/<name>/` in the
+    /// project root (helper files in subdirectories included).
+    fn glam_of_file(&mut self, file: &str) -> Option<String> {
+        if let Some(hit) = self.glam_files.get(file) { return hit.clone(); }
+        let glams = self.session.project_root.join("glams");
+        let glams = glams.canonicalize().unwrap_or(glams);
+        let p = std::path::Path::new(file);
+        let p = if p.is_absolute() { p.to_path_buf() } else { self.session.project_root.join(p) };
+        let p = p.canonicalize().unwrap_or(p);
+        let g = p.strip_prefix(&glams).ok().and_then(|rest| {
+            let mut parts = rest.components();
+            let first = parts.next()?;
+            parts.next()?;
+            Some(first.as_os_str().to_string_lossy().to_string())
+        });
+        self.glam_files.insert(file.to_string(), g.clone());
+        g
+    }
+
+    /// The GLAM whose code is running now, if any.
+    fn current_glam(&mut self) -> Option<String> {
+        let file = self.call_stack.last()?.func.source_file.clone();
+        self.glam_of_file(&file)
+    }
+
+    /// A GLAM's code, at any time, writes only into its own Box namespace
+    /// (B0102) and only the names its `[provides] values` lists (B0105).
+    fn check_glam_box_write(&mut self, ns: &str, name: &str) -> Result<(), GoblinError> {
+        let Some(g) = self.current_glam() else { return Ok(()) };
+        if g != ns {
+            return Err(GoblinError::Runtime(format!(
+                "B0102: box-namespace-violation: GLAM '{g}' cannot write into namespace '{ns}'")));
+        }
+        if let Some(provides) = self.session.glam_provides.get(&g) {
+            if !provides.contains(name) {
+                return Err(GoblinError::Runtime(format!(
+                    "B0105: box-undeclared-provide: GLAM '{g}' cannot publish '#{ns}::{name}' — '{name}' is not declared in [provides]")));
+            }
+        }
+        Ok(())
+    }
+
     fn import_file(&mut self, full_path: std::path::PathBuf, owner_glam: Option<String>, pre_globals: std::collections::HashMap<String, Value>) -> Result<(), GoblinError> {
         let _phase = goblin_diagnostics::phase::enter(goblin_diagnostics::phase::Phase::Import);
         let path_str = full_path.to_string_lossy().to_string();
@@ -4474,13 +4650,20 @@ impl Vm {
         } else {
             full_path.clone()
         };
-        // Excluded by the project's import exclusions: never read, never run.
-        if crate::import_excludes::excluded(&actual_path, &self.session.project_root)? {
-            return Ok(());
-        }
         // One file reached by two spellings (`a/../b.gbln`, a symlink) runs once.
         let canonical = actual_path.canonicalize().unwrap_or_else(|_| actual_path.clone())
             .to_string_lossy().to_string();
+        // A GLAM's code imports only its own files.
+        if let Some(g) = self.current_glam() {
+            if self.glam_of_file(&canonical).as_deref() != Some(g.as_str()) {
+                let root = self.session.project_root.canonicalize().unwrap_or_else(|_| self.session.project_root.clone());
+                let shown = std::path::Path::new(&canonical).strip_prefix(&root)
+                    .map(|p| p.display().to_string()).unwrap_or_else(|_| canonical.clone());
+                return Err(GoblinError::Runtime(format!(
+                    "B0110: glam-outside-import: GLAM '{g}' cannot import '{shown}': a GLAM imports only its own files (glams/{g}/). Read what it needs from the Box.")));
+            }
+        }
+        let isolated = self.glam_of_file(&canonical).is_some();
         if self.session.imported.contains(&canonical) {
             // Still running further up: a cycle. It is skipped, as before,
             // but said, so a missing action is easier to trace.
@@ -4507,7 +4690,7 @@ impl Vm {
             None => {
                 let globals_before = self.session.global_names.clone();
                 crate::modcache::compile_import(
-                    &actual_path, &globals_before, &module_prefix, owner_glam, |entry| self.quicken(entry),
+                    &actual_path, &globals_before, &module_prefix, owner_glam, isolated, |entry| self.quicken(entry),
                 )?
             }
         };
@@ -4663,6 +4846,7 @@ impl Vm {
                         "B0105: [provides] values entries must be strings, got: {}", other))),
                 }
             }
+            self.session.glam_provides.insert(ns.to_string(), set.clone());
             self.session.box_provides = Some(set);
         }
 
@@ -5319,7 +5503,23 @@ impl Vm {
         } else {
             args[1..].to_vec()
         };
+        self.glam_may_call(&name)?;
         self.call_named(&name, forwarded)
+    }
+
+    /// `:invoke`/`:summon` from a GLAM's code reach only the GLAM's own
+    /// actions; an outside action is wired as a need and called with `:need`.
+    fn glam_may_call(&mut self, name: &str) -> Result<(), GoblinError> {
+        let Some(g) = self.current_glam() else { return Ok(()) };
+        let src = match self.resolve_named(name) {
+            Some(Value::Function(f)) => Some(f.source_file.clone()),
+            Some(Value::Closure(c)) => Some(c.func.source_file.clone()),
+            _ => None,
+        };
+        let Some(src) = src else { return Ok(()) };  // unknown: call_named reports it
+        if self.glam_of_file(&src).as_deref() == Some(g.as_str()) { return Ok(()); }
+        Err(GoblinError::Runtime(format!(
+            "B0111: glam-outside-name: GLAM '{g}' cannot call '{name}' from outside the GLAM. Declare it in [needs.actions] and call it with :need.")))
     }
 
     fn vm_summon(&mut self, args: Vec<Value>) -> Result<Value, GoblinError> {
@@ -5337,6 +5537,7 @@ impl Vm {
                 Value::Str(s) => s,
                 other => return Err(GoblinError::type_error("str", other.type_name(), "summon event name")),
             };
+            self.glam_may_call(&name)?;
             acc = self.call_named(&name, vec![acc])?;
         }
         Ok(acc)
@@ -5441,13 +5642,83 @@ impl Vm {
         Ok(f)
     }
 
+    /// `obj >> name |= v` (stack: [obj, v]): writes the field and leaves
+    /// the object (a reference) for the variable it came from.
+    fn set_field_named(&mut self, field_name: crate::value::GStr) -> Result<(), GoblinError> {
+        let new_val = self.pop_value()?;
+        // The object expression leaves a Ref or Object on the stack.
+        let obj_val = self.stack_pop()?;
+        let uuid = match obj_val {
+            Value::Ref(u) => u,
+            Value::Object(o) => o.uuid.clone(),
+            other => return Err(GoblinError::Runtime(format!("SetField: expected object, got {}", other.type_name()))),
+        };
+        // An overlay is an object: a copy's fields are written like
+        // any object's (the variable gets the copy as it is now).
+        if uuid.starts_with(OVERLAY_RECORD) {
+            let rec = self.write_overlay_field(&uuid, &field_name, new_val)?;
+            self.stack.push(Operand::Val(rec));
+            return Ok(());
+        }
+        let new_val = entry_of(&self.session, new_val);
+        if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
+        // Mutate directly in object_store (shared reference semantics, like interpreter).
+        self.session.touch(&uuid);
+        if let Some(obj) = self.session.object_store.get_mut(&uuid) {
+            check_field_write(obj, &field_name)?;
+            if let Value::Object(ref mut o) = obj {
+                // A trait field (a 0..1 number at creation) stays in 0..1.
+                let new_val = if o.trait_fields.contains(field_name.as_str()) {
+                    match new_val {
+                        Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+                        Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+                        other => other,
+                    }
+                } else { new_val };
+                std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
+            }
+            if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
+            // A region's object, written by the program that runs
+            // the world: its region gets the new value next tick.
+            crate::world::after_view_write(&mut self.session, &uuid, &field_name)?;
+        } else {
+            return Err(GoblinError::Runtime(format!(
+                "R1240: removed-object: field `{field_name}` of an object that is no longer in the world (a transition or an erase removed it): it can be read, not changed")));
+        }
+        // Push ref back so caller can chain / store back.
+        self.stack.push(Operand::Val(Value::Ref(uuid)));
+        Ok(())
+    }
+
+    /// The named variables of the running action (none at the top level,
+    /// whose variables are globals), by name, each once, with its value now.
+    fn maker_values(&mut self) -> Result<Vec<(String, Value)>, GoblinError> {
+        if self.call_stack.len() <= 1 { return Ok(Vec::new()); }
+        let frame = self.call_stack.last().unwrap();
+        let mut found: Vec<(String, Tether)> = Vec::new();
+        for (i, name) in frame.func.local_names.iter().enumerate() {
+            if name.is_empty() || name.starts_with("__") { continue; }
+            let Some(Some(t)) = frame.locals.get(i) else { continue };
+            match found.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 = t.clone(),
+                None => found.push((name.clone(), t.clone())),
+            }
+        }
+        // An object is kept as a reference to it, so the overlay's lines
+        // read its fields as they are when they run.
+        found.into_iter().map(|(n, t)| {
+            let v = match self.resolve_op(Operand::Ref(t))? {
+                Value::Object(o) if self.session.object_store.contains_key(&o.uuid) => Value::Ref(o.uuid.clone().into()),
+                v => v,
+            };
+            Ok((n, v))
+        }).collect()
+    }
+
     /// The global prefix of the imported module `file` (as its spans name
     /// it), or None for the main program.
     fn module_prefix_of(&self, file: &str) -> Option<String> {
-        if file.is_empty() { return None; }
-        let path = std::path::Path::new(file);
-        let prefix = format!("{}::", path.canonicalize().ok()?.display());
-        self.session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
+        crate::tick::module_prefix(&self.session, file)
     }
 
     /// Compile one expression as a parameterless action, with `compiler`
@@ -5645,6 +5916,27 @@ impl Vm {
                 Opcode::LoadTrue => st.push(Fv::Val(Value::Bool(true))),
                 Opcode::LoadFalse => st.push(Fv::Val(Value::Bool(false))),
                 Opcode::LoadNil => st.push(Fv::Val(Value::Nil)),
+                // A global the run's snapshot doesn't hold (a DES formula
+                // has none): read where it lives now, as the VM does. An
+                // action that only reads can be called (`Call` below); a
+                // plain value is pushed; anything else is the VM's.
+                Opcode::LoadGlobal(g) if !env.globals.iter().any(|(n, _)| *n == g) => {
+                    let t = self.session.get_global(g as usize)?;
+                    let v = self.session.resolve(t.addr).ok()?.value.clone();
+                    match v {
+                        Value::Function(func) => {
+                            if !self.fn_reads_only(&func) { return None; }
+                            st.push(Fv::Act(func));
+                        }
+                        Value::Closure(c) if c.upvalues.is_empty() => {
+                            let func = c.func.clone();
+                            if !self.fn_reads_only(&func) { return None; }
+                            st.push(Fv::Act(func));
+                        }
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_) => st.push(Fv::Val(v)),
+                        _ => return None,
+                    }
+                }
                 Opcode::LoadLocal(_) | Opcode::LoadUpvalue(_) | Opcode::LoadGlobal(_) => {
                     let slot = match op {
                         Opcode::LoadLocal(s) => { if s as usize >= ups_at { return None; } s as usize }
@@ -5735,7 +6027,7 @@ impl Vm {
                 }
                 Opcode::Pop => { st.pop()?; }
                 Opcode::Dup => {
-                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(*a, *p) };
+                    let top = match st.last()? { Fv::Val(v) => Fv::Val(v.clone_fast()), Fv::Arg(a, p) => Fv::Arg(*a, *p), Fv::Act(f) => Fv::Act(f.clone()) };
                     st.push(top);
                 }
                 Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div => {
@@ -5800,7 +6092,7 @@ impl Vm {
                         continue;
                     }
                     let id = |v: &Fv| -> Option<Option<String>> {
-                        let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x };
+                        let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x, Fv::Act(_) => return None };
                         match x {
                             Value::Object(o) => Some(Some(o.uuid.to_string())),
                             Value::Ref(u) => Some(if self.session.object_store.contains_key(u) { Some(u.to_string()) } else { None }),
@@ -5829,12 +6121,83 @@ impl Vm {
                     let start = st.len().checked_sub(argc as usize)?;
                     let mut largs = Vec::with_capacity(argc as usize);
                     for v in st.drain(start..) {
-                        match v { Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v), _ => return None }
+                        match v {
+                            Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v),
+                            // `self`, `target`: the objects themselves.
+                            Fv::Arg(slot, _) => match value_at(slot)? {
+                                v @ (Value::Ref(_) | Value::Object(_)) => largs.push(v.clone()),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        }
                     }
                     st.push(Fv::Val(self.link_score_in(&largs, Some((f, args))).ok()?));
                 }
+                // `:min(a, b)`, `:clamp(x, 0.0, 1.0)` ...: a math builtin on
+                // plain numbers, through the same code the VM calls.
+                Opcode::CallBuiltin(id, argc) if crate::builtins::is_math(id) => {
+                    let start = st.len().checked_sub(argc as usize)?;
+                    let mut nums = Vec::with_capacity(argc as usize);
+                    for v in st.drain(start..) {
+                        match v { Fv::Val(v @ (Value::Int(_) | Value::Float(_))) => nums.push(v), _ => return None }
+                    }
+                    let r = crate::builtins::call_builtin(id, nums, &mut self.session).ok()?;
+                    if !matches!(r, Value::Int(_) | Value::Float(_)) { return None; }
+                    st.push(Fv::Val(r));
+                }
+                // An action that only reads (`short(@gold, 10.0)`): only it
+                // gets a call frame. While a decision is scored its answer
+                // for these arguments is kept, as the VM keeps it (memo.rs).
+                // It changes nothing, so if a later step hands the formula
+                // to the VM, running it again there gives the same answer.
+                Opcode::Call(argc) => {
+                    let start = st.len().checked_sub(argc as usize + 1)?;
+                    let mut vals: Vec<Value> = Vec::with_capacity(argc as usize);
+                    for v in st.drain(start + 1..) {
+                        vals.push(match v {
+                            Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => v,
+                            Fv::Val(Value::Ref(u)) if !u.starts_with(OVERLAY_RECORD) => Value::Ref(u),
+                            Fv::Arg(slot, _) => match value_at(slot)? {
+                                Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => Value::Ref(u.clone()),
+                                _ => return None,
+                            },
+                            _ => return None,
+                        });
+                    }
+                    let Some(Fv::Act(func)) = st.pop() else { return None };
+                    if vals.len() < func.required_params || vals.len() > func.params { return None; }
+                    if vals.iter().any(|v| matches!(v, Value::Ref(u) if !self.session.object_store.contains_key(u))) { return None; }
+                    let key = match self.memo.as_ref() {
+                        Some(m) if m.changing == 0 => {
+                            let mut a = smallvec::SmallVec::new();
+                            for v in &vals { a.push(crate::memo::Arg::of(v)?); }
+                            let key = (Rc::as_ptr(&func) as usize, a);
+                            if let Some(v) = m.answers.get(&key) {
+                                let v = v.clone();
+                                st.push(Fv::Val(v));
+                                continue;
+                            }
+                            Some((key, m.epoch))
+                        }
+                        _ => None,
+                    };
+                    let r = self.call_func_core(func, Vec::new(), vals).ok()?;
+                    if let (Some((key, epoch)), Some(m)) = (key, self.memo.as_mut()) {
+                        if m.epoch == epoch && m.changing == 0 { m.answers.insert(key, r.clone()); }
+                    }
+                    match r {
+                        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_) => st.push(Fv::Val(r)),
+                        Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) => st.push(Fv::Val(Value::Ref(u))),
+                        _ => return None,
+                    }
+                }
                 Opcode::Return => {
-                    return match st.pop()? { Fv::Val(v) if st.is_empty() => Some(v), _ => None };
+                    return match st.pop()? {
+                        Fv::Val(v) if st.is_empty() => Some(v),
+                        // An argument given back (`self`): as it was given.
+                        Fv::Arg(slot, _) if st.is_empty() => value_at(slot).cloned(),
+                        _ => None,
+                    };
                 }
                 _ => return None,
             }
@@ -5854,7 +6217,13 @@ impl Vm {
                 _ => None,
             }
         };
-        let r = crate::memo::reads_only(f, &globals, &mut Vec::new());
+        let named = |n: &str| -> Option<Value> {
+            match session.named_values.get(n) {
+                Some(v @ (Value::Function(_) | Value::Closure(_) | Value::Builtin(_))) => Some(v.clone()),
+                _ => None,
+            }
+        };
+        let r = crate::memo::reads_only(f, &globals, &named, &mut Vec::new());
         self.reads_only.insert(key, (f.clone(), r));
         r
     }
@@ -6204,8 +6573,16 @@ impl Vm {
             Some(c) if c.starts_with("uses ") => Some(self.session.places_of_class(c)),
             Some(c) => {
                 if !self.session.classes.contains_key(c) {
+                    // An overlay class: its overlays are its objects.
+                    if let Some(kinds) = self.overlay_kinds_of(c) {
+                        let mut out = Vec::with_capacity(kinds.len());
+                        for k in kinds {
+                            if pred.as_ref().is_none_or(|p| self.query_predicate_holds(p, &k)) { out.push(k); }
+                        }
+                        return Ok(Value::Array(out));
+                    }
                     return Err(GoblinError::Runtime(format!(
-                        "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name")));
+                        "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name, or an overlay class (<^>Name) that has overlays")));
                 }
                 let narrowed = match pred.as_ref().and_then(|p| self.objects_by_field(c, p)) {
                     Some(at) => Some(at),
@@ -6466,6 +6843,86 @@ impl Vm {
             // Its own id: binding it must not replace its host.
             uuid: format!("{OVERLAY_RECORD}{}:{}", inst.host_uuid, inst.des_id.0).into(),
         }))
+    }
+
+    /// The overlays of overlay class `class` (declared, or made while the
+    /// program ran), in the order they were made, each as an object of the
+    /// class: `overlay_name`, `parents`, the `intensity` a new copy starts
+    /// at, and its own fields. None when no overlay is of that class.
+    fn overlay_kinds_of(&self, class: &str) -> Option<Vec<Value>> {
+        let defs = &self.session.overlay_defs;
+        let mut names: Vec<&str> = self.session.kind_order.iter().map(String::as_str)
+            .filter(|n| defs.get(*n).is_some_and(|d| d.class.as_deref() == Some(class))).collect();
+        let mut rest: Vec<&str> = defs.iter()
+            .filter(|(n, d)| d.class.as_deref() == Some(class) && !self.session.kind_order.iter().any(|k| k == *n))
+            .map(|(n, _)| n.as_str()).collect();
+        rest.sort_unstable();
+        names.extend(rest);
+        if names.is_empty() { return None; }
+        Some(names.into_iter().map(|n| {
+            let d = &defs[n];
+            let mut f = crate::value::FieldMap::default();
+            f.insert("overlay_name".to_string(), Value::Str(n.into()));
+            f.insert("parents".to_string(), Value::Array(d.parents.iter().map(|p| Value::Str(p.as_str().into())).collect()));
+            f.insert("intensity".to_string(), Value::Float(d.intensity));
+            for (k, v) in &d.extra_fields { f.insert(k.clone(), v.clone()); }
+            Value::Object(Box::new(crate::value::ObjectVal {
+                class_name: crate::value::class_rc(class),
+                fields: std::rc::Rc::new(f),
+                readonly_fields: Default::default(),
+                trait_fields: Default::default(),
+                uuid: format!("{OVERLAY_RECORD}kind:{n}").into(),
+            }))
+        }).collect())
+    }
+
+    /// Writes field `field` of the overlay copy a record names
+    /// (`o >> intensity |= .9`, `o >> fervor |= 2`) and gives the copy's
+    /// record as it is now. `intensity` stays in 0..1; `ticks_remaining`
+    /// takes a whole number or nil; the copy's own fields take any value.
+    /// The fields that say which copy it is, and its age, are the runtime's.
+    /// Its `modify` lines are worked out again at once.
+    fn write_overlay_field(&mut self, record: &str, field: &str, v: Value) -> Result<Value, GoblinError> {
+        let err = |what: String| GoblinError::Runtime(format!("R1249: overlay-field-write: `{field}`: {what}"));
+        let rest = &record[OVERLAY_RECORD.len()..];
+        if rest.starts_with("kind:") {
+            return Err(err("this is an overlay as it was made, read from `:objects(Class)`: its fields are what each new copy starts with, set where it is made; change a copy's fields (`:overlays(host)`), or make a new overlay".into()));
+        }
+        let found = rest.rsplit_once(':').and_then(|(host, id)| {
+            let id: u32 = id.parse().ok()?;
+            let list = &self.session.overlay_instances;
+            list.on_host(host).iter().copied().find(|&q| list[q].des_id.0 == id)
+        });
+        let Some(p) = found else {
+            return Err(err("that overlay copy is no longer on its host (it ran out, was taken off or a transition replaced it): it can be read, not changed".into()));
+        };
+        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
+        match field {
+            "intensity" => {
+                let Some(x) = num(&v) else { return Err(err(format!("an overlay's intensity is a number from 0 to 1, got {}", v.type_name()))) };
+                self.session.overlay_instances[p].strength = x.clamp(0.0, 1.0);
+            }
+            "ticks_remaining" => {
+                self.session.overlay_instances[p].ticks_remaining = match v {
+                    Value::Nil => None,
+                    Value::Int(i) if i >= 0 => Some(i.min(u32::MAX as i64) as u32),
+                    other => return Err(err(format!("ticks_remaining is a whole number of ticks (0 or more) or nil, got {}", other.type_name()))),
+                };
+            }
+            "overlay_name" | "host_uuid" | "host_var" | "parents" | "age" =>
+                return Err(err("this field says which overlay copy it is and how old it is; the runtime keeps it (to move an idea, take it off and put it on; to change its kind, a transition)".into())),
+            _ => {
+                if !self.session.overlay_instances[p].extra_fields.contains_key(field) {
+                    let name = self.session.overlay_instances[p].overlay_name.clone();
+                    return Err(err(format!("overlay {name} has no field named {field}")));
+                }
+                let v = entry_of(&self.session, v);
+                self.session.overlay_instances[p].extra_fields.insert(field.to_string(), v);
+            }
+        }
+        crate::tick::rework_film(self, p)?;
+        let inst = self.session.overlay_instances[p].clone();
+        Ok(self.overlay_record(&inst))
     }
 
     /// `:overlays(...)`: every overlay, or one overlay's instances (read
@@ -7195,7 +7652,9 @@ pub(crate) struct FormulaEnv {
 
 /// An operand of `Vm::run_formula_in`: a value, or an argument that refers
 /// to an object (by its argument slot), with where it sits in the store.
-enum Fv { Val(Value), Arg(usize, usize) }
+/// A value on the direct runner's stack: a value, an argument read where
+/// it lives, or an action to call that only reads.
+enum Fv { Val(Value), Arg(usize, usize), Act(Rc<crate::value::FunctionObject>) }
 
 impl TickFormula {
     /// Whether it reads `x >> name` only for names that are fields, not
@@ -7205,6 +7664,8 @@ impl TickFormula {
         let f = &self.func;
         f.bytecode.iter().all(|op| match op {
             Opcode::GetMember(idx) => matches!(f.constants.get(*idx as usize), Some(Value::Str(n)) if member_builtin(n).is_none()),
+            // A name worked out as it runs may be a member builtin's.
+            Opcode::GetMemberDyn => false,
             _ => true,
         })
     }
@@ -7244,7 +7705,11 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
         | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
-        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)),
+        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _)
+        // Actions and globals are checked when they are read: one that
+        // doesn't only read hands the formula to the VM.
+        | Opcode::LoadGlobal(_) | Opcode::Call(_))
+        || matches!(op, Opcode::CallBuiltin(id, _) if crate::builtins::is_math(*id)),
     })
 }
 
@@ -8075,3 +8540,4 @@ pub(crate) fn segment_matches(pat: &str, name: &str) -> bool {
     }
     true
 }
+

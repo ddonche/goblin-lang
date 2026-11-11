@@ -18,11 +18,11 @@ link respect
 xx
 a <> Nation | military: .8, economy: .2
 b <> Nation | military: .4, economy: .4
-say(:link_score(a, b, "border"))
-say(:link_score(b, a, "border"))
-say(:link_score(a, b, "respect"))
+:say(:link_score(a, b, "border"))
+:say(:link_score(b, a, "border"))
+:say(:link_score(a, b, "respect"))
 :link!(a, b, respect, 4)
-say(:link_score(a, b, "respect"))
-say(:link_score(b, a, "respect"))
+:say(:link_score(a, b, "respect"))
+:say(:link_score(b, a, "respect"))
 :link!(a, b, border, .9)
-say(:link_score(a, b, "border"))
+:say(:link_score(a, b, "border"))

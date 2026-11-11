@@ -1,4 +1,4 @@
 /// pick without allow_dups cannot return more elements than src has.
-say("start")
+:say("start")
 p | :pick({"count": 5, "src": [1, 2]})
-say("unreachable")
+:say("unreachable")

@@ -6,5 +6,5 @@ provoke
     x !== 25
 xx
 
-say "All checks passed!"
-say x
+:say "All checks passed!"
+:say x

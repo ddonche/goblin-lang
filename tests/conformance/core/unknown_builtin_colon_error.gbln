@@ -1,1 +1,1 @@
-say(:nope_not_a_builtin(1))
+:say(:nope_not_a_builtin(1))

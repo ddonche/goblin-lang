@@ -30,12 +30,12 @@ act worth(k)
     return k >> deeds * 10 + k >> purse
 xx
 act pay(l, k)
-    say("{l >> name} rewards {k >> name}")
+    :say("{l >> name} rewards {k >> name}")
     l >> gold |= l >> gold - 1
     k >> deeds |= 0
 xx
 act levy(l, k)
-    say("{l >> name} taxes {k >> name}")
+    :say("{l >> name} taxes {k >> name}")
     l >> gold |= l >> gold + 3
     k >> purse |= k >> purse - 3
 xx
@@ -45,8 +45,8 @@ k1 <> Knight | name: "Kay", deeds: 2, owner: a
 k2 <> Knight | name: "Lot", deeds: 3, purse: 4, owner: b
 k3 <> Knight | name: "Mark", deeds: 1, purse: 9, owner: a
 k4 <> Knight | name: "Nod", purse: 20
-tick()
-say("{a >> gold} {b >> gold}")
+:tick()
+:say("{a >> gold} {b >> gold}")
 k1 >> owner |= b
-tick()
-say("{a >> gold} {b >> gold}")
+:tick()
+:say("{a >> gold} {b >> gold}")

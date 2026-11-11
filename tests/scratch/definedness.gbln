@@ -1,6 +1,6 @@
 /// basic
 if &config.database_url
-    say "DB configured"
+    :say "DB configured"
 end
 
 /// negated

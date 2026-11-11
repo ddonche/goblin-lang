@@ -8,5 +8,5 @@
     xx
 xx
 p <> P | hp: 5
-say("before")
+:say("before")
 p.hurt()

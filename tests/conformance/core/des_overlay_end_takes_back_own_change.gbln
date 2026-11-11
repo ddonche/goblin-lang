@@ -34,8 +34,8 @@ repeat :range(1, 6) as d
     if d == 1
         a >> def |= a >> def + 10
     xx
-    tick()
+    :tick()
     h | a >> hp
     df | a >> def
-    say("tick {d}: hp {h}, def {df}")
+    :say("tick {d}: hp {h}, def {df}")
 xx

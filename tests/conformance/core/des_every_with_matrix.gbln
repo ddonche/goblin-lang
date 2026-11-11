@@ -12,8 +12,8 @@ xx
     age:  10,       nc,  20
 end
 
-tick()
-tick()
+:tick()
+:tick()
 a | ann >> age
 b | bob >> age
-say("ann {a}, bob {b}")
+:say("ann {a}, bob {b}")

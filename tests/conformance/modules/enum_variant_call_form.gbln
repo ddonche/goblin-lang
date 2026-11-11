@@ -5,6 +5,6 @@ enum Shape
     Dot
 xx
 c | Shape::Circle({"r": 3})
-say(c.r)
-say(c == Shape::Circle { r: 3 })
-say(:valtype(c))
+:say(c.r)
+:say(c == Shape::Circle { r: 3 })
+:say(:valtype(c))

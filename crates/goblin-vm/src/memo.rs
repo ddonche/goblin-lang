@@ -82,7 +82,8 @@ pub(crate) fn builtin_reads(id: BuiltinId) -> bool {
             .chain(["objects", "overlays", "overlays_of", "field", "type_of", "typeof"].iter())
             .filter_map(|n| crate::compiler::builtin_by_name(n))
             .collect();
-        ids.extend([BuiltinId::ObjectsIn, BuiltinId::Objects, BuiltinId::Overlays]);
+        // `a ?? b` asks whether `a` holds something.
+        ids.extend([BuiltinId::ObjectsIn, BuiltinId::Objects, BuiltinId::Overlays, BuiltinId::CoalescePresent]);
         ids
     }).contains(&id)
 }
@@ -94,7 +95,9 @@ pub(crate) fn builtin_reads(id: BuiltinId) -> bool {
 /// method) doesn't count.
 /// `globals(g)`: what global `g` holds, when it is something callable (an
 /// action, a closure or a builtin).
-pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option<Value>, seen: &mut Vec<usize>) -> bool {
+/// `named(n)`: what an action reached by its full name (`family::claims_to`,
+/// `LoadNamed`) is, when it is callable.
+pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option<Value>, named: &dyn Fn(&str) -> Option<Value>, seen: &mut Vec<usize>) -> bool {
     let me = Rc::as_ptr(f) as usize;
     if seen.contains(&me) { return true; }
     seen.push(me);
@@ -121,15 +124,26 @@ pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option
             Opcode::CallBuiltin(id, _) => builtin_reads(id),
             Opcode::Fused(i) => matches!(f.op_data.get(i as usize), Some(OpData::Fused(x)) if matches!(x.kind, FusedKind::Read)),
             Opcode::MakeClosure(i) => match f.constants.get(i as usize) {
-                Some(Value::Function(g)) => reads_only(g, globals, seen),
+                Some(Value::Function(g)) => reads_only(g, globals, named, seen),
                 _ => false,
             },
             Opcode::LoadGlobal(g) => match globals(g) {
-                Some(Value::Function(g)) => reads_only(&g, globals, seen),
-                Some(Value::Closure(c)) => reads_only(&c.func, globals, seen),
+                Some(Value::Function(g)) => reads_only(&g, globals, named, seen),
+                Some(Value::Closure(c)) => reads_only(&c.func, globals, named, seen),
                 // `job | shuffle`: calling it calls the builtin.
                 Some(Value::Builtin(id)) => builtin_reads(id),
                 _ => true,
+            },
+            // An action of another module by its full name.
+            Opcode::LoadNamed(i) => match f.constants.get(i as usize) {
+                Some(Value::Str(n)) => match named(n.as_ref()) {
+                    Some(Value::Function(g)) => reads_only(&g, globals, named, seen),
+                    Some(Value::Closure(c)) => reads_only(&c.func, globals, named, seen),
+                    Some(Value::Builtin(id)) => builtin_reads(id),
+                    Some(_) => true,
+                    None => false,
+                },
+                _ => false,
             },
             _ => false,
         };

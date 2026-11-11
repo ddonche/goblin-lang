@@ -1,2 +1,2 @@
-say(:has(["a", "b"], "a"))
-say(:has(["a", "b"], "z"))
+:say(:has(["a", "b"], "a"))
+:say(:has(["a", "b"], "z"))

@@ -4,5 +4,5 @@ r | :db_query_one("SELECT 1::bigint AS b, 2::integer AS i, 'x'::text AS t, 'v'::
 for k in ["b", "i", "t", "v", "f", "d"]
     v | r{k}
     ty | :vt(v)
-    say("{k}={v} {ty}")
+    :say("{k}={v} {ty}")
 xx

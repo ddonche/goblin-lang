@@ -91,14 +91,14 @@ repeat :range(0, 4) as i
     :actor(make_town(i * .25, 60, i % 2), town_day)
 xx
 repeat :range(1, 13) as d
-    tick()
+    :tick()
     sick | :len(:overlays(flu))
     fat | 0
     repeat :objects(it >> fat > -1000)
         f | it >> fat
         fat |= fat + f
     xx
-    say("tick {d}: flu {sick}, sheep fat {fat}")
+    :say("tick {d}: flu {sick}, sheep fat {fat}")
 xx
 "#;
 

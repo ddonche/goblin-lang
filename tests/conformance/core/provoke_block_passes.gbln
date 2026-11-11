@@ -5,5 +5,5 @@ provoke
     x < 100
     x !== 25
 xx
-say("all checks passed")
-say(x)
+:say("all checks passed")
+:say(x)

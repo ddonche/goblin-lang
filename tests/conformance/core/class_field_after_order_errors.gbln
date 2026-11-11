@@ -1,0 +1,8 @@
+/// A field line after `order:` in a class is P1569: `order` can't be a
+/// field name (owner, 2026-11-09).
+<>Land |
+    order: 1
+    size: 2
+xx
+a <> Land | size: 2
+:say(a)

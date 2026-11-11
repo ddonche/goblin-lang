@@ -6,4 +6,4 @@ for i in 1..50
         ok |= false
     xx
 xx
-say(ok)
+:say(ok)

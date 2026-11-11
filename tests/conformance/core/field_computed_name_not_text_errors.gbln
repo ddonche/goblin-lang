@@ -1,0 +1,6 @@
+/// The name in `obj >> {name}` must be text (R0414).
+<>Land |
+    gold: 3
+xx
+a <> Land | gold: 3
+:say(a >> {3})

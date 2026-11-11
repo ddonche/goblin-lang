@@ -4,6 +4,6 @@ enum Shape
     Rect { w: int, h: int }
     Dot
 xx
-say(Shape::Circle { r: 1 } == Shape::Circle { r: 1 })
-say(Shape::Circle { r: 1 } == Shape::Circle { r: 2 })
-say(Shape::Circle { r: 1 } != Shape::Circle { r: 2 })
+:say(Shape::Circle { r: 1 } == Shape::Circle { r: 1 })
+:say(Shape::Circle { r: 1 } == Shape::Circle { r: 2 })
+:say(Shape::Circle { r: 1 } != Shape::Circle { r: 2 })

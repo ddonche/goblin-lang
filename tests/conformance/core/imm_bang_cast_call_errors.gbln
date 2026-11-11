@@ -1,5 +1,5 @@
 /// `:int!(k)` cannot recast an `imm` binding (R0113).
 imm k | "5"
-say("before")
+:say("before")
 :int!(k)
-say(k)
+:say(k)

@@ -39,7 +39,7 @@ xx
 c | :actor(make(3), day)
 e | :actor(make(4), day)
 repeat :range(1, 4) as t
-    tick()
+    :tick()
     names | []
     repeat :objects("Realm", it >> name != "Duke" and it >> name != "Emperor") as r
         :put_last!(names, "{r >> name} {r >> power}")

@@ -11,9 +11,9 @@ act bad(st, msg)
     return st
 xx
 attempt
-    tick([1, 2])
+    :tick([1, 2])
 rescue e
-    say(:has("{e}", "tick"))
+    :say(:has("{e}", "tick"))
 xx
 act make_region()
     t <> Thing | n: 1
@@ -21,7 +21,7 @@ act make_region()
 xx
 r | :actor(make_region(), bad)
 attempt
-    tick()
+    :tick()
 rescue e
-    say(:has("{e}", "C0123: tick-regions: a region failed"))
+    :say(:has("{e}", "C0123: tick-regions: a region failed"))
 xx

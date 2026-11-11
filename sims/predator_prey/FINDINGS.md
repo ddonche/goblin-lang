@@ -96,7 +96,7 @@ with, so `:move!(a, meadows[to])` works inside a region. No new name.
 ## 5. An expression in braces that can't be filled in stays as written, silently
 
 ```goblin
-say("rabbits {:len(:objects(it >> kind == \"rabbit\"))}")
+:say("rabbits {:len(:objects(it >> kind == \"rabbit\"))}")
 ```
 
 prints the braces as written, because `it` isn't a variable where the

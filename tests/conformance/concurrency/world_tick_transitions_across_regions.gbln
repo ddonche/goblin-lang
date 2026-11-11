@@ -67,7 +67,7 @@ east | :actor(make(.9, ["Kel"], true), day)
 big | :actor(make_realm("Big", 20), day)
 small | :actor(make_realm("Small", 3), day)
 repeat :range(1, 4) as d
-    tick()
+    :tick()
     langs | []
     repeat :objects("Land") as x
         ns | []
@@ -80,5 +80,5 @@ repeat :range(1, 4) as d
     repeat :objects("Realm") as r
         :put_last!(realms, r >> name)
     xx
-    say("tick {d}: {:sort(langs)} realms {:sort(realms)}")
+    :say("tick {d}: {:sort(langs)} realms {:sort(realms)}")
 xx

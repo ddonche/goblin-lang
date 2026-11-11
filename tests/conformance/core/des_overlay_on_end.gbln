@@ -20,7 +20,7 @@ overlay fever
 xx
 act give_birth(mom)
     mom >> kids |= mom >> kids + 1
-    say("a baby")
+    :say("a baby")
 xx
 ann <> Person | kids: 0
 bea <> Person | kids: 0
@@ -31,9 +31,9 @@ repeat :range(1, 5) as d
     if d == 2
         :detach!(bea, pregnant)
     xx
-    tick()
+    :tick()
     k | ann >> kids
     b | bea >> kids
     f | bea >> fevers
-    say("tick {d}: ann {k} kids, bea {b} kids, bea had {f} fevers")
+    :say("tick {d}: ann {k} kids, bea {b} kids, bea had {f} fevers")
 xx

@@ -20,7 +20,7 @@
             strength: @strength + 1
         xx
     xx
-    on split => say("parent and first share an id: {(self >> id) == (first >> id)}; first and second: {(first >> id) == (second >> id)}")
+    on split => :say("parent and first share an id: {(self >> id) == (first >> id)}; first and second: {(first >> id) == (second >> id)}")
 xx
 <>Empire |
     name: ..
@@ -52,11 +52,11 @@ m_id | m >> id
 l <> Land | heat: 0
 :overlay!(l, fire)
 :overlay!(l, ember)
-tick()
+:tick()
 repeat :objects("Kingdom") as x
-    say("{x >> name} strength {x >> strength} id is uuid {(x >> id) == (x >> uuid)}")
+    :say("{x >> name} strength {x >> strength} id is uuid {(x >> id) == (x >> uuid)}")
 xx
 repeat :objects("Empire") as e
-    say("{e >> name} strength {e >> strength} kept its id {(e >> id) == m_id} id is uuid {(e >> id) == (e >> uuid)}")
+    :say("{e >> name} strength {e >> strength} kept its id {(e >> id) == m_id} id is uuid {(e >> id) == (e >> uuid)}")
 xx
-say("heat {l >> heat} overlays {:len(:overlays_of(l))}")
+:say("heat {l >> heat} overlays {:len(:overlays_of(l))}")

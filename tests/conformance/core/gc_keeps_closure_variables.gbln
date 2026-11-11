@@ -16,17 +16,17 @@ counter | make_counter(0)
 in_array | [make_counter(10)]
 in_map | {"c": make_counter(20)}
 h <> Holder | f: make_counter(30)
-say(counter(1))
+:say(counter(1))
 :gc()
-say(counter(1))
+:say(counter(1))
 fa | in_array[0]
-say(fa(1))
+:say(fa(1))
 g | in_map{"c"}
-say(g(1))
+:say(g(1))
 k | h >> f
-say(k(1))
+:say(k(1))
 :gc()
-say(counter(1))
-say(fa(1))
-say(g(1))
-say(k(1))
+:say(counter(1))
+:say(fa(1))
+:say(g(1))
+:say(k(1))

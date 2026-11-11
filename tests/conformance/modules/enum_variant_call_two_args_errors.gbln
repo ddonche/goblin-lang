@@ -4,6 +4,6 @@ enum Shape
     Rect { w: int, h: int }
     Dot
 xx
-say("before")
+:say("before")
 c | Shape::Rect(2, 3)
-say(c)
+:say(c)

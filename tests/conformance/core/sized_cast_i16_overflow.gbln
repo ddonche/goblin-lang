@@ -1,2 +1,2 @@
-say("start")
-say(:i16(40000))
+:say("start")
+:say(:i16(40000))

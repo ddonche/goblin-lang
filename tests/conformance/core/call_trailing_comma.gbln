@@ -2,4 +2,4 @@
 act add(a, b)
     return a + b
 xx
-say(add(1, 2,))
+:say(add(1, 2,))

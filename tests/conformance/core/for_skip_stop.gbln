@@ -4,4 +4,4 @@ for k in [1, 2, 3, 4]
     if k == 4 => stop
     total |= total + k
 xx
-say(total)
+:say(total)

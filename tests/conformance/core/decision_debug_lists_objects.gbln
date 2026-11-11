@@ -3,6 +3,6 @@
     name: ""
 xx
 a <> Unit | name: "a"
-say("start")
+:say("start")
 :decision_debug()
-say("end")
+:say("end")

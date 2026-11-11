@@ -29,9 +29,9 @@ act annex(l, k)
     return k >> deeds
 xx
 act hire(l, k)
-    say("{l >> name} picks {k >> name}")
+    :say("{l >> name} picks {k >> name}")
 xx
 a <> Lord | name: "Ash"
 k1 <> Knight | name: "Kay", deeds: 1, owner: a
 k2 <> Knight | name: "Lot", deeds: 5
-tick()
+:tick()

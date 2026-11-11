@@ -65,13 +65,13 @@ repeat :range(0, n_towns) as n
     :actor(make_town(n))
 xx
 
-say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
+:say("epidemic: {n_towns} towns of {people_per_town}, {days} days")
 repeat :range(1, days + 1) as d
-    tick()
+    :tick()
     if d % 5 == 0 or d == days
         alive | :len(:objects(Person))
         ill | :len(:overlays(sick))
         immune | :len(:objects(Person, it >> immune))
-        say("day {d}: alive {alive}, sick {ill}, immune {immune}, dead {n_towns * people_per_town - alive}")
+        :say("day {d}: alive {alive}, sick {ill}, immune {immune}, dead {n_towns * people_per_town - alive}")
     xx
 xx

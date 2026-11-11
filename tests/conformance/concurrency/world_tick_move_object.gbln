@@ -48,7 +48,7 @@ east | :actor(make_region("east", 2), region_day)
 :post(west, {"peer": east})
 :post(east, {"peer": west})
 repeat :range(1, 7) as d
-    tick()
+    :tick()
     w | :await(:request(west, {"ask": 1}))
     e | :await(:request(east, {"ask": 1}))
     wh | w{"have"}
@@ -61,9 +61,9 @@ repeat :range(1, 7) as d
         age |= it >> age
     xx
     seen | :len(:overlays(tired))
-    say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}, tired seen {seen}")
+    :say("tick {d}: west {wh} (tired {wt}), east {eh} (tired {et}), all {all}, walker age {age}, tired seen {seen}")
     if d == 2
-        say(:has(w{"err"}, "C0125: object-moved"))
+        :say(:has(w{"err"}, "C0125: object-moved"))
     xx
     if d == 4
         repeat :objects(it >> marked == 1)
@@ -74,5 +74,5 @@ xx
 attempt
     :move!(1, west)
 rescue e
-    say(:has("{e}", "C0125"))
+    :say(:has("{e}", "C0125"))
 xx

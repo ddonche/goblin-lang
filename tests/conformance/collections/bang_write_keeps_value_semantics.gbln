@@ -4,25 +4,25 @@
 a | [1, 2]
 b | a
 :put_last!(a, 3)
-say(b)
-say(a)
+:say(b)
+:say(a)
 m | {"k": [1]}
 row | m{"k"}
 :update!(m{"k"}[0], 5)
-say(row)
-say(m)
+:say(row)
+:say(m)
 act grow(xs)
     :put_last!(xs, 9)
     return xs
 xx
 c | [7]
-say(grow(c))
-say(c)
+:say(grow(c))
+:say(c)
 d | [1]
-say([d, :put_last!(d, 2)])
+:say([d, :put_last!(d, 2)])
 i | 0
 while i < 3
     :put_first!(d, i)
     i |= i + 1
 xx
-say(d)
+:say(d)

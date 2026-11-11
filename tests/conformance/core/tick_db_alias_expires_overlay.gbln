@@ -10,7 +10,7 @@ overlay stunned
 xx
 rome <> Polity | stability: .8
 :overlay!(rome, stunned, .5, 1)
-say(rome >> stability)
-tick_db()
-say(rome >> stability)
-say(:overlays_of("rome"))
+:say(rome >> stability)
+:tick_db()
+:say(rome >> stability)
+:say(:overlays_of("rome"))

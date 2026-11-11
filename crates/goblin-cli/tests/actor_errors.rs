@@ -53,20 +53,20 @@ f | :request(a, 0)
 g | :request(a, 1)
 for w in [f, g, f]
     attempt
-        say(:await(w))
+        :say(:await(w))
     rescue e
-        say("{e}")
+        :say("{e}")
     xx
 xx
 attempt
     :post(a, 1)
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 attempt
     :await(a)
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 "#);
     let lines: Vec<&str> = out.lines().collect();
@@ -88,7 +88,7 @@ fn a_failing_posted_message_is_reported_on_stderr() {
 xx
 a | :actor(0, boom)
 :post(a, 0)
-say("posted")
+:say("posted")
 "#);
     assert_eq!(out, "posted\n");
     assert!(err.contains("goblin: actor `boom` failed: [main.gbln:2] division by zero"), "{err}");
@@ -107,7 +107,7 @@ act boss(state, msg)
     return state + 1
 xx
 b | :actor(0, boss)
-say(:await(:request(b, 1)))
+:say(:await(:request(b, 1)))
 "#);
     assert_eq!(out, "1\n");
     assert!(err.contains("goblin: actor `worker` failed: [main.gbln:2] division by zero"), "{err}");
@@ -124,11 +124,11 @@ act bad(state)
     return 1 / 0
 xx
 c | :actor(0, count, {stop_when: bad})
-say(:await(:request(c, 1)))
+:say(:await(:request(c, 1)))
 attempt
     :await(c)
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 "#);
     let lines: Vec<&str> = out.lines().collect();
@@ -159,13 +159,13 @@ m | :actor(0, middle)
 attempt
     :await(:request(m, 0))
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 c | :actor(0, each)
 attempt
     :await(:request(c, [1, 0]))
 rescue e
-    say("{e}")
+    :say("{e}")
 xx
 "#);
     let lines: Vec<&str> = out.lines().collect();
@@ -226,12 +226,12 @@ fn a_restarting_actor_says_so_on_stderr() {
 xx
 a | :actor(0, flaky, {restart: "on_failure", max_restarts: 1})
 :post(a, "boom")
-say(:await(:request(a, "ok")))
+:say(:await(:request(a, "ok")))
 :post(a, "boom")
 attempt
     :await(a)
 rescue e
-    say(:has("{e}", "C0112"))
+    :say(:has("{e}", "C0112"))
 xx
 "#);
     assert_eq!(out, "1\ntrue\n");
@@ -260,7 +260,7 @@ c | :await(:request(p, "start"))
 attempt
     :await(c)
 rescue e
-    say(:has("{e}", "C0116"))
+    :say(:has("{e}", "C0116"))
 xx
 act slow(state, msg)
     return :receive(:channel(1))
@@ -273,7 +273,7 @@ nap | :channel(1)
 attempt
     :await(s)
 rescue e
-    say(:has("{e}", "C0116"))
+    :say(:has("{e}", "C0116"))
 xx
 "#);
     assert_eq!(out, "true\ntrue\n");
@@ -293,7 +293,7 @@ fn a_restarting_startup_actor_keeps_serving() {
 xx
 jobs | :actor(0, job, {restart: "on_failure"})
 "#).unwrap();
-    std::fs::write(dir.join("www/api/hit.gbln"), ":post(jobs, \"boom\")\nsay(:await(:request(jobs, \"ok\")))\n").unwrap();
+    std::fs::write(dir.join("www/api/hit.gbln"), ":post(jobs, \"boom\")\n:say(:await(:request(jobs, \"ok\")))\n").unwrap();
     let port = free_port();
     let mut child = Command::new(bin())
         .args(["start", "--host", "127.0.0.1", "--port", &port.to_string(), "--startup", "startup.gbln"])

@@ -2,4 +2,4 @@
 act size(w)
     return :len(w)
 xx
-say(:sort_by(["ccc", "a", "bb"], "size"))
+:say(:sort_by(["ccc", "a", "bb"], "size"))

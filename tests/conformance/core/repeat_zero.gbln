@@ -1,4 +1,4 @@
 repeat 0
-    say("no")
+    :say("no")
 xx
-say("done")
+:say("done")

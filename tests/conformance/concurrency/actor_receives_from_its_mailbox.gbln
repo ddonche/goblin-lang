@@ -15,7 +15,7 @@ while i <= 10
     :post(b, i)
     i |= i + 1
 xx
-say(:await(:request(b, 0)))
+:say(:await(:request(b, 0)))
 act pair(state, first)
     second | :receive()
     return state + [first, second]
@@ -23,14 +23,14 @@ xx
 p | :actor([], pair)
 f1 | :request(p, "a")
 f2 | :request(p, "b")
-say(:await(f1))
-say(:await(f2))
+:say(:await(f1))
+:say(:await(f2))
 act patient(state, msg)
     return [msg, :receive(1s)]
 xx
-say(:await(:request(:actor(0, patient), "alone")))
+:say(:await(:request(:actor(0, patient), "alone")))
 attempt
     :receive()
 rescue e
-    say(:has("{e}", "C0120"))
+    :say(:has("{e}", "C0120"))
 xx

@@ -10,6 +10,6 @@ p <> Parent | child: c
 attempt
     :update!(p >> child >> hp, 2)
 rescue
-    say("rejected")
+    :say("rejected")
 xx
-say(c >> hp)
+:say(c >> hp)

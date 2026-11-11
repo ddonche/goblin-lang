@@ -1,0 +1,1413 @@
+/// Capstone step 6: overlays. What people hold and what befalls them sits
+/// on the land, because people live on land and land outlasts every
+/// realm: tongues, faiths and creeds (ideas, lasting centuries), and
+/// plague, famine and disasters (conditions, lasting years). The moods of
+/// a state sit on the realm: dread, discontent, a golden age and the
+/// strife among the great houses it can turn into (with `at_war`, `war_weariness` and
+/// `war_memory` from polity.gbln). An overlay is an adjustment layer: its
+/// `modify` lines change what reading gives, never the stored fields;
+/// what lasts (the dead, a fallen wall) is written by `every` and
+/// `on start`. Each year `account` reads the ideas a realm's people
+/// hold: how many tongues it rules (`peoples`), how much of it shares its
+/// court's tongue (cohesion) and faith (legitimacy). Every force has a
+/// counterweight drawn by chance. The design is in
+/// goblin-docs/overlays-design.md.
+import land as land
+
+now | 0
+
+act chance(p)
+    return (pick 1 from 0...9999) < p * 10000.0
+xx
+
+act past(v, at)
+    return :clamp((v - at) / (1.0 - at), 0.0, 1.0)
+xx
+
+/// The traits a culture can be pulled on.
+traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stability", "honor", "spirituality",
+    "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
+
+/// What the run's overlays did (printed at the end).
+tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
+    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0}
+
+act count(k)
+    :update!(tally{k}, tally{k} + 1)
+xx
+
+/// What an idea teaches, with one trait moved a little: a daughter idea
+/// drifts from its parent.
+act shifted(b)
+    out | {}
+    repeat b as t, v
+        :update!(out{t}, v)
+    xx
+    t | traits[(pick 1 from 0...14)]
+    :update!(out{t}, (out{t} ?? 0.0) + ((pick 1 from 0...20) - 10) / 100.0)
+    return out
+xx
+
+/// ideas: on land, for centuries
+
+/// A tongue, as languages behave (2026-11-10, owner: real life first).
+/// Its intensity on a land is the share of the land's people who speak
+/// it; a land can hold several (kinds of one class sit side by side; a
+/// kind already there is not put on again). `at` is the land this copy is
+/// held on: a copy that has just spread here (it carries its source's
+/// `at`) is spoken by few.
+/// - Shift, not merging, is how tongues meet: speakers go over to the
+///   tongue with more speakers and more standing, slowly, faster in towns
+///   and cities (`shift`). The court's tongue has standing as far as the
+///   realm speaks it: a tongue most of the realm speaks draws others; the
+///   tongue of a few conquerors gives way to the locals' (Franks, Normans).
+/// - New tongues come from separation: the speakers of a tongue cut off
+///   from the rest of it drift apart over centuries, faster with no
+///   contact at all than across a border, slower under a learned realm
+///   (a written standard). `drift` is the years of it, set by `diverge`.
+///   When it has gone far enough, by chance, it is a new tongue, and the
+///   whole cut-off region speaks it (`born`).
+/// - A creole: almost never, only in a trading city where two tongues
+///   meet and neither is on top.
+<^>Tongue |
+    hosts: Land
+    ~intensity: .1
+    title: ..
+    at: ..
+    drift: 0.0
+    /// Carried by people from where it is spoken by many (.3 or more).
+    spread: carry(self, target, intensity) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
+    transition mutate where chance(.01 * past(:min((self >> drift) / 500.0, 1.0), .4))
+        carries:
+            drift: 0.0
+        xx
+    xx
+    on mutate => born(self)
+    transition merge
+        targets: Tongue where (target >> intensity) >= .25 and (target >> intensity) <= .55 and intensity >= .25 and intensity <= .55 and land::is_city(host) and host >> trade >= .5 and chance(.002)
+        carries:
+            intensity: intensity + target >> intensity
+            drift: 0.0
+        xx
+    xx
+    on merge => drifted(self, "tongue_merge", {"a trade tongue grew in the markets": 2.0, "the children of the port spoke a tongue of their own": 1.0})
+xx
+
+/// A tongue's or faith's standing on a land: 1, plus 2 × its share of all
+/// the world's people, and for the court's 3 × the share of the realm
+/// that holds it (last year's).
+act standing(n, court, pull, appeal)
+    w | 1.0 + 2.0 * (spread_of{n} ?? 0.0) + appeal * (faith_seeks{n} ?? 0.0)
+    if n == court => send w + 3.0 * pull
+    return w
+xx
+
+/// Last year's share of all the world's people holding each tongue and
+/// faith, by name: a tongue or faith held across the world has prestige
+/// beyond any one court (Greek in the eastern sea, Persian across Asia,
+/// a world faith's pilgrims and books).
+spread_of | {}
+
+/// How fast people change tongue where they live: a town twice as fast
+/// as the country, a city three times.
+act pace(l)
+    s | l >> settlement
+    if s == "city" or s == "great city" => send 3.0
+    if s == "town" => send 2.0
+    return 1.0
+xx
+
+/// Speakers go over between each tongue and the most spoken one on land
+/// `l`, as in the Abrams-Strogatz model of language shift (Nature, 2003):
+/// a year's move is .05 × pace × (a × b^1.3 × s − b × a^1.3 × (1 − s)),
+/// for shares a and b of the two and the most spoken one's standing s
+/// against the other's (.05: a small minority with no standing loses its
+/// tongue in about three generations, as immigrants do). More speakers
+/// draw more, and standing can beat numbers. A copy that has just spread here starts at .1.
+act shift(l, cls, court, pull, rate, what)
+    ts | []
+    repeat :overlays(l) as o
+        if !:is_type(o, cls) => skip
+        if o >> at != l >> name
+            o >> at |= l >> name
+            if o >> intensity > .1 => o >> intensity |= .1
+        xx
+        :put_last!(ts, o)
+    xx
+    if :len(ts) < 2 => send nil
+    top | ts[0]
+    repeat ts as o
+        if o >> intensity > top >> intensity => top |= o
+    xx
+    c  | rate * pace(l)
+    tn | top >> overlay_name
+    xt | top >> intensity
+    /// A faith that seeks converts has the appeal of its scripture,
+    /// clergy and charity, most in the towns (early Christianity grew by
+    /// about 40% a decade in the Roman towns; `pagan` meant the
+    /// countryside): 2 × seeks × how big the place is (1 to 3).
+    appeal | 0.0
+    if cls == "Faith" => appeal |= 2.0 * pace(l)
+    /// The tongue of a faith that seeks converts has the standing of its
+    /// scripture where that faith is held (Arabic with Islam, Church
+    /// Slavonic, Pali), as far as it is held and seeks converts.
+    holy | {}
+    if cls == "Tongue"
+        repeat :overlays(l) as f
+            if !:is_type(f, "Faith") or f >> tongue == .. => skip
+            h | f >> tongue
+            :update!(holy{h}, (holy{h} ?? 0.0) + (f >> intensity) * (f >> seeks))
+        xx
+    xx
+    pt | standing(tn, court, pull, appeal) + (holy{tn} ?? 0.0)
+    repeat ts as o
+        n | o >> overlay_name
+        if n == tn => skip
+        x | o >> intensity
+        both | x + xt
+        if both <= 0.0 => skip
+        a | x / both
+        b | xt / both
+        st | pt / (pt + standing(n, court, pull, appeal) + (holy{n} ?? 0.0))
+        /// Numbers alone shift people slowly: where neither has the
+        /// prestige, a land stays bilingual (or of two faiths) for
+        /// centuries; the gap in prestige drives the shift.
+        cc | c
+        if cls != "Creed" => cc |= c * (.2 + 1.6 * :abs(st - .5))
+        move | cc * both * (a * :pow(b, 1.3) * st - b * :pow(a, 1.3) * (1.0 - st))
+        move |= :clamp(move, -xt, x)
+        x |= x - move
+        xt |= xt + move
+        /// Under one in fifty, its last speakers (or faithful) here are gone.
+        if x < .02 => x |= 0.0
+        o >> intensity |= x
+        if x > xt => count(what)
+    xx
+    top >> intensity |= :clamp(xt, 0.0, 1.0)
+xx
+
+/// Each tongue's speakers in regions: bordering lands that speak it
+/// (.3 or more) under the same holder. The region with the most people is
+/// the tongue's heart; every other region drifts a year for each year
+/// (a quarter where it borders land of another holder that speaks it,
+/// halved again under a realm of full learning), and the heart is pulled
+/// back together (its drift falls 5% a year).
+act diverge(firm, where, court)
+    repeat firm as k, ls
+        seen  | {}
+        parts | []
+        repeat ls as l
+            if seen{l >> name} ?? false => skip
+            h | holder(l)
+            part | [l]
+            :update!(seen{l >> name}, true)
+            i | 0
+            repeat i < :len(part)
+                repeat near{part[i] >> name} ?? [] as q
+                    if seen{q >> name} ?? false => skip
+                    if (where{"{k}|{q >> name}"} ?? "") != h => skip
+                    :update!(seen{q >> name}, true)
+                    :put_last!(part, q)
+                xx
+                i |= i + 1
+            xx
+            :put_last!(parts, part)
+        xx
+        heart | 0
+        most  | -1.0
+        repeat parts as part
+            n | 0.0
+            repeat part as l
+                n |= n + l >> people
+            xx
+            if n > most
+                most |= n
+                heart |= idx
+            xx
+        xx
+        repeat parts as part
+            rate | 1.0
+            if idx != heart
+                mine | {}
+                repeat part as l
+                    :update!(mine{l >> name}, true)
+                xx
+                repeat part as l
+                    repeat near{l >> name} ?? [] as q
+                        if !(mine{q >> name} ?? false) and :has(where, "{k}|{q >> name}")
+                            rate |= .25
+                            stop
+                        xx
+                    xx
+                    if rate < 1.0 => stop
+                xx
+                p | part[0] >> owner
+                if !p.nix? => rate |= rate * (1.0 - .5 * (p >> learning))
+            xx
+            /// A region whose ruler holds this faith as the court's own,
+            /// apart from its heart, is strained toward a schism, more under
+            /// a learned ruler (tongues have no strain).
+            pull | 0.0
+            if idx != heart
+                p | part[0] >> owner
+                if !p.nix? and (court{p >> name} ?? ..) == k => pull |= .5 + p >> learning
+            xx
+            repeat part as l
+                repeat :overlays(l, k) as o
+                    d | o >> drift
+                    if idx == heart
+                        if d > 0.0 => o >> drift |= d * .95
+                    else
+                        o >> drift |= d + rate
+                    xx
+                    if :is_type(o, "Faith")
+                        sn | o >> tension
+                        if pull > 0.0
+                            o >> tension |= sn + pull
+                        elif sn > 0.0
+                            o >> tension |= sn * .95
+                        xx
+                    xx
+                xx
+            xx
+        xx
+    xx
+xx
+
+/// A new tongue on land `l`: the copy that has just drifted into it. The
+/// rest of its cut-off region (bordering land speaking the old tongue
+/// under the same holder) speaks it too.
+act born(l)
+    o | nil
+    repeat :overlays(l) as c
+        if :is_type(c, "Tongue") and c >> age == 0 and :len(c >> parents) > 0 and :len(:overlays(l, (c >> parents)[0])) == 0
+            o |= c
+            stop
+        xx
+    xx
+    count("tongue_new")
+    :event(l, "tongue_new", nil, {"their speech had drifted from their fathers'": 2.0, "the old tongue was spoken there no more": 1.0})
+    if o.nix? => send nil
+    region(l, o, 1.0)
+xx
+
+/// A faith's new kind on land `l`: drifted apart (`share` 1, the whole
+/// region takes it) or split off in a schism (`share` .7: most of the
+/// region follows its ruler, the rest keep the old faith). The copy is the
+/// newest copy of a Faith on `l` made from another (`kept`: whether the
+/// old one is still there, as after a fracture).
+act faith_born(l, share, kept, what, telling)
+    o | nil
+    repeat :overlays(l) as c
+        if :is_type(c, "Faith") and c >> age == 0 and :len(c >> parents) > 0 and (:len(:overlays(l, (c >> parents)[0])) > 0) == kept
+            o |= c
+            stop
+        xx
+    xx
+    count(what)
+    :event(l, what, nil, telling)
+    if o.nix? => send nil
+    region(l, o, share)
+xx
+
+/// The rest of new kind `o`'s region on land `l`: bordering land holding
+/// its parent kind firmly (.3+) under the same holder. On each, `share`
+/// of the parent's people take the new kind.
+act region(l, o, share)
+    n  | o >> overlay_name
+    old | (o >> parents)[0]
+    h  | holder(l)
+    part | [l]
+    seen | {}
+    :update!(seen{l >> name}, true)
+    i | 0
+    repeat i < :len(part)
+        repeat near{part[i] >> name} ?? [] as q
+            if seen{q >> name} ?? false => skip
+            :update!(seen{q >> name}, true)
+            if holder(q) != h => skip
+            was | :overlays(q, old)
+            if :len(was) == 0 => skip
+            w0 | was[0]
+            if w0 >> intensity < .3 => skip
+            i0 | w0 >> intensity
+            :overlay!(q, n, i0 * share)
+            w0 >> intensity |= i0 * (1.0 - share)
+            repeat :overlays(q, n) as c
+                c >> at |= q >> name
+                c >> drift |= 0.0
+                if :is_type(c, "Faith") => c >> tension |= 0.0
+            xx
+            :put_last!(part, q)
+        xx
+        i |= i + 1
+    xx
+xx
+
+/// How likely a tongue spreads from land `a` to `b`: more with trade,
+/// twice as likely under one holder, less into the mountains.
+act carry(a, b, i)
+    c | .03 * i * (1.0 + a >> trade)
+    if a >> owner == b >> owner => c |= c * 2.0
+    if b >> terrain == "mountains" => c |= c * .3
+    return c
+xx
+
+/// A faith: about the gods, as faiths behave (2026-11-10, owner: real
+/// life first). Its intensity on a land is the share of the land's people
+/// who hold it.
+/// - Conversion is a shift, as for tongues (`shift`), but slower, and
+///   faster in cities (the countryside holds out). The court's faith has
+///   standing as far as the realm holds it, pressed harder by an
+///   intolerant ruler. Preachers carry it along borders, more from trading
+///   land (`spread`), and groups preach and found it (factions.gbln).
+/// - Isolated believers drift into rites of their own, slower than a
+///   tongue (scripture and clergy hold a faith together): `drift`, set by
+///   `diverge`, and the whole cut-off region takes the new faith.
+/// - Schisms split whole regions and follow politics: a region whose own
+///   ruler holds the faith apart from its heartland builds up `tension`,
+///   more under a learned ruler, and by chance breaks away; most of the
+///   region follows its ruler (Reformation, East and West).
+/// - Blending of two faiths into a new one, where both are held side by
+///   side and neither is on top: rare.
+<^>Faith |
+    hosts: Land
+    ~intensity: .3
+    /// Missions go out from where the faith is established (.3 or more).
+    spread: missions(self, target, intensity, seeks) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
+    /// What a realm's culture is pulled toward, by trait, as far as its
+    /// people hold it.
+    bends: {}
+    title: ..
+    founded: 0
+    at: ..
+    drift: 0.0
+    tension: 0.0
+    /// How much it seeks converts, 0 to 1: a folk faith or a people's own
+    /// gods (0) send no missions and give way when a court converts; a
+    /// universal faith with scripture and clergy (1) sends missions and
+    /// wins over courts.
+    seeks: 0.0
+    /// The tongue of its scripture: the tongue of the land it began in.
+    tongue: ..
+    transition mutate where chance(.005 * past(:min((self >> drift) / 600.0, 1.0), .4))
+        carries:
+            drift: 0.0
+            tension: 0.0
+            bends: shifted(self >> bends)
+        xx
+    xx
+    on mutate => faith_born(self, 1.0, false, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
+    transition fracture where chance(.01 * past(:min((self >> tension) / 300.0, 1.0), .3))
+        fragment:
+            intensity: intensity * .7
+            drift: 0.0
+            tension: 0.0
+            bends: shifted(self >> bends)
+        xx
+        carries:
+            intensity: intensity * .3
+            tension: 0.0
+        xx
+    xx
+    on fracture => faith_born(self, .7, true, "schism", {"the realm broke with the old church": 2.0, "a reformer's teaching was taken up by the court": 1.0, "the bishops would no longer bow to the old see": 1.0})
+    transition merge
+        targets: Faith where (target >> intensity) >= .3 and (target >> intensity) <= .6 and intensity >= .3 and intensity <= .6 and chance(.0005)
+        carries:
+            intensity: intensity + target >> intensity
+            drift: 0.0
+            tension: 0.0
+        xx
+    xx
+    on merge => drifted(self, "blend", {"the old gods were worshipped as saints": 2.0, "the two rites became one": 1.0})
+xx
+
+/// How likely preachers carry a faith from land `a` to `b`: more from
+/// trading land, twice as likely into a town or city.
+act missions(a, b, i, seeks)
+    c | .02 * i * (1.0 + 2.0 * a >> trade) * (.1 + 1.8 * seeks)
+    if b >> settlement == "town" or b >> settlement == "city" or b >> settlement == "great city" => c |= c * 2.0
+    return c
+xx
+
+/// A creed: a philosophy or a cause about how people should live, as
+/// creeds behave (2026-11-10, owner: real life first). Its intensity on a
+/// land is the share of the land's learned (scholars, the court, the
+/// well-off) who hold it, so it lives in cities.
+/// - It is carried by scholars from city to city: to a bordering city, and
+///   to a city of a realm its own realm trades with, more from a city with
+///   libraries (`schools`).
+/// - Schools compete for students: the learned shift toward the school
+///   with the larger following (`shift`, .05: faster than people change
+///   tongue), out of one pool of the learned, so a city holds a few
+///   schools and the small ones die out.
+/// - Where learning collapses (no city left), it fades, slower where a
+///   library keeps the books.
+/// - Schools split often where scholars gather: a pupil turns on his
+///   master (Plato and Aristotle, the Confucian schools), more in a city
+///   of many libraries under a learned realm.
+<^>Creed |
+    hosts: Land
+    ~intensity: .3
+    /// Scholars go out from a school with a following (.3 or more).
+    spread: schools(self, target, intensity) where intensity >= .3 and land::is_city(target) and (:link_score(self, target, "border") or traded(self, target))
+    bends: {}
+    title: ..
+    founded: 0
+    at: ..
+    transition fracture where intensity >= .3 and chance(.002 * intensity * :min(host >> library, 3) / 3.0 * (.5 + learned(host)))
+        fragment:
+            intensity: intensity * .4
+            bends: shifted(self >> bends)
+        xx
+        carries:
+            intensity: intensity * .6
+        xx
+    xx
+    on fracture => drifted(self, "creed_split", {"the scholars fell out into two schools": 2.0, "a pupil turned on his master": 1.0})
+xx
+
+/// How likely scholars carry a creed from city land `a` to `b`.
+act schools(a, b, i)
+    return .02 * i * (1.0 + :min(a >> library, 3))
+xx
+
+/// Whether the holders of lands `a` and `b` trade.
+act traded(a, b)
+    p | a >> owner ?? => send false
+    q | b >> owner ?? => send false
+    if p == q => send false
+    return :link_score(p, q, "trade") > 0
+xx
+
+/// The learning of the realm holding land `l` (0 with no holder).
+act learned(l)
+    p | l >> owner ?? => send 0.0
+    return p >> learning
+xx
+
+/// A new idea from nothing, at land `c`, teaching `b`: a faith, or a creed
+/// when `faith` is false. A group founds it (factions::found); the new
+/// kind's name is returned.
+act found(faith, b, by, c)
+    if faith
+        overlay new_faith <^> Faith
+            bends: b
+            title: "the faith of {by}"
+            founded: now
+            at: c >> name
+            /// A faith with a founder and a teaching mostly seeks converts.
+            seeks: (pick 1 from 3...10) / 10.0
+            tongue: top(c, "Tongue")
+        xx
+        :overlay!(c, new_faith, .3)
+        send new_faith
+    xx
+    overlay new_creed <^> Creed
+        bends: b
+        title: "the teaching of {by}"
+        founded: now
+        at: c >> name
+    xx
+    :overlay!(c, new_creed, .3)
+    return new_creed
+xx
+
+act drifted(l, what, telling)
+    count(what)
+    :event(l, what, nil, telling)
+xx
+
+/// conditions: on land, for years
+
+/// A plague: it kills a share of the land's people each year it is on
+/// (`every`, so the dead stay dead), more in a city, less where the
+/// people have met it before; trade falls while it lasts. It spreads
+/// along borders, more from trading land into crowded land, and by ship
+/// and caravan between the cities of realms that trade. By chance it
+/// turns into a new strain, deadlier or milder. It dies out where too few
+/// are left, and leaves the survivors immune; the immunity fades as
+/// children are born who never had it (`immunity`), and the sickness can
+/// come back.
+<^>Plague |
+    hosts: Land
+    /// One plague at a time on a land: a strain does not catch where another is.
+    dup: ignore
+    ~intensity: .8
+    decays: .15
+    deadly: .12
+    spread: catch(self, target, intensity) where target >> people >= 20.0 and open_to(target) and (:link_score(self, target, "border") or (land::is_city(target) and land::is_city(self) and traded(self, target)))
+    every 1 tick => @people |= @people * (1.0 - deadly * intensity * toll(self))
+    modify
+        @trade - @trade * .5 * intensity
+    xx
+    transition mutate where chance(.05 * intensity)
+        carries:
+            deadly: :clamp((self >> deadly) + ((pick 1 from 0...10) - 5) / 100.0, .02, .3)
+        xx
+    xx
+    on mutate => drifted(self, "strain", {"the sickness came back in a new form": 2.0, "a new fever followed the old": 1.0})
+    transition erase where host >> people < 20.0
+    on end => :overlay!(self, immunity, 1)
+xx
+overlay plague <^> Plague
+xx
+/// What survivors of a plague keep: it fades over a generation, as the
+/// people who lived through it die and children are born.
+overlay immunity
+    hosts: Land
+    dup: replace
+    decays: .04
+xx
+
+act catch(a, b, i)
+    return .5 * i * (.2 + :field(a, "trade")) * :min((b >> people) / (b >> food), 1.0)
+xx
+
+/// A plague catches only where most of the survivors of the last one are gone.
+act open_to(l)
+    return (:overlay_strength("immunity", l) ?? 0.0) < .6
+xx
+
+/// How hard a plague hits land `l`: half again in a city, less by the
+/// immunity left from the last one.
+act toll(l)
+    t | 1.0 - (:overlay_strength("immunity", l) ?? 0.0)
+    if land::is_city(l) => t |= t * 1.5
+    return t
+xx
+
+/// A bad harvest: a wet cold summer or a dry one over a whole region, the
+/// cold years after a great eruption over the whole world, a flood, or an
+/// army living off the land. The land feeds fewer until the next harvest.
+overlay dearth
+    hosts: Land
+    dup: stronger
+    ~intensity: .3
+    lasts: 2
+    modify
+        @food - @food * intensity
+    xx
+xx
+
+/// An army fought on land `l` this year: it ate and burned the harvest.
+act ravage(l)
+    :overlay!(l, dearth, .3)
+xx
+
+/// Famine: more people than this year's harvest feeds. It kills, mostly by
+/// the fevers that come with hunger, less where there are granaries or
+/// trade brings grain in, and ends with a good harvest.
+overlay famine
+    hosts: Land
+    dup: stronger
+    ~intensity: .5
+    every 1 tick => @people |= @people * (1.0 - .1 * intensity / (1.0 + @granary + @trade))
+    transition erase where host >> people <= host >> food
+xx
+
+/// Small cataclysms: floods on rivers (the harvest lost), quakes in hills
+/// and mountains, deadliest in cities, fires in towns and cities. Each
+/// kills some and may bring down buildings once (`on start`). A drought
+/// on dry and open land cuts the harvest for years.
+<^>Disaster |
+    hosts: Land
+    lasts: 1
+xx
+overlay flood <^> Disaster
+    on start => struck(self, .01, "granary", "roads")
+xx
+overlay quake <^> Disaster
+    on start => struck(self, quake_toll(self), "walls", "temple")
+xx
+overlay fire <^> Disaster
+    on start => struck(self, .002, "library", "granary")
+xx
+overlay drought <^> Disaster
+    lasts: 3
+    modify
+        @food - @food * .4 * intensity
+    xx
+xx
+
+/// A quake kills more where people live crowded in stone houses.
+act quake_toll(l)
+    if land::is_city(l) => send .08
+    return .02
+xx
+
+act struck(l, killed, a, b)
+    l >> people |= l >> people * (1.0 - killed)
+    repeat [a, b] as k
+        if l >> {k} > 0 and chance(.5)
+            l >> {k} |= l >> {k} - 1
+            if k == "granary" => l >> food |= l >> food / 1.1
+        xx
+    xx
+xx
+
+/// The weather. Each year a region of the map (6 by 6 provinces) has a
+/// bad harvest by chance, one year in about sixteen, cutting it by a
+/// tenth to a third; and once in a few centuries a great eruption
+/// darkens the whole world's sky for two years. `weather` holds this
+/// year's draw for each region.
+weather   | {}
+cold_left | 0
+
+/// Dry, open land, where a bad year is a drought that lasts.
+act dry(k)
+    return k == "steppe" or k == "desert" or k == "plain"
+xx
+
+act harvest_cut(l)
+    key | "{l >> x // 6},{l >> y // 6}"
+    c | weather{key}
+    if c.nix?
+        c |= 0.0
+        if chance(.06) => c |= (pick 1 from 10...35) / 100.0
+        :update!(weather{key}, c)
+    xx
+    return c
+xx
+
+/// moods: on a realm, for years or a generation
+
+/// Dread, after a plague, a quake, a great famine or the dark years: more
+/// afraid, more pious, holding to the old ways, harder on strangers and
+/// those of another faith, and doubting a ruler heaven seems to have
+/// left.
+overlay dread
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    dup: stronger
+    decays: .04
+    modify
+        @fear + .1 * intensity
+        @tradition + .05 * intensity
+        @spirituality + .05 * intensity
+        @tolerance - .1 * intensity
+        @legitimacy - .03 * intensity
+    xx
+xx
+
+/// Discontent: stirred by famine, taxes, a lost war and crushed groups;
+/// eased by relief, concessions and a won war; it fades each year. It
+/// raises the unrest a breakaway reads, and lowers stability and
+/// legitimacy.
+overlay discontent
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    dup: replace
+    decays: .05
+    modify
+        @unrest + .5 * intensity
+        @stability - .1 * intensity
+        @legitimacy - .05 * intensity
+    xx
+xx
+
+act stir(p, amt)
+    was | :overlay_strength("discontent", p)
+    if was.nix? and amt <= 0.0 => send nil
+    :overlay!(p, discontent, :clamp((was ?? 0.0) + amt, 0.0, 1.0))
+xx
+
+/// Each realm's people over what its land feeds in a good year (set each
+/// year by `account`).
+fullness | {}
+
+/// How far a realm's land has filled since `began` (its fullness then),
+/// 0 to 1 at eight points more.
+act crowd(p, began)
+    return :clamp(((fullness{p >> name} ?? 0.0) - began) / .08, 0.0, 1.0)
+xx
+
+/// A golden age: peace, trade and a steady rule over land with room to
+/// spare, so food is cheap and there is surplus for builders, scholars
+/// and patrons. Learning, openness and ambition rise. It ends with a lost
+/// war or unrest. The surplus feeds more children, and as the land fills
+/// the good years turn into strife among the great houses: more heirs
+/// and office seekers than land and offices for them.
+overlay golden_age
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    lasts: 60
+    /// The realm's fullness when it began.
+    began: 0.0
+    modify
+        @learning + .1 * intensity
+        @openness + .1 * intensity
+        @ambition + .05 * intensity
+        @legitimacy + .05 * intensity
+    xx
+    transition mutate where age >= 10 and chance(.05 * crowd(host, self >> began))
+        into: elite_strife
+    xx
+    on mutate => drifted(self, "elite_strife", {"there were more lords than lands to give them": 2.0, "bread grew dear and the great houses quarrelled": 1.0})
+    transition erase where host >> lost_years > 0 or host >> unrest >= .3
+xx
+/// Elite strife: the great houses fight over too few offices and lands;
+/// cohesion, stability and legitimacy fall.
+overlay elite_strife
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    lasts: 40
+    modify
+        @cohesion - .1 * intensity
+        @stability - .1 * intensity
+        @legitimacy - .05 * intensity
+    xx
+xx
+
+/// year 0 and each year
+
+/// Each land's bordering lands, by name (set once at year 0).
+near | {}
+
+act neighbours(pairs)
+    repeat pairs as pr
+        a | pr[0]
+        b | pr[1]
+        xs | near{a >> name} ?? []
+        :put_last!(xs, b)
+        :update!(near{a >> name}, xs)
+        ys | near{b >> name} ?? []
+        :put_last!(ys, a)
+        :update!(near{b >> name}, ys)
+    xx
+xx
+
+/// Year 0: each kingdom's homeland speaks a tongue of its own and holds a
+/// faith of its own, strong. The tribes and village communities share
+/// one tongue and one folk faith with the bordering ones that have
+/// them already, so neighbours form clusters, and a cluster with no
+/// kingdom gets its own.
+act seed(kingdoms, others, pairs)
+    neighbours(pairs)
+    /// The tongue and faith each realm was given, by name.
+    given | {}
+    repeat kingdoms as p
+        tongue | ..
+        overlay old_tongue <^> Tongue
+            title: "the speech of {p >> name}"
+        xx
+        tongue |= old_tongue
+        faith | ..
+        overlay old_faith <^> Faith
+            bends: teaching()
+            title: "the old gods of {p >> name}"
+            /// A kingdom's cult: some priesthood, few missions.
+            seeks: (pick 1 from 0...3) / 10.0
+        xx
+        faith |= old_faith
+        hold(p, tongue, .9, faith, .8)
+    xx
+    repeat others as p
+        tongue | ..
+        faith | ..
+        repeat :objects(Land, it >> owner == p) as l
+            repeat near{l >> name} ?? [] as q
+                o | q >> owner ?? => skip
+                if o == p or :is_type(o, "Kingdom") => skip
+                g | given{o >> name} ?? => skip
+                tongue |= g[0]
+                faith |= g[1]
+                stop
+            xx
+            if tongue != .. => stop
+        xx
+        if tongue == ..
+            overlay folk_tongue <^> Tongue
+                title: "the speech of {p >> name}"
+            xx
+            tongue |= folk_tongue
+            overlay folk_faith <^> Faith
+                bends: teaching()
+                title: "the spirits of {p >> name}"
+            xx
+            faith |= folk_faith
+        xx
+        :update!(given{p >> name}, [tongue, faith])
+        hold(p, tongue, .8, faith, .6)
+    xx
+xx
+
+/// A little of two traits, either way.
+act teaching()
+    b | {}
+    repeat 2
+        t | traits[(pick 1 from 0...14)]
+        :update!(b{t}, ((pick 1 from 0...30) - 15) / 100.0)
+    xx
+    return b
+xx
+
+/// Tongue `t` and faith `f` on every land `p` holds, each copy marked as
+/// held there.
+act hold(p, t, ti, f, fi)
+    repeat :objects(Land, it >> owner == p) as l
+        :overlay!(l, t, ti)
+        :overlay!(l, f, fi)
+        repeat :overlays(l) as o
+            o >> at |= l >> name
+        xx
+    xx
+xx
+
+/// The strongest copy of class `c` on land `l`, by name (`..` for none).
+act top(l, c)
+    best | ..
+    most | 0.0
+    repeat :overlays(l) as o
+        if :is_type(o, c) and o >> intensity > most
+            most |= o >> intensity
+            best |= o >> overlay_name
+        xx
+    xx
+    return best
+xx
+
+/// Last year's share of each realm's people speaking its court's tongue,
+/// and holding its court's faith.
+court_share  | {}
+court_fshare | {}
+
+/// Each year, after the groups' accounts: on each land, speakers shift
+/// between its tongues (`shift`); faiths that have just arrived start
+/// weak, and a faith held beside a firmer one fades, faster the further
+/// behind it is; a creed fades where there is no city; each faith's years
+/// cut off and its rivals are counted. Each tongue's cut-off regions
+/// drift (`diverge`). Then plague, the weather, disasters and famine.
+/// Then each realm: how many tongues its people speak (`peoples`), how
+/// much of them share its court's tongue (cohesion) and faith
+/// (legitimacy), through `bends`; dread after a plague or disaster on its
+/// land, discontent from famine, and by chance a golden age.
+act account(year, lands, realms)
+    now |= year
+    weather |= {}
+    if cold_left > 0 => cold_left |= cold_left - 1
+    if cold_left == 0 and chance(.003)
+        cold_left |= 2
+        count("dark_years")
+        :event("the world", "dark_years", nil, {"the sun was dim for two summers": 2.0, "a dry fog hid the sky and the harvests failed everywhere": 1.0})
+    xx
+    /// Each realm's people and what its land feeds in a good year.
+    ate | {}
+    fed | {}
+    /// Where each tongue and faith is held firmly (.3 or more): "kind|land"
+    /// to the land's holder.
+    where | {}
+    /// The lands that hold each tongue and faith firmly.
+    firm  | {}
+    repeat lands as l
+        w | holder(l)
+        repeat :overlays(l) as o
+            if o >> intensity < .3 => skip
+            if :is_type(o, "Tongue") or :is_type(o, "Faith")
+                n | o >> overlay_name
+                :update!(where{"{n}|{l >> name}"}, w)
+                xs | firm{n} ?? []
+                :put_last!(xs, l)
+                :update!(firm{n}, xs)
+            xx
+        xx
+    xx
+    /// The court's tongue and faith: the firmest at its capital.
+    court_t | {}
+    court_f | {}
+    repeat realms as p
+        c | p >> capital ?? => skip
+        :update!(court_t{p >> name}, top(c, "Tongue"))
+        :update!(court_f{p >> name}, top(c, "Faith"))
+    xx
+    /// Each realm's people by the tongue and faith they hold.
+    spoken  | {}
+    faithful | {}
+    struck  | {}
+    hungry  | {}
+    repeat lands as l
+        w  | holder(l)
+        p  | l >> owner
+        ln | l >> name
+        ns | near{ln} ?? []
+        os | :overlays(l)
+        tt | 0.0
+        ts | 0.0
+        ft | 0.0
+        fs | 0.0
+        sick   | false
+        famine_on | false
+        /// A disaster under way, and one this year the realm will dread.
+        busy   | false
+        hit    | false
+        repeat os as o
+            i | o >> intensity
+            if :is_type(o, "Tongue")
+                tt |= :max(tt, i)
+                ts |= ts + i
+            elif :is_type(o, "Faith")
+                ft |= :max(ft, i)
+                fs |= fs + i
+                :update!(faith_seeks{o >> overlay_name}, o >> seeks)
+            elif :is_type(o, "Plague")
+                sick |= true
+            elif o >> overlay_name == "famine"
+                famine_on |= true
+            elif :is_type(o, "Disaster")
+                busy |= true
+            xx
+        xx
+        if ts > 0.0 => shift(l, "Tongue", court_t{w} ?? .., court_share{w} ?? .5, .05, "shifted")
+        /// The court presses its faith harder the less tolerant it is.
+        if fs > 0.0
+            press | 1.0
+            if !p.nix? => press |= 1.5 - p >> tolerance
+            shift(l, "Faith", court_f{w} ?? .., (court_fshare{w} ?? .5) * press, .03, "converted")
+        xx
+        if land::is_city(l) => shift(l, "Creed", .., 0.0, .05, "creed_shift")
+        /// The court's officials, garrisons and priests bring its tongue
+        /// and faith into the towns it rules (Latin and the church came to
+        /// Gaul's towns long before its fields).
+        if !p.nix? and (l >> settlement == "town" or land::is_city(l))
+            ct | court_t{w} ?? ..
+            if ct != .. and :len(:overlays(l, ct)) == 0 and chance(.05)
+                firm_up(l, ct, .05)
+                ts |= ts + .05
+            xx
+            cf | court_f{w} ?? ..
+            if cf != .. and :len(:overlays(l, cf)) == 0 and chance(.05)
+                firm_up(l, cf, .05)
+                fs |= fs + .05
+            xx
+        xx
+        /// A faith's clergy and scholars bring its scripture's tongue into
+        /// the towns where it is held.
+        if l >> settlement == "town" or land::is_city(l)
+            repeat :overlays(l) as f
+                if !:is_type(f, "Faith") or f >> intensity < .3 or f >> seeks < .5 or f >> tongue == .. => skip
+                h | f >> tongue
+                if :len(:overlays(l, h)) == 0 and chance(.03 * f >> seeks)
+                    firm_up(l, h, .05)
+                    ts |= ts + .05
+                xx
+            xx
+        xx
+        if ts > 0.0 or fs > 0.0 or land::is_city(l) => os |= :overlays(l)
+        st | spoken{w} ?? {}
+        sf | faithful{w} ?? {}
+        repeat os as o
+            tongue | :is_type(o, "Tongue")
+            faith  | :is_type(o, "Faith")
+            if !(tongue or faith or :is_type(o, "Creed")) => skip
+            n | o >> overlay_name
+            i | o >> intensity
+            if tongue
+                if !p.nix? => :update!(st{n}, (st{n} ?? 0.0) + (l >> people) * i)
+                skip
+            xx
+            if faith
+                if !p.nix? => :update!(sf{n}, (sf{n} ?? 0.0) + (l >> people) * i)
+                skip
+            xx
+            /// A creed: just arrived, held by few; with no city left it
+            /// fades, slower where a library keeps the books.
+            if o >> at != ln
+                o >> at |= ln
+                if i > .1 => i |= .1
+            xx
+            if !land::is_city(l) => i |= i - .05 / (1.0 + l >> library)
+            i |= :clamp(i, 0.0, 1.0)
+            if i != o >> intensity => o >> intensity |= i
+        xx
+        if !p.nix?
+            :update!(spoken{w}, st)
+            :update!(faithful{w}, sf)
+        xx
+        /// Plague, the weather, disasters and famine.
+        pe | l >> people
+        if pe < 20.0 => skip
+        if !p.nix?
+            :update!(ate{w}, (ate{w} ?? 0.0) + pe)
+            :update!(fed{w}, (fed{w} ?? 0.0) + :field(l, "food"))
+        xx
+        full | pe / (l >> food)
+        /// A sickness from outside comes with trade. One that came before
+        /// can come back once most who lived through it are gone; hunger
+        /// opens the way to fevers.
+        im | :overlay_strength("immunity", l) ?? 0.0
+        if !sick and pe >= 100.0 and im < .6
+            odds | .0001 * :min(full, 1.0) * (.2 + l >> trade)
+            if im > 0.0 => odds |= odds * 20.0
+            if famine_on => odds |= odds * 5.0
+            if chance(odds)
+                :overlay!(l, plague, .8)
+                count("plague")
+                hit |= true
+                :event(l, "plague", p, {"a sickness came with the ships": .1 + l >> trade, "the dead lay in the streets": 1.0, "a fever spread from the market": 1.0})
+            xx
+        xx
+        k | l >> terrain
+        cut | harvest_cut(l)
+        if cold_left > 0 => cut |= cut + .25
+        if !busy
+            d | ..
+            judge
+                k == "river" and chance(.03): d |= "flood"
+                k == "mountains" and chance(.002): d |= "quake"
+                k == "hills" and chance(.002): d |= "quake"
+                cut > 0.0 and cold_left == 0 and dry(k) and chance(.5): d |= "drought"
+                land::is_city(l) and chance(.02): d |= "fire"
+                l >> settlement == "town" and chance(.02): d |= "fire"
+            xx
+            if d != ..
+                judge
+                    d == "flood": :overlay!(l, flood, 1)
+                    d == "quake": :overlay!(l, quake, 1)
+                    d == "drought": :overlay!(l, drought, 1)
+                    d == "fire": :overlay!(l, fire, 1)
+                xx
+                count(d)
+                /// A flood takes the harvest; a quake is dreaded.
+                if d == "flood" => cut |= :max(cut, .5)
+                if d == "drought" => cut |= 0.0
+                if d == "quake" => hit |= true
+                :event(l, d, p, {"the {d} came": 2.0, "the old people had seen nothing like it": 1.0})
+            xx
+        xx
+        if cut > 0.0 => :overlay!(l, dearth, :min(cut, .6))
+        if !famine_on and pe > (l >> food) * 1.02
+            fi | :clamp((pe / (l >> food) - 1.0) * 2.5, .1, 1.0)
+            :overlay!(l, famine, fi)
+            count("famine")
+            famine_on |= true
+            /// A great famine is dreaded as well as hated.
+            if fi >= .5 => hit |= true
+            :event(l, "famine", p, {"the harvest failed": 2.0, "the granaries stood empty": 1.0, "bread cost a day's wage": 1.0})
+        xx
+        if p.nix? => skip
+        if hit => :update!(struck{w}, true)
+        if famine_on => :update!(hungry{w}, true)
+    xx
+    diverge(firm, where, court_f)
+    /// Each faith's share of all the world's people.
+    reach | {}
+    world | 0.0
+    repeat faithful as w, m
+        repeat m as n, v
+            :update!(reach{n}, (reach{n} ?? 0.0) + v)
+            world |= world + v
+        xx
+    xx
+    if world > 0.0
+        repeat reach as n, v
+            :update!(reach{n}, v / world)
+        xx
+    xx
+    said | {}
+    heard | 0.0
+    repeat spoken as w, m
+        repeat m as n, v
+            :update!(said{n}, (said{n} ?? 0.0) + v)
+            heard |= heard + v
+        xx
+    xx
+    nxt | reach
+    if heard > 0.0
+        repeat said as n, v
+            :update!(nxt{n}, v / heard)
+        xx
+    xx
+    spread_of |= nxt
+    repeat realms as p
+        k | p >> name
+        total | p >> people
+        if total > 0.0
+            st | spoken{k} ?? {}
+            n | 0
+            repeat st as t, v
+                if v / total >= .15 => n |= n + 1
+            xx
+            if :max(n, 1) != p >> peoples => p >> peoples |= :max(n, 1)
+            tshare | (st{court_t{k} ?? ..} ?? 0.0) / total
+            :update!(court_share{k}, tshare)
+            fshare | ((faithful{k} ?? {}){court_f{k} ?? ..} ?? 0.0) / total
+            :update!(court_fshare{k}, fshare)
+            convert(p, court_f{k} ?? .., fshare, court_f, reach, faithful)
+            b | p >> bends
+            :update!(b{"cohesion"}, (b{"cohesion"} ?? 0.0) + (tshare - .5) * .3)
+            :update!(b{"legitimacy"}, (b{"legitimacy"} ?? 0.0) + (fshare - .5) * .2)
+            p >> bends |= b
+        xx
+        if struck{k} ?? false
+            :overlay!(p, dread, .6)
+            count("dread")
+        xx
+        if hungry{k} ?? false => stir(p, .05)
+        f | (ate{k} ?? 0.0) / :max(fed{k} ?? 0.0, 1.0)
+        :update!(fullness{k}, f)
+        if p >> wars == 0 and f < .7 and (:overlay_strength("war_memory", p)).nix? and (:overlay_strength("golden_age", p)).nix? and (:overlay_strength("elite_strife", p)).nix? and p >> stability >= .55 and p >> commerce >= .5 and chance(.01)
+            :overlay!(p, golden_age, 1)
+            g | :overlays(p, "golden_age")[0]
+            g >> began |= f
+            count("golden_age")
+            :event(p, "golden_age", nil, {"poets and builders came to the court": 2.0, "it was remembered as the good years": 1.0})
+        xx
+    xx
+    kindred(realms, spoken, faithful, court_t, court_f)
+xx
+
+/// What two bordering realms share, 0 to 1: of their tongues
+/// (`shared_tongue`) and of their faiths (`shared_faith`). Half is how
+/// much their peoples hold alike (the overlap of their shares), half
+/// whether their courts hold the same one. In real life a shared tongue
+/// makes trade easier; a shared faith makes alliances, royal marriages,
+/// aid and peace easier, and a different one gives a war its
+/// justification; land of one's own tongue and faith is easier to take
+/// in than to hold as a vassal. polity.gbln reads these links.
+link shared_tongue
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+link shared_faith
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+
+/// Each realm's bordering realms (last year's), by name.
+beside | {}
+
+/// When a court took a new faith and what it held before, by realm name.
+converted | {}
+
+/// A court takes the faith of a bordering realm's court (2026-11-10,
+/// real life first). Most of the great conversions came from the top:
+/// Clovis, Vladimir of Kiev, Mieszko of Poland, the Khazar khagans, the
+/// Mongol khans. A ruler took the faith of a stronger neighbour, for its
+/// alliance, its trade, its priests who could write, its prestige, and
+/// the people followed over generations (the court's pressure in
+/// `shift`). The faith it takes seeks converts, belongs to the stronger
+/// neighbour, and is held by more of the world; a court whose own faith
+/// seeks converts rarely gives it up, an open ruler more readily. The
+/// court's men and new monasteries bring it into the towns at once.
+/// Counterweight: where the people still hold the old faith a generation
+/// on, an old-faith reaction can bring it back (Poland in the 1030s,
+/// Hungary in 1046, Sweden), likelier the fewer have converted.
+act convert(p, own, fshare, court_f, reach, inside)
+    c | p >> capital ?? => send nil
+    k | p >> name
+    was | converted{k}
+    if !was.nix? and now - was[0] <= 40
+        if fshare < .3 and chance(.02 * (1.0 - fshare))
+            back | was[1]
+            firm_up(c, back, .6)
+            cut_down(c, own, .4)
+            :update!(converted{k}, [now - 100, back])
+            count("reaction")
+            :event(p, "reaction", nil, {"the people rose for the old gods": 2.0, "the new priests were driven out": 1.0})
+        xx
+        send nil
+    xx
+    sf | seeks_of(c, own)
+    /// Each neighbour's court faith pulls by how much it seeks converts
+    /// and how strong that neighbour is; several neighbours of one faith
+    /// pull together (the kings of the north converted as their
+    /// neighbours had, for alliances and marriages).
+    pulls | {}
+    repeat beside{k} ?? [] as q
+        if q.nix? => skip
+        g | court_f{q >> name} ?? ..
+        if g == .. or g == own => skip
+        w | seeks_of_any(g) * (q >> power) / ((p >> power) + (q >> power) + .001)
+        :update!(pulls{g}, (pulls{g} ?? 0.0) + w)
+    xx
+    best | ..
+    bw | 0.0
+    repeat pulls as g, w0
+        w | w0 * (.3 + 2.0 * (reach{g} ?? 0.0))
+        if w > bw
+            bw |= w
+            best |= g
+        xx
+    xx
+    /// Or a faith that has won followers inside the realm (Constantine,
+    /// Ashoka), as far as its people hold it.
+    total | p >> people
+    if total > 0.0
+        repeat inside{k} ?? {} as g, v
+            if g == own => skip
+            share | v / total
+            if share < .05 => skip
+            w | seeks_of_any(g) * share * 2.0 * (.3 + 2.0 * (reach{g} ?? 0.0))
+            if w > bw
+                bw |= w
+                best |= g
+            xx
+        xx
+    xx
+    if best == .. => send nil
+    if !chance(.03 * bw * (1.0 - sf) * (.5 + p >> openness)) => send nil
+    firm_up(c, best, .6)
+    cut_down(c, own, .4)
+    repeat :objects(Land, it >> owner == p and it != c and (it >> settlement == "town" or land::is_city(it))) as l
+        firm_up(l, best, .2)
+    xx
+    :update!(converted{k}, [now, own])
+    count("court_converted")
+    :event(p, "court_converted", nil, {"the ruler was baptized and the lords with him": 2.0, "the ruler took the faith of the strong neighbour": 1.0, "the old shrines were pulled down": 1.0})
+xx
+
+/// How much the faith named `n` seeks converts, read from its copy on land `l`.
+act seeks_of(l, n)
+    if n == .. => send 0.0
+    cs | :overlays(l, n)
+    if :len(cs) == 0 => send 0.0
+    return cs[0] >> seeks
+xx
+
+/// How much each faith seeks converts, by name (set each year by `account`).
+faith_seeks | {}
+
+act seeks_of_any(n)
+    return faith_seeks{n} ?? 0.0
+xx
+
+/// The copy of `n` on land `l` held by at least `x` (a new copy if none).
+act firm_up(l, n, x)
+    if n == .. => send nil
+    cs | :overlays(l, n)
+    if :len(cs) == 0
+        :overlay!(l, n, x)
+        repeat :overlays(l, n) as c
+            c >> at |= l >> name
+        xx
+        send nil
+    xx
+    c | cs[0]
+    if c >> intensity < x => c >> intensity |= x
+xx
+
+/// The copy of `n` on land `l` cut to `share` of what it was.
+act cut_down(l, n, share)
+    if n == .. => send nil
+    repeat :overlays(l, n) as c
+        c >> intensity |= c >> intensity * share
+    xx
+xx
+
+/// Last year's bordering pairs, and how many share a tongue or a faith
+/// (.5 or more).
+kin_seen | {"pairs": 0, "tongue": 0, "faith": 0}
+
+act kindred(realms, spoken, faithful, court_t, court_f)
+    seen | {"pairs": 0, "tongue": 0, "faith": 0}
+    nb | {}
+    tsh | {}
+    fsh | {}
+    repeat realms as p
+        k | p >> name
+        total | p >> people
+        if total <= 0.0 => skip
+        a | {}
+        repeat (spoken{k} ?? {}) as t, v
+            :update!(a{t}, v / total)
+        xx
+        :update!(tsh{k}, a)
+        b | {}
+        repeat (faithful{k} ?? {}) as t, v
+            :update!(b{t}, v / total)
+        xx
+        :update!(fsh{k}, b)
+    xx
+    n | :len(realms)
+    repeat :range(0, n) as i
+        p | realms[i]
+        repeat :range(i + 1, n) as j
+            q | realms[j]
+            if !:link_score(p, q, "border") => skip
+            xs | nb{p >> name} ?? []
+            :put_last!(xs, q)
+            :update!(nb{p >> name}, xs)
+            ys | nb{q >> name} ?? []
+            :put_last!(ys, p)
+            :update!(nb{q >> name}, ys)
+            st | alike(tsh{p >> name} ?? {}, tsh{q >> name} ?? {}, court_t{p >> name}, court_t{q >> name})
+            sf | alike(fsh{p >> name} ?? {}, fsh{q >> name} ?? {}, court_f{p >> name}, court_f{q >> name})
+            tie(p, q, "shared_tongue", st)
+            tie(p, q, "shared_faith", sf)
+            :update!(seen{"pairs"}, seen{"pairs"} + 1)
+            if st >= .5 => :update!(seen{"tongue"}, seen{"tongue"} + 1)
+            if sf >= .5 => :update!(seen{"faith"}, seen{"faith"} + 1)
+        xx
+    xx
+    kin_seen |= seen
+    beside |= nb
+xx
+
+/// Half the overlap of two realms' shares, half whether their courts agree.
+act alike(a, b, ca, cb)
+    o | 0.0
+    repeat a as t, v
+        o |= o + :min(v, b{t} ?? 0.0)
+    xx
+    same | 0.0
+    if !ca.nix? and ca != .. and ca == cb => same |= 1.0
+    return :clamp(o, 0.0, 1.0) * .5 + same * .5
+xx
+
+/// Sets a lasting link both ways to `v`.
+act tie(p, q, what, v)
+    d | v - :link_score(p, q, what)
+    if :abs(d) < .01 => send nil
+    :link!(p, q, what, d)
+    :link!(q, p, what, d)
+xx
+
+act holder(l)
+    o | l >> owner ?? => send "-"
+    return o >> name
+xx
+
+/// The tongues, faiths and creeds held at the end, the largest tongue's
+/// and faith's share of all people, and the realms ruling more than one
+/// people (for the checks).
+act counts(lands, realms)
+    total | 0.0
+    by | {}
+    cls | {}
+    repeat lands as l
+        total |= total + l >> people
+        repeat :overlays(l) as o
+            c | ..
+            if :is_type(o, "Tongue") => c |= "tongue"
+            if :is_type(o, "Faith") => c |= "faith"
+            if :is_type(o, "Creed") => c |= "creed"
+            if c == .. => skip
+            n | o >> overlay_name
+            :update!(cls{n}, c)
+            :update!(by{n}, (by{n} ?? 0.0) + (l >> people) * (o >> intensity))
+        xx
+    xx
+    out | {"tongues": 0, "faiths": 0, "creeds": 0, "largest_tongue": 0.0, "largest_faith": 0.0, "many_peoples": 0}
+    repeat realms as p
+        if p >> peoples > 1 => :update!(out{"many_peoples"}, out{"many_peoples"} + 1)
+    xx
+    repeat by as n, v
+        c | cls{n}
+        :update!(out{"{c}s"}, out{"{c}s"} + 1)
+        if total > 0.0 and c != "creed" => :update!(out{"largest_{c}"}, :max(out{"largest_{c}"}, :round(v / total, 3)))
+    xx
+    return out
+xx
+
+/// Last year's bordering realms sharing a tongue or a faith (.5 or
+/// more), and how many wars under way are between realms that do not
+/// share a faith.
+act kinship_counts()
+    out | kin_seen
+    :update!(out{"wars"}, 0)
+    :update!(out{"wars_apart"}, 0)
+    repeat :objects(War, !(it >> over)) as w
+        a | w >> attacker
+        d | w >> defender
+        if a.nix? or d.nix? => skip
+        :update!(out{"wars"}, out{"wars"} + 1)
+        if :link_score(a, d, "shared_faith") < .5 => :update!(out{"wars_apart"}, out{"wars_apart"} + 1)
+    xx
+    return out
+xx

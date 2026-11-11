@@ -10,7 +10,7 @@ act build(n)
     xx
     return out
 xx
-say(build(12))
+:say(build(12))
 act copies()
     a | "ab"
     keep | [a]
@@ -18,17 +18,17 @@ act copies()
     a |= a + "c"
     return [a, keep, b]
 xx
-say(copies())
+:say(copies())
 act failed()
     y | "a"
     attempt
         y |= y + 3
     rescue e
-        say(:has("{e}", "T0205"))
+        :say(:has("{e}", "T0205"))
     xx
     return y
 xx
-say(failed())
+:say(failed())
 act others()
     n | 1
     n |= n + 2
@@ -40,4 +40,4 @@ act others()
     s |= s + s
     return [n, c, xs, s]
 xx
-say(others())
+:say(others())

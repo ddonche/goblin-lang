@@ -2,4 +2,4 @@
 act max(x)
     return "user-max"
 xx
-say(max([1, 2]))
+:say(max([1, 2]))

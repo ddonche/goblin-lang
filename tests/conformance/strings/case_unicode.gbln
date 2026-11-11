@@ -1,4 +1,4 @@
-say(:upper("é"))
-say(:lower("ÀB"))
-say(:title("élan vital"))
-say("straße".upper)
+:say(:upper("é"))
+:say(:lower("ÀB"))
+:say(:title("élan vital"))
+:say("straße".upper)

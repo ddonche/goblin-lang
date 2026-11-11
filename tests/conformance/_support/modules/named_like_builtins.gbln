@@ -73,5 +73,5 @@ act call_url_decode()
     return url_decode("a%20b")
 xx
 act call_colon_len()
-    return :len([1, 2, 3])
+    return len([1, 2, 3])
 xx

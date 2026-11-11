@@ -7,4 +7,4 @@ sweep p
         :update_where!(self, "a>", "b>")
         if :keep_between(self, ">", "<") == "keep" => skip
 xx
-say(:read_text(p))
+:say(:read_text(p))

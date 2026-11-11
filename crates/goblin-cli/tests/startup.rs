@@ -60,14 +60,14 @@ room | {"name": "lobby"}
 rooms | :actor(room, count)
 "#;
 
-const HIT: &str = r#"say(note)
+const HIT: &str = r#":say(note)
 note |= "changed by a request"
 :post(counter, 1)
-say(:await(:request(counter, 0)))
+:say(:await(:request(counter, 0)))
 attempt
-    say(room)
+    :say(room)
 rescue e
-    say(:has("{e}", "C0115"))
+    :say(:has("{e}", "C0115"))
 xx
 "#;
 
@@ -125,7 +125,7 @@ fn startup_actors_finish_their_messages_when_the_server_stops() {
 xx
 writer | :actor(0, slow)
 "#, log.display())).unwrap();
-    std::fs::write(dir.join("www/api/queue.gbln"), ":post(writer, 1)\n:post(writer, 2)\n:post(writer, 3)\nsay(\"queued\")\n").unwrap();
+    std::fs::write(dir.join("www/api/queue.gbln"), ":post(writer, 1)\n:post(writer, 2)\n:post(writer, 3)\n:say(\"queued\")\n").unwrap();
     let port = free_port();
     let mut server = start(&dir, "startup.gbln", port);
     assert!(get(port, "/api/queue").unwrap().contains("queued"));

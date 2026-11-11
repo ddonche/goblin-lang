@@ -6,4 +6,4 @@ r | :eval(["_support/eval/site/schedule.yall", "_support/eval/mods/cool/site_eve
 ctx | :summon("", r >> pre)
 ctx |= :summon(ctx, r >> schedule)
 ctx |= :summon(ctx, r >> post)
-say(ctx)
+:say(ctx)

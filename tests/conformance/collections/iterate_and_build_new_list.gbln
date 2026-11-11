@@ -3,5 +3,5 @@ out | []
 for x in l
     :put_last!(out, x * 10)
 xx
-say out
-say l
+:say out
+:say l

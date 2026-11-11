@@ -323,12 +323,10 @@ fn run_overlay_block(vm: &mut Vm, inst: &OverlayInstance, block: &str) -> Result
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name) else { return Ok(()) };
     let Some(f) = def.methods.get(block).cloned() else { return Ok(()) };
     if !vm.session.object_store.contains_key(&inst.host_uuid) { return Ok(()); }
-    let mut args = Vec::with_capacity(2 + inst.extra_fields.len());
+    let mut args = Vec::with_capacity(2 + inst.extra_fields.len() + def.maker.len());
     args.push(Value::Ref(inst.host_uuid.clone().into()));
     args.push(Value::Float(inst.strength));
-    for k in def.extra_fields.keys() {
-        args.push(inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil));
-    }
+    args.extend(def.own_values(&inst.extra_fields));
     with_erase_check(vm, |vm| vm.call_callable(Value::Function(f), args).map(|_| ()))
 }
 
@@ -421,6 +419,7 @@ pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)
             Some(Value::Object(o)) => match o.fields.get(field) {
                 Some(Value::Int(_) | Value::Float(_)) => {}
                 Some(other) => return Err(fail(format!("{} holds {}, not a number", o.class_name, other.type_name()))),
+                None if field == "order" => return Err(fail(format!("{} has no field named order: {}", o.class_name, crate::builtins::no_field_help(field)))),
                 None => return Err(fail(format!("{} has no field named {field}", o.class_name))),
             },
             _ => return Ok(Vec::new()),
@@ -435,6 +434,7 @@ pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)
                 ("intensity", Value::Float(strength)),
             ];
             for (k, v) in &extra { bind.push((k.as_str(), v.clone())); }
+            for (k, v) in &def.maker { bind.push((k.as_str(), v.clone())); }
             vm.eval_tick_expr(expr, bind)
         };
         match amount {
@@ -472,6 +472,18 @@ fn refresh_films(vm: &mut Vm) -> Result<(), GoblinError> {
     }
     settle_films(&mut vm.session);
     Ok(())
+}
+
+/// Works out again the `modify` amounts of the overlay copy at `p` (its
+/// intensity or fields were written) and puts its host's film back on.
+pub(crate) fn rework_film(vm: &mut Vm, p: usize) -> Result<(), GoblinError> {
+    let host = vm.session.overlay_instances[p].host_uuid.clone();
+    film_off(&mut vm.session, &host);
+    let amounts = modify_amounts(vm, p);
+    vm.session.overlay_instances.mark(&host);
+    if let Ok(a) = &amounts { vm.session.overlay_instances[p].applied = a.clone(); }
+    settle_films(&mut vm.session);
+    amounts.map(|_| ())
 }
 
 /// Takes the film off a host for now (its fields read as stored).
@@ -564,7 +576,8 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let stacks = matches!(def.apply_behavior, crate::session::OverlayApplyBehavior::Stacks { .. });
         let mut names: Vec<&str> = vec!["self", "target", "intensity"];
         names.extend(def.extra_fields.keys().map(String::as_str));
-        let extras: Vec<Value> = def.extra_fields.keys().map(|k| inst.extra_fields.get(k).cloned().unwrap_or(Value::Nil)).collect();
+        names.extend(def.maker.iter().map(|(n, _)| n.as_str()));
+        let extras: Vec<Value> = def.own_values(&inst.extra_fields);
         for rule in def.spreads_in(phase) {
             let name = &def.name;
             let cond = vm.tick_formula(&rule.condition, &names)?;
@@ -596,6 +609,19 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             let candidates = match same_field(vm, &rule.condition, &cond_parts, &def.host_types, &candidates, &mut field_groups, &self_ref, self_at) {
                 Some(fewer) => fewer,
                 None => candidates,
+            };
+            // `:link_score(self, target, "border") and ...`: only the objects
+            // linked to its host can pass (the first part stops the rest), in
+            // the same order.
+            let candidates = match (def.host_types.as_slice(), cond_parts.first()) {
+                ([class], Some(first)) => match narrow_by_link(vm, first, class, &self_ref, self_at) {
+                    Some(Some(linked)) => {
+                        let keep: std::collections::HashSet<usize> = linked.iter().map(|(_, i)| *i).collect();
+                        std::rc::Rc::new(candidates.iter().filter(|(_, i)| keep.contains(i)).cloned().collect())
+                    }
+                    _ => candidates,
+                },
+                _ => candidates,
             };
             for (target_ref, target_at) in candidates.iter() {
                 let target_at = *target_at;
@@ -1072,12 +1098,13 @@ fn reads(vm: &mut Vm, e: &goblin_ast::Expr) -> bool {
 /// - `target >> f == x` with `x` not naming `target` and `f` a field the
 ///   class declares: only the objects whose `f` can equal `x` (the store's
 ///   index of `f`) can pass.
+/// - `target == x` with `x` not naming `target`: only x itself can pass.
 /// The targets left out would have failed the condition at or before that
 /// point, and what came before changes nothing, so the result is the same.
 /// It stops at the first condition that names `target` and isn't one of
 /// those tests. The caller uses it only when scoring changes nothing
 /// either (so who holds what stays as it was while the targets are scored).
-fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
+pub(crate) fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &str, self_ref: &Value, self_at: usize, all: &[(Value, usize)]) -> Option<Vec<(Value, usize)>> {
     use goblin_ast::Expr as E;
     if !all.iter().any(|(t, _)| t != self_ref) { return None; }
     let mut parts = Vec::new();
@@ -1104,6 +1131,26 @@ fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool, class: &st
         if let Some(fewer) = narrow_by_link(vm, c, class, self_ref, self_at) { return fewer; }
         let E::Binary(l, op, r, _) = c else { return None };
         if op != "==" { return None; }
+        // `target == x` (`target == @capital`): only x itself can pass.
+        let is_target = |e: &E| matches!(e, E::Ident(n, _) if n == "target");
+        let other = if is_target(l) && !names(r, "target") { Some(&**r) }
+            else if is_target(r) && !names(l, "target") { Some(&**l) }
+            else { None };
+        if let Some(other) = other {
+            let f = vm.tick_formula(other, &["self", "target"]).ok()?;
+            let want = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
+            if changed(vm, epoch) { return None; }
+            let uuid = match want.ok()? {
+                Value::Ref(u) => u,
+                Value::Object(o) => o.uuid.clone(),
+                Value::Nil => return Some(Vec::new()),
+                _ => return None,
+            };
+            return Some(all.iter()
+                .filter(|(t, _)| matches!(t, Value::Ref(u) if *u == uuid))
+                .cloned()
+                .collect());
+        }
         // `target >> owner` is 1, `target >> owner >> owner` 2, ...
         fn owner_depth(e: &E) -> usize {
             match e {
@@ -1292,7 +1339,18 @@ fn score_targets(
 
 /// An overlay's blocks compiled as methods: `self` (the host) first, then
 /// `intensity`, then the overlay's own data fields by name.
-pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionDecl], extra: &[String])
+/// The global prefix of the imported module written in `file` (none for
+/// the main program).
+pub(crate) fn module_prefix(session: &crate::session::Session, file: &str) -> Option<String> {
+    if file.is_empty() { return None; }
+    let prefix = format!("{}::", std::path::Path::new(file).canonicalize().ok()?.display());
+    session.import_paths.values().any(|p| *p == prefix).then_some(prefix)
+}
+
+/// An overlay's blocks (`on mutate => heresy(self, mutated)`) see the
+/// program's globals, as the rest of the code does; one written in an
+/// imported module sees that module's names.
+pub(crate) fn compile_overlay_methods(session: &crate::session::Session, name: &str, actions: &[goblin_ast::ActionDecl], extra: &[String])
     -> Result<std::collections::HashMap<String, std::rc::Rc<crate::value::FunctionObject>>, GoblinError> {
     let mut m = std::collections::HashMap::new();
     for action in actions {
@@ -1302,7 +1360,8 @@ pub(crate) fn compile_overlay_methods(name: &str, actions: &[goblin_ast::ActionD
         params.extend(action.params.clone());
         params.extend(extra.iter().map(|k| p(k)));
         let pseudo = goblin_ast::ActionDecl { params, ..action.clone() };
-        let mut c = crate::compiler::Compiler::new();
+        let mut c = crate::compiler::Compiler::new().with_initial_globals(session.global_names.to_vec())
+            .with_global_prefix(module_prefix(session, &action.span.file));
         c.is_class_method = true;
         let f = c.compile_action(&pseudo).map_err(|e| GoblinError::Runtime(format!("overlay {name}, `{}`: {e}", action.name)))?;
         m.insert(action.name.clone(), std::rc::Rc::new(f));
@@ -1636,7 +1695,7 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
             let (imin, imax) = derive_link_formula_range(inner);
             (-imax, -imin)
         }
-        Expr::FreeCall(name, args, _) if name == "abs" => {
+        Expr::FreeCall(name, args, _) if name.trim_start_matches(':') == "abs" => {
             if let Some(arg) = args.first() {
                 let (amin, amax) = derive_link_formula_range(arg);
                 let abs_min = if amin <= 0.0 && amax >= 0.0 { 0.0 } else { amin.abs().min(amax.abs()) };
@@ -1925,7 +1984,7 @@ fn erase_changed(vm: &mut Vm, touched: Vec<crate::value::ObjId>) -> Result<(), G
 fn uses_chance(e: &goblin_ast::Expr) -> bool {
     use goblin_ast::Expr as E;
     let random_name = |n: &str| {
-        let n = n.trim_end_matches('!');
+        let n = n.trim_start_matches(':').trim_end_matches('!');
         matches!(n, "pick" | "reap" | "roll" | "roll_detail" | "roll_str" | "roll_detail_str"
             | "shuffle" | "sample_weighted" | "uuid_v4" | "uuid_v7")
             || n.starts_with("secure_") || n.ends_with("_random") || n.ends_with("_sample")
@@ -1933,7 +1992,7 @@ fn uses_chance(e: &goblin_ast::Expr) -> bool {
     // A call to the program's own code (an action, a method, `:invoke`)
     // may roll dice inside, so it counts as chance too: checked once a tick.
     let own_code = |n: &str| {
-        let n = n.trim_end_matches('!');
+        let n = n.trim_start_matches(':').trim_end_matches('!');
         matches!(n, "invoke" | "summon" | "provoke" | "eval") || crate::compiler::builtin_by_name(n).is_none()
     };
     match e {

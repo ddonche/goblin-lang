@@ -3,6 +3,6 @@ imm n | 3
 act f()
     n |= 4
 xx
-say("before")
+:say("before")
 f()
-say(n)
+:say(n)

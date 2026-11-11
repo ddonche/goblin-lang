@@ -1,2 +1,2 @@
-say "before"
-say(:min([]))
+:say "before"
+:say(:min([]))

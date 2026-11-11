@@ -4,7 +4,7 @@ r |
         x > 5: "big"
         else: "small"
     xx
-say(r)
+:say(r)
 y | 2
 s |
     judge
@@ -12,4 +12,4 @@ s |
         y > 1: "mid"
         else: "small"
     xx
-say(s)
+:say(s)
