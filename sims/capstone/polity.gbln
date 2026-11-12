@@ -1912,6 +1912,17 @@ interface realm |
         targets: uses govern where target == @owner
         score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
     xx
+    /// Offer to serve the enemy at its gates rather than be taken
+    /// (2026-11-11, owner): the towns that opened their gates to the
+    /// Mongols and were kept as tributaries, Rome's client kings. Only in
+    /// a war with it (in peace, a demand can bring the same offer);
+    /// only when clearly the weaker side, and likelier the further behind,
+    /// the more afraid and weary it is;
+    /// a proud, ambitious realm fights on (the Melians).
+    decision submit
+        targets: uses govern where @owner.nix? and (target >> owner).nix? and @submits_to.nix? and !(war_between(self, target).nix?)
+        score => past(1.0 - war_edge(self, target), .5) * (.5 + @fear * .5) * (.5 + weariness(self) * .5) * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+    xx
 
     /// One decision a year about its shape, or none: keeping things as they
     /// are weighs as much as its stability and tradition do.
@@ -1919,7 +1930,7 @@ interface realm |
         true:
             names   | [""]
             weights | [(@stability + @tradition) / 2]
-            repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt} as k, d
+            repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt, "submit": submit} as k, d
                 if d.nix? or (d >> score) <= 0 => skip
                 :put_last!(names, k)
                 :put_last!(weights, d >> score)
@@ -1934,6 +1945,7 @@ interface realm |
                     name == "cede": cede(self, cede >> target)
                     name == "release": release(self, release >> target)
                     name == "revolt": revolt(self, revolt >> target)
+                    name == "submit": submit(self, submit >> target)
                 xx
             xx
     xx
@@ -2027,6 +2039,22 @@ interface realm |
         :link!(t, p, "grievance", -.2, 40)
         w | war_between(p, t) ?? => send nil
         if w >> aim == give => end_war(w, nil)
+    xx
+    /// Realm `p` offers to serve `t`. A conqueror bent on more (aggressive
+    /// and ambitious) may refuse and take it by force; one that accepts
+    /// ends any war between them, and `p` becomes its vassal (subjugate).
+    act submit(p, t)
+        if chance((t >> aggression) * (t >> ambition))
+            :link!(p, t, "grievance", .1, 40)
+            overlays::count("refused")
+            :event(t, "refused", p, {"the envoys were sent back": 2.0, "the conqueror wanted the land, not the oath": 1.0})
+            send nil
+        xx
+        p >> submits_to |= t
+        w | war_between(p, t)
+        if !(w.nix?) => end_war(w, nil)
+        overlays::count("submitted")
+        :event(p, "submitted", t, {"the gates were opened and the keys sent out": 2.0, "the ruler swore to serve and pay tribute": 1.0})
     xx
     act release(p, t)
         t >> owner |= nil

@@ -31,7 +31,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
 /// What the run's overlays did (printed at the end).
 tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
     "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0,
-    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0, "coalition": 0, "struck_first": 0}
+    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0, "coalition": 0, "struck_first": 0, "submitted": 0, "refused": 0}
 
 act count(k)
     :update!(tally{k}, tally{k} + 1)

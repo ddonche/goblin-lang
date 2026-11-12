@@ -1225,3 +1225,37 @@ Flagged:
    seek them more is the bandwagoning question (flag 3 above).
 3. The creed-split check fails again on seed 42 (no creed split in this
    run; creeds still need their look in the tuning pass).
+
+### Submitting to the enemy at the gates
+
+Daniel (2026-11-11): a small realm should be able to petition for
+subjugation instead of being taken in; a powerful militant realm still
+conquers. Real life: towns that opened their gates to the Mongols were
+spared and kept as tributaries; Rome's client kings; Assyria's vassals,
+who submitted and revolted again and again; the Melians, who refused and
+were destroyed. Before this a realm offered to serve only after a demand
+in peace.
+
+Built: realm decision `submit`, only toward an enemy it is at war with
+and only when clearly the weaker side: `past(1 − war_edge, .5) × (.5 + .5
+× fear) × (.5 + .5 × weariness) × (1 − ambition) × (1 − .5 × prestige
+share)`. The enemy refuses with `chance(aggression × ambition)` (it wants
+the land, not the oath); else the war ends and the subjugate transition
+takes the realm as a vassal (.9, as for an offer after a demand). The
+counterweights are the existing ones: a vassal revolts as its lord
+weakens; a proud or ambitious realm fights on.
+
+500 years (seeds 42 / 7 / 99): submitted 188 / 185 / 237, refused 71 /
+64 / 43; wars 922 / 876 / 1,038; vassals made 242 / 226 / 286 (52 / 39 /
+59 before); realms taken in 166 / 170 / 168 (202 / 188 / 202); revolts
+178 / 194 / 196 (108 / 65 / 74); years at war 14.6% / 14.7% / 12.8%;
+largest realm at year 500 57 / 105 / 46 provinces.
+
+Flagged:
+1. My coefficients: the .5 line, the weights, aggression × ambition.
+2. A first version let a realm submit to any feared neighbour in peace:
+   about 750 submissions in 500 years and wars down to 12%. Now only in
+   war; a demand in peace already brings offers.
+3. About a fifth of wars end in submission, and revolts are 2.5 times as
+   many: vassals submit, revolt and are beaten again (as Assyria's
+   were). Whether that is too often I don't know.

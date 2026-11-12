@@ -33,7 +33,7 @@ LABEL="population levels off";     check awk '/^check: growth/ { g = $NF; sub("%
 LABEL="history matches expected_history.txt"; check diff "$T/h1" "$D/expected_history.txt"
 LABEL="two histories are identical";          check diff "$T/h1" "$T/h2"
 LABEL="two event logs are identical";         check cmp "$T/e1" "$T/e2"
-for d in tax relieve build levy disband borrow reform settle migrate union cede release revolt trade envoy aid ally treaty spy denounce embargo demand show_of_force raid strike war break_treaty sue_for_peace match; do
+for d in tax relieve build levy disband borrow reform settle migrate union cede release revolt submit trade envoy aid ally treaty spy denounce embargo demand show_of_force raid strike war break_treaty sue_for_peace match; do
     LABEL="decision taken: $d ($(grep -c " | $d | " "$T/e1"))"; check grep -q " | $d | " "$T/e1"
 done
 LABEL="wars end ($(grep -c '| War .* | erase$' "$T/e1") of $(grep -c ' | war | ' "$T/e1"))"; check grep -q '| War .* | erase$' "$T/e1"
