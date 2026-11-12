@@ -67,6 +67,7 @@ pub(crate) struct DesImage {
     link_defs: Vec<((String, String), LinkDef)>,
     object_link_defs: Vec<((String, String), LinkDef)>,
     object_decisions: Vec<(String, goblin_ast::DecisionDef)>,
+    overlay_classes: Vec<(String, goblin_ast::OverlayDefStmt)>,
     overlays: Vec<POverlay>,
     object_names: Vec<(String, (String, bool))>,
     /// Link offsets (`a link to b on ch offset ...`) from or to the
@@ -163,6 +164,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     img.object_link_defs = session.object_link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     img.object_decisions = session.object_decisions.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
+    img.overlay_classes = session.overlay_classes.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     if let Some(objs) = objects {
         for inst in session.overlay_instances.iter().filter(|i| objs.contains(&i.host_uuid)) {
             img.overlays.push(overlay_to_p(inst, tp)?);
@@ -195,6 +197,7 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     s.link_defs = img.link_defs.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.object_link_defs = img.object_link_defs.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.object_decisions = img.object_decisions.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
+    s.overlay_classes = img.overlay_classes.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.des_overlay_id_counter = img.overlay_ids;
     for (u, n) in &img.object_names {
         s.object_names.insert(u.clone(), n.clone());

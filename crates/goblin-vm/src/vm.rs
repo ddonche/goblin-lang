@@ -2738,6 +2738,24 @@ impl Vm {
             // ── DES / Overlay / Link opcodes ─────────────────────────────────
             Opcode::OverlayDef(i) => {
                 let crate::opcode::OpData::OverlayDef(def) = self.op_data_at(i) else { unreachable!() };
+                // An overlay class: kept for members declared in other files.
+                if def.is_class {
+                    self.session.overlay_classes.insert(def.name.clone(), std::rc::Rc::new((*def).clone()));
+                    return Ok(());
+                }
+                // A member of a class from another file gets the class's
+                // lines it does not write.
+                let def = if def.class_pending {
+                    let class = def.class.clone().unwrap_or_default();
+                    let Some(c) = self.session.overlay_classes.get(&class).cloned() else {
+                        return Err(GoblinError::Runtime(format!(
+                            "R1296: overlay-class: overlay {} belongs to the overlay class {class}, which no file run so far declares (declare `<^>{class} |` in this file, or in a file imported before this line runs)", def.name)));
+                    };
+                    let mut d = (*def).clone();
+                    goblin_parser::fill_from_overlay_class(&mut d, &c);
+                    d.class_pending = false;
+                    Box::new(d)
+                } else { def };
                 // The runtime reads no meaning into a link: what a link does
                 // is the formula the program writes.
                 if let Some(ch) = def.spread_rules.iter().find_map(|r| match r {

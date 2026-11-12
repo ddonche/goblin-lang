@@ -1,0 +1,6 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// A member of an overlay class that no file declares is an error when its
+/// `overlay` line runs.
+overlay calm <^> Mood
+xx
+:say("not reached")
