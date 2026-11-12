@@ -331,7 +331,7 @@ act account(year, lands, realms)
             top |= :max(top, power(g))
             p >> clergy |= :max(p >> clergy, :min((g >> power) * (g >> zeal) * (1.0 + .5 * g >> holy), 1.0))
             /// Plotters who took power: they get what they wanted.
-            if g >> plotted >= year - 3 and g >> plotted < year and p >> form_years == 0 and p >> form == "military_junta" and p >> plot > 0.0 => won_coup(g, p)
+            if g >> plotted >= 0 and g >> plotted >= year - 3 and g >> plotted < year and p >> form_years == 0 and p >> form == "military_junta" and p >> plot > 0.0 => won_coup(g, p)
         xx
         /// New groups: likelier the stronger what they grow from, rarer
         /// as the realm's people are taken up, and likelier against one
