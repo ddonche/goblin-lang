@@ -126,7 +126,7 @@ xx
             drift: 0.0
         xx
     xx
-    on mutate => born(self)
+    on mutate => born(self, mutated)
     transition merge
         targets: Tongue where (target >> intensity) >= .25 and (target >> intensity) <= .55 and intensity >= .25 and intensity <= .55 and land::is_city(host) and host >> trade >= .5 and chance(.002)
         carries:
@@ -318,39 +318,22 @@ act diverge(firm, where, court)
     xx
 xx
 
-/// A new tongue on land `l`: the copy that has just drifted into it. The
-/// rest of its cut-off region (bordering land speaking the old tongue
+/// A new tongue on land `l`: `o`, the copy that has just drifted into it.
+/// The rest of its cut-off region (bordering land speaking the old tongue
 /// under the same holder) speaks it too.
-act born(l)
-    o | nil
-    repeat :overlays(l) as c
-        if :is_type(c, "Tongue") and c >> age == 0 and :len(c >> parents) > 0 and :len(:overlays(l, (c >> parents)[0])) == 0
-            o |= c
-            stop
-        xx
-    xx
+act born(l, o)
     count("tongue_new")
     :event(l, "tongue_new", nil, {"their speech had drifted from their fathers'": 2.0, "the old tongue was spoken there no more": 1.0})
-    if o.nix? => send nil
     region(l, o, 1.0)
 xx
 
 /// A faith's new kind on land `l`: drifted apart (`share` 1, the whole
 /// region takes it) or split off in a schism (`share` .7: most of the
-/// region follows its ruler, the rest keep the old faith). The copy is the
-/// newest copy of a Faith on `l` made from another (`kept`: whether the
-/// old one is still there, as after a fracture).
-act faith_born(l, share, kept, what, telling)
-    o | nil
-    repeat :overlays(l) as c
-        if :is_type(c, "Faith") and c >> age == 0 and :len(c >> parents) > 0 and (:len(:overlays(l, (c >> parents)[0])) > 0) == kept
-            o |= c
-            stop
-        xx
-    xx
+/// region follows its ruler, the rest keep the old faith). `o` is the new
+/// copy on `l`.
+act faith_born(l, o, share, what, telling)
     count(what)
     :event(l, what, nil, telling)
-    if o.nix? => send nil
     region(l, o, share)
 xx
 
@@ -451,7 +434,7 @@ xx
             bends: shifted(self >> bends)
         xx
     xx
-    on mutate => faith_born(self, 1.0, false, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
+    on mutate => faith_born(self, mutated, 1.0, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
     transition fracture where chance(.01 * past(:min((self >> tension) / 300.0, 1.0), .3))
         fragment:
             intensity: intensity * .7
@@ -468,7 +451,7 @@ xx
             tension: 0.0
         xx
     xx
-    on fracture => faith_born(self, .7, true, "schism", {"the realm broke with the old church": 2.0, "a reformer's teaching was taken up by the court": 1.0, "the bishops would no longer bow to the old see": 1.0})
+    on fracture => faith_born(self, fragment, .7, "schism", {"the realm broke with the old church": 2.0, "a reformer's teaching was taken up by the court": 1.0, "the bishops would no longer bow to the old see": 1.0})
     transition merge
         targets: Faith where (target >> intensity) >= .3 and (target >> intensity) <= .6 and intensity >= .3 and intensity <= .6 and chance(.0005)
         carries:

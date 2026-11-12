@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.31 — 2026-11-12
+
+- An overlay class can have members in other files: `overlay calm <^> Mood` in a file that imports the one declaring `<^>Mood |` (at the top level or inside an action) gets the class's lines it doesn't write when its `overlay` line runs. A member of a class no file run so far declares is R1296 there. A member inside a block above its class in the same file is still P1295.
+- An overlay's `on mutate` block gets the copy it became as `mutated` (its kind, intensity and fields), as `on split` gets `first` and `second`. sims/capstone's new tongues and faiths use it instead of looking for the copy among the land's overlays.
+- A DES condition that fails is an error, not false: an object's or overlay's `transition ... where`, a transition's target test, an `erase` condition and a judge arm's condition that read a field the object doesn't have stop the tick with R0403 (as decisions' `where` and `score` already did). A spread grouped by a field falls back to the plain run when a host lacks the field, so it errors the same way. A condition that gives something other than true, false or nil is R1262.
+- Every sim's check passes unchanged; capstone history unchanged.
+
 ## 0.51.30 — 2026-11-12
 
 - sims/capstone: coups, from real life (owner: "whatever is most realistic"). A group's coup is now an attempt that succeeds or fails at once, as about half of real attempts do (Powell and Thyne, 1950 to 2010): the plotters' armed men are matched against the guard (a twentieth of the realm's soldiers), and fewer of the guard stand by a ruler whose right is doubted or in an army without discipline. A won coup puts the officers in power (a military junta); a coup against a junta puts other officers in its place (a counter-coup). A failed coup costs the plotters half their members and frightens the ruler (`coups_failed`). One coup invites the next (the coup trap, Londregan and Poole): a realm's recent coups (`coups`, fading by a tenth a year) make the army's coup and a group's plot up to three times likelier. The realm's `plot` field is gone.

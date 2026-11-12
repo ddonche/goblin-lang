@@ -735,14 +735,22 @@ fn same_field(
     if !e.reads_fields_only() { return None; }
     let want = vm.run_tick_formula_ref(&e, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]).ok()?;
     let key = field_key(&want)?;
-    let g = groups.entry((hosts.to_vec(), field.clone())).or_insert_with(|| {
+    let k = (hosts.to_vec(), field.clone());
+    // A host without the field: reading it is an error, which the general
+    // path gives.
+    if !groups.contains_key(&k) {
+        let store = &vm.session.object_store;
+        let lacks = all.iter().any(|(_, i)| matches!(store.get_index(*i), Some((_, Value::Object(o))) if !o.fields.contains_key(field.as_str())));
+        if lacks { return None; }
+    }
+    let g = groups.entry(k).or_insert_with(|| {
         let store = &vm.session.object_store;
         let mut by: HashMap<FieldKey, Vec<(Value, usize)>> = HashMap::default();
         let mut other = Vec::new();
         for (r, i) in all {
             let Some((_, Value::Object(o))) = store.get_index(*i) else { other.push((r.clone(), *i)); continue };
             match o.fields.get(field.as_str()) {
-                // No such field: the condition fails (an error there is false).
+                // Checked above: every host has the field.
                 None => {}
                 Some(v) => match field_key(v) {
                     Some(k) => by.entry(k).or_default().push((r.clone(), *i)),
@@ -1607,7 +1615,8 @@ fn decide(vm: &mut Vm, targets: &mut Targets, self_uuid: &crate::value::ObjId, n
                     ("target", target_ref.clone()),
                 ];
                 if name != "score" { bind.push((name, Value::Float(final_score))); }
-                let fires = vm.eval_tick_expr_bool(cond, bind);
+                let fires = vm.eval_tick_expr_bool(cond, bind)
+                    .map_err(|e| GoblinError::Runtime(format!("a judge arm's condition failed: {e}")))?;
                 if fires {
                     if let Some(call) = extract_action_call(&arm.body) {
                         selected_action = Some(call);
@@ -1972,12 +1981,18 @@ fn erase_changed(vm: &mut Vm, touched: Vec<crate::value::ObjId>) -> Result<(), G
         if c.conds.is_empty() { continue; }
         if vm.session.des_erasing.iter().any(|e| uuid == *e) || crate::world::is_remote(vm, &uuid) { continue; }
         let me = Value::Ref(uuid.clone());
-        let fires = c.conds.iter().any(|f| match vm.run_tick_formula_ref(f, &[("self", &me)], &[at]) {
-            Ok(Value::Bool(b)) => b,
-            Ok(Value::Int(i)) => i != 0,
-            Ok(Value::Float(f)) => f != 0.0,
-            _ => false,
-        });
+        let mut fires = false;
+        for f in &c.conds {
+            fires = match vm.run_tick_formula_ref(f, &[("self", &me)], &[at]) {
+                Ok(Value::Bool(b)) => b,
+                Ok(Value::Int(i)) => i != 0,
+                Ok(Value::Float(f)) => f != 0.0,
+                Ok(Value::Nil) => false,
+                Ok(other) => return Err(GoblinError::Runtime(format!("{class_name}'s `transition erase` condition gave {}, not true or false", other.type_name()))),
+                Err(e) => return Err(GoblinError::Runtime(format!("{class_name}'s `transition erase` condition failed: {e}"))),
+            };
+            if fires { break; }
+        }
         if fires { erase_object(vm, &uuid, c.on_erase.as_deref())?; }
     }
     Ok(())

@@ -9099,6 +9099,8 @@ impl<'t> Parser<'t> {
                         match self.eat_ident().as_deref() {
                             Some("start") => "on start".to_string(),
                             Some("end") => "on end".to_string(),
+                            // An overlay's `on mutate` also gets the copy it became.
+                            Some("mutate") => { hook = Some(&["mutated"]); "on mutate".to_string() }
                             Some(w) if hook_params(w).is_some() && w != "subjugate" => { hook = hook_params(w); format!("on {w}") }
                             _ => return Err(s_help_site!("P1213", "Expected 'start', 'end' or a transition (split, fracture, merge, absorb, mutate, spawn) after 'on'", "Write: on start => @fear |= @fear + .05")),
                         }

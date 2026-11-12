@@ -5838,16 +5838,20 @@ impl Vm {
         self.run_tick_formula_vm(formula.func.clone(), locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
     }
 
+    /// A DES condition: true or false. A condition that fails (it reads a
+    /// field the object doesn't have, say) is an error, not false.
     pub(crate) fn eval_tick_expr_bool(
         &mut self,
         expr: &goblin_ast::Expr,
         locals: Vec<(&str, Value)>,
-    ) -> bool {
+    ) -> Result<bool, GoblinError> {
         match self.eval_tick_expr(expr, locals) {
-            Ok(Value::Bool(b)) => b,
-            Ok(Value::Int(i)) => i != 0,
-            Ok(Value::Float(f)) => f != 0.0,
-            _ => false,
+            Ok(Value::Bool(b)) => Ok(b),
+            Ok(Value::Int(i)) => Ok(i != 0),
+            Ok(Value::Float(f)) => Ok(f != 0.0),
+            Ok(Value::Nil) => Ok(false),
+            Ok(other) => Err(GoblinError::Runtime(format!("R1262: des-condition: a condition gave {}, not true or false", other.type_name()))),
+            Err(e) => Err(e),
         }
     }
 
