@@ -1045,7 +1045,7 @@ xx
 interface govern |
     decision tax
         targets: Land where (target >> owner) == self and @rank >= 2 and (target >> people) >= 10.0
-        score => (short(@gold, @people * .05) + @ambition + @centralization + :min(@wars, 1)) / 4 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
+        score => (short(@gold, @people * .05) + @centralization + :min(@wars, 1)) / 3 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
     xx
     decision relieve
         targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= .9 * (target >> food)
@@ -1053,11 +1053,11 @@ interface govern |
     xx
     decision build
         targets: Land where (target >> owner) == self and @rank >= 2 and @gold >= 20.0 and (@stone >= 5.0 or @wood >= 5.0) and land::buildings(target) < 12
-        score => (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
+        score => (@stability + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
     xx
     decision levy
         targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= 50.0
-        score => (@fear + @ambition + :min(@wars, 1)) / 3 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
+        score => (@fear + :min(@wars, 1)) / 2 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
     xx
     decision disband
         targets: Land where @army >= 1.0 and target == @capital
@@ -1065,7 +1065,7 @@ interface govern |
     xx
     decision borrow
         targets: Land where (target >> owner) == self and @cities >= 1 and target == @capital and @debt < @people * .5
-        score => short(@gold, @people * .05) * (@ambition + :min(@wars, 1)) / 2 * (1.0 - @debt / (@people * .5 + 1.0))
+        score => short(@gold, @people * .05) * (.5 + .5 * :min(@wars, 1)) * (1.0 - @debt / (@people * .5 + 1.0))
     xx
 
     /// One decision a year, drawn by weight among the possible ones.
@@ -1188,7 +1188,7 @@ interface dealings |
 
     decision spy
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "border")
-        score => (@fear + @ambition + @discipline) / 3 * (1.0 - @honor) * .5
+        score => (@fear + @discipline) / 2 * (1.0 - @honor) * .5
     xx
     decision denounce
         targets: uses dealings where :link_score(self, target, "border")
@@ -1196,7 +1196,7 @@ interface dealings |
     xx
     decision embargo
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
-        score => grudge(self, target) * (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
+        score => grudge(self, target) * (@aggression + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
     xx
     decision demand
         targets: uses dealings where :link_score(self, target, "border") and (self >> power) > 1.5 * (target >> power)
@@ -1207,7 +1207,7 @@ interface dealings |
 
     decision show_of_force
         targets: uses dealings where @army >= 10.0 and :link_score(self, target, "border")
-        score => (@fear + @ambition) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
+        score => (@fear + @aggression) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
     xx
     decision raid
         targets: uses dealings where (@horses >= 1.0 or @ships >= 1.0) and @army >= 5.0 and :link_score(self, target, "border")
@@ -1884,7 +1884,7 @@ interface answers |
     xx
     decision concede
         targets: Group where (target >> realm) == self and :len(target >> wants) > 0
-        score => (target >> power) * (target >> grievance) * @cooperation
+        score => (target >> power) * (target >> grievance) * @cooperation * (1.0 - @legitimacy * .5)
     xx
     decision patronize
         targets: Group where (target >> realm) == self and (target >> idea) != .. and (target >> held) > .2
@@ -1937,7 +1937,7 @@ interface realm |
     xx
     decision revolt
         targets: uses govern where target == @owner
-        score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
+        score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * (1.0 - @honor * .5) * (1.0 - @stability * .5) * @lean_revolt
     xx
     /// Offer to serve the enemy at its gates rather than be taken
     /// (2026-11-11, owner): the towns that opened their gates to the
@@ -2297,9 +2297,11 @@ act breakaway(p, city)
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
     /// Another people breaks away more readily than the court's own.
-    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p))
+    /// An intolerant court drives its other peoples away (Austria-Hungary,
+    /// the late Ottomans); a stable realm holds its provinces.
+    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p)) * (1.5 - p >> tolerance)
     if city => send odds(far * loose * apart * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
-    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
+    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 - p >> stability * .5) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)

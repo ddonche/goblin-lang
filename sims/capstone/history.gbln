@@ -186,7 +186,11 @@ repeat :range(0, years + 1) as year
         xx
         repeat :objects(Empire) as e
             if !:has(empire_from, e >> name) => :update!(empire_from{e >> name}, year)
-            :update!(empire_to{e >> name}, year)
+        xx
+        /// An empire lasts while its realm does, under its name, whatever
+        /// it is called (it may lose its other peoples and be a kingdom).
+        repeat :objects(uses govern) as q
+            if :has(empire_from, q >> name) => :update!(empire_to{q >> name}, year)
         xx
         repeat :objects(uses dealings) as p
             lived |= lived + 1
@@ -291,8 +295,9 @@ repeat :objects(uses govern) as p
     if p >> holy >= .5 and government::form_of(p) == "theocracy" => priests |= priests + 1
 xx
 :say("check: faiths at the end: militant {ft{"militant"}}, mercantile {ft{"mercantile"}}; realms fighting for their faith {ft{"holy"}} ({priests} ruled by priests), trading for it {ft{"trading"}}; realm-years fighting for their faith {holy_years} ({priest_years} ruled by priests)")
-/// How long empires lasted (as empires, under one name): those still
-/// standing at the end count their years so far.
+/// How long empires lasted: from becoming an empire until the realm is
+/// gone (taken in, merged, erased) or renamed; those still standing at
+/// the end count their years so far.
 spans | []
 standing | 0
 repeat empire_from as n, y0
@@ -308,7 +313,7 @@ if ne > 0
     mid |= spans[h]
     longest |= spans[ne - 1]
 xx
-:say("check: empires: {ne}, years as an empire: median {mid}, longest {longest}; standing at the end {standing}")
+:say("check: empires: {ne}, years from becoming an empire until gone: median {mid}, longest {longest}; standing at the end {standing}")
 kc | overlays::kinship_counts()
 :say("check: bordering realms: {kc{"pairs"}} pairs, sharing a tongue (.5 or more) {kc{"tongue"}}, a faith {kc{"faith"}}; wars under way between faiths {kc{"wars_apart"}} of {kc{"wars"}}")
 gc | factions::counts(lands)

@@ -137,7 +137,7 @@ kinds | [
         xx
         decision withhold
             targets: uses govern where target == @realm and target >> gold > 0.0
-            score => @greed * @power * (@grievance + .5 * @hard + .2 * @weak)
+            score => @greed * @power * (@grievance + .5 * @hard + .2 * @weak) * (1.0 - @loyalty)
         xx
         decision give_men
             targets: uses govern where target == @realm and @arms >= 1.0
@@ -145,7 +145,7 @@ kinds | [
         xx
         decision coup
             targets: uses govern where target == @realm and target >> rank >= 3 and @arms >= 1.0
-            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1))
+            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5)
         xx
         decision preach
             targets: uses govern where target == @realm and @idea != ..
@@ -161,7 +161,7 @@ kinds | [
         xx
         decision rise
             targets: uses govern where target == @realm and target >> lands >= 3
-            score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power
+            score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power * (1.0 - @loyalty * .5)
         xx
         judge
             true:
@@ -313,7 +313,8 @@ act account(year, lands, realms)
         k  | p >> name
         hs | held{k} ?? {}
         p >> bends |= bends{k} ?? {}
-        p >> plot |= 0.0
+        /// Plotters wait for their moment: a plot lingers a few years.
+        p >> plot |= p >> plot * .6
         p >> unrest |= 0.0
         p >> clergy |= 0.0
         gs | of{k} ?? []
@@ -330,7 +331,7 @@ act account(year, lands, realms)
             top |= :max(top, power(g))
             p >> clergy |= :max(p >> clergy, :min((g >> power) * (g >> zeal) * (1.0 + .5 * g >> holy), 1.0))
             /// Plotters who took power: they get what they wanted.
-            if g >> plotted == year - 1 and p >> form_years == 0 => won_coup(g, p)
+            if g >> plotted >= year - 3 and g >> plotted < year and p >> form_years == 0 and p >> form == "military_junta" and p >> plot > 0.0 => won_coup(g, p)
         xx
         /// New groups: likelier the stronger what they grow from, rarer
         /// as the realm's people are taken up, and likelier against one
