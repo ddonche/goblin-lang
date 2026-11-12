@@ -1086,3 +1086,65 @@ Flagged:
    arguments (P0715, the parser treats `lower(` as the builtin): renamed
    `cut_down`/`firm_up`. A user action shadowing a builtin name should
    either work or give a clear error.
+
+## Faith traits: militant and merchant faiths (0.51.27)
+
+Real life first:
+- Some faiths call the faithful to fight for them: the first caliphs'
+  conquests, the crusades and the Reconquista, the Teutonic Order in
+  Prussia, the Aztec flower wars, the war gods of the Norse. Where the
+  faith is militant and its clergy hold the realm, faith, court and army
+  fuse and expand (the early caliphate, the Papal States, the Teutonic
+  Order's state).
+- Conquerors of another faith brought their priests with the army
+  (Charlemagne and the Saxons, the Order in Prussia, the Spanish in the
+  Americas), and forced faith was resented and rebelled against.
+- A holy war lost can discredit the call to arms (the crusades after
+  Hattin and Nicopolis, the Ottoman ghazis after Vienna); a holy war
+  suffered can raise the defenders' own zeal (Zengi and Saladin after the
+  first crusade).
+- Reforms can take up the sword (Hussites, Wahhabis) or lay it down
+  (Mennonites, Quakers).
+- Some faiths travel with merchants and their law suits trade: Islam on
+  the Indian Ocean, Buddhism on the Silk Road, the Jains, the Armenian
+  and Jewish trading houses. Merchants of one faith trade more with each
+  other.
+
+Built: Faith `militancy` and `mercantile` (0 to 1). New faiths draw both
+at random 0 to .7; a kingdom's old cult militancy 0 to .5 (war gods),
+mercantile 0 to .2; folk faiths 0. A schism's new faith moves militancy
+up to .3 and mercantile up to .2 either way. `missions`: the land's trade
+counts up to three times more for a merchants' faith (`× (1 + 2 ×
+mercantile)`). Each year each realm gets `holy` = the court faith's
+militancy at the capital × (.5 + clergy), and `faith_trade` = its
+mercantile × (.5 + .5 × the share of the people holding it) (`zeal`).
+War on a realm of another faith is likelier (`× (1 + (.5 − shared_faith)
+× holy × 1.2)`, 1.6 at most, .4 against one of the same faith); trade
+with one of the same faith is likelier (`× (1 + faith_trade × (.2 + .6 ×
+shared_faith))`). A war is holy when its attacker's `holy` is .3 or more
+and the two share less than .5 of a faith. A holy war won with land
+taken: by chance `holy`, the land gets the conqueror's faith at `.3 ×
+holy` and the conqueror is stirred by `.2 × holy`. Defender beaten: by
+chance its spirituality, its faith's militancy +.2 (`rally`). Attacker
+beaten: by chance 1 − its spirituality, −.2 (`discredit`).
+
+500 years (seeds 42 / 7 / 99): holy wars 36 / 43 / 132, holy conquests
+6 / 6 / 7, rallies 8 / 12 / 14, discredited 0 / 1 / 2. Faiths at the end
+militant (.5+) 7 / 12 / 22, mercantile 15 / 17 / 13. Realm-years with
+`holy` .5 or more: 2 / 0 / 225 (none of them theocracies); realms
+trading for their faith (.5+) at the end 0 / 9 / 0. Years at war 18.7% /
+16.4% / 16.1% (before 17.4% / 14.6% / 14.8%).
+
+Flagged:
+1. Every coefficient above is mine (the founding draws, 1.2, .2 + .6,
+   × 3 for missions, .3 and .2 × holy, ±.2, the .3 and .5 lines).
+2. A first version faded militancy by .996 a year on every copy; over
+   1,200 years of prehistory that left every faith at almost 0, so no
+   holy war ever started. It was replaced by the two war outcomes
+   (rally, discredit).
+3. The fused state is rare and never a theocracy: a theocracy needs
+   clergy over .4, and its court faith is seldom militant. In real life
+   the faithful of a militant faith fight (ghazis, crusaders): the
+   faithful group could take its militancy from its faith. Not built.
+4. No counter-alliance against a holy aggressor (the leagues against
+   the Ottomans) beyond what shared faith already does for alliances.

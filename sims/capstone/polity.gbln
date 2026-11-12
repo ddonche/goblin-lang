@@ -152,6 +152,10 @@ aspect Polity |
     /// The strongest group of believers' hold on the realm this year
     /// (its power times its zeal, 0 to 1; set by factions::account).
     clergy: 0.0
+    /// How far it fights for its court's faith, and trades for it, 0 to 1
+    /// (set each year by overlays::zeal).
+    holy: 0.0
+    faith_trade: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -887,6 +891,9 @@ xx
     attackers: []
     defenders: []
     over: false
+    /// Fought for a faith: by a realm that fights for its own (holy .3 or
+    /// more) against one of another.
+    holy: false
     phase: between
         every 1 tick
             fight(self)
@@ -1107,7 +1114,7 @@ xx
 interface dealings |
     decision trade
         targets: uses dealings where :link_score(self, target, "border")
-        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * @lean_trade
+        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * (1.0 + @faith_trade * (.2 + .6 * :link_score(self, target, "shared_faith"))) * @lean_trade
     xx
     decision envoy
         targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
@@ -1161,7 +1168,7 @@ interface dealings |
     xx
     decision war
         targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * .6 * @lean_war
+        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @holy * 1.2) * .6 * @lean_war
     xx
     decision break_treaty
         targets: uses dealings where :link_score(self, target, "alliance") > 0
@@ -1344,6 +1351,10 @@ interface dealings |
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
         if !(aim.nix?) => w >> aim |= aim
+        if p >> holy >= .3 and :link_score(p, t, "shared_faith") < .5
+            w >> holy |= true
+            overlays::count("holy_war")
+        xx
         w >> defenders |= call_allies(t, p, [])
         w >> attackers |= call_allies(p, t, w >> defenders)
         p >> wars |= p >> wars + 1
@@ -1459,7 +1470,12 @@ act end_war(w, winner)
     overlays::stir(loser, .3)
     :link!(loser, winner, "grievance", .4, 80)
     aim | w >> aim
-    if winner == a and !(aim.nix?) and aim >> owner == d => aim >> owner |= a
+    if winner == a and !(aim.nix?) and aim >> owner == d
+        aim >> owner |= a
+        if w >> holy => overlays::holy_conquest(a, aim)
+    xx
+    if w >> holy and winner == a => overlays::rally(d)
+    if w >> holy and winner == d => overlays::discredit(a)
     /// A loser left with little land or no army is broken: the winner may
     /// take it in or make it a vassal (the settle phase's transitions).
     if loser >> lands <= 3 or loser >> army < 1.0

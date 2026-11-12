@@ -30,7 +30,8 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
 
 /// What the run's overlays did (printed at the end).
 tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
-    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0}
+    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0,
+    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0}
 
 act count(k)
     :update!(tally{k}, tally{k} + 1)
@@ -374,7 +375,7 @@ xx
     hosts: Land
     ~intensity: .3
     /// Missions go out from where the faith is established (.3 or more).
-    spread: missions(self, target, intensity, seeks) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
+    spread: missions(self, target, intensity, seeks, mercantile) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
     /// What a realm's culture is pulled toward, by trait, as far as its
     /// people hold it.
     bends: {}
@@ -388,6 +389,16 @@ xx
     /// universal faith with scripture and clergy (1) sends missions and
     /// wins over courts.
     seeks: 0.0
+    /// How far it calls the faithful to fight for it, 0 to 1 (holy war:
+    /// the first caliphs, the crusades, the Teutonic Order, the Aztec
+    /// flower wars). A lost holy war can discredit it and a defeat by
+    /// another faith can raise it (`rally`); a reform can raise or lower
+    /// it again.
+    militancy: 0.0
+    /// How far its merchants carry it and its law suits trade, 0 to 1
+    /// (Islam on the Indian Ocean, Buddhism on the Silk Road, the Jains,
+    /// the Armenian and Jewish trading houses).
+    mercantile: 0.0
     /// The tongue of its scripture: the tongue of the land it began in.
     tongue: ..
     transition mutate where chance(.005 * past(:min((self >> drift) / 600.0, 1.0), .4))
@@ -404,6 +415,10 @@ xx
             drift: 0.0
             tension: 0.0
             bends: shifted(self >> bends)
+            /// A reform can take up the sword (the Hussites, the Wahhabis)
+            /// or lay it down (the Mennonites, the Quakers).
+            militancy: :clamp(self >> militancy + ((pick 1 from 0...60) - 30) / 100.0, 0.0, 1.0)
+            mercantile: :clamp(self >> mercantile + ((pick 1 from 0...40) - 20) / 100.0, 0.0, 1.0)
         xx
         carries:
             intensity: intensity * .3
@@ -423,9 +438,10 @@ xx
 xx
 
 /// How likely preachers carry a faith from land `a` to `b`: more from
-/// trading land, twice as likely into a town or city.
-act missions(a, b, i, seeks)
-    c | .02 * i * (1.0 + 2.0 * a >> trade) * (.1 + 1.8 * seeks)
+/// trading land (up to three times more for a merchants' faith), twice as
+/// likely into a town or city.
+act missions(a, b, i, seeks, m)
+    c | .02 * i * (1.0 + 2.0 * (a >> trade) * (1.0 + 2.0 * m)) * (.1 + 1.8 * seeks)
     if b >> settlement == "town" or b >> settlement == "city" or b >> settlement == "great city" => c |= c * 2.0
     return c
 xx
@@ -498,6 +514,10 @@ act found(faith, b, by, c)
             at: c >> name
             /// A faith with a founder and a teaching mostly seeks converts.
             seeks: (pick 1 from 3...10) / 10.0
+            /// Some new faiths take up the sword, some go with the
+            /// merchants, most neither much.
+            militancy: (pick 1 from 0...7) / 10.0
+            mercantile: (pick 1 from 0...7) / 10.0
             tongue: top(c, "Tongue")
         xx
         :overlay!(c, new_faith, .3)
@@ -794,6 +814,9 @@ act seed(kingdoms, others, pairs)
             title: "the old gods of {p >> name}"
             /// A kingdom's cult: some priesthood, few missions.
             seeks: (pick 1 from 0...3) / 10.0
+            /// War gods (Odin, Huitzilopochtli) or none.
+            militancy: (pick 1 from 0...5) / 10.0
+            mercantile: (pick 1 from 0...2) / 10.0
         xx
         faith |= old_faith
         hold(p, tongue, .9, faith, .8)
@@ -1129,6 +1152,7 @@ act account(year, lands, realms)
             fshare | ((faithful{k} ?? {}){court_f{k} ?? ..} ?? 0.0) / total
             :update!(court_fshare{k}, fshare)
             convert(p, court_f{k} ?? .., fshare, court_f, reach, faithful)
+            zeal(p, court_f{k} ?? .., fshare)
             b | p >> bends
             :update!(b{"cohesion"}, (b{"cohesion"} ?? 0.0) + (tshare - .5) * .3)
             :update!(b{"legitimacy"}, (b{"legitimacy"} ?? 0.0) + (fshare - .5) * .2)
@@ -1252,6 +1276,75 @@ act convert(p, own, fshare, court_f, reach, inside)
     :event(p, "court_converted", nil, {"the ruler was baptized and the lords with him": 2.0, "the ruler took the faith of the strong neighbour": 1.0, "the old shrines were pulled down": 1.0})
 xx
 
+/// How far realm `p` fights and trades for its court's faith `n` (held by
+/// `share` of its people), from that faith's copy at its capital. Faith,
+/// court and army fuse where the faith is militant and its clergy hold
+/// the realm (the first caliphs, the Papal States, the Teutonic Order):
+/// `holy` is the faith's militancy times (.5 + the clergy's hold).
+/// `faith_trade` is how mercantile the faith is, as far as the people
+/// hold it.
+act zeal(p, n, share)
+    h | 0.0
+    m | 0.0
+    c | p >> capital
+    if n != .. and !c.nix?
+        cs | :overlays(c, n)
+        if :len(cs) > 0
+            h |= :clamp((cs[0] >> militancy) * (.5 + p >> clergy), 0.0, 1.0)
+            m |= (cs[0] >> mercantile) * (.5 + .5 * share)
+        xx
+    xx
+    if h != p >> holy => p >> holy |= h
+    if m != p >> faith_trade => p >> faith_trade |= m
+xx
+
+/// Land `l` taken in a holy war by realm `p`: its priests come with the
+/// army and bring the faith of `p`'s court, as strongly as `p` fights for
+/// it (Charlemagne and the Saxons, the Teutonic Order in Prussia, the
+/// Spanish in the Americas). Forced faith is resented: the realm is
+/// stirred, as much.
+act holy_conquest(p, l)
+    c | p >> capital ?? => send nil
+    n | top(c, "Faith")
+    if n == .. or !chance(p >> holy) => send nil
+    firm_up(l, n, .3 * p >> holy)
+    stir(p, .2 * p >> holy)
+    count("holy_conquest")
+    :event(p, "holy_conquest", l, {"the priests came with the army": 2.0, "the people were baptized at the sword's point": 1.0, "the old shrines were burned": 1.0})
+xx
+
+/// Realm `p` beaten in the holy war it started: by chance, the less
+/// spiritual it is, the defeat discredits the call to arms (the crusades
+/// after Hattin and Nicopolis, the Ottoman ghazis after Vienna).
+act discredit(p)
+    if p.nix? => send nil
+    c | p >> capital ?? => send nil
+    n | top(c, "Faith")
+    if n == .. or !chance(1.0 - p >> spirituality) => send nil
+    cs | :overlays(c, n)
+    if :len(cs) == 0 => send nil
+    f | cs[0]
+    f >> militancy |= :max(f >> militancy - .2, 0.0)
+    count("discredited")
+    :event(p, "discredited", nil, {"the call to arms was no longer heeded": 2.0, "the defeat was taken as a sign that God had turned away": 1.0})
+xx
+
+/// Realm `p` beaten in a holy war: by chance, as spiritual as it is, its
+/// faith takes up the sword in turn (the jihad of Zengi and Saladin after
+/// the first crusade, the Reconquista).
+act rally(p)
+    if p.nix? => send nil
+    c | p >> capital ?? => send nil
+    n | top(c, "Faith")
+    if n == .. or !chance(p >> spirituality) => send nil
+    cs | :overlays(c, n)
+    if :len(cs) == 0 => send nil
+    f | cs[0]
+    f >> militancy |= :min(f >> militancy + .2, 1.0)
+    count("rally")
+    :event(p, "rally", nil, {"the preachers called the faithful to arms": 2.0, "the defeat was taken as God's judgment, and the realm swore to win it back": 1.0})
+xx
+
 /// How much the faith named `n` seeks converts, read from its copy on land `l`.
 act seeks_of(l, n)
     if n == .. => send 0.0
@@ -1366,6 +1459,32 @@ xx
 /// The tongues, faiths and creeds held at the end, the largest tongue's
 /// and faith's share of all people, and the realms ruling more than one
 /// people (for the checks).
+/// The faiths at the end that are militant or mercantile (.5 or more on
+/// their strongest copy), and the realms that fight (`holy`) or trade
+/// (`faith_trade`) for their faith (.5 or more).
+act faith_traits(lands, realms)
+    mil | {}
+    mer | {}
+    repeat lands as l
+        repeat :overlays(l) as o
+            if !:is_type(o, "Faith") => skip
+            n | o >> overlay_name
+            :update!(mil{n}, :max(mil{n} ?? 0.0, o >> militancy))
+            :update!(mer{n}, :max(mer{n} ?? 0.0, o >> mercantile))
+        xx
+    xx
+    out | {"militant": 0, "mercantile": 0, "holy": 0, "trading": 0}
+    repeat mil as n, v
+        if v >= .5 => :update!(out{"militant"}, out{"militant"} + 1)
+        if mer{n} >= .5 => :update!(out{"mercantile"}, out{"mercantile"} + 1)
+    xx
+    repeat realms as p
+        if p >> holy >= .5 => :update!(out{"holy"}, out{"holy"} + 1)
+        if p >> faith_trade >= .5 => :update!(out{"trading"}, out{"trading"} + 1)
+    xx
+    return out
+xx
+
 act counts(lands, realms)
     total | 0.0
     by | {}
