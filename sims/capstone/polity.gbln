@@ -167,6 +167,13 @@ aspect Polity |
     /// Its people over what its land feeds in a good year (set each year by
     /// overlays::account).
     fullness: 0.0
+    /// Its court's tongue and faith (the firmest at its capital), and last
+    /// year's share of its people holding each (set by overlays::prepare
+    /// and overlays::account).
+    court_tongue: ..
+    court_faith: ..
+    court_share: .5
+    court_fshare: .5
 xx
 
 /// What every class but League shares when it changes shape. Each

@@ -163,6 +163,9 @@ pub struct WorldIn {
     /// What the program set on objects since the last round (see
     /// `World::main_sets`): set on this region's copies of them.
     main_sets: Arc<Vec<(String, String, PValue)>>,
+    /// Overlay kinds made while the world runs that this round's regions
+    /// may not have seen (see `World::kinds_sent`).
+    kinds: Arc<Vec<Arc<crate::des_image::POverlayDef>>>,
     /// The region each of `remote` belongs to.
     remote_ids: Vec<u64>,
     regions: Vec<u64>,
@@ -234,6 +237,12 @@ pub struct World {
     /// (object, field, value): the owner gets it in its inbox, and every
     /// other region sets it on its copy, so all of them read it this round.
     main_sets: Vec<(String, String, PValue)>,
+    /// The overlay kinds made while the world runs (a new faith in one
+    /// region, a kind the program makes) already sent to every region. A
+    /// kind travels with its overlays, but a region can also meet it by
+    /// name only (a field naming a realm's faith): so each round sends
+    /// every region the kinds the program has learnt since the last.
+    kinds_sent: HashSet<String>,
     /// The regions' objects as the main program sees them (copies in its
     /// object store, replaced after every tick; what the program writes to
     /// them goes to their regions, see `send_to_owner`).
@@ -386,7 +395,7 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
         }
         in_flight_overlays = old.in_flight_overlays;
     }
-    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
+    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
     let outs = round(vm, &actors, &ids, true, None)?;
@@ -612,6 +621,30 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
     let log = vm.session.event_log.is_some();
     let w = vm.session.world.as_mut().unwrap();
     let main_sets = Arc::new(std::mem::take(&mut w.main_sets));
+    // The kinds the regions made last round, from their overlays.
+    let mut kinds: Vec<Arc<crate::des_image::POverlayDef>> = Vec::new();
+    for snap in &w.snaps {
+        for o in &snap.overlays {
+            if let Some(k) = o.kind() {
+                if w.kinds_sent.insert(k.name.clone()) { kinds.push(k.clone()); }
+            }
+        }
+    }
+    if !kinds.is_empty() {
+        let mut fp = FromPortable::new();
+        for k in &kinds { crate::des_image::learn_kind(k, &mut fp, &mut vm.session); }
+    }
+    let w = vm.session.world.as_mut().unwrap();
+    let fresh: Vec<std::rc::Rc<crate::session::OverlayDef>> = vm.session.overlay_defs.iter()
+        .filter(|(n, d)| (d.generated || d.travels) && !w.kinds_sent.contains(n.as_str()))
+        .map(|(_, d)| d.clone()).collect();
+    if !fresh.is_empty() {
+        let mut tp = ToPortable::new(&vm.session);
+        for d in &fresh { kinds.push(crate::des_image::kind_to_p(d, &mut tp)?); }
+    }
+    let w = vm.session.world.as_mut().unwrap();
+    for d in &fresh { w.kinds_sent.insert(d.name.clone()); }
+    let kinds = Arc::new(kinds);
     let mut sent = Vec::with_capacity(actors.len());
     for (i, a) in actors.iter().enumerate() {
         // The other regions' objects, and those on their way to them.
@@ -622,7 +655,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), kinds: kinds.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -764,6 +797,7 @@ fn region_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) 
 
 fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn, root: usize) -> Result<(), GoblinError> {
     let mut fp = FromPortable::new();
+    for d in job.kinds.iter() { crate::des_image::learn_kind(d, &mut fp, &mut vm.session); }
     // 1. What the other regions sent last tick: first the objects that move
     // here, then the rest in order.
     for item in &job.inbox {

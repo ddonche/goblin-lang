@@ -3,6 +3,16 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.32 — 2026-11-12
+
+- DES regions: what the program sets on a region's object now reaches every region's copy in the same round, not only the owner's. Before this, a region far from the object read last round's value (in the capstone, last year's year in the first phase).
+- DES regions: an overlay kind made while a world runs (a new faith in one region) reaches every region with the next round, not only with its overlays. A region that met such a kind only by name (`:overlays(l, name)` with the name read from a field) stopped with R1231 before this.
+- sims/capstone: the yearly account of each province (its tongues and faiths shifting, the court's tongue and faith reaching its towns, plague, weather, disasters, famine) runs on the regions, in the `ideas` phase, instead of in the program. What it needs from the whole world is kept in objects: the year's weather and dark years and each idea's reach on `land::Clock`, each realm's court tongue and faith and how much of the realm holds them on the realm (`court_tongue`, `court_faith`, `court_share`, `court_fshare`). The program still sums the realms' people by tongue and faith.
+- sims/capstone: the regions are cut so each holds about as many provinces (they were cut by equal widths of the map, which gave one region 42 provinces and another 157, and every round waited on the biggest).
+- Capstone, 500 years: the history is new (the program's writes reach the regions sooner). Seed 42: 12.1% of polity-years at war, 29 empires lasting a median 152 years, 14 coup attempts, 8 won, no realm fighting for its faith; seeds 7 and 99: 11.1% and 11.4% at war, empires a median 253 and 208 years, 3,529 and 577 realm-years fighting for their faith. Expected history regenerated. Every check passes.
+- Speed, 4 cores: 100 years (seed 42) in 49 s, from 52 s; 30 years in 15.5 s, from 17.2 s. The program's accounts of realms, groups and families still run on one thread between phases.
+- Conformance: new case `world_tick_kind_known_by_name`.
+
 ## 0.51.31 — 2026-11-12
 
 - An overlay class can have members in other files: `overlay calm <^> Mood` in a file that imports the one declaring `<^>Mood |` (at the top level or inside an action) gets the class's lines it doesn't write when its `overlay` line runs. A member of a class no file run so far declares is R1296 there. A member inside a block above its class in the same file is still P1295.

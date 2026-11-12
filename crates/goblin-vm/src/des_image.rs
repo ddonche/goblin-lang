@@ -14,7 +14,7 @@ use crate::session::{LinkDef, LinkOffset, OverlayApplyBehavior, OverlayDef, Over
 
 #[derive(Debug, Clone)]
 pub(crate) struct POverlayDef {
-    name: String,
+    pub(crate) name: String,
     host_types: Vec<String>,
     decay_rate: f64,
     default_duration: Option<u32>,
@@ -220,6 +220,27 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
 impl POverlay {
     pub(crate) fn host(&self) -> &str { &self.host_uuid }
     pub(crate) fn name(&self) -> &str { &self.overlay_name }
+    /// Its kind, when the kind travels with it (made while a world runs).
+    pub(crate) fn kind(&self) -> Option<&std::sync::Arc<POverlayDef>> { self.kind.as_ref() }
+}
+
+/// An overlay kind, ready to cross to another thread (converted once per
+/// session, `Session::portable_kinds`).
+pub(crate) fn kind_to_p(d: &Rc<OverlayDef>, tp: &mut ToPortable) -> Result<std::sync::Arc<POverlayDef>, GoblinError> {
+    let cached = tp.session.portable_kinds.borrow().get(&d.name).cloned();
+    if let Some(p) = cached { return Ok(p); }
+    let p = std::sync::Arc::new(def_to_p(d, tp)?);
+    tp.session.portable_kinds.borrow_mut().insert(d.name.clone(), p.clone());
+    Ok(p)
+}
+
+/// An overlay kind from another thread, made known in this session unless
+/// it already is.
+pub(crate) fn learn_kind(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session) {
+    if !s.overlay_defs.contains_key(&d.name) {
+        let def = def_from_p(d, fp, s);
+        s.overlay_defs.insert(d.name.clone(), Rc::new(def));
+    }
 }
 
 /// One overlay, ready to cross to another thread.
@@ -236,18 +257,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
         extra_fields: pfields(tp, &inst.extra_fields)?,
         des_id: inst.des_id.0,
         kind: match tp.session.overlay_defs.get(&inst.overlay_name) {
-            Some(d) if d.generated || d.travels => {
-                let cached = tp.session.portable_kinds.borrow().get(&d.name).cloned();
-                match cached {
-                    Some(p) => Some(p),
-                    None => {
-                        let d = d.clone();
-                        let p = std::sync::Arc::new(def_to_p(&d, tp)?);
-                        tp.session.portable_kinds.borrow_mut().insert(d.name.clone(), p.clone());
-                        Some(p)
-                    }
-                }
-            }
+            Some(d) if d.generated || d.travels => Some(kind_to_p(&d.clone(), tp)?),
             _ => None,
         },
     })
@@ -255,12 +265,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
 
 /// An overlay rebuilt in this session.
 pub(crate) fn overlay_from_p(o: &POverlay, fp: &mut FromPortable, s: &mut Session) -> OverlayInstance {
-    if let Some(d) = &o.kind {
-        if !s.overlay_defs.contains_key(&d.name) {
-            let def = def_from_p(d, fp, s);
-            s.overlay_defs.insert(d.name.clone(), Rc::new(def));
-        }
-    }
+    if let Some(d) = &o.kind { learn_kind(d, fp, s); }
     OverlayInstance {
         overlay_name: o.overlay_name.clone(),
         host_var: o.host_var.clone(),

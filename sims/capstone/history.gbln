@@ -147,17 +147,32 @@ nt | :len(:objects(Tribe))
 :say("year 0: {nk} kingdoms, {nv} village communities, {nt} tribes")
 
 /// The world goes to `REGIONS` region actors (default 4), each a band of
-/// the map from west to east, as the town, feudal and epidemic sims run
+/// the map from west to east holding about as many provinces as the others
+/// (so each has as much to do), as the town, feudal and epidemic sims run
 /// theirs: a province by where it lies, a polity by its capital, a ruler
 /// with its court, a group with its realm, a house with its first ruler.
 /// What is made later is placed next to what it belongs to
 /// (`land::place`). Each region ticks its own part on its own thread;
 /// it sees the others as they were at the end of the last phase.
 regions_n | :int(:env("REGIONS") ?? "4")
+/// The band of a place at `x`: how many of the cuts between bands lie at
+/// or west of it.
+act band(x, cuts)
+    n | 0
+    repeat cuts as c
+        if x >= c => n |= n + 1
+    xx
+    return n
+xx
 if regions_n > 1
-    wide | 1
+    xs | []
     repeat lands as l
-        wide |= :max(wide, l >> x + 1)
+        :put_last!(xs, l >> x)
+    xx
+    xs |= :sort(xs)
+    cuts | []
+    repeat :range(1, regions_n) as k
+        :put_last!(cuts, xs[k * :len(xs) // regions_n])
     xx
     regions | []
     repeat :range(0, regions_n)
@@ -165,11 +180,11 @@ if regions_n > 1
     xx
     land::use_regions()
     repeat lands as l
-        :move!(l, regions[(l >> x) * regions_n // wide])
+        :move!(l, regions[band(l >> x, cuts)])
     xx
     repeat :objects(uses govern) as p
         c | p >> capital ?? => skip
-        :move!(p, regions[(c >> x) * regions_n // wide])
+        :move!(p, regions[band(c >> x, cuts)])
     xx
     repeat :objects(Ruler) as r
         c | r >> court ?? => skip
@@ -228,6 +243,8 @@ repeat :range(0, years + 1) as year
             polity::account(lands, pairs)
             family::account(year)
             factions::account(year, lands, :objects(uses govern))
+            overlays::prepare(lands, :objects(uses govern))
+            ideas
             overlays::account(year, lands, :objects(uses govern))
             inside
             between
