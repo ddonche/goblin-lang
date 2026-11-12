@@ -114,3 +114,23 @@ Until those criteria are met, the accurate description is **Goblin's Dynamic Ent
 5. If a new paradigm name is warranted, maintain a separate terminology check, include its previous uses and compare alternatives; do not retroactively redefine "object" or "entity" to make a novelty argument.
 
 This file deliberately stores **what we know, what was already investigated, and what is still open**. Repetition without new evidence is not progress.
+
+## Terminology and programming-model audit — 2026-11-12
+
+The owner is considering whether DES is better described as a distinct dynamic-object programming model, perhaps with data-only/passive objects and actively deciding/evolving entities. The naming question must be kept separate from executable semantics.
+
+**Checked terms and dated evidence:**
+
+- **Dynamic Object-Oriented Programming (DOOP):** established wording, not available to coin as a newly discovered paradigm. Franz Inc., "Dynamic Object Oriented Programming" (copyright 1997), https://franz.com/resources/educational_resources/white_papers/doop.lhtml; its Dynamic Objects overview describes runtime changes of objects, classes and behavior. https://franz.com/resources/educational_resources/white_papers/dooverview.lhtml
+- **GOOP:** long used for Graphical Object-Oriented Programming tooling in LabVIEW; see https://labviewwiki.org/wiki/Graphical_Object-Oriented_Programming and NI's FAQ https://www.ni.com/en/support/documentation/supplemental/06/labview-object-oriented-programming-faq.html . Also used independently by a Go object package (2011). **Not** a clear unoccupied term.
+- **Dynamic Object Model:** named software pattern in Riehle, Tilman and Johnson (2000), describing runtime changes to object types and their relationships. https://www.plopcon.org/pastplops/plop2k/proceedings/Riehle/Riehle.pdf
+- **Active Object:** established concurrent design pattern, not a synonym for a Goblin entity that merely has a scheduled decision. See Lavender & Schmidt (1996), https://www.dre.vanderbilt.edu/~schmidt/PDF/act-obj-siemens.pdf
+- **Object evolution:** established research term, often **restricted** to monotonic subtype/feature growth (Cohen & Gil 2009, https://research.google/pubs/three-approaches-to-object-evolution/). Such a restriction is **not** Goblin's arbitrary unrelated-class recast; avoid treating the terms as interchangeable.
+
+**Terminology ruling:** retain `DES` for the existing subsystem. "Dynamic entity" means a runtime-managed object eligible for the semantics defined in `DESIGN.md`, not an inherently living thing or a conscious agent. An inanimate Spoon remains a valid destination class. The phrase "object" in programming does **not** mean inanimate; conventional OOP objects can already have methods and active behavior.
+
+**Independently varying axes:** (1) data-only vs action-bearing, (2) class-fixed vs reclassifiable, (3) passively invoked vs decision/schedule driven, (4) runtime-mediated vs programmer-managed life-cycle/relations. Do **not** equate "static object" with a struct or "has methods" with DES dynamicity. Use data-only/passive object and DES-managed dynamic entity as clearer role descriptions when needed. A class can be reclassified without having decisions; an object can execute methods without class changes.
+
+**Events are already included:** Goblin's `:event` and `:event_log` are narrative/observational facilities. They can log relevant incidents that have **no** simulation-state effect and do **not** schedule code by themselves. This is **not** equivalent to event-driven handlers that directly cause execution. Source: `crates/goblin-vm/src/events.rs`, `sims/capstone/history.gbln`, and `crates/goblin-vm/src/transition.rs`. Include events when describing what the system supplies.
+
+**Next deliverable:** a short programming-model paper, not another unordered list of existing paradigms. It must state the core abstraction, the built-in operations supplied by the runtime (decisions, transitions, overlays, ownership, links, ticks, phases, events), a simple unrelated-class executable witness, and one substantial *non-simulation* Goblin program demonstrating why runtime-managed dynamic entities are useful beyond ABM. Then compare **exact semantics** against the nearest existing programming model using paired runnable examples; record what is the same and different. Do not rename DES before that.
