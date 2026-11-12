@@ -1,4 +1,3 @@
-/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
 /// A transition's condition that reads a field its object doesn't have
 /// stops the tick with R0403; it is not taken as false.
 <>Land |
