@@ -3,6 +3,24 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.29 — 2026-11-12
+
+- DES regions: what crosses from one region to another now works for everything the capstone uses.
+  - Changing a field of an overlay copy on another region's object (`o >> f |= v`, on a copy from `:overlays(host)`) goes to that region, which changes its copy at the start of the next round. The one that wrote it reads it back at once. Before this it was R1249.
+  - Links are kept with the object they go from, in that object's region. Other regions and the program that runs the world read them as they were at the end of the last round. A `:link!`, `:unlink!` or `link to ... offset` on another region's object goes to its region. Before this, each region saw only its own links, and a link the program set never reached the regions (in the capstone, realms in regions saw no borders, so no wars).
+  - A whole number the program changes on a region's object goes to it as what it added, when the next round starts, so the program and the regions can count on one object. Any other field goes as the value set, when it is set.
+  - An `overlay` line run while regions run (a new faith, a new creed) makes a kind with a name of its own, numbered by region, so two regions never make two kinds of one name. The kind goes along with its overlays to regions that have not seen it. Before this, a region that had not seen the kind stopped with "unknown overlay".
+  - `:move!(obj, actor)` with no world yet starts one. Narrowing (a transition's targets) works in regions. Imports are in each region's image. The world's tick goes on from the ticks already run.
+  - Speed: the program's `:overlays(host)` and its writes to region objects use indexes built once per round. Without them, the capstone ran nine times slower on regions.
+- sims/capstone runs on region actors, as the town, feudal and epidemic sims do. There are `REGIONS` (default 4) bands of the map, west to east: a province goes by where it lies, a realm by its capital, a ruler and a group with their realm, a house with its first ruler. Anything made later is placed next to what it belongs to (`land::place`). `REGIONS=1` runs without regions.
+- sims/capstone: what every region must share is kept in objects (owner, 2026-11-12):
+  - the year: `land::Clock`, set by the program as each year begins;
+  - the tallies: `FamilyRecord`, `GroupRecord` and `IdeaRecord`;
+  - each realm's fears and how full its land is: `Polity.fears` and `Polity.fullness`, replacing the module maps `feared` and `fullness` (golden ages never turned to elite strife in a region before this);
+  - the name counters: a name is drawn at the realm's capital (`Land.named`, `land::name_no`), so two regions never draw the same one.
+- Conformance: 4 new cases (VM): `world_tick_links_across_regions`, `world_tick_overlay_fields_across_regions`, `world_tick_program_counts_add_up`, `world_tick_new_kinds_across_regions`. check.sh also checks that a run on one thread gives the same history.
+- Capstone, 500 years (seed 42) on four regions: 11.7% of polity-years at war; 34 empires, a median of 93 years from becoming an empire until gone; 120 coalitions, 176 submissions, 19 holy wars, 43 golden ages turned to elite strife; 8 coup plots, 1 won. The same history on one, two or four threads. The history is new (names are drawn differently and each region rolls its own dice). Expected history regenerated. Every check passes (78). Time on 4 cores: 100 years in about 50 s on four regions, 104 s on four regions on one thread, 65 s with no regions. The yearly accounts still run in the program, on one thread.
+
 ## 0.51.28 — 2026-11-12
 
 - sims/capstone: balance pass, from the map of what drives what (goblin-docs/capstone-behaviour-map.md). Ambition no longer pushes taxing, building, levying, borrowing or spying: taxes follow need, centralization and war, held back by doubted legitimacy; building follows stability and spare gold; levies follow fear and war; borrowing follows need and war; spying follows fear and discipline. Embargoes and shows of force follow aggression instead of ambition.

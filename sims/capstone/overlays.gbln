@@ -773,14 +773,10 @@ act stir(p, amt)
     :overlay!(p, discontent, :clamp((was ?? 0.0) + amt, 0.0, 1.0))
 xx
 
-/// Each realm's people over what its land feeds in a good year (set each
-/// year by `account`).
-fullness | {}
-
 /// How far a realm's land has filled since `began` (its fullness then),
 /// 0 to 1 at eight points more.
 act crowd(p, began)
-    return :clamp(((fullness{p >> name} ?? 0.0) - began) / .08, 0.0, 1.0)
+    return :clamp((p >> fullness - began) / .08, 0.0, 1.0)
 xx
 
 /// A golden age: peace, trade and a steady rule over land with room to
@@ -1207,7 +1203,7 @@ act account(year, lands, realms)
         xx
         if hungry{k} ?? false => stir(p, .05)
         f | (ate{k} ?? 0.0) / :max(fed{k} ?? 0.0, 1.0)
-        :update!(fullness{k}, f)
+        p >> fullness |= f
         if p >> wars == 0 and f < .7 and (:overlay_strength("war_memory", p)).nix? and (:overlay_strength("golden_age", p)).nix? and (:overlay_strength("elite_strife", p)).nix? and p >> stability >= .55 and p >> commerce >= .5 and chance(.01)
             :overlay!(p, golden_age, 1)
             g | :overlays(p, "golden_age")[0]

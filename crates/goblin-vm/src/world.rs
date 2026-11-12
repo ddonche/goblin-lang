@@ -1279,10 +1279,22 @@ pub(crate) fn overlay_field_in_region(s: &mut crate::session::Session, inst: &cr
     if !send_to_owner(s, &inst.host_uuid, item) { return Ok(false); }
     let same = |o: &POverlay| o.des_id == p.des_id && o.host() == p.host();
     if let Some(c) = s.region.as_mut() {
+        // Put on this round: the copy on its way changes too.
+        for (_, it) in c.sent.iter_mut() {
+            if let Item::Overlay(q, _) = it { if same(q) { *q = p.clone(); } }
+        }
         c.rewritten.retain(|o| !same(o));
         c.rewritten.push(p);
     } else if let Some(w) = s.world.as_mut() {
-        if let Some(o) = w.pending_overlays.iter_mut().find(|o| same(o)) { *o = p; }
+        if let Some(o) = w.pending_overlays.iter_mut().find(|o| same(o)) {
+            // Put on since the last tick: the copy on its way changes too.
+            for items in w.inbox.iter_mut() {
+                for it in items.iter_mut() {
+                    if let Item::Overlay(q, _) = it { if same(q) { *q = p.clone(); } }
+                }
+            }
+            *o = p;
+        }
         else { w.rewritten.retain(|o| !same(o)); w.rewritten.push(p); }
     }
     Ok(true)
