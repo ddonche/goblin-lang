@@ -1194,10 +1194,34 @@ at year 500: 47 / 46 / 61 provinces (53 / 54 / 51 before). Years at war
 Flagged:
 1. My coefficients: .95, 3 provinces, .5, × 3, .5 × shared, the .3 and
    .2 lines.
-2. A coalition only defends: allies come when the threat attacks one of
-   them (`call_allies`). Nothing makes an attacker weigh its target's
-   allies, so a coalition does not deter, and the largest realm is not
-   clearly smaller. In real life it did deter (and coalitions also
-   attacked first). Not built.
+2. A coalition only defended at first (see below for deterrence).
 3. Small realms beside a threat sometimes joined it instead
    (bandwagoning). Not built.
+
+### Deterrence and striking first
+
+Daniel (2026-11-11): yes, and reckless rulers may still make bad
+choices. Real life: a cautious ruler weighed the league against him; a
+reckless one marched anyway (Charles XII into Russia); a league
+sometimes struck first at a rising threat.
+
+Built: `war_edge(p, t)` for the war decision: each side's power plus its
+allies' (alliance .5 or more, each × its honor), the allies counted ×
+2 × the attacker's fear, so a fearless realm ignores them. The war
+decision's cause is now the largest of grudge, claim and `threat × fear`
+(a feared neighbour may be struck first). A war mostly against a feared
+neighbour (threat .3 or more) counts as `struck_first`.
+
+500 years (seeds 42 / 7 / 99): struck first 7 / 2 / 5; coalitions 235 /
+165 / 140; wars 861 / 877 / 899 (866 / 834 / 803 before); largest realm
+at year 500: 64 / 60 / 83 provinces (47 / 46 / 61 before deterrence).
+
+Flagged:
+1. My coefficients: 2 × fear, honor as the share of an ally's power, .3.
+2. The largest realm is not smaller: on seed 99 it grew by beating and
+   taking in small villages and city-states one at a time (absorb,
+   subjugate), which have few allies to count. Deterrence protects
+   realms that have allies; whether small realms near a threat should
+   seek them more is the bandwagoning question (flag 3 above).
+3. The creed-split check fails again on seed 42 (no creed split in this
+   run; creeds still need their look in the tuning pass).

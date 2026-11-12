@@ -1,17 +1,17 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 86 polities, largest Noresk with 14 provinces, 3 wars
-year 200: 66 polities, largest Mararnor-Quarros with 27 provinces, 4 wars
-year 300: 48 polities, largest Mararnor-Quarros with 28 provinces, 11 wars
-year 400: 34 polities, largest Mararnor-Quarros with 44 provinces, 3 wars
-year 500: 28 polities, largest Noresk with 47 provinces, 4 wars
-check: share of polity-years at war: 17%
-check: forms at the end: aristocratic_republic 1, elders_council 6, elective_monarchy 6, hereditary_monarchy 6, imperial_autocracy 4, merchant_oligarchy 1, military_junta 1, theocracy 3
-check: families: deaths 1173, murders 21, executions 1, crowned 877, regencies 18, usurped 21, interregnums 55, lines_ended 4, elections 595, claims_won 41, new_houses 204, marriages 371, births 668, partitions 0
-check: succession laws at the end: eldest_child 4, eldest_son 5, elective 6, faith 1, force 1, strongest_kin 1, term 2
-check: groups: formed 680, split 161, merged 15, ended 599, give_gold 3699, withhold 212, give_men 3148, coup 71, preach 3280, found 86, press 1869, rise 46, crush 98, concede 163, patronize 2209, coups_won 0
-check: overlays: tongue_new 11, tongue_merge 0, shifted 117, faith_new 3, schism 5, blend 24, converted 356, creed_split 2, creed_shift 0, plague 25, strain 33, famine 2101, flood 632, quake 82, drought 2322, fire 2572, dread 671, golden_age 32, elite_strife 11, dark_years 0, court_converted 50, reaction 2, holy_war 126, holy_conquest 14, rally 27, discredited 0, coalition 214
-check: ideas at the end: tongues 45 (largest holds 0.069 of all people), faiths 94 (largest 0.258), creeds 16; realms of more than one people 14
-check: faiths at the end: militant 14, mercantile 11; realms fighting for their faith 0 (0 ruled by priests), trading for it 0; realm-years fighting for their faith 12 (0 ruled by priests)
-check: bordering realms: 53 pairs, sharing a tongue (.5 or more) 3, a faith 23; wars under way between faiths 3 of 4
-check: groups at the end: 227, largest share of a realm 0.483; ideas 110, largest holds 0.258 of all people
+year 100: 84 polities, largest Noresk with 18 provinces, 6 wars
+year 200: 62 polities, largest Toresk with 30 provinces, 6 wars
+year 300: 47 polities, largest Pelquar-Toresk-Corjor with 51 provinces, 4 wars
+year 400: 38 polities, largest Pelquar-Toresk-Corjor with 58 provinces, 3 wars
+year 500: 38 polities, largest Pelquar-Toresk-Corjor with 64 provinces, 5 wars
+check: share of polity-years at war: 17.3%
+check: forms at the end: aristocratic_republic 5, chieftainship 8, citizen_republic 1, elders_council 4, elective_monarchy 3, hereditary_monarchy 4, imperial_autocracy 3, interregnum 1, merchant_oligarchy 5, military_junta 2, theocracy 2
+check: families: deaths 1113, murders 25, executions 2, crowned 959, regencies 18, usurped 20, interregnums 42, lines_ended 3, elections 885, claims_won 23, new_houses 142, marriages 283, births 501, partitions 5
+check: succession laws at the end: eldest_child 4, eldest_son 2, elective 3, faith 2, force 2, strongest_kin 2, term 11
+check: groups: formed 747, split 139, merged 12, ended 692, give_gold 3173, withhold 162, give_men 3134, coup 58, preach 2517, found 75, press 1416, rise 25, crush 72, concede 138, patronize 1937, coups_won 1
+check: overlays: tongue_new 5, tongue_merge 0, shifted 104, faith_new 4, schism 12, blend 15, converted 361, creed_split 0, creed_shift 0, plague 8, strain 6, famine 2633, flood 647, quake 86, drought 2255, fire 2507, dread 811, golden_age 42, elite_strife 12, dark_years 1, court_converted 59, reaction 2, holy_war 105, holy_conquest 10, rally 20, discredited 1, coalition 235, struck_first 7
+check: ideas at the end: tongues 39 (largest holds 0.058 of all people), faiths 71 (largest 0.512), creeds 25; realms of more than one people 17
+check: faiths at the end: militant 6, mercantile 10; realms fighting for their faith 0 (0 ruled by priests), trading for it 13; realm-years fighting for their faith 6 (0 ruled by priests)
+check: bordering realms: 74 pairs, sharing a tongue (.5 or more) 8, a faith 44; wars under way between faiths 5 of 5
+check: groups at the end: 183, largest share of a realm 0.675; ideas 96, largest holds 0.512 of all people

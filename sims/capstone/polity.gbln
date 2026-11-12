@@ -969,6 +969,33 @@ act edge(p, t)
     return (p >> power) / ((p >> power) + (t >> power) + 0.001)
 xx
 
+/// The power of those sworn to `p` (alliance .5 or more) who would come
+/// to its side against `foe`, each as far as it keeps its word (honor).
+act backing(p, foe)
+    b | 0.0
+    repeat :objects(uses dealings, :link_score(p, it, "alliance") >= .5) as x
+        if x == foe or x == p => skip
+        b |= b + (x >> power) * (x >> honor)
+    xx
+    return b
+xx
+
+/// `edge` for a war: each side with the allies that would come, counted
+/// as far as `p` fears them (2026-11-11, owner: a cautious ruler weighs
+/// the league against him; a reckless one, like Charles XII marching on
+/// Russia, mostly does not).
+act war_edge(p, t)
+    w | 2.0 * (p >> fear)
+    a | (p >> power) + w * backing(p, t)
+    d | (t >> power) + w * backing(t, p)
+    return a / (a + d + 0.001)
+xx
+
+/// What `a` fears from `b` this year (`menace`), 0 to 1.
+act threat(a, b)
+    return (feared{a >> name} ?? {}){b >> name} ?? 0.0
+xx
+
 /// A polity that is erased ends its wars (the other side keeps what it
 /// holds), stops fighting in others' wars, and no one is left beaten by
 /// it, serving it or uniting with it.
@@ -1172,7 +1199,7 @@ interface dealings |
     xx
     decision war
         targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @holy * 1.2) * .6 * @lean_war
+        score => (@aggression + @ambition + :max(:max(grudge(self, target), claim(self, target)), threat(self, target) * @fear)) / 3 * war_edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @holy * 1.2) * .6 * @lean_war
     xx
     decision break_treaty
         targets: uses dealings where :link_score(self, target, "alliance") > 0
@@ -1362,6 +1389,8 @@ interface dealings |
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
         if !(aim.nix?) => w >> aim |= aim
+        /// Struck first: the war is mostly against a feared neighbour.
+        if threat(p, t) * (p >> fear) > :max(grudge(p, t), claim(p, t)) and threat(p, t) >= .3 => overlays::count("struck_first")
         if p >> holy >= .3 and :link_score(p, t, "shared_faith") < .5
             w >> holy |= true
             overlays::count("holy_war")
