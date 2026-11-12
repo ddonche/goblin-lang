@@ -15,12 +15,12 @@ xx
 xx
 
 w <> Wolf | name: "Lupin"
-alias | w
+same | w
 before | w >> id
 :tick()
 :say(:is_type(w, "Spoon"))
 :say((w >> id) == before)
-:say((alias >> id) == before)
+:say((same >> id) == before)
 :say(w >> name)
 :say(w >> material)
 :say(:len(:objects("Wolf")))
