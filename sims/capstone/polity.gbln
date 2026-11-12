@@ -95,7 +95,8 @@ aspect Polity |
     union_with: nil
     /// The free province it means to settle.
     colony_at: nil
-    /// Its province likeliest to break away: far from the capital, peopled.
+    /// Its province likeliest to break away: far from the capital, peopled,
+    /// and held by another people (another tongue or faith).
     rebel: nil
     /// Settled free provinces bordering its land.
     frontier: 0
@@ -847,6 +848,25 @@ link grievance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
 xx
+/// Land a realm lost to a breakaway, one way (old realm to the one that
+/// left): a claim it may fight to win back, fading over a century
+/// (Justinian's reconquest, Russia and Chechnya).
+link lost_land
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+/// After a breakaway: the center is shown unable to hold its lands, and
+/// others try (the republics after the Baltics in 1990-91, Yugoslavia
+/// after Slovenia). Each breakaway adds to it; it fades over a decade.
+overlay crumbling
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    dup: replace
+    decays: .1
+    modify
+        @legitimacy - .15 * intensity
+        @centralization - .1 * intensity
+    xx
+xx
 
 /// A War under way: fear up, trade with anyone less likely. Put on again
 /// each year the war lasts.
@@ -1594,12 +1614,19 @@ act account(lands, pairs)
         settle_accounts(p)
     xx
     far | {}
+    /// Each realm's court tongue and faith (the firmest at its capital).
+    court | {}
+    repeat ps as p
+        c | p >> capital ?? => skip
+        :update!(court{p >> name}, [overlays::top(c, "Tongue"), overlays::top(c, "Faith")])
+    xx
     repeat lands as l
         p | l >> owner ?? => skip
         d | distance(p, l)
         p >> strength |= p >> strength + (l >> people) * :pow(0.5, d / ((p >> reach) + (l >> roads) * .5))
         if l == p >> capital => skip
-        r | d / (p >> reach) * (1.0 + (l >> people) / 500.0)
+        k | court{p >> name} ?? [.., ..]
+        r | d / (p >> reach) * (1.0 + (l >> people) / 500.0) * (1.0 + 2.0 * overlays::alien(l, k[0], k[1]))
         if r > (far{p >> name} ?? 0.0)
             :update!(far{p >> name}, r)
             p >> rebel |= l
@@ -1906,7 +1933,7 @@ interface realm |
     xx
     decision release
         targets: uses govern where (target >> owner) == self
-        score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+        score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1) + (:overlay_strength("crumbling", self) ?? 0.0)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
     xx
     decision revolt
         targets: uses govern where target == @owner
@@ -2093,9 +2120,10 @@ xx
 
 /// Whether `p`'s ruling dynasty claims `t`'s throne: 1 or 0.
 act claim(p, t)
-    d | p >> dynasty ?? => send 0.0
+    lost | :link_score(p, t, "lost_land")
+    d | p >> dynasty ?? => send lost
     if family::claims_to(d, t) => send 1.0
-    return 0.0
+    return lost
 xx
 
 /// the settle phase: the year's change of form and the transitions
@@ -2268,8 +2296,10 @@ act breakaway(p, city)
     if p >> lands < 3 or land::is_city(r) != city => send 0.0
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
-    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
-    return odds(far * loose * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
+    /// Another people breaks away more readily than the court's own.
+    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p))
+    if city => send odds(far * loose * apart * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
+    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)
@@ -2431,11 +2461,32 @@ act broke_away(p, f)
     r | p >> rebel
     r >> owner |= f
     n | 1
+    ct | overlays::court_tongue(p)
+    rt | overlays::top(r, "Tongue")
     if !:is_type(f, "CityState")
-        repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(r, it, "border")) as q
-            if n >= 3 => stop
-            q >> owner |= f
-            n |= n + 1
+        if rt != .. and rt != ct
+            /// A people breaks away with all its land: the realm's lands
+            /// joined to the rebel province where its tongue is the firmest.
+            overlays::count("people_broke_away")
+            edge_lands | [r]
+            while :len(edge_lands) > 0
+                nxt | []
+                repeat edge_lands as e
+                    repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(e, it, "border")) as q
+                        if overlays::top(q, "Tongue") != rt => skip
+                        q >> owner |= f
+                        n |= n + 1
+                        :put_last!(nxt, q)
+                    xx
+                xx
+                edge_lands |= nxt
+            xx
+        else
+            repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(r, it, "border")) as q
+                if n >= 3 => stop
+                q >> owner |= f
+                n |= n + 1
+            xx
         xx
     xx
     f >> capital |= r
@@ -2445,7 +2496,25 @@ act broke_away(p, f)
     p >> lands |= p >> lands - n
     p >> rebel |= nil
     :link!(p, f, "grievance", .3, 60)
+    :link!(p, f, "lost_land", .8, 100)
     government::rule(f, government::choose(f))
+    /// The center is shown unable to hold: the next breakaway comes easier.
+    was | :overlay_strength("crumbling", p) ?? 0.0
+    :overlay!(p, crumbling, :min(was + .3, 1.0))
+    /// In a loose realm a breakaway of the court's faith may keep its
+    /// oath in name and rule for itself (the Abbasid emirs, the Holy
+    /// Roman princes).
+    cf | overlays::court_faith(p)
+    fi | 0.0
+    if cf != ..
+        cs | :overlays(r, cf)
+        if :len(cs) > 0 => fi |= cs[0] >> intensity
+    xx
+    if (p >> owner).nix? and chance((1.0 - p >> centralization) * fi)
+        f >> owner |= p
+        overlays::count("nominal")
+        :event(f, "nominal", p, {"the governor kept the old ruler's name in the prayers and ruled as he liked": 2.0, "the oath was kept in name only": 1.0})
+    xx
 xx
 
 /// A split: `first` holds everything; the provinces nearer the old far

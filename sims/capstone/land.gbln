@@ -44,7 +44,10 @@
         xx
     xx
     act move_people(to, gain)
-        n | @people * @leaving * gain
+        /// At most `leaving` of the people go in a year, however much
+        /// better the other land is (a land whose harvest failed could
+        /// send more people than it had).
+        n | @people * @leaving * :min(gain, 1.0)
         before | to >> people
         @people |= @people - n
         to >> people |= to >> people + n

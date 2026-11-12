@@ -31,7 +31,7 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
 /// What the run's overlays did (printed at the end).
 tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
     "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0,
-    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0, "coalition": 0, "struck_first": 0, "submitted": 0, "refused": 0}
+    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0, "coalition": 0, "struck_first": 0, "submitted": 0, "refused": 0, "people_broke_away": 0, "nominal": 0}
 
 act count(k)
     :update!(tally{k}, tally{k} + 1)
@@ -87,7 +87,7 @@ xx
     transition merge
         targets: Tongue where (target >> intensity) >= .25 and (target >> intensity) <= .55 and intensity >= .25 and intensity <= .55 and land::is_city(host) and host >> trade >= .5 and chance(.002)
         carries:
-            intensity: intensity + target >> intensity
+            intensity: :min(intensity + target >> intensity, 1.0)
             drift: 0.0
         xx
     xx
@@ -429,7 +429,7 @@ xx
     transition merge
         targets: Faith where (target >> intensity) >= .3 and (target >> intensity) <= .6 and intensity >= .3 and intensity <= .6 and chance(.0005)
         carries:
-            intensity: intensity + target >> intensity
+            intensity: :min(intensity + target >> intensity, 1.0)
             drift: 0.0
             tension: 0.0
         xx
@@ -1358,6 +1358,29 @@ xx
 act court_faith(p)
     c | p >> capital ?? => send ..
     return top(c, "Faith")
+xx
+
+/// The tongue held firmest at realm `p`'s capital (`..` for none).
+act court_tongue(p)
+    c | p >> capital ?? => send ..
+    return top(c, "Tongue")
+xx
+
+/// How foreign land `l` is to a court of tongue `t` and faith `f`: 1 less
+/// the mean of how firmly the land holds each (0 = the court's own people,
+/// 1 = another people of another faith).
+act alien(l, t, f)
+    ti | 0.0
+    fi | 0.0
+    if t != ..
+        cs | :overlays(l, t)
+        if :len(cs) > 0 => ti |= cs[0] >> intensity
+    xx
+    if f != ..
+        cs | :overlays(l, f)
+        if :len(cs) > 0 => fi |= cs[0] >> intensity
+    xx
+    return 1.0 - (ti + fi) / 2.0
 xx
 
 /// How militant the faith named `n` is, for realm `p`: its copy at `p`'s

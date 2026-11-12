@@ -1259,3 +1259,65 @@ Flagged:
 3. About a fifth of wars end in submission, and revolts are 2.5 times as
    many: vassals submit, revolt and are beaten again (as Assyria's
    were). Whether that is too often I don't know.
+
+## Empires falling from within (0.51.27)
+
+Daniel (2026-11-11): model how empires fall from within (the USSR); he
+wants to see how long empires last.
+
+Real life first: the USSR, Austria-Hungary in 1918, Yugoslavia, the
+late Abbasids and the Mongol empire broke along the same lines. Many
+peoples, each with its own land; a center weakened by bankruptcy,
+defeat, a fight over succession or lost belief; one people goes first
+(the Baltics, Slovenia), which shows the center cannot hold, and the
+others follow within a few years. Often the center gives up rather than
+fight, or governors keep the oath in name and rule for themselves (the
+Abbasid emirs). Counterweights: reconquest (Justinian, Chechnya),
+renewal (Diocletian), a shared faith and tongue, prosperity; many
+breakaways failed (the Confederacy, Biafra).
+
+Built:
+- The province likeliest to break away (`rebel`) counts how foreign it
+  is: `× (1 + 2 × alien)`, alien = 1 − the mean of how firmly it holds
+  the court's tongue and faith (`overlays::alien`). Breakaway odds `×
+  (.5 + alien)`.
+- A people breaks away with all its land: when the rebel province's
+  firmest tongue is not the court's, the fragment takes every land of
+  the realm joined to it whose firmest tongue is the same (else, as
+  before, up to three bordering lands). Counted `people_broke_away`.
+- Cascade: each breakaway puts `crumbling` on the old realm (+.3, up to
+  1, fading .1 a year): legitimacy −.15 and centralization −.1 ×
+  intensity, so the next breakaway comes easier; it also adds to the
+  `release` decision (the center lets lands go).
+- Nominal loyalty: an independent realm's breakaway stays its vassal
+  with `chance((1 − centralization) × how firmly the rebel province holds
+  the court's faith)`. Counted `nominal`.
+- Reconquest: a `lost_land` link (.8, fading over 100 years) from the old
+  realm to the breakaway; `claim` reads it, so it is a cause of war.
+- Check line: empires (the Empire class, under one name), the median and
+  longest years as an empire, and how many stand at the end.
+
+Fixed on the way (both could crash a run, found on seed 7):
+- A land could send off more people than it had: `move_people` sent
+  `people × leaving × gain`, and `gain` (how much better the other land
+  is) can be 30 after a failed harvest. Now at most `leaving` of the
+  people go. world.gbln output is unchanged.
+- A faith or tongue blend could make a copy held by more than 1
+  (`intensity + target's`, each up to .6); now at most 1.
+
+500 years (seeds 42 / 7 / 99), before → after these rules (both with
+the two fixes): median years as an empire 87 → 56, 151 → 49, 93 → 119;
+longest 418 → 417, 462 → 430, 447 → 434; empires 43 → 48, 33 → 49, 42 →
+40. Peoples breaking away 44 / 23 / 34, nominal vassals 7 / 7 / 10.
+Breakaways 232 → 241, 277 → 263, 250 → 293; releases 112 → 134, 104 →
+136, 122 → 143. Years at war 13.9% / 14.4% / 13.1%.
+
+Flagged:
+1. My coefficients: × (1 + 2 alien), (.5 + alien), +.3 and .1 a year,
+   −.15 / −.1, the nominal chance, .8 over 100 years.
+2. Median empire lifespans of 50 to 120 years are short: real empires
+   are often given an average near two centuries (and the run is only
+   500 years, so the longest are cut off at the end).
+3. Goblin: `spans[:len(spans) - 1]` reads as a slice from the start to
+   `len(...)`, so the colon rule then reports `len` as a bare builtin.
+   An index that starts with a builtin call needs a variable first.
