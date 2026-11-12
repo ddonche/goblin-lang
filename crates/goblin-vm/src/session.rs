@@ -58,6 +58,10 @@ pub struct OverlayDef {
     /// Made by a transition while the program ran, not declared: it goes
     /// along with its overlays to other regions, which don't know it.
     pub generated: bool,
+    /// Made while actors ran (by an `overlay` line in a region, or in the
+    /// program once it started actors): their images do not have it, so it
+    /// goes along with its overlays too.
+    pub travels: bool,
     /// The kinds a transition made this one from (two for a merge); none
     /// for a declared overlay.
     pub parents: Vec<String>,

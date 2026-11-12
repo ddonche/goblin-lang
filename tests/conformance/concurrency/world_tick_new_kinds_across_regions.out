@@ -1,0 +1,4 @@
+town 1 holds idea_3, from town 2
+town 1 holds idea_6, from town 2
+town 2 holds idea_2, from town 1
+town 2 holds idea_5, from town 1

@@ -38,6 +38,7 @@ pub(crate) struct POverlayDef {
     phases: Vec<goblin_ast::OverlayPhase>,
     family: String,
     generated: bool,
+    travels: bool,
     parents: Vec<String>,
     maker: Vec<(String, PValue)>,
 }
@@ -53,7 +54,7 @@ pub(crate) struct POverlay {
     count: u64,
     applied: Vec<(String, f64)>,
     extra_fields: Vec<(String, PValue)>,
-    des_id: u32,
+    pub(crate) des_id: u32,
     /// The overlay's kind, when a transition made it while the program
     /// ran: the session it goes to may not know it.
     kind: Option<std::sync::Arc<POverlayDef>>,
@@ -101,6 +102,7 @@ pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDe
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        travels: d.travels,
         parents: d.parents.clone(),
         maker: d.maker.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect::<Result<Vec<_>, GoblinError>>()?,
     })
@@ -138,6 +140,7 @@ pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        travels: d.travels,
         parents: d.parents.clone(),
     }
 }
@@ -230,7 +233,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
         extra_fields: pfields(tp, &inst.extra_fields)?,
         des_id: inst.des_id.0,
         kind: match tp.session.overlay_defs.get(&inst.overlay_name) {
-            Some(d) if d.generated => {
+            Some(d) if d.generated || d.travels => {
                 let cached = tp.session.portable_kinds.borrow().get(&d.name).cloned();
                 match cached {
                     Some(p) => Some(p),

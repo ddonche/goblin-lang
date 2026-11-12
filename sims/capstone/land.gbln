@@ -30,6 +30,10 @@
     /// How much of the world's people hold the idea held most firmly
     /// here (set each year by factions::account).
     dominance: 0.0
+    /// Its place on the map (one number per cell), and how many names have
+    /// been drawn here (`name_no`).
+    no: 0
+    named: 0
     phase: land
         every 1 tick
             @people |= @people + @growth * @people * (1.0 - @people / @food)
@@ -112,4 +116,50 @@ xx
 act is_city(l)
     s | l >> settlement
     return s == "city" or s == "great city"
+xx
+
+/// Whether the world runs in regions (set by history.gbln before it hands
+/// the world out): then a new object is placed next to what it belongs to.
+in_regions | false
+
+act use_regions()
+    in_regions |= true
+xx
+
+/// Runs `o` where `near` runs (a no-op without regions, or when it already
+/// runs there).
+act place(o, near)
+    if in_regions and !near.nix? => :move!(o, near)
+xx
+
+/// The world's clock: the year, which the program sets as each year
+/// begins (`set_year`), and how many cells the map has. It is an object,
+/// so every region reads the same year.
+<>Clock |
+    year: 0
+    cells: 1
+xx
+
+clock <> Clock | year: 0, cells: 1
+
+act year()
+    return clock >> year
+xx
+
+act set_year(y)
+    clock >> year |= y
+xx
+
+act set_cells(n)
+    clock >> cells |= n
+xx
+
+/// A number no name drawn anywhere else has had: the province's place on
+/// the map, then once round the map again for each name drawn here. A name
+/// drawn for a realm, a house or a person draws it at the realm's capital,
+/// so two regions never draw the same one.
+act name_no(l)
+    n | l >> named
+    l >> named |= n + 1
+    return l >> no + n * (clock >> cells)
 xx

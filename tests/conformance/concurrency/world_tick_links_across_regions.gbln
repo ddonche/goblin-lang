@@ -1,0 +1,52 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A link is kept with the object it goes from, in that object's region.
+/// The other regions and the program read it as it was at the end of the
+/// last tick; a change one of them makes (`:link!`, `:unlink!`) goes to
+/// that region, which makes it at the start of the next tick, and the one
+/// that made it reads it back until then. Here `b` (east) adds 1 to a's
+/// trust in it each tick; the program adds 10 after tick 2 and takes all
+/// of it back after tick 4.
+<>P |
+    n: 0
+    saw: 0
+    every 1 tick
+        if self >> n == 2
+            repeat :objects(it >> n == 1) as o
+                self >> saw |= :link_score(o, self, "trust")
+                :link!(o, self, trust, 1)
+            xx
+        xx
+    end
+xx
+link trust
+    hosts: P
+    range: -100...100
+    score => 0
+xx
+act make_west()
+    a <> P | n: 1
+    return {"things": [a]}
+xx
+act make_east()
+    b <> P | n: 2
+    return {"things": [b]}
+xx
+act day(st, msg)
+    return st
+xx
+west | :actor(make_west(), day)
+east | :actor(make_east(), day)
+repeat :range(1, 7) as d
+    :tick()
+    a | :objects(P, it >> n == 1)[0]
+    b | :objects(P, it >> n == 2)[0]
+    v | :link_score(a, b, "trust")
+    s | b >> saw
+    :say("tick {d}: a trusts b {v}; b saw {s}")
+    if d == 2
+        :link!(a, b, trust, 10)
+        w | :link_score(a, b, "trust")
+        :say("tick {d}: the program reads back {w}")
+    xx
+    if d == 4 => :unlink!(a, b, "trust")
+xx

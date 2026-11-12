@@ -8,6 +8,7 @@
 /// what the realm keeps (an heir, a claim, legitimacy lost) changes the
 /// sim.
 import government as government
+import land as land
 
 /// A realm's ruler: a tribe's or village's chief, a king, a priest, a
 /// term leader or a general. `house` is its dynasty, nil (`?`) for one
@@ -86,12 +87,9 @@ act under(v, at)
     return :clamp((at - v) / at, 0.0, 1.0)
 xx
 
-now | 0
 
 /// names
 
-givens | 0
-families | 0
 
 act word(i, s)
     n | :len(s)
@@ -103,17 +101,15 @@ act word(i, s)
     return :title(w)
 xx
 
-/// A given name never used before.
-act given_name()
-    w | word(givens, ["a", "be", "ca", "do", "e", "fi", "ga", "ha", "i", "ja", "ke", "li", "mo", "na", "o", "pa", "ri", "sa", "ta", "u", "ve", "wi", "ya", "ze", "lan", "mir", "dor", "wen", "rik", "tha"])
-    givens |= givens + 1
+/// A given name never used before, drawn at `p`'s capital.
+act given_name(p)
+    w | word(land::name_no(p >> capital), ["a", "be", "ca", "do", "e", "fi", "ga", "ha", "i", "ja", "ke", "li", "mo", "na", "o", "pa", "ri", "sa", "ta", "u", "ve", "wi", "ya", "ze", "lan", "mir", "dor", "wen", "rik", "tha"])
     return w
 xx
 
-/// A house name never used before.
-act house_name()
-    w | word(families, ["ash", "bry", "cael", "dra", "elm", "fen", "grim", "hol", "ird", "kes", "lyn", "morr", "ny", "orm", "pry", "quell", "rhun", "sev", "thal", "ulm", "vey", "wyr", "yst", "zor"])
-    families |= families + 1
+/// A house name never used before, drawn at `p`'s capital.
+act house_name(p)
+    w | word(land::name_no(p >> capital), ["ash", "bry", "cael", "dra", "elm", "fen", "grim", "hol", "ird", "kes", "lyn", "morr", "ny", "orm", "pry", "quell", "rhun", "sev", "thal", "ulm", "vey", "wyr", "yst", "zor"])
     return w
 xx
 
@@ -125,10 +121,38 @@ xx
 
 /// the run's tally (printed at the end)
 
-tally | {"deaths": 0, "murders": 0, "executions": 0, "crowned": 0, "regencies": 0, "usurped": 0, "interregnums": 0, "lines_ended": 0, "elections": 0, "claims_won": 0, "new_houses": 0, "marriages": 0, "births": 0, "partitions": 0}
+/// The counts are kept in an object, so every region adds to the same ones.
+<>FamilyRecord |
+    deaths: 0
+    murders: 0
+    executions: 0
+    crowned: 0
+    regencies: 0
+    usurped: 0
+    interregnums: 0
+    lines_ended: 0
+    elections: 0
+    claims_won: 0
+    new_houses: 0
+    marriages: 0
+    births: 0
+    partitions: 0
+xx
+
+record <> FamilyRecord | deaths: 0
+counted | ["deaths", "murders", "executions", "crowned", "regencies", "usurped", "interregnums", "lines_ended", "elections", "claims_won", "new_houses", "marriages", "births", "partitions"]
+
+/// The counts so far, in order.
+act tally()
+    out | {}
+    repeat counted as k
+        :update!(out{k}, record >> {k})
+    xx
+    return out
+xx
 
 act count(k)
-    :update!(tally{k}, tally{k} + 1)
+    record >> {k} |= record >> {k} + 1
 xx
 
 /// rulers
@@ -156,11 +180,12 @@ xx
 
 /// A new Ruler of house `d` (or of none) for `p`, not yet seated.
 act new_ruler(p, d, t, age)
-    g | given_name()
+    g | given_name(p)
     if !d.nix? and :len(d >> names) > 0 and chance(.3) => g |= :shuffle(d >> names)[0]
     n | "{g} of {p >> name}"
     if !d.nix? => n |= "{g} {d >> name}"
     x <> Ruler | given: g, name: n, age: age, court: p, house: d
+    land::place(x, p)
     x >> aggression |= t{"aggression"}
     x >> ambition |= t{"ambition"}
     x >> competence |= t{"competence"}
@@ -168,9 +193,10 @@ act new_ruler(p, d, t, age)
     return x
 xx
 
-/// A new house, founded now.
-act new_house()
-    d <> Dynasty | name: house_name(), founded: now
+/// A new house of `p`, founded now.
+act new_house(p)
+    d <> Dynasty | name: house_name(p), founded: land::year()
+    land::place(d, p)
     count("new_houses")
     return d
 xx
@@ -283,7 +309,7 @@ xx
 act family_year(r, p)
     a | r >> age
     if r >> spouse == .. and a >= 16 and a <= 50 and chance(.25)
-        r >> spouse |= given_name()
+        r >> spouse |= given_name(p)
         count("marriages")
         :event(p, "ruler wed", r, "{r >> spouse}, of a great family of the realm")
     xx
@@ -469,7 +495,7 @@ act household(p, x)
     a | x >> age
     if a < 18 or x >> spouse != .. => send nil
     if !chance(:min((a - 16) * .1, .9)) => send nil
-    x >> spouse |= given_name()
+    x >> spouse |= given_name(p)
     count("marriages")
     told | "married to {x >> spouse}"
     if p >> heir < 0 and a >= 20 and chance(:min((a - 19) * .08, .85))
@@ -525,7 +551,7 @@ xx
 
 /// A house for a new ruler of `p`, if its form of rule has houses.
 act house_for(p)
-    if housed(kind(government::form_of(p) ?? ..)) => send new_house()
+    if housed(kind(government::form_of(p) ?? ..)) => send new_house(p)
     return nil
 xx
 
@@ -716,7 +742,7 @@ act wed(p, t)
     r | p >> ruler
     d | t >> dynasty
     if !free(p) or d.nix? => send nil
-    r >> spouse |= "{given_name()} {d >> name}"
+    r >> spouse |= "{given_name(p)} {d >> name}"
     count("marriages")
     :link!(p, t, "kinship", .3, 60)
     :link!(t, p, "kinship", .3, 60)
@@ -813,7 +839,7 @@ act check(p)
         k == "crown":
             if !r.nix?
                 if (r >> house).nix?
-                    d | new_house()
+                    d | new_house(p)
                     r >> house |= d
                     r >> name |= "{r >> given} {d >> name}"
                     d >> rulers |= 1
@@ -828,7 +854,7 @@ act check(p)
                 count("claims_won")
                 send crown(p, new_ruler(p, cl, culture_traits(p), 20 + (pick 1 from 0...25)), "the house of {cl >> name}, by its claim")
             xx
-            crown(p, new_ruler(p, new_house(), culture_traits(p), 22 + (pick 1 from 0...28)), "the first of a new house")
+            crown(p, new_ruler(p, new_house(p), culture_traits(p), 22 + (pick 1 from 0...28)), "the first of a new house")
         k == "usurper": usurp(p, "seized the throne")
         k == "junta": usurp(p, "the army took power")
         k == "priest":
@@ -840,7 +866,7 @@ act check(p)
         k == "term":
             election(p, true)
         k == "client":
-            crown(p, new_ruler(p, new_house(), culture_traits(p), 22 + (pick 1 from 0...28)), "set up by its overlord")
+            crown(p, new_ruler(p, new_house(p), culture_traits(p), 22 + (pick 1 from 0...28)), "set up by its overlord")
     xx
 xx
 
@@ -849,7 +875,6 @@ xx
 /// a regent may seize a child's throne; terms run out; and every realm's
 /// succession is worked out.
 act account(year)
-    now |= year
     claims | {}
     repeat :objects(Dynasty) as d
         d >> prestige |= d >> prestige * .98

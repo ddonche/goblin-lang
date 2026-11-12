@@ -182,7 +182,10 @@ fn overlay_tick(vm: &mut Vm) -> Result<(), GoblinError> {
     use std::time::Instant;
     // ── Pass 0: Decay temporary link offsets ─────────────────────────────────
     let t = Instant::now();
-    for offsets in vm.session.link_offsets.values_mut() {
+    // Another region's links (in view this tick) run out in their region.
+    let remote = vm.session.region.as_ref().map(|c| &c.remote);
+    for ((from, _, _), offsets) in vm.session.link_offsets.iter_mut() {
+        if remote.is_some_and(|r| r.contains(from.as_str())) { continue; }
         for o in offsets.iter_mut() {
             if let Some(ref mut t) = o.ticks_remaining {
                 if *t > 0 { *t -= 1; }

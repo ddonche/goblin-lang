@@ -161,6 +161,8 @@ aspect Polity |
     /// twentieth a year (its neighbours remember an aggressor for a
     /// generation).
     seized: 0.0
+    /// The neighbours it fears, by name: how much (polity::menace, each year).
+    fears: {}
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -174,13 +176,13 @@ interface founding |
     transition spawn where !(@colony_at.nix?)
         into: Village
         child:
-            name: next_name()
+            name: next_name(self)
         xx
     xx
     transition spawn where chance(league_odds(self))
         into: League
         child:
-            name: next_name()
+            name: next_name(self)
         xx
     xx
     on spawn => founded_child(self, child)
@@ -399,7 +401,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -425,7 +427,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 wars: 0
@@ -451,7 +453,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -470,7 +472,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -497,7 +499,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -571,7 +573,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -597,7 +599,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -616,7 +618,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -643,7 +645,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -710,7 +712,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -729,7 +731,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -756,7 +758,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -1013,7 +1015,7 @@ xx
 
 /// What `a` fears from `b` this year (`menace`), 0 to 1.
 act threat(a, b)
-    return (feared{a >> name} ?? {}){b >> name} ?? 0.0
+    return (a >> fears){b >> name} ?? 0.0
 xx
 
 /// A polity that is erased ends its wars (the other side keeps what it
@@ -1408,6 +1410,7 @@ interface dealings |
             xx
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
+        land::place(w, p)
         if !(aim.nix?) => w >> aim |= aim
         /// Struck first: the war is mostly against a feared neighbour.
         if threat(p, t) * (p >> fear) > :max(grudge(p, t), claim(p, t)) and threat(p, t) >= .3 => overlays::count("struck_first")
@@ -1692,7 +1695,6 @@ xx
 
 /// What each realm fears from each bordering realm, by name (set each
 /// year by `menace`): realm name to {neighbour name: threat}.
-feared | {}
 
 /// The threat each realm sees in each neighbour (2026-11-11, owner:
 /// rivals set their quarrels aside before a great threat). In real life a
@@ -1704,7 +1706,6 @@ feared | {}
 /// provinces is the most) and, against another faith, how far it fights
 /// for its own.
 act menace(ps, nbs)
-    out | {}
     repeat ps as p
         if p >> seized > 0.0 => p >> seized |= p >> seized * .95
     xx
@@ -1715,17 +1716,16 @@ act menace(ps, nbs)
             t | past(edge(b, a), .5) * done
             if t > 0.0 => :update!(m{b >> name}, t)
         xx
-        :update!(out{a >> name}, m)
+        a >> fears |= m
     xx
-    feared |= out
 xx
 
 /// The threat realms `a` and `b` both see in one realm (the larger, if
 /// several): 0 to 1.
 act shared_threat(a, b)
-    fa | feared{a >> name} ?? {}
+    fa | a >> fears
     if :len(fa) == 0 => send 0.0
-    fb | feared{b >> name} ?? {}
+    fb | b >> fears
     best | 0.0
     repeat fa as n, v
         w | fb{n} ?? 0.0
@@ -1844,8 +1844,6 @@ xx
 
 /// names
 
-named | 0
-
 /// A name from a number: two or three syllables.
 act name_of(i)
     s | ["ar", "bel", "cor", "dun", "esk", "fal", "gor", "hal", "isk", "jor", "kel", "lor", "mar", "nor", "or", "pel", "quar", "ros", "sar", "tor", "ul", "var", "wen", "yr", "zan"]
@@ -1859,11 +1857,9 @@ act name_of(i)
     return :title(w)
 xx
 
-/// The next polity's name.
-act next_name()
-    w | name_of(named)
-    named |= named + 1
-    return w
+/// A name for a new polity coming from `p`, drawn at `p`'s capital.
+act next_name(p)
+    return name_of(land::name_no(p >> capital))
 xx
 
 /// realm: its shape (the inside phase). Reform, settle (a colony), migrate

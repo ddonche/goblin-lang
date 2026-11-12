@@ -12,8 +12,8 @@
 /// (Faith, Creed) are in overlays.gbln, which makes new ones: an overlay
 /// class is known only in the file that declares it.
 import overlays as overlays
+import land as land
 
-now | 0
 
 act chance(p)
     return (pick 1 from 0...9999) < p * 10000.0
@@ -34,11 +34,40 @@ act jitter(v)
 xx
 
 /// What the run's groups did, and how they came and went (printed at the end).
-tally | {"formed": 0, "split": 0, "merged": 0, "ended": 0, "give_gold": 0, "withhold": 0, "give_men": 0, "coup": 0,
-    "preach": 0, "found": 0, "press": 0, "rise": 0, "crush": 0, "concede": 0, "patronize": 0, "coups_won": 0}
+/// The counts are kept in an object, so every region adds to the same ones.
+<>GroupRecord |
+    formed: 0
+    split: 0
+    merged: 0
+    ended: 0
+    give_gold: 0
+    withhold: 0
+    give_men: 0
+    coup: 0
+    preach: 0
+    found: 0
+    press: 0
+    rise: 0
+    crush: 0
+    concede: 0
+    patronize: 0
+    coups_won: 0
+xx
+
+record <> GroupRecord | formed: 0
+counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won"]
+
+/// The counts so far, in order.
+act tally()
+    out | {}
+    repeat counted as k
+        :update!(out{k}, record >> {k})
+    xx
+    return out
+xx
 
 act count(k)
-    :update!(tally{k}, tally{k} + 1)
+    record >> {k} |= record >> {k} + 1
 xx
 
 traits | overlays::traits
@@ -196,7 +225,7 @@ kinds | [
             unity: :min(@unity + .3, 1.0)
             grievance: :min(@grievance + .1, 1.0)
             plotted: -1
-            founded: now
+            founded: land::year()
         xx
         carries:
             members: @members * .6
@@ -261,7 +290,8 @@ act form(k, p, idea, wants, s)
     repeat ["loyalty", "ambition", "militancy", "zeal", "greed", "unity"] as t
         :update!(born{t}, jitter(k{t}))
     xx
-    g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: now
+    g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: land::year()
+    land::place(g, p)
     count("formed")
     :event(g, "formed", p, {"they began to meet": 2.0, "a charter was written": .1 + born{"loyalty"}, "an oath was sworn": .1 + born{"unity"}})
 xx
@@ -271,7 +301,6 @@ xx
 /// polity::drift_traits), each group's members, gold, arms, traits and
 /// grievance, and new groups, by chance.
 act account(year, lands, realms)
-    now |= year
     /// Each realm's people, and how much of them hold each idea.
     people | {}
     held   | {}
@@ -456,7 +485,7 @@ act coup(g, p)
     /// A coup is made by the men under arms, not by numbers: plotters who
     /// hold a twentieth of the realm's soldiers (the guard) can do it.
     p >> plot |= :max(p >> plot, :min((g >> arms) / ((p >> army) * .05 + 1.0), 1.0) * (g >> militancy))
-    g >> plotted |= now
+    g >> plotted |= land::year()
     count("coup")
     :event(g, "plotted", p, {"met in secret": 2.0, "weighed the throne": .5 + g >> ambition, "bought the guard": .1 + g >> greed})
 xx

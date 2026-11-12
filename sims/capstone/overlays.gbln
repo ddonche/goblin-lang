@@ -14,7 +14,6 @@
 /// goblin-docs/overlays-design.md.
 import land as land
 
-now | 0
 
 act chance(p)
     return (pick 1 from 0...9999) < p * 10000.0
@@ -29,12 +28,56 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
     "openness", "discipline", "legitimacy", "centralization", "tolerance", "tradition", "learning"]
 
 /// What the run's overlays did (printed at the end).
-tally | {"tongue_new": 0, "tongue_merge": 0, "shifted": 0, "faith_new": 0, "schism": 0, "blend": 0, "converted": 0, "creed_split": 0, "creed_shift": 0, "plague": 0, "strain": 0,
-    "famine": 0, "flood": 0, "quake": 0, "drought": 0, "fire": 0, "dread": 0, "golden_age": 0, "elite_strife": 0, "dark_years": 0, "court_converted": 0, "reaction": 0,
-    "holy_war": 0, "holy_conquest": 0, "rally": 0, "discredited": 0, "coalition": 0, "struck_first": 0, "submitted": 0, "refused": 0, "people_broke_away": 0, "nominal": 0}
+/// The counts are kept in an object, so every region adds to the same ones.
+<>IdeaRecord |
+    tongue_new: 0
+    tongue_merge: 0
+    shifted: 0
+    faith_new: 0
+    schism: 0
+    blend: 0
+    converted: 0
+    creed_split: 0
+    creed_shift: 0
+    plague: 0
+    strain: 0
+    famine: 0
+    flood: 0
+    quake: 0
+    drought: 0
+    fire: 0
+    dread: 0
+    golden_age: 0
+    elite_strife: 0
+    dark_years: 0
+    court_converted: 0
+    reaction: 0
+    holy_war: 0
+    holy_conquest: 0
+    rally: 0
+    discredited: 0
+    coalition: 0
+    struck_first: 0
+    submitted: 0
+    refused: 0
+    people_broke_away: 0
+    nominal: 0
+xx
+
+record <> IdeaRecord | tongue_new: 0
+counted | ["tongue_new", "tongue_merge", "shifted", "faith_new", "schism", "blend", "converted", "creed_split", "creed_shift", "plague", "strain", "famine", "flood", "quake", "drought", "fire", "dread", "golden_age", "elite_strife", "dark_years", "court_converted", "reaction", "holy_war", "holy_conquest", "rally", "discredited", "coalition", "struck_first", "submitted", "refused", "people_broke_away", "nominal"]
+
+/// The counts so far, in order.
+act tally()
+    out | {}
+    repeat counted as k
+        :update!(out{k}, record >> {k})
+    xx
+    return out
+xx
 
 act count(k)
-    :update!(tally{k}, tally{k} + 1)
+    record >> {k} |= record >> {k} + 1
 xx
 
 /// What an idea teaches, with one trait moved a little: a daughter idea
@@ -510,7 +553,7 @@ act found(faith, b, by, c)
         overlay new_faith <^> Faith
             bends: b
             title: "the faith of {by}"
-            founded: now
+            founded: land::year()
             at: c >> name
             /// A faith with a founder and a teaching mostly seeks converts.
             seeks: (pick 1 from 3...10) / 10.0
@@ -526,7 +569,7 @@ act found(faith, b, by, c)
     overlay new_creed <^> Creed
         bends: b
         title: "the teaching of {by}"
-        founded: now
+        founded: land::year()
         at: c >> name
     xx
     :overlay!(c, new_creed, .3)
@@ -902,7 +945,6 @@ court_fshare | {}
 /// (legitimacy), through `bends`; dread after a plague or disaster on its
 /// land, discontent from famine, and by chance a golden age.
 act account(year, lands, realms)
-    now |= year
     weather |= {}
     if cold_left > 0 => cold_left |= cold_left - 1
     if cold_left == 0 and chance(.003)
@@ -1217,12 +1259,12 @@ act convert(p, own, fshare, court_f, reach, inside)
     c | p >> capital ?? => send nil
     k | p >> name
     was | converted{k}
-    if !was.nix? and now - was[0] <= 40
+    if !was.nix? and land::year() - was[0] <= 40
         if fshare < .3 and chance(.02 * (1.0 - fshare))
             back | was[1]
             firm_up(c, back, .6)
             cut_down(c, own, .4)
-            :update!(converted{k}, [now - 100, back])
+            :update!(converted{k}, [land::year() - 100, back])
             count("reaction")
             :event(p, "reaction", nil, {"the people rose for the old gods": 2.0, "the new priests were driven out": 1.0})
         xx
@@ -1272,7 +1314,7 @@ act convert(p, own, fshare, court_f, reach, inside)
     repeat :objects(Land, it >> owner == p and it != c and (it >> settlement == "town" or land::is_city(it))) as l
         firm_up(l, best, .2)
     xx
-    :update!(converted{k}, [now, own])
+    :update!(converted{k}, [land::year(), own])
     count("court_converted")
     :event(p, "court_converted", nil, {"the ruler was baptized and the lords with him": 2.0, "the ruler took the faith of the strong neighbour": 1.0, "the old shrines were pulled down": 1.0})
 xx

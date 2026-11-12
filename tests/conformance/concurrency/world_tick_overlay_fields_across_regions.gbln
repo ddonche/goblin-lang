@@ -1,0 +1,45 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The program can change the fields of an overlay copy on a region's
+/// object (`o >> f |= v`, on a copy from `:overlays(host)`): it reads the
+/// copy back as changed at once, and the region changes its copy at the
+/// start of the next tick.
+<>Town |
+    seen: ""
+    every 1 tick
+        repeat :overlays(self) as o
+            k | o >> kind
+            i | o >> intensity
+            self >> seen |= "{k} at {i}"
+        xx
+    end
+xx
+overlay fever
+    hosts: Town
+    kind: "mild"
+xx
+act make_town()
+    t <> Town |
+    :overlay!(t, fever, .5)
+    return {"things": [t]}
+xx
+act day(st, msg)
+    return st
+xx
+r | :actor(make_town(), day)
+repeat :range(1, 4) as d
+    :tick()
+    t | :objects(Town)[0]
+    s | t >> seen
+    :say("tick {d}: the town saw {s}")
+    if d == 1
+        repeat :overlays(t) as o
+            o >> kind |= "high"
+            o >> intensity |= .9
+        xx
+        repeat :overlays(t) as o
+            k | o >> kind
+            i | o >> intensity
+            :say("tick {d}: the program reads back {k} at {i}")
+        xx
+    xx
+xx

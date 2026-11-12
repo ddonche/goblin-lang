@@ -105,7 +105,7 @@ fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<S
     // objects that can pass the first test on `target` are tried, in the
     // same order (see `tick::narrow`).
     let ids: Vec<ObjId> = match vm.session.object_store.get_index_of(me.as_str()) {
-        Some(me_at) if ids.len() > 1 && vm.session.region.is_none() => {
+        Some(me_at) if ids.len() > 1 => {
             let all: Vec<(Value, usize)> = ids.iter()
                 .filter_map(|u| vm.session.object_store.get_index_of(u.as_str()).map(|i| (Value::Ref(u.clone()), i)))
                 .collect();

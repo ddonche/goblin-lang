@@ -2756,7 +2756,11 @@ impl Vm {
                 // after its family (`faith_1`). In the code that ran the
                 // line, its name means the one just made.
                 let line = format!("{:?}", def.span);
-                let fresh = self.session.overlay_lines_run.contains(&line);
+                // While regions run, any of them may run the same line: each
+                // kind gets a name of its own (numbered by region), so two
+                // never share one.
+                let fresh = self.session.overlay_lines_run.contains(&line)
+                    || self.session.region.is_some() || self.session.world.is_some();
                 self.session.overlay_lines_run.insert(line);
                 let family = def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone());
                 let kind = if fresh { crate::transition::new_root_name(self, &family) } else { def.name.clone() };
@@ -2790,6 +2794,7 @@ impl Vm {
                     phases: def.phases.clone(),
                     family,
                     generated: fresh,
+                    travels: fresh || !self.session.owned_actors.is_empty(),
                     parents: Vec::new(),
                     // Other fields the overlay declares (`fervor: f >> zeal`),
                     // worked out once here, where the `overlay` line runs:
@@ -2961,7 +2966,6 @@ impl Vm {
             Opcode::LinkOffset(i) => {
                 let crate::opcode::OpData::LinkOffset(s) = self.op_data_at(i) else { unreachable!() };
                 let s = s.clone();
-                use crate::session::LinkOffset;
                 let value = self.stack_pop()?;
                 let to = self.stack_pop()?;
                 let from = self.stack_pop()?;
@@ -2973,21 +2977,8 @@ impl Vm {
                         s.from_var, s.to_var, s.channel, other.type_name()))),
                 };
                 let (from_id, to_id) = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?);
-                let (lo, hi) = crate::tick::link_bounds(self, &from_id, &s.channel)?;
-                let key = (from_id.clone(), to_id.clone(), s.channel.clone());
-                if s.ticks.is_none() {
-                    // A lasting change moves the link, and keeps it inside its
-                    // range: past the top, a later drop starts from the top.
-                    let base = crate::tick::link_base(self, &from_id, &to_id, &s.channel)?;
-                    let offsets = self.session.link_offsets.entry(key).or_default();
-                    let lasting: f64 = offsets.iter().filter(|o| o.ticks_remaining.is_none()).map(|o| o.value).sum();
-                    let kept = (base + lasting + value).clamp(lo, hi) - base;
-                    offsets.retain(|o| o.ticks_remaining.is_some());
-                    offsets.push(LinkOffset { value: kept, ticks_remaining: None });
-                } else {
-                    // A timed change is taken back when its ticks run out.
-                    self.session.link_offsets.entry(key).or_default().push(LinkOffset { value, ticks_remaining: s.ticks });
-                }
+                crate::world::link_in_region(&mut self.session, &from_id, &to_id, &s.channel, Some((value, s.ticks)));
+                self.link_apply(from_id, to_id, s.channel.clone(), value, s.ticks)?;
             }
 
             Opcode::ClearLink(i) => {
@@ -2996,6 +2987,7 @@ impl Vm {
                 let to = self.stack_pop()?;
                 let from = self.stack_pop()?;
                 let key = (self.link_end(&from, &s.from_var)?, self.link_end(&to, &s.to_var)?, s.channel.clone());
+                crate::world::link_in_region(&mut self.session, &key.0, &key.1, &key.2, None);
                 self.session.link_offsets.remove(&key);
                 self.session.des_link_ids.remove(&key);
             }
@@ -6888,38 +6880,29 @@ impl Vm {
         if rest.starts_with("kind:") {
             return Err(err("this is an overlay as it was made, read from `:objects(Class)`: its fields are what each new copy starts with, set where it is made; change a copy's fields (`:overlays(host)`), or make a new overlay".into()));
         }
-        let found = rest.rsplit_once(':').and_then(|(host, id)| {
-            let id: u32 = id.parse().ok()?;
+        let at = rest.rsplit_once(':').and_then(|(host, id)| Some((host.to_string(), id.parse::<u32>().ok()?)));
+        let found = at.as_ref().and_then(|(host, id)| {
             let list = &self.session.overlay_instances;
-            list.on_host(host).iter().copied().find(|&q| list[q].des_id.0 == id)
+            list.on_host(host).iter().copied().find(|&q| list[q].des_id.0 == *id)
         });
         let Some(p) = found else {
+            // A region's copy, seen from the program or another region: its
+            // region sets the field at the start of the next round.
+            if let Some((host, id)) = &at {
+                let seen = if crate::world::in_view(&self.session, host) { crate::world::view_overlays_of(&mut self.session, Some(host), None) }
+                    else if crate::world::is_remote(self, host.as_str()) { crate::world::remote_overlays(&mut self.session, Some(host)) }
+                    else { Vec::new() };
+                if let Some(mut inst) = seen.into_iter().find(|i| i.host_uuid == *host && i.des_id.0 == *id) {
+                    set_overlay_field(&self.session, &mut inst, field, v).map_err(err)?;
+                    crate::world::overlay_field_in_region(&mut self.session, &inst, field)?;
+                    return Ok(self.overlay_record(&inst));
+                }
+            }
             return Err(err("that overlay copy is no longer on its host (it ran out, was taken off or a transition replaced it): it can be read, not changed".into()));
         };
-        let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
-        match field {
-            "intensity" => {
-                let Some(x) = num(&v) else { return Err(err(format!("an overlay's intensity is a number from 0 to 1, got {}", v.type_name()))) };
-                self.session.overlay_instances[p].strength = x.clamp(0.0, 1.0);
-            }
-            "ticks_remaining" => {
-                self.session.overlay_instances[p].ticks_remaining = match v {
-                    Value::Nil => None,
-                    Value::Int(i) if i >= 0 => Some(i.min(u32::MAX as i64) as u32),
-                    other => return Err(err(format!("ticks_remaining is a whole number of ticks (0 or more) or nil, got {}", other.type_name()))),
-                };
-            }
-            "overlay_name" | "host_uuid" | "host_var" | "parents" | "age" =>
-                return Err(err("this field says which overlay copy it is and how old it is; the runtime keeps it (to move an idea, take it off and put it on; to change its kind, a transition)".into())),
-            _ => {
-                if !self.session.overlay_instances[p].extra_fields.contains_key(field) {
-                    let name = self.session.overlay_instances[p].overlay_name.clone();
-                    return Err(err(format!("overlay {name} has no field named {field}")));
-                }
-                let v = entry_of(&self.session, v);
-                self.session.overlay_instances[p].extra_fields.insert(field.to_string(), v);
-            }
-        }
+        let mut inst = self.session.overlay_instances[p].clone();
+        set_overlay_field(&self.session, &mut inst, field, v).map_err(err)?;
+        self.session.overlay_instances[p] = inst;
         crate::tick::rework_film(self, p)?;
         let inst = self.session.overlay_instances[p].clone();
         Ok(self.overlay_record(&inst))
@@ -6940,8 +6923,8 @@ impl Vm {
             .filter(|&&p| name.is_none_or(|n| list[p].overlay_name == n))
             .map(|&p| self.overlay_record(&list[p])).collect();
         if self.session.world.is_some() {
-            for inst in crate::world::view_overlays(self) {
-                if inst.host_uuid == host && name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+            for inst in crate::world::view_overlays_of(&mut self.session, Some(host), name) {
+                records.push(self.overlay_record(&inst));
             }
         }
         for inst in crate::world::remote_overlays(&mut self.session, Some(host)) {
@@ -6963,8 +6946,8 @@ impl Vm {
                 .map(|&p| self.overlay_record(&self.session.overlay_instances[p])).collect(),
         };
         if self.session.world.is_some() {
-            for inst in crate::world::view_overlays(self) {
-                if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
+            for inst in crate::world::view_overlays_of(&mut self.session, None, name) {
+                records.push(self.overlay_record(&inst));
             }
         }
         for inst in crate::world::remote_overlays(&mut self.session, None) {
@@ -7114,7 +7097,6 @@ impl Vm {
     /// to a is its own). Without ticks the change lasts, kept inside the
     /// link's range; with them it is taken back when they run out.
     fn vm_link_bang(&mut self, args: Vec<Value>) -> Result<(), GoblinError> {
-        use crate::session::LinkOffset;
         if !(4..=5).contains(&args.len()) {
             return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "link!".into() });
         }
@@ -7133,6 +7115,15 @@ impl Vm {
             Some(v) => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:link!` needs a whole number of ticks above 0, got {}", v.type_name()))),
         };
         let (from_id, to_id) = (self.link_end(&args[0], "a")?, self.link_end(&args[1], "b")?);
+        // A region's object: its region makes the change too, at the start
+        // of the next round; this side reads it back until then.
+        crate::world::link_in_region(&mut self.session, &from_id, &to_id, &channel, Some((value, ticks)));
+        self.link_apply(from_id, to_id, channel, value, ticks)
+    }
+
+    /// The change `:link!` makes to a's link to b.
+    pub(crate) fn link_apply(&mut self, from_id: String, to_id: String, channel: String, value: f64, ticks: Option<u32>) -> Result<(), GoblinError> {
+        use crate::session::LinkOffset;
         let (lo, hi) = crate::tick::link_bounds(self, &from_id, &channel)?;
         let key = (from_id.clone(), to_id.clone(), channel.clone());
         if ticks.is_none() {
@@ -7158,6 +7149,7 @@ impl Vm {
             other => return Err(GoblinError::Runtime(format!("R1224: link-offset: `:unlink!` takes a link third, got {}", other.type_name()))),
         };
         let key = (self.link_end(&args[0], "a")?, self.link_end(&args[1], "b")?, channel);
+        crate::world::link_in_region(&mut self.session, &key.0, &key.1, &key.2, None);
         self.session.link_offsets.remove(&key);
         self.session.des_link_ids.remove(&key);
         Ok(())
@@ -7604,6 +7596,35 @@ fn entry_out(session: &crate::session::Session, v: Value) -> Value {
         _ => v,
     }
 }
+
+/// Sets `field` of one overlay copy (`o >> f |= v`); the error says why
+/// it cannot be set.
+pub(crate) fn set_overlay_field(session: &crate::session::Session, inst: &mut crate::session::OverlayInstance, field: &str, v: Value) -> Result<(), String> {
+    let num = |v: &Value| match v { Value::Int(i) => Some(*i as f64), Value::Float(f) => Some(*f), _ => None };
+    match field {
+        "intensity" => {
+            let Some(x) = num(&v) else { return Err(format!("an overlay's intensity is a number from 0 to 1, got {}", v.type_name())) };
+            inst.strength = x.clamp(0.0, 1.0);
+        }
+        "ticks_remaining" => {
+            inst.ticks_remaining = match v {
+                Value::Nil => None,
+                Value::Int(i) if i >= 0 => Some(i.min(u32::MAX as i64) as u32),
+                other => return Err(format!("ticks_remaining is a whole number of ticks (0 or more) or nil, got {}", other.type_name())),
+            };
+        }
+        "overlay_name" | "host_uuid" | "host_var" | "parents" | "age" =>
+            return Err("this field says which overlay copy it is and how old it is; the runtime keeps it (to move an idea, take it off and put it on; to change its kind, a transition)".into()),
+        _ => {
+            if !inst.extra_fields.contains_key(field) {
+                return Err(format!("overlay {} has no field named {field}", inst.overlay_name));
+            }
+            inst.extra_fields.insert(field.to_string(), entry_of(session, v));
+        }
+    }
+    Ok(())
+}
+
 
 fn entry_of(session: &crate::session::Session, v: Value) -> Value {
     match &v {
