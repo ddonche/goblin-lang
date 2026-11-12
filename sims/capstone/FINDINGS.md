@@ -1126,25 +1126,35 @@ and the two share less than .5 of a faith. A holy war won with land
 taken: by chance `holy`, the land gets the conqueror's faith at `.3 ×
 holy` and the conqueror is stirred by `.2 × holy`. Defender beaten: by
 chance its spirituality, its faith's militancy +.2 (`rally`). Attacker
-beaten: by chance 1 − its spirituality, −.2 (`discredit`).
+beaten: by chance 1 − its spirituality, −.2 (`discredit`). `zeal` reads
+the capital's faith after `convert`, so a court that has just converted
+fights for its new faith (held by almost none yet, share 0).
+Believers take up arms: a group holding a faith, and a holy order (for
+the court's faith), gets `holy` = that faith's militancy; its militancy
+drifts toward the larger of its own and `holy`, and its hold on the
+realm counts `× (1 + .5 × holy)` in `clergy`. So a militant faith arms
+its believers (more men given, more risings and plots) and its clergy
+weigh more, which opens the way to a priests' takeover.
 
-500 years (seeds 42 / 7 / 99): holy wars 36 / 43 / 132, holy conquests
-6 / 6 / 7, rallies 8 / 12 / 14, discredited 0 / 1 / 2. Faiths at the end
-militant (.5+) 7 / 12 / 22, mercantile 15 / 17 / 13. Realm-years with
-`holy` .5 or more: 2 / 0 / 225 (none of them theocracies); realms
-trading for their faith (.5+) at the end 0 / 9 / 0. Years at war 18.7% /
-16.4% / 16.1% (before 17.4% / 14.6% / 14.8%).
+500 years (seeds 42 / 7 / 99): holy wars 119 / 43 / 82, holy conquests
+12 / 5 / 6, rallies 17 / 6 / 12, discredited 2 / 2 / 0. Faiths at the
+end militant (.5+) 18 / 13 / 9, mercantile 5 / 15 / 9. Realm-years with
+`holy` .5 or more: 108 / 63 / 0, of them ruled by priests 1 / 36 / 0.
+Years at war 16.9% / 16.5% / 16.9% (before 17.4% / 14.6% / 14.8%).
+Coup plots 79 / 61 / 64 (31 before on seed 42), none won. Creed splits
+1 / 1 / 0: check.sh passes on seed 42.
 
 Flagged:
 1. Every coefficient above is mine (the founding draws, 1.2, .2 + .6,
-   × 3 for missions, .3 and .2 × holy, ±.2, the .3 and .5 lines).
+   × 3 for missions, .3 and .2 × holy, ±.2, the .3 and .5 lines, .5 in
+   clergy).
 2. A first version faded militancy by .996 a year on every copy; over
    1,200 years of prehistory that left every faith at almost 0, so no
    holy war ever started. It was replaced by the two war outcomes
    (rally, discredit).
-3. The fused state is rare and never a theocracy: a theocracy needs
-   clergy over .4, and its court faith is seldom militant. In real life
-   the faithful of a militant faith fight (ghazis, crusaders): the
-   faithful group could take its militancy from its faith. Not built.
-4. No counter-alliance against a holy aggressor (the leagues against
-   the Ottomans) beyond what shared faith already does for alliances.
+3. Before the believers took up arms, no holy state was ever ruled by
+   priests. Now it happens on some seeds (36 realm-years on seed 7) and
+   not on others (0 on seed 99): it varies a lot by seed.
+4. No league against a great threat (the Holy League, the coalitions
+   against Louis XIV and Napoleon): proposed to Daniel as `threat`
+   between two realms, not built.

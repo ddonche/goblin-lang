@@ -968,6 +968,7 @@ act account(year, lands, realms)
                 ft |= :max(ft, i)
                 fs |= fs + i
                 :update!(faith_seeks{o >> overlay_name}, o >> seeks)
+                :update!(faith_militancy{o >> overlay_name}, o >> militancy)
             elif :is_type(o, "Plague")
                 sick |= true
             elif o >> overlay_name == "famine"
@@ -1276,8 +1277,9 @@ act convert(p, own, fshare, court_f, reach, inside)
     :event(p, "court_converted", nil, {"the ruler was baptized and the lords with him": 2.0, "the ruler took the faith of the strong neighbour": 1.0, "the old shrines were pulled down": 1.0})
 xx
 
-/// How far realm `p` fights and trades for its court's faith `n` (held by
-/// `share` of its people), from that faith's copy at its capital. Faith,
+/// How far realm `p` fights and trades for its court's faith (`n`, held
+/// by `share` of its people, unless the court has just converted), from
+/// that faith's copy at its capital. Faith,
 /// court and army fuse where the faith is militant and its clergy hold
 /// the realm (the first caliphs, the Papal States, the Teutonic Order):
 /// `holy` is the faith's militancy times (.5 + the clergy's hold).
@@ -1287,6 +1289,13 @@ act zeal(p, n, share)
     h | 0.0
     m | 0.0
     c | p >> capital
+    /// Read after `convert`: a court that has just taken a new faith fights
+    /// and trades for that one, held as yet by almost none of its people.
+    if !c.nix?
+        f | top(c, "Faith")
+        if f != n => share |= 0.0
+        n |= f
+    xx
     if n != .. and !c.nix?
         cs | :overlays(c, n)
         if :len(cs) > 0
@@ -1344,6 +1353,28 @@ act rally(p)
     count("rally")
     :event(p, "rally", nil, {"the preachers called the faithful to arms": 2.0, "the defeat was taken as God's judgment, and the realm swore to win it back": 1.0})
 xx
+
+/// The faith held firmest at realm `p`'s capital (`..` for none).
+act court_faith(p)
+    c | p >> capital ?? => send ..
+    return top(c, "Faith")
+xx
+
+/// How militant the faith named `n` is, for realm `p`: its copy at `p`'s
+/// capital, else the world's (set each year by `account`); 0 for a creed
+/// or none.
+act militancy_of(p, n)
+    if n == .. => send 0.0
+    c | p >> capital
+    if !c.nix?
+        cs | :overlays(c, n)
+        if :len(cs) > 0 and :is_type(cs[0], "Faith") => send cs[0] >> militancy
+    xx
+    return faith_militancy{n} ?? 0.0
+xx
+
+/// How militant each faith is, by name (set each year by `account`).
+faith_militancy | {}
 
 /// How much the faith named `n` seeks converts, read from its copy on land `l`.
 act seeks_of(l, n)
