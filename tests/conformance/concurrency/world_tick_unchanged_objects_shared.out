@@ -8,6 +8,6 @@ tick 4: post level 1, n 2
 tick 4: the program set level 5
 tick 4: watcher saw level 1, n 1
 tick 5: post level 1, n 2
-tick 5: watcher saw level 1, n 2
+tick 5: watcher saw level 5, n 2
 tick 6: post level 1, n 3
 tick 6: watcher saw level 1, n 2

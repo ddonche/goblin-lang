@@ -160,6 +160,9 @@ pub struct WorldIn {
     log: bool,
     inbox: Vec<Item>,
     remote: Vec<Arc<Snapshot>>,
+    /// What the program set on objects since the last round (see
+    /// `World::main_sets`): set on this region's copies of them.
+    main_sets: Arc<Vec<(String, String, PValue)>>,
     /// The region each of `remote` belongs to.
     remote_ids: Vec<u64>,
     regions: Vec<u64>,
@@ -227,6 +230,10 @@ pub struct World {
     tick: i64,
     snaps: Vec<Arc<Snapshot>>,
     inbox: Vec<Vec<Item>>,
+    /// What the program set on regions' objects since the last round
+    /// (object, field, value): the owner gets it in its inbox, and every
+    /// other region sets it on its copy, so all of them read it this round.
+    main_sets: Vec<(String, String, PValue)>,
     /// The regions' objects as the main program sees them (copies in its
     /// object store, replaced after every tick; what the program writes to
     /// them goes to their regions, see `send_to_owner`).
@@ -379,7 +386,7 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
         }
         in_flight_overlays = old.in_flight_overlays;
     }
-    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
+    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
     let outs = round(vm, &actors, &ids, true, None)?;
@@ -574,16 +581,18 @@ fn refresh_view(vm: &mut Vm) {
 fn send_view_writes(vm: &mut Vm) -> Result<(), GoblinError> {
     let Some(w) = vm.session.world.as_ref() else { return Ok(()) };
     let mut changes: Vec<(String, Item)> = Vec::new();
+    let mut sets: Vec<(String, String, PValue)> = Vec::new();
     {
         for (uuid, (_, old)) in w.view_from.iter() {
             let Some(Value::Object(o)) = vm.session.object_store.get(uuid) else { continue };
             if std::rc::Rc::ptr_eq(&o.fields, old) { continue; }
             for (k, new) in o.fields.iter() {
-                let change = match (old.get(k), new) {
-                    (Some(Value::Int(a)), Value::Int(b)) if a != b => Change::AddInt(b.wrapping_sub(*a)),
+                let (change, now) = match (old.get(k), new) {
+                    (Some(Value::Int(a)), Value::Int(b)) if a != b => (Change::AddInt(b.wrapping_sub(*a)), *b),
                     _ => continue,
                 };
                 changes.push((uuid.to_string(), Item::Change { uuid: uuid.to_string(), field: k.clone(), change }));
+                sets.push((uuid.to_string(), k.clone(), PValue::Int(now)));
             }
         }
     }
@@ -591,6 +600,7 @@ fn send_view_writes(vm: &mut Vm) -> Result<(), GoblinError> {
     for (uuid, item) in changes {
         if let Some(i) = owner_index(w, &uuid) { w.inbox[i].push(item); }
     }
+    w.main_sets.extend(sets);
     Ok(())
 }
 
@@ -601,6 +611,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
     let tick = w.tick + 1;
     let log = vm.session.event_log.is_some();
     let w = vm.session.world.as_mut().unwrap();
+    let main_sets = Arc::new(std::mem::take(&mut w.main_sets));
     let mut sent = Vec::with_capacity(actors.len());
     for (i, a) in actors.iter().enumerate() {
         // The other regions' objects, and those on their way to them.
@@ -611,7 +622,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -883,6 +894,11 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     // makes the object its own fields, so the two compare by pointer.
     let mut copies = std::mem::take(&mut vm.session.remote_copies);
     let mut before: Vec<(crate::value::ObjId, std::rc::Rc<crate::value::FieldMap>, Arc<PValue>)> = Vec::new();
+    // What the program set since the last round, by object.
+    let mut main_set: HashMap<&str, Vec<(&str, &PValue)>> = HashMap::default();
+    for (u, f, v) in job.main_sets.iter() { main_set.entry(u.as_str()).or_default().push((f.as_str(), v)); }
+    // A copy the program's sets changed is kept for next tick as it arrived.
+    let mut arrived: HashMap<crate::value::ObjId, std::rc::Rc<crate::value::FieldMap>> = HashMap::default();
     for snap in &job.remote {
         for (uuid, p) in &snap.objects {
             let uuid = crate::value::ObjId::from(uuid.as_str());
@@ -893,6 +909,17 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
                 Some(mut c) => if refresh_copy(&mut c.v, p, &mut fp, &mut vm.session) { c.v } else { fp.value(p, &mut vm.session) },
                 None => fp.value(p, &mut vm.session),
             };
+            let mut v = v;
+            // The program set it since: the copy says so too, before
+            // anything compares the copy with what arrived.
+            if let (Some(fs), Value::Object(o)) = (main_set.get(uuid.as_str()), &mut v) {
+                arrived.insert(uuid.clone(), o.fields.clone());
+                let m = std::rc::Rc::make_mut(&mut o.fields);
+                for (f, x) in fs {
+                    let x = fp.value(x, &mut vm.session);
+                    if let Some(slot) = m.get_mut(*f) { *slot = x; }
+                }
+            }
             if let Value::Object(o) = &v { before.push((uuid.clone(), o.fields.clone(), p.clone())); }
             // The program handed it to a region after this one started: it
             // is the world's now, so once it is gone it reads nil here too.
@@ -1002,7 +1029,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         for (uuid, old, from) in before {
             if let Some(slot) = vm.session.object_store.get_mut(&uuid) {
                 let mut v = std::mem::replace(slot, Value::Nil);
-                if let Value::Object(o) = &mut v { o.fields = old; }
+                if let Value::Object(o) = &mut v { o.fields = arrived.remove(&uuid).unwrap_or(old); }
                 kept.insert(uuid, Copy { v, from });
             }
         }
@@ -1216,7 +1243,9 @@ pub(crate) fn after_view_write(s: &mut crate::session::Session, uuid: &str, fiel
     let Some(Value::Object(o)) = s.object_store.get(uuid) else { return Ok(()) };
     let Some(v) = o.fields.get(field) else { return Ok(()) };
     let p = ToPortable::new(s).objects_by_id().value(v)?;
-    send_to_owner(s, uuid, Item::Change { uuid: uuid.to_string(), field: field.to_string(), change: Change::Set(p) });
+    if send_to_owner(s, uuid, Item::Change { uuid: uuid.to_string(), field: field.to_string(), change: Change::Set(p.clone()) }) && s.region.is_none() {
+        if let Some(w) = s.world.as_mut() { w.main_sets.push((uuid.to_string(), field.to_string(), p)); }
+    }
     Ok(())
 }
 
