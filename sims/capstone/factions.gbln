@@ -121,6 +121,11 @@ kinds | [
     /// The idea it holds, by kind name (`..` for none), and the traits
     /// it pushes its realm toward.
     idea: ..
+    /// The militancy of the faith it serves, 0 to 1: its idea, or for a
+    /// holy order the court's faith (set each year). Believers of a
+    /// militant faith take up arms for it (the ghazis, the crusaders, the
+    /// Templars), and believers under arms weigh more in the realm.
+    holy: 0.0
     wants: {}
     founded: 0
     /// The year it last plotted a coup (-1 for never).
@@ -323,7 +328,7 @@ act account(year, lands, realms)
             standing(g, p, hs, alike{"{g >> word}|{g >> idea}"} ?? 1)
             taken |= taken + g >> share
             top |= :max(top, power(g))
-            p >> clergy |= :max(p >> clergy, (g >> power) * (g >> zeal))
+            p >> clergy |= :max(p >> clergy, :min((g >> power) * (g >> zeal) * (1.0 + .5 * g >> holy), 1.0))
             /// Plotters who took power: they get what they wanted.
             if g >> plotted == year - 1 and p >> form_years == 0 => won_coup(g, p)
         xx
@@ -398,8 +403,15 @@ act standing(g, p, hs, alike)
     g >> hard |= hard
     g >> defied |= (g >> defied) * .9
     b | g >> born
+    n | g >> idea
+    if g >> word == "holy order" => n |= overlays::court_faith(p)
+    h | overlays::militancy_of(p, n)
+    if h != g >> holy => g >> holy |= h
     repeat ["loyalty", "ambition", "militancy", "zeal", "greed"] as t
-        g >> {t} |= g >> {t} + ((b{t} ?? .5) - g >> {t}) * .02
+        base | b{t} ?? .5
+        /// A militant faith's believers drift toward its militancy.
+        if t == "militancy" => base |= :max(base, h)
+        g >> {t} |= g >> {t} + (base - g >> {t}) * .02
     xx
     u | :clamp((b{"unity"} ?? .5) - (g >> share), 0.0, 1.0)
     g >> unity |= g >> unity + (u - g >> unity) * .05

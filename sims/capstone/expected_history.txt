@@ -1,16 +1,18 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Arbelcor with 5 provinces, 0 wars
-year 100: 75 polities, largest Kelul with 21 provinces, 13 wars
-year 200: 57 polities, largest Kelul-Lorzanmar with 36 provinces, 2 wars
-year 300: 53 polities, largest Noresk with 44 provinces, 10 wars
-year 400: 43 polities, largest Kelul-Lorzanmar with 49 provinces, 5 wars
-year 500: 37 polities, largest Kelul-Lorzanmar with 55 provinces, 1 wars
-check: share of polity-years at war: 17.4%
-check: forms at the end: aristocratic_republic 4, chieftainship 2, citizen_republic 1, elders_council 7, elective_monarchy 6, hereditary_monarchy 4, merchant_oligarchy 7, military_junta 2, theocracy 4
-check: families: deaths 1120, murders 19, executions 3, crowned 1145, regencies 22, usurped 24, interregnums 61, lines_ended 6, elections 1068, claims_won 31, new_houses 194, marriages 333, births 629, partitions 6
-check: succession laws at the end: eldest_child 1, eldest_son 3, elective 6, faith 2, force 2, term 12
-check: groups: formed 744, split 126, merged 4, ended 659, give_gold 3274, withhold 166, give_men 2265, coup 26, preach 2843, found 66, press 1550, rise 25, crush 64, concede 152, patronize 1881, coups_won 0
-check: overlays: tongue_new 6, tongue_merge 0, shifted 76, faith_new 5, schism 9, blend 21, converted 319, creed_split 0, creed_shift 0, plague 21, strain 28, famine 1987, flood 566, quake 86, drought 2399, fire 2511, dread 583, golden_age 22, elite_strife 7, dark_years 2, court_converted 58, reaction 4
-check: ideas at the end: tongues 40 (largest holds 0.085 of all people), faiths 101 (largest 0.271), creeds 15; realms of more than one people 10
-check: bordering realms: 68 pairs, sharing a tongue (.5 or more) 15, a faith 37; wars under way between faiths 1 of 1
-check: groups at the end: 208, largest share of a realm 0.512; ideas 116, largest holds 0.271 of all people
+year 100: 83 polities, largest Jorquar-Pelquar with 20 provinces, 4 wars
+year 200: 73 polities, largest Yrzanar with 27 provinces, 6 wars
+year 300: 60 polities, largest Yrzanar with 33 provinces, 10 wars
+year 400: 66 polities, largest Yrzanar with 35 provinces, 5 wars
+year 500: 50 polities, largest Isksarlor-Orlorpel-Toresk-Eskros-Gordunhaljor with 49 provinces, 3 wars
+check: share of polity-years at war: 13.9%
+check: forms at the end: aristocratic_republic 1, chieftainship 4, confederation 1, elders_council 16, elective_monarchy 2, hereditary_monarchy 10, imperial_autocracy 4, merchant_oligarchy 5, military_junta 1, theocracy 5, tyranny 1
+check: families: deaths 1355, murders 25, executions 7, crowned 1261, regencies 29, usurped 37, interregnums 74, lines_ended 3, elections 1061, claims_won 34, new_houses 237, marriages 431, births 771, partitions 3
+check: succession laws at the end: eldest_child 6, eldest_son 4, elective 2, faith 2, force 2, strongest_kin 4, term 6
+check: groups: formed 780, split 171, merged 24, ended 688, give_gold 3389, withhold 256, give_men 3362, coup 51, preach 3732, found 103, press 2169, rise 51, crush 127, concede 214, patronize 2653, coups_won 0
+check: overlays: tongue_new 15, tongue_merge 0, shifted 104, faith_new 5, schism 10, blend 17, converted 370, creed_split 1, creed_shift 0, plague 12, strain 31, famine 2338, flood 617, quake 96, drought 2427, fire 2395, dread 747, golden_age 55, elite_strife 19, dark_years 5, court_converted 115, reaction 11, holy_war 58, holy_conquest 6, rally 7, discredited 0, coalition 121, struck_first 4, submitted 202, refused 70, people_broke_away 44, nominal 7
+check: ideas at the end: tongues 50 (largest holds 0.078 of all people), faiths 84 (largest 0.45), creeds 32; realms of more than one people 16
+check: faiths at the end: militant 13, mercantile 12; realms fighting for their faith 0 (0 ruled by priests), trading for it 0; realm-years fighting for their faith 5 (0 ruled by priests)
+check: empires: 48, years as an empire: median 56, longest 417; standing at the end 11
+check: bordering realms: 95 pairs, sharing a tongue (.5 or more) 25, a faith 62; wars under way between faiths 2 of 3
+check: groups at the end: 239, largest share of a realm 1; ideas 116, largest holds 0.45 of all people

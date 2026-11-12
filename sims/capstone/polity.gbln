@@ -95,7 +95,8 @@ aspect Polity |
     union_with: nil
     /// The free province it means to settle.
     colony_at: nil
-    /// Its province likeliest to break away: far from the capital, peopled.
+    /// Its province likeliest to break away: far from the capital, peopled,
+    /// and held by another people (another tongue or faith).
     rebel: nil
     /// Settled free provinces bordering its land.
     frontier: 0
@@ -152,6 +153,14 @@ aspect Polity |
     /// The strongest group of believers' hold on the realm this year
     /// (its power times its zeal, 0 to 1; set by factions::account).
     clergy: 0.0
+    /// How far it fights for its court's faith, and trades for it, 0 to 1
+    /// (set each year by overlays::zeal).
+    holy: 0.0
+    faith_trade: 0.0
+    /// Land it has taken by war lately: one per province, fading by a
+    /// twentieth a year (its neighbours remember an aggressor for a
+    /// generation).
+    seized: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -839,6 +848,25 @@ link grievance
     hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
     range: 0...1
 xx
+/// Land a realm lost to a breakaway, one way (old realm to the one that
+/// left): a claim it may fight to win back, fading over a century
+/// (Justinian's reconquest, Russia and Chechnya).
+link lost_land
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    range: 0...1
+xx
+/// After a breakaway: the center is shown unable to hold its lands, and
+/// others try (the republics after the Baltics in 1990-91, Yugoslavia
+/// after Slovenia). Each breakaway adds to it; it fades over a decade.
+overlay crumbling
+    hosts: Tribe, Village, CityState, Kingdom, Empire, NationState, League
+    dup: replace
+    decays: .1
+    modify
+        @legitimacy - .15 * intensity
+        @centralization - .1 * intensity
+    xx
+xx
 
 /// A War under way: fear up, trade with anyone less likely. Put on again
 /// each year the war lasts.
@@ -887,6 +915,9 @@ xx
     attackers: []
     defenders: []
     over: false
+    /// Fought for a faith: by a realm that fights for its own (holy .3 or
+    /// more) against one of another.
+    holy: false
     phase: between
         every 1 tick
             fight(self)
@@ -956,6 +987,33 @@ xx
 /// How much stronger `p` is than `t`: 0 to 1, a half when even.
 act edge(p, t)
     return (p >> power) / ((p >> power) + (t >> power) + 0.001)
+xx
+
+/// The power of those sworn to `p` (alliance .5 or more) who would come
+/// to its side against `foe`, each as far as it keeps its word (honor).
+act backing(p, foe)
+    b | 0.0
+    repeat :objects(uses dealings, :link_score(p, it, "alliance") >= .5) as x
+        if x == foe or x == p => skip
+        b |= b + (x >> power) * (x >> honor)
+    xx
+    return b
+xx
+
+/// `edge` for a war: each side with the allies that would come, counted
+/// as far as `p` fears them (2026-11-11, owner: a cautious ruler weighs
+/// the league against him; a reckless one, like Charles XII marching on
+/// Russia, mostly does not).
+act war_edge(p, t)
+    w | 2.0 * (p >> fear)
+    a | (p >> power) + w * backing(p, t)
+    d | (t >> power) + w * backing(t, p)
+    return a / (a + d + 0.001)
+xx
+
+/// What `a` fears from `b` this year (`menace`), 0 to 1.
+act threat(a, b)
+    return (feared{a >> name} ?? {}){b >> name} ?? 0.0
 xx
 
 /// A polity that is erased ends its wars (the other side keeps what it
@@ -1107,7 +1165,7 @@ xx
 interface dealings |
     decision trade
         targets: uses dealings where :link_score(self, target, "border")
-        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * @lean_trade
+        score => (@openness + @cooperation) / 2 * (.5 + (target >> cooperation) * .5) * (1.0 - grudge(self, target)) * (1.0 - fighting(self) * .7) * (1.2 - short(@gold + target >> gold, 200.0) * .4) * (.8 + :link_score(self, target, "shared_tongue") * .4) * (1.0 + @faith_trade * (.2 + .6 * :link_score(self, target, "shared_faith"))) * @lean_trade
     xx
     decision envoy
         targets: uses dealings where @cities >= 1 and @gold >= 5.0 and :link_score(self, target, "border")
@@ -1118,8 +1176,8 @@ interface dealings |
         score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_aid
     xx
     decision ally
-        targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
-        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_ally
+        targets: uses dealings where (:link_score(self, target, "border") or shared_threat(self, target) > 0.0) and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
+        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target) * (1.0 - shared_threat(self, target))) * (1.0 - grudge(target, self) * (1.0 - shared_threat(self, target))) * (.6 + :link_score(self, target, "shared_faith") * .8) * (1.0 + 3.0 * shared_threat(self, target)) * @lean_ally
     xx
     decision treaty
         targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
@@ -1161,7 +1219,7 @@ interface dealings |
     xx
     decision war
         targets: uses dealings where @army >= 20.0 and :link_score(self, target, "border") and war_between(self, target).nix?
-        score => (@aggression + @ambition + :max(grudge(self, target), claim(self, target))) / 3 * edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * .6 * @lean_war
+        score => (@aggression + @ambition + :max(:max(grudge(self, target), claim(self, target)), threat(self, target) * @fear)) / 3 * war_edge(self, target) * (1.0 - :link_score(self, target, "trade") * .5) * (1.0 - weariness(self)) * (1.0 - @honor * .5) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @spirituality * .6) * (1.0 + (.5 - :link_score(self, target, "shared_faith")) * @holy * 1.2) * .6 * @lean_war
     xx
     decision break_treaty
         targets: uses dealings where :link_score(self, target, "alliance") > 0
@@ -1235,10 +1293,17 @@ interface dealings |
         :link!(t, p, "alliance", .1, 20)
         :link!(t, p, "grievance", -.2, 40)
     xx
+    /// Before a threat both see, old grudges count for less, and the other
+    /// side takes the pact more readily.
     act ally(p, t)
-        if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p)))
+        s | shared_threat(p, t)
+        if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p) * (1.0 - s)) + s * .5)
             :link!(p, t, "grievance", .02, 20)
             send nil
+        xx
+        if s >= .3 and (grudge(p, t) > .2 or grudge(t, p) > .2 or :link_score(p, t, "shared_faith") < .5)
+            overlays::count("coalition")
+            :event(p, "coalition", t, {"old rivals swore to stand together": 2.0, "the quarrel was set aside before the common enemy": 1.0})
         xx
         p >> fear |= p >> fear - .05
         t >> fear |= t >> fear - .05
@@ -1344,6 +1409,12 @@ interface dealings |
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
         if !(aim.nix?) => w >> aim |= aim
+        /// Struck first: the war is mostly against a feared neighbour.
+        if threat(p, t) * (p >> fear) > :max(grudge(p, t), claim(p, t)) and threat(p, t) >= .3 => overlays::count("struck_first")
+        if p >> holy >= .3 and :link_score(p, t, "shared_faith") < .5
+            w >> holy |= true
+            overlays::count("holy_war")
+        xx
         w >> defenders |= call_allies(t, p, [])
         w >> attackers |= call_allies(p, t, w >> defenders)
         p >> wars |= p >> wars + 1
@@ -1459,7 +1530,13 @@ act end_war(w, winner)
     overlays::stir(loser, .3)
     :link!(loser, winner, "grievance", .4, 80)
     aim | w >> aim
-    if winner == a and !(aim.nix?) and aim >> owner == d => aim >> owner |= a
+    if winner == a and !(aim.nix?) and aim >> owner == d
+        aim >> owner |= a
+        a >> seized |= a >> seized + 1.0
+        if w >> holy => overlays::holy_conquest(a, aim)
+    xx
+    if w >> holy and winner == a => overlays::rally(d)
+    if w >> holy and winner == d => overlays::discredit(a)
     /// A loser left with little land or no army is broken: the winner may
     /// take it in or make it a vassal (the settle phase's transitions).
     if loser >> lands <= 3 or loser >> army < 1.0
@@ -1484,6 +1561,7 @@ xx
 /// and sets the border link between polities that hold bordering
 /// provinces. `pairs` is every pair of bordering provinces, once.
 act account(lands, pairs)
+    nbs | {}
     ps | :objects(uses govern)
     repeat ps as p
         p >> lands |= 0
@@ -1536,12 +1614,19 @@ act account(lands, pairs)
         settle_accounts(p)
     xx
     far | {}
+    /// Each realm's court tongue and faith (the firmest at its capital).
+    court | {}
+    repeat ps as p
+        c | p >> capital ?? => skip
+        :update!(court{p >> name}, [overlays::top(c, "Tongue"), overlays::top(c, "Faith")])
+    xx
     repeat lands as l
         p | l >> owner ?? => skip
         d | distance(p, l)
         p >> strength |= p >> strength + (l >> people) * :pow(0.5, d / ((p >> reach) + (l >> roads) * .5))
         if l == p >> capital => skip
-        r | d / (p >> reach) * (1.0 + (l >> people) / 500.0)
+        k | court{p >> name} ?? [.., ..]
+        r | d / (p >> reach) * (1.0 + (l >> people) / 500.0) * (1.0 + 2.0 * overlays::alien(l, k[0], k[1]))
         if r > (far{p >> name} ?? 0.0)
             :update!(far{p >> name}, r)
             p >> rebel |= l
@@ -1595,7 +1680,58 @@ act account(lands, pairs)
         :update!(seen{"{b >> name}|{a >> name}"}, true)
         :link!(a, b, "border", 1, 1)
         :link!(b, a, "border", 1, 1)
+        xs | nbs{a >> name} ?? []
+        :put_last!(xs, b)
+        :update!(nbs{a >> name}, xs)
+        ys | nbs{b >> name} ?? []
+        :put_last!(ys, a)
+        :update!(nbs{b >> name}, ys)
     xx
+    menace(ps, nbs)
+xx
+
+/// What each realm fears from each bordering realm, by name (set each
+/// year by `menace`): realm name to {neighbour name: threat}.
+feared | {}
+
+/// The threat each realm sees in each neighbour (2026-11-11, owner:
+/// rivals set their quarrels aside before a great threat). In real life a
+/// realm fears a neighbour for its power, its nearness and what it has
+/// done (Walt's balance of threat): the Greek cities before Persia, the
+/// Holy League of 1571 before the Ottomans, the coalitions against Louis
+/// XIV and Napoleon. Threat = how much stronger the neighbour is (edge
+/// past even) × what it has done: the land it has seized lately (three
+/// provinces is the most) and, against another faith, how far it fights
+/// for its own.
+act menace(ps, nbs)
+    out | {}
+    repeat ps as p
+        if p >> seized > 0.0 => p >> seized |= p >> seized * .95
+    xx
+    repeat ps as a
+        m | {}
+        repeat nbs{a >> name} ?? [] as b
+            done | :clamp(:min((b >> seized) / 3.0, 1.0) + (b >> holy) * (1.0 - :link_score(a, b, "shared_faith")), 0.0, 1.0)
+            t | past(edge(b, a), .5) * done
+            if t > 0.0 => :update!(m{b >> name}, t)
+        xx
+        :update!(out{a >> name}, m)
+    xx
+    feared |= out
+xx
+
+/// The threat realms `a` and `b` both see in one realm (the larger, if
+/// several): 0 to 1.
+act shared_threat(a, b)
+    fa | feared{a >> name} ?? {}
+    if :len(fa) == 0 => send 0.0
+    fb | feared{b >> name} ?? {}
+    best | 0.0
+    repeat fa as n, v
+        w | fb{n} ?? 0.0
+        best |= :max(best, :min(v, w))
+    xx
+    return best
 xx
 
 act settle_accounts(p)
@@ -1797,11 +1933,22 @@ interface realm |
     xx
     decision release
         targets: uses govern where (target >> owner) == self
-        score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
+        score => (short(@gold, @people * .05) + grudge(target, self) + :min(@wars, 1) + (:overlay_strength("crumbling", self) ?? 0.0)) / 3 * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
     xx
     decision revolt
         targets: uses govern where target == @owner
         score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
+    xx
+    /// Offer to serve the enemy at its gates rather than be taken
+    /// (2026-11-11, owner): the towns that opened their gates to the
+    /// Mongols and were kept as tributaries, Rome's client kings. Only in
+    /// a war with it (in peace, a demand can bring the same offer);
+    /// only when clearly the weaker side, and likelier the further behind,
+    /// the more afraid and weary it is;
+    /// a proud, ambitious realm fights on (the Melians).
+    decision submit
+        targets: uses govern where @owner.nix? and (target >> owner).nix? and @submits_to.nix? and !(war_between(self, target).nix?)
+        score => past(1.0 - war_edge(self, target), .5) * (.5 + @fear * .5) * (.5 + weariness(self) * .5) * (1.0 - @ambition) * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5)
     xx
 
     /// One decision a year about its shape, or none: keeping things as they
@@ -1810,7 +1957,7 @@ interface realm |
         true:
             names   | [""]
             weights | [(@stability + @tradition) / 2]
-            repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt} as k, d
+            repeat {"reform": reform, "settle": settle, "migrate": migrate, "union": union, "cede": cede, "release": release, "revolt": revolt, "submit": submit} as k, d
                 if d.nix? or (d >> score) <= 0 => skip
                 :put_last!(names, k)
                 :put_last!(weights, d >> score)
@@ -1825,6 +1972,7 @@ interface realm |
                     name == "cede": cede(self, cede >> target)
                     name == "release": release(self, release >> target)
                     name == "revolt": revolt(self, revolt >> target)
+                    name == "submit": submit(self, submit >> target)
                 xx
             xx
     xx
@@ -1919,6 +2067,22 @@ interface realm |
         w | war_between(p, t) ?? => send nil
         if w >> aim == give => end_war(w, nil)
     xx
+    /// Realm `p` offers to serve `t`. A conqueror bent on more (aggressive
+    /// and ambitious) may refuse and take it by force; one that accepts
+    /// ends any war between them, and `p` becomes its vassal (subjugate).
+    act submit(p, t)
+        if chance((t >> aggression) * (t >> ambition))
+            :link!(p, t, "grievance", .1, 40)
+            overlays::count("refused")
+            :event(t, "refused", p, {"the envoys were sent back": 2.0, "the conqueror wanted the land, not the oath": 1.0})
+            send nil
+        xx
+        p >> submits_to |= t
+        w | war_between(p, t)
+        if !(w.nix?) => end_war(w, nil)
+        overlays::count("submitted")
+        :event(p, "submitted", t, {"the gates were opened and the keys sent out": 2.0, "the ruler swore to serve and pay tribute": 1.0})
+    xx
     act release(p, t)
         t >> owner |= nil
         p >> prestige |= p >> prestige - 2.0
@@ -1956,9 +2120,10 @@ xx
 
 /// Whether `p`'s ruling dynasty claims `t`'s throne: 1 or 0.
 act claim(p, t)
-    d | p >> dynasty ?? => send 0.0
+    lost | :link_score(p, t, "lost_land")
+    d | p >> dynasty ?? => send lost
     if family::claims_to(d, t) => send 1.0
-    return 0.0
+    return lost
 xx
 
 /// the settle phase: the year's change of form and the transitions
@@ -2131,8 +2296,10 @@ act breakaway(p, city)
     if p >> lands < 3 or land::is_city(r) != city => send 0.0
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
-    if city => send odds(far * loose * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
-    return odds(far * loose * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
+    /// Another people breaks away more readily than the court's own.
+    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p))
+    if city => send odds(far * loose * apart * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
+    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)
@@ -2294,11 +2461,32 @@ act broke_away(p, f)
     r | p >> rebel
     r >> owner |= f
     n | 1
+    ct | overlays::court_tongue(p)
+    rt | overlays::top(r, "Tongue")
     if !:is_type(f, "CityState")
-        repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(r, it, "border")) as q
-            if n >= 3 => stop
-            q >> owner |= f
-            n |= n + 1
+        if rt != .. and rt != ct
+            /// A people breaks away with all its land: the realm's lands
+            /// joined to the rebel province where its tongue is the firmest.
+            overlays::count("people_broke_away")
+            edge_lands | [r]
+            while :len(edge_lands) > 0
+                nxt | []
+                repeat edge_lands as e
+                    repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(e, it, "border")) as q
+                        if overlays::top(q, "Tongue") != rt => skip
+                        q >> owner |= f
+                        n |= n + 1
+                        :put_last!(nxt, q)
+                    xx
+                xx
+                edge_lands |= nxt
+            xx
+        else
+            repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(r, it, "border")) as q
+                if n >= 3 => stop
+                q >> owner |= f
+                n |= n + 1
+            xx
         xx
     xx
     f >> capital |= r
@@ -2308,7 +2496,25 @@ act broke_away(p, f)
     p >> lands |= p >> lands - n
     p >> rebel |= nil
     :link!(p, f, "grievance", .3, 60)
+    :link!(p, f, "lost_land", .8, 100)
     government::rule(f, government::choose(f))
+    /// The center is shown unable to hold: the next breakaway comes easier.
+    was | :overlay_strength("crumbling", p) ?? 0.0
+    :overlay!(p, crumbling, :min(was + .3, 1.0))
+    /// In a loose realm a breakaway of the court's faith may keep its
+    /// oath in name and rule for itself (the Abbasid emirs, the Holy
+    /// Roman princes).
+    cf | overlays::court_faith(p)
+    fi | 0.0
+    if cf != ..
+        cs | :overlays(r, cf)
+        if :len(cs) > 0 => fi |= cs[0] >> intensity
+    xx
+    if (p >> owner).nix? and chance((1.0 - p >> centralization) * fi)
+        f >> owner |= p
+        overlays::count("nominal")
+        :event(f, "nominal", p, {"the governor kept the old ruler's name in the prayers and ruled as he liked": 2.0, "the oath was kept in name only": 1.0})
+    xx
 xx
 
 /// A split: `first` holds everything; the provinces nearer the old far

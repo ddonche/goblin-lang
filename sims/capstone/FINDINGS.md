@@ -1086,3 +1086,238 @@ Flagged:
    arguments (P0715, the parser treats `lower(` as the builtin): renamed
    `cut_down`/`firm_up`. A user action shadowing a builtin name should
    either work or give a clear error.
+
+## Faith traits: militant and merchant faiths (0.51.27)
+
+Real life first:
+- Some faiths call the faithful to fight for them: the first caliphs'
+  conquests, the crusades and the Reconquista, the Teutonic Order in
+  Prussia, the Aztec flower wars, the war gods of the Norse. Where the
+  faith is militant and its clergy hold the realm, faith, court and army
+  fuse and expand (the early caliphate, the Papal States, the Teutonic
+  Order's state).
+- Conquerors of another faith brought their priests with the army
+  (Charlemagne and the Saxons, the Order in Prussia, the Spanish in the
+  Americas), and forced faith was resented and rebelled against.
+- A holy war lost can discredit the call to arms (the crusades after
+  Hattin and Nicopolis, the Ottoman ghazis after Vienna); a holy war
+  suffered can raise the defenders' own zeal (Zengi and Saladin after the
+  first crusade).
+- Reforms can take up the sword (Hussites, Wahhabis) or lay it down
+  (Mennonites, Quakers).
+- Some faiths travel with merchants and their law suits trade: Islam on
+  the Indian Ocean, Buddhism on the Silk Road, the Jains, the Armenian
+  and Jewish trading houses. Merchants of one faith trade more with each
+  other.
+
+Built: Faith `militancy` and `mercantile` (0 to 1). New faiths draw both
+at random 0 to .7; a kingdom's old cult militancy 0 to .5 (war gods),
+mercantile 0 to .2; folk faiths 0. A schism's new faith moves militancy
+up to .3 and mercantile up to .2 either way. `missions`: the land's trade
+counts up to three times more for a merchants' faith (`× (1 + 2 ×
+mercantile)`). Each year each realm gets `holy` = the court faith's
+militancy at the capital × (.5 + clergy), and `faith_trade` = its
+mercantile × (.5 + .5 × the share of the people holding it) (`zeal`).
+War on a realm of another faith is likelier (`× (1 + (.5 − shared_faith)
+× holy × 1.2)`, 1.6 at most, .4 against one of the same faith); trade
+with one of the same faith is likelier (`× (1 + faith_trade × (.2 + .6 ×
+shared_faith))`). A war is holy when its attacker's `holy` is .3 or more
+and the two share less than .5 of a faith. A holy war won with land
+taken: by chance `holy`, the land gets the conqueror's faith at `.3 ×
+holy` and the conqueror is stirred by `.2 × holy`. Defender beaten: by
+chance its spirituality, its faith's militancy +.2 (`rally`). Attacker
+beaten: by chance 1 − its spirituality, −.2 (`discredit`). `zeal` reads
+the capital's faith after `convert`, so a court that has just converted
+fights for its new faith (held by almost none yet, share 0).
+Believers take up arms: a group holding a faith, and a holy order (for
+the court's faith), gets `holy` = that faith's militancy; its militancy
+drifts toward the larger of its own and `holy`, and its hold on the
+realm counts `× (1 + .5 × holy)` in `clergy`. So a militant faith arms
+its believers (more men given, more risings and plots) and its clergy
+weigh more, which opens the way to a priests' takeover.
+
+500 years (seeds 42 / 7 / 99): holy wars 119 / 43 / 82, holy conquests
+12 / 5 / 6, rallies 17 / 6 / 12, discredited 2 / 2 / 0. Faiths at the
+end militant (.5+) 18 / 13 / 9, mercantile 5 / 15 / 9. Realm-years with
+`holy` .5 or more: 108 / 63 / 0, of them ruled by priests 1 / 36 / 0.
+Years at war 16.9% / 16.5% / 16.9% (before 17.4% / 14.6% / 14.8%).
+Coup plots 79 / 61 / 64 (31 before on seed 42), none won. Creed splits
+1 / 1 / 0: check.sh passes on seed 42.
+
+Flagged:
+1. Every coefficient above is mine (the founding draws, 1.2, .2 + .6,
+   × 3 for missions, .3 and .2 × holy, ±.2, the .3 and .5 lines, .5 in
+   clergy).
+2. A first version faded militancy by .996 a year on every copy; over
+   1,200 years of prehistory that left every faith at almost 0, so no
+   holy war ever started. It was replaced by the two war outcomes
+   (rally, discredit).
+3. Before the believers took up arms, no holy state was ever ruled by
+   priests. Now it happens on some seeds (36 realm-years on seed 7) and
+   not on others (0 on seed 99): it varies a lot by seed.
+4. No league against a great threat (the Holy League, the coalitions
+   against Louis XIV and Napoleon): proposed to Daniel as `threat`
+   between two realms, not built.
+
+## Leagues against a great threat (0.51.27)
+
+Daniel (2026-11-11): realms should have rivals, enemies and allies so
+their dealings are believable; a league needs realms already on good
+terms, barring a great threat that makes them set their differences
+aside.
+
+Real life first: realms fear a neighbour for its power, its nearness and
+what it has done (Walt's balance of threat). Before a great threat old
+rivals ally: the Greek cities against Persia (Athens and Aegina set their
+war aside), the Holy League of 1571 (Venice, Spain, the Pope), the
+coalitions against Louis XIV and Napoleon. Such leagues come apart once
+the threat is gone (the Hellenic League into the Peloponnesian War,
+Venice's separate peace in 1573).
+
+Built: Polity `seized` (+1 for each province taken by war, × .95 a
+year). Each year `menace` sets what each realm fears from each bordering
+realm: `past(edge(b, a), .5) × clamp(min(seized / 3, 1) + holy × (1 −
+shared_faith))`. `shared_threat(a, b)` is the largest threat both fear
+from one realm. `ally` may now target a realm that is not a neighbour
+but shares a threat; its score counts grudges `× (1 − shared)` and is `×
+(1 + 3 × shared)`; the other side accepts with `chance(... × (1 − grudge
+× (1 − shared)) + .5 × shared)`. Counterweight: an alliance fades in 30
+years unless renewed, and once the threat is gone grudges count in full
+again. An alliance made with shared threat .3 or more between realms
+with a grudge over .2 or of different faiths counts as a `coalition`.
+
+500 years (seeds 42 / 7 / 99): coalitions 214 / 135 / 158; alliances
+made 2,265 / 2,316 / 2,064 (1,733 / 1,767 / 1,825 before); largest realm
+at year 500: 47 / 46 / 61 provinces (53 / 54 / 51 before). Years at war
+17% / 16% / 17.2%.
+
+Flagged:
+1. My coefficients: .95, 3 provinces, .5, × 3, .5 × shared, the .3 and
+   .2 lines.
+2. A coalition only defended at first (see below for deterrence).
+3. Small realms beside a threat sometimes joined it instead
+   (bandwagoning). Not built.
+
+### Deterrence and striking first
+
+Daniel (2026-11-11): yes, and reckless rulers may still make bad
+choices. Real life: a cautious ruler weighed the league against him; a
+reckless one marched anyway (Charles XII into Russia); a league
+sometimes struck first at a rising threat.
+
+Built: `war_edge(p, t)` for the war decision: each side's power plus its
+allies' (alliance .5 or more, each × its honor), the allies counted ×
+2 × the attacker's fear, so a fearless realm ignores them. The war
+decision's cause is now the largest of grudge, claim and `threat × fear`
+(a feared neighbour may be struck first). A war mostly against a feared
+neighbour (threat .3 or more) counts as `struck_first`.
+
+500 years (seeds 42 / 7 / 99): struck first 7 / 2 / 5; coalitions 235 /
+165 / 140; wars 861 / 877 / 899 (866 / 834 / 803 before); largest realm
+at year 500: 64 / 60 / 83 provinces (47 / 46 / 61 before deterrence).
+
+Flagged:
+1. My coefficients: 2 × fear, honor as the share of an ally's power, .3.
+2. The largest realm is not smaller: on seed 99 it grew by beating and
+   taking in small villages and city-states one at a time (absorb,
+   subjugate), which have few allies to count. Deterrence protects
+   realms that have allies; whether small realms near a threat should
+   seek them more is the bandwagoning question (flag 3 above).
+3. The creed-split check fails again on seed 42 (no creed split in this
+   run; creeds still need their look in the tuning pass).
+
+### Submitting to the enemy at the gates
+
+Daniel (2026-11-11): a small realm should be able to petition for
+subjugation instead of being taken in; a powerful militant realm still
+conquers. Real life: towns that opened their gates to the Mongols were
+spared and kept as tributaries; Rome's client kings; Assyria's vassals,
+who submitted and revolted again and again; the Melians, who refused and
+were destroyed. Before this a realm offered to serve only after a demand
+in peace.
+
+Built: realm decision `submit`, only toward an enemy it is at war with
+and only when clearly the weaker side: `past(1 − war_edge, .5) × (.5 + .5
+× fear) × (.5 + .5 × weariness) × (1 − ambition) × (1 − .5 × prestige
+share)`. The enemy refuses with `chance(aggression × ambition)` (it wants
+the land, not the oath); else the war ends and the subjugate transition
+takes the realm as a vassal (.9, as for an offer after a demand). The
+counterweights are the existing ones: a vassal revolts as its lord
+weakens; a proud or ambitious realm fights on.
+
+500 years (seeds 42 / 7 / 99): submitted 188 / 185 / 237, refused 71 /
+64 / 43; wars 922 / 876 / 1,038; vassals made 242 / 226 / 286 (52 / 39 /
+59 before); realms taken in 166 / 170 / 168 (202 / 188 / 202); revolts
+178 / 194 / 196 (108 / 65 / 74); years at war 14.6% / 14.7% / 12.8%;
+largest realm at year 500 57 / 105 / 46 provinces.
+
+Flagged:
+1. My coefficients: the .5 line, the weights, aggression × ambition.
+2. A first version let a realm submit to any feared neighbour in peace:
+   about 750 submissions in 500 years and wars down to 12%. Now only in
+   war; a demand in peace already brings offers.
+3. About a fifth of wars end in submission, and revolts are 2.5 times as
+   many: vassals submit, revolt and are beaten again (as Assyria's
+   were). Whether that is too often I don't know.
+
+## Empires falling from within (0.51.27)
+
+Daniel (2026-11-11): model how empires fall from within (the USSR); he
+wants to see how long empires last.
+
+Real life first: the USSR, Austria-Hungary in 1918, Yugoslavia, the
+late Abbasids and the Mongol empire broke along the same lines. Many
+peoples, each with its own land; a center weakened by bankruptcy,
+defeat, a fight over succession or lost belief; one people goes first
+(the Baltics, Slovenia), which shows the center cannot hold, and the
+others follow within a few years. Often the center gives up rather than
+fight, or governors keep the oath in name and rule for themselves (the
+Abbasid emirs). Counterweights: reconquest (Justinian, Chechnya),
+renewal (Diocletian), a shared faith and tongue, prosperity; many
+breakaways failed (the Confederacy, Biafra).
+
+Built:
+- The province likeliest to break away (`rebel`) counts how foreign it
+  is: `× (1 + 2 × alien)`, alien = 1 − the mean of how firmly it holds
+  the court's tongue and faith (`overlays::alien`). Breakaway odds `×
+  (.5 + alien)`.
+- A people breaks away with all its land: when the rebel province's
+  firmest tongue is not the court's, the fragment takes every land of
+  the realm joined to it whose firmest tongue is the same (else, as
+  before, up to three bordering lands). Counted `people_broke_away`.
+- Cascade: each breakaway puts `crumbling` on the old realm (+.3, up to
+  1, fading .1 a year): legitimacy −.15 and centralization −.1 ×
+  intensity, so the next breakaway comes easier; it also adds to the
+  `release` decision (the center lets lands go).
+- Nominal loyalty: an independent realm's breakaway stays its vassal
+  with `chance((1 − centralization) × how firmly the rebel province holds
+  the court's faith)`. Counted `nominal`.
+- Reconquest: a `lost_land` link (.8, fading over 100 years) from the old
+  realm to the breakaway; `claim` reads it, so it is a cause of war.
+- Check line: empires (the Empire class, under one name), the median and
+  longest years as an empire, and how many stand at the end.
+
+Fixed on the way (both could crash a run, found on seed 7):
+- A land could send off more people than it had: `move_people` sent
+  `people × leaving × gain`, and `gain` (how much better the other land
+  is) can be 30 after a failed harvest. Now at most `leaving` of the
+  people go. world.gbln output is unchanged.
+- A faith or tongue blend could make a copy held by more than 1
+  (`intensity + target's`, each up to .6); now at most 1.
+
+500 years (seeds 42 / 7 / 99), before → after these rules (both with
+the two fixes): median years as an empire 87 → 56, 151 → 49, 93 → 119;
+longest 418 → 417, 462 → 430, 447 → 434; empires 43 → 48, 33 → 49, 42 →
+40. Peoples breaking away 44 / 23 / 34, nominal vassals 7 / 7 / 10.
+Breakaways 232 → 241, 277 → 263, 250 → 293; releases 112 → 134, 104 →
+136, 122 → 143. Years at war 13.9% / 14.4% / 13.1%.
+
+Flagged:
+1. My coefficients: × (1 + 2 alien), (.5 + alien), +.3 and .1 a year,
+   −.15 / −.1, the nominal chance, .8 over 100 years.
+2. Median empire lifespans of 50 to 120 years are short: real empires
+   are often given an average near two centuries (and the run is only
+   500 years, so the longest are cut off at the end).
+3. Goblin: `spans[:len(spans) - 1]` reads as a slice from the start to
+   `len(...)`, so the colon rule then reports `len` as a bare builtin.
+   An index that starts with a builtin call needs a variable first.
