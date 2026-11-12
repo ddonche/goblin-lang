@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.30 — 2026-11-12
+
+- sims/capstone: coups, from real life (owner: "whatever is most realistic"). A group's coup is now an attempt that succeeds or fails at once, as about half of real attempts do (Powell and Thyne, 1950 to 2010): the plotters' armed men are matched against the guard (a twentieth of the realm's soldiers), and fewer of the guard stand by a ruler whose right is doubted or in an army without discipline. A won coup puts the officers in power (a military junta); a coup against a junta puts other officers in its place (a counter-coup). A failed coup costs the plotters half their members and frightens the ruler (`coups_failed`). One coup invites the next (the coup trap, Londregan and Poole): a realm's recent coups (`coups`, fading by a tenth a year) make the army's coup and a group's plot up to three times likelier. The realm's `plot` field is gone.
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 21 coup attempts, 14 won (22/12, 8/6; 32 of 51 in all, 63%); 10 military juntas at the end (10, 7); 10.6% of polity-years at war (9.7%, 10.8%); empires last a median 212 years (163, 121). The guard's size and the coup trap's strength are chosen, not measured. Every check passes. Expected history regenerated.
+
 ## 0.51.29 — 2026-11-12
 
 - DES regions: what crosses from one region to another now works for everything the capstone uses.

@@ -147,9 +147,10 @@ aspect Polity |
     /// What its people's ideas pull its culture toward, by trait (set each
     /// year by factions::account).
     bends: {}
-    /// This year's coup plotting and unrest stirred by its factions.
-    plot: 0.0
+    /// This year's unrest stirred by its factions.
     unrest: 0.0
+    /// Its recent coups (1 a coup, fading by a tenth a year).
+    coups: 0.0
     /// The strongest group of believers' hold on the realm this year
     /// (its power times its zeal, 0 to 1; set by factions::account).
     clergy: 0.0
@@ -2200,9 +2201,11 @@ act settle_year(p)
         government::regime(p, lost, won, armed, unpaid)
     xx
     f | government::form_of(p) ?? ..
+    p >> coups |= p >> coups * .9
     if f == p >> form
         p >> form_years |= p >> form_years + 1
     else
+        if f == "military_junta" => p >> coups |= p >> coups + 1.0
         p >> form |= f
         p >> form_years |= 0
     xx

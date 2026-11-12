@@ -52,10 +52,11 @@ xx
     concede: 0
     patronize: 0
     coups_won: 0
+    coups_failed: 0
 xx
 
 record <> GroupRecord | formed: 0
-counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won"]
+counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won", "coups_failed"]
 
 /// The counts so far, in order.
 act tally()
@@ -157,8 +158,6 @@ kinds | [
     holy: 0.0
     wants: {}
     founded: 0
-    /// The year it last plotted a coup (-1 for never).
-    plotted: -1
     phase: inside
         decision give_gold
             targets: uses govern where target == @realm and @gold >= 1.0
@@ -174,7 +173,7 @@ kinds | [
         xx
         decision coup
             targets: uses govern where target == @realm and target >> rank >= 3 and @arms >= 1.0
-            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5)
+            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5) * (1.0 + 2.0 * :min(target >> coups, 1.0))
         xx
         decision preach
             targets: uses govern where target == @realm and @idea != ..
@@ -342,8 +341,6 @@ act account(year, lands, realms)
         k  | p >> name
         hs | held{k} ?? {}
         p >> bends |= bends{k} ?? {}
-        /// Plotters wait for their moment: a plot lingers a few years.
-        p >> plot |= p >> plot * .6
         p >> unrest |= 0.0
         p >> clergy |= 0.0
         gs | of{k} ?? []
@@ -359,8 +356,6 @@ act account(year, lands, realms)
             taken |= taken + g >> share
             top |= :max(top, power(g))
             p >> clergy |= :max(p >> clergy, :min((g >> power) * (g >> zeal) * (1.0 + .5 * g >> holy), 1.0))
-            /// Plotters who took power: they get what they wanted.
-            if g >> plotted >= 0 and g >> plotted >= year - 3 and g >> plotted < year and p >> form_years == 0 and p >> form == "military_junta" and p >> plot > 0.0 => won_coup(g, p)
         xx
         /// New groups: likelier the stronger what they grow from, rarer
         /// as the realm's people are taken up, and likelier against one
@@ -479,20 +474,45 @@ act give_men(g, p)
     count("give_men")
 xx
 
-/// coup: it makes a coup likelier this year (government::odds reads
-/// `plot`); if the form falls next settle, they took power.
+/// coup: the group tries to take power. In real life about half of all
+/// attempts succeed (Powell and Thyne count 1950 to 2010): it turns on
+/// whether the rest of the army joins the plotters or stands by the
+/// ruler. A coup is made by the men under arms, not by numbers: the
+/// plotters' men are matched against the guard (a twentieth of the
+/// realm's soldiers), and fewer stand by a ruler whose right is doubted,
+/// or in an army without discipline.
 act coup(g, p)
-    /// A coup is made by the men under arms, not by numbers: plotters who
-    /// hold a twentieth of the realm's soldiers (the guard) can do it.
-    p >> plot |= :max(p >> plot, :min((g >> arms) / ((p >> army) * .05 + 1.0), 1.0) * (g >> militancy))
-    g >> plotted |= land::year()
     count("coup")
     :event(g, "plotted", p, {"met in secret": 2.0, "weighed the throne": .5 + g >> ambition, "bought the guard": .1 + g >> greed})
+    guard | ((p >> army) * .05 + 1.0) * (.5 + p >> legitimacy) * (.5 + p >> discipline)
+    if chance((g >> arms) / ((g >> arms) + guard))
+        won_coup(g, p)
+    else
+        lost_coup(g, p)
+    xx
 xx
 
-/// The plotters took power: their anger is gone and the realm takes up
-/// what they want.
+/// The coup failed: the plotters are hanged or flee, and the ruler,
+/// frightened, trusts the army less.
+act lost_coup(g, p)
+    g >> members |= g >> members * .5
+    g >> grievance |= g >> grievance + .2
+    p >> fear |= p >> fear + .03
+    count("coups_failed")
+    :event(p, "put down", g, {"the plotters were hanged": 1.0 + p >> fear, "the plotters fled abroad": 1.0, "the guard stood by the throne": .5 + p >> legitimacy})
+xx
+
+/// The plotters took power: the officers rule (a coup against officers
+/// puts other officers in their place), their anger is gone and the
+/// realm takes up what they want. One coup invites the next (the coup
+/// trap: Londregan and Poole).
 act won_coup(g, p)
+    if p >> form == "military_junta"
+        p >> coups |= p >> coups + 1.0
+        p >> legitimacy |= p >> legitimacy - .1
+    else
+        if government::allowed(p, "military_junta") => government::rule(p, "military_junta")
+    xx
     g >> grievance |= 0.0
     g >> loyalty |= g >> loyalty + .2
     repeat g >> wants as t, v
