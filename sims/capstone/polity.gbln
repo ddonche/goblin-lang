@@ -156,6 +156,10 @@ aspect Polity |
     /// (set each year by overlays::zeal).
     holy: 0.0
     faith_trade: 0.0
+    /// Land it has taken by war lately: one per province, fading by a
+    /// twentieth a year (its neighbours remember an aggressor for a
+    /// generation).
+    seized: 0.0
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -1125,8 +1129,8 @@ interface dealings |
         score => @cooperation * (1.0 - :clamp(@prestige / 100.0, 0.0, 1.0) * .5) * (1.0 - grudge(self, target)) * (.5 + :link_score(self, target, "alliance") * .5) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_aid
     xx
     decision ally
-        targets: uses dealings where :link_score(self, target, "border") and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
-        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target)) * (1.0 - grudge(target, self)) * (.6 + :link_score(self, target, "shared_faith") * .8) * @lean_ally
+        targets: uses dealings where (:link_score(self, target, "border") or shared_threat(self, target) > 0.0) and :link_score(self, target, "alliance") < .5 and (target >> wars) == 0
+        score => @cooperation * @fear * (target >> honor) * (1.0 - grudge(self, target) * (1.0 - shared_threat(self, target))) * (1.0 - grudge(target, self) * (1.0 - shared_threat(self, target))) * (.6 + :link_score(self, target, "shared_faith") * .8) * (1.0 + 3.0 * shared_threat(self, target)) * @lean_ally
     xx
     decision treaty
         targets: uses dealings where @rank >= 2 and :link_score(self, target, "border") and (grudge(self, target) > .2 or grudge(target, self) > .2 or (@wars > 0 and !(war_between(self, target).nix?)))
@@ -1242,10 +1246,17 @@ interface dealings |
         :link!(t, p, "alliance", .1, 20)
         :link!(t, p, "grievance", -.2, 40)
     xx
+    /// Before a threat both see, old grudges count for less, and the other
+    /// side takes the pact more readily.
     act ally(p, t)
-        if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p)))
+        s | shared_threat(p, t)
+        if !chance((t >> cooperation + t >> fear) / 2 * (1.0 - grudge(t, p) * (1.0 - s)) + s * .5)
             :link!(p, t, "grievance", .02, 20)
             send nil
+        xx
+        if s >= .3 and (grudge(p, t) > .2 or grudge(t, p) > .2 or :link_score(p, t, "shared_faith") < .5)
+            overlays::count("coalition")
+            :event(p, "coalition", t, {"old rivals swore to stand together": 2.0, "the quarrel was set aside before the common enemy": 1.0})
         xx
         p >> fear |= p >> fear - .05
         t >> fear |= t >> fear - .05
@@ -1472,6 +1483,7 @@ act end_war(w, winner)
     aim | w >> aim
     if winner == a and !(aim.nix?) and aim >> owner == d
         aim >> owner |= a
+        a >> seized |= a >> seized + 1.0
         if w >> holy => overlays::holy_conquest(a, aim)
     xx
     if w >> holy and winner == a => overlays::rally(d)
@@ -1500,6 +1512,7 @@ xx
 /// and sets the border link between polities that hold bordering
 /// provinces. `pairs` is every pair of bordering provinces, once.
 act account(lands, pairs)
+    nbs | {}
     ps | :objects(uses govern)
     repeat ps as p
         p >> lands |= 0
@@ -1611,7 +1624,58 @@ act account(lands, pairs)
         :update!(seen{"{b >> name}|{a >> name}"}, true)
         :link!(a, b, "border", 1, 1)
         :link!(b, a, "border", 1, 1)
+        xs | nbs{a >> name} ?? []
+        :put_last!(xs, b)
+        :update!(nbs{a >> name}, xs)
+        ys | nbs{b >> name} ?? []
+        :put_last!(ys, a)
+        :update!(nbs{b >> name}, ys)
     xx
+    menace(ps, nbs)
+xx
+
+/// What each realm fears from each bordering realm, by name (set each
+/// year by `menace`): realm name to {neighbour name: threat}.
+feared | {}
+
+/// The threat each realm sees in each neighbour (2026-11-11, owner:
+/// rivals set their quarrels aside before a great threat). In real life a
+/// realm fears a neighbour for its power, its nearness and what it has
+/// done (Walt's balance of threat): the Greek cities before Persia, the
+/// Holy League of 1571 before the Ottomans, the coalitions against Louis
+/// XIV and Napoleon. Threat = how much stronger the neighbour is (edge
+/// past even) × what it has done: the land it has seized lately (three
+/// provinces is the most) and, against another faith, how far it fights
+/// for its own.
+act menace(ps, nbs)
+    out | {}
+    repeat ps as p
+        if p >> seized > 0.0 => p >> seized |= p >> seized * .95
+    xx
+    repeat ps as a
+        m | {}
+        repeat nbs{a >> name} ?? [] as b
+            done | :clamp(:min((b >> seized) / 3.0, 1.0) + (b >> holy) * (1.0 - :link_score(a, b, "shared_faith")), 0.0, 1.0)
+            t | past(edge(b, a), .5) * done
+            if t > 0.0 => :update!(m{b >> name}, t)
+        xx
+        :update!(out{a >> name}, m)
+    xx
+    feared |= out
+xx
+
+/// The threat realms `a` and `b` both see in one realm (the larger, if
+/// several): 0 to 1.
+act shared_threat(a, b)
+    fa | feared{a >> name} ?? {}
+    if :len(fa) == 0 => send 0.0
+    fb | feared{b >> name} ?? {}
+    best | 0.0
+    repeat fa as n, v
+        w | fb{n} ?? 0.0
+        best |= :max(best, :min(v, w))
+    xx
+    return best
 xx
 
 act settle_accounts(p)

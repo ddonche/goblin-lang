@@ -1158,3 +1158,46 @@ Flagged:
 4. No league against a great threat (the Holy League, the coalitions
    against Louis XIV and Napoleon): proposed to Daniel as `threat`
    between two realms, not built.
+
+## Leagues against a great threat (0.51.27)
+
+Daniel (2026-11-11): realms should have rivals, enemies and allies so
+their dealings are believable; a league needs realms already on good
+terms, barring a great threat that makes them set their differences
+aside.
+
+Real life first: realms fear a neighbour for its power, its nearness and
+what it has done (Walt's balance of threat). Before a great threat old
+rivals ally: the Greek cities against Persia (Athens and Aegina set their
+war aside), the Holy League of 1571 (Venice, Spain, the Pope), the
+coalitions against Louis XIV and Napoleon. Such leagues come apart once
+the threat is gone (the Hellenic League into the Peloponnesian War,
+Venice's separate peace in 1573).
+
+Built: Polity `seized` (+1 for each province taken by war, × .95 a
+year). Each year `menace` sets what each realm fears from each bordering
+realm: `past(edge(b, a), .5) × clamp(min(seized / 3, 1) + holy × (1 −
+shared_faith))`. `shared_threat(a, b)` is the largest threat both fear
+from one realm. `ally` may now target a realm that is not a neighbour
+but shares a threat; its score counts grudges `× (1 − shared)` and is `×
+(1 + 3 × shared)`; the other side accepts with `chance(... × (1 − grudge
+× (1 − shared)) + .5 × shared)`. Counterweight: an alliance fades in 30
+years unless renewed, and once the threat is gone grudges count in full
+again. An alliance made with shared threat .3 or more between realms
+with a grudge over .2 or of different faiths counts as a `coalition`.
+
+500 years (seeds 42 / 7 / 99): coalitions 214 / 135 / 158; alliances
+made 2,265 / 2,316 / 2,064 (1,733 / 1,767 / 1,825 before); largest realm
+at year 500: 47 / 46 / 61 provinces (53 / 54 / 51 before). Years at war
+17% / 16% / 17.2%.
+
+Flagged:
+1. My coefficients: .95, 3 provinces, .5, × 3, .5 × shared, the .3 and
+   .2 lines.
+2. A coalition only defends: allies come when the threat attacks one of
+   them (`call_allies`). Nothing makes an attacker weigh its target's
+   allies, so a coalition does not deter, and the largest realm is not
+   clearly smaller. In real life it did deter (and coalitions also
+   attacked first). Not built.
+3. Small realms beside a threat sometimes joined it instead
+   (bandwagoning). Not built.
