@@ -29,7 +29,7 @@ pub const DECISIONS: usize = 7;
 pub const TRANSITIONS: usize = 8;
 
 /// What a session has counted.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DesMetrics {
     pub objects_made: u64,
     pub overlays_made: u64,
@@ -55,7 +55,7 @@ impl DesMetrics {
 }
 
 /// A region's numbers after its tick, sent to the program that runs the world.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Counts {
     pub metrics: DesMetrics,
     pub objects: u64,

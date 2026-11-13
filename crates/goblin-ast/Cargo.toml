@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 goblin-diagnostics = { path = "../goblin-diagnostics" }
+serde = { version = "1", features = ["derive"] }

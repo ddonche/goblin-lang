@@ -24,7 +24,7 @@ impl fmt::Display for Severity {
 }
 
 /// Source span using both byte offsets and 1-based line/col for display.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub file: String,
     pub start: usize,

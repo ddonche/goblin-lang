@@ -1017,6 +1017,7 @@ name = "goblin-ast"
 version = "0.19.1"
 dependencies = [
  "goblin-diagnostics",
+ "serde",
 ]
 
 [[package]]
@@ -1075,6 +1076,9 @@ dependencies = [
 [[package]]
 name = "goblin-diagnostics"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "goblin-gql"
@@ -1162,6 +1166,7 @@ name = "goblin-vm"
 version = "0.2.15"
 dependencies = [
  "ahash 0.8.12",
+ "bincode",
  "chrono",
  "chrono-tz",
  "comrak",

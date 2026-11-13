@@ -12,7 +12,7 @@ use crate::error::GoblinError;
 use crate::portable::{FromPortable, PValue, ToPortable};
 use crate::session::{LinkDef, LinkOffset, OverlayApplyBehavior, OverlayDef, OverlayInstance, OverlayInstanceId, Session};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct POverlayDef {
     pub(crate) name: String,
     host_types: Vec<String>,
@@ -43,7 +43,7 @@ pub(crate) struct POverlayDef {
     maker: Vec<(String, PValue)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct POverlay {
     overlay_name: String,
     host_var: String,
@@ -61,7 +61,7 @@ pub(crate) struct POverlay {
 }
 
 /// DES definitions plus the overlays (and host names) that go along.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DesImage {
     overlay_defs: Vec<POverlayDef>,
     link_defs: Vec<((String, String), LinkDef)>,
