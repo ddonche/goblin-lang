@@ -22,6 +22,8 @@ import land as land
     spouse: ..
     fame: 0.0
     dead: false
+    /// Born unlike its kin in one trait (see `unlike`).
+    unlike: false
     /// No longer rules: deposed, voted out, or its realm is gone.
     gone: false
     ~aggression: .5
@@ -137,10 +139,11 @@ xx
     marriages: 0
     births: 0
     partitions: 0
+    unlike: 0
 xx
 
 record <> FamilyRecord | deaths: 0
-counted | ["deaths", "murders", "executions", "crowned", "regencies", "usurped", "interregnums", "lines_ended", "elections", "claims_won", "new_houses", "marriages", "births", "partitions"]
+counted | ["deaths", "murders", "executions", "crowned", "regencies", "usurped", "interregnums", "lines_ended", "elections", "claims_won", "new_houses", "marriages", "births", "partitions", "unlike"]
 
 /// The counts so far, in order.
 act tally()
@@ -158,24 +161,38 @@ xx
 /// rulers
 
 /// Traits for someone of `p`'s culture not born to rule: drawn around
-/// the realm's own.
+/// the realm's own (some are `unlike` it).
 act culture_traits(p)
-    return {
+    return unlike({
         "aggression": vary(:field(p, "base_aggression")),
         "ambition": vary(:field(p, "base_ambition")),
         "competence": vary(.5),
         "piety": vary(:field(p, "base_spirituality"))
-    }
+    })
 xx
 
-/// A child's traits: drawn around its parent's.
+/// A child's traits: drawn around its parent's (some are `unlike` them).
 act child_traits(r)
-    return {
+    return unlike({
         "aggression": vary(r >> aggression),
         "ambition": vary(r >> ambition),
         "competence": vary(r >> competence),
         "piety": vary(r >> piety)
-    }
+    })
+xx
+
+/// Traits `t`, and by chance (one in twenty) one of them drawn anew
+/// from anywhere between 0 and 1: now and then a ruler is nothing like
+/// the kin and the culture that made them (Akhenaten and his one god,
+/// Caligula, Ivan the Terrible, Peter the Great; the chance is chosen,
+/// not measured).
+act unlike(t)
+    if !chance(.05) => send t
+    ks | ["aggression", "ambition", "competence", "piety"]
+    k | ks[pick 1 from 0...3]
+    :update!(t{k}, (pick 1 from 0...100) / 100.0)
+    :update!(t{"unlike"}, true)
+    return t
 xx
 
 /// A new Ruler of house `d` (or of none) for `p`, not yet seated.
@@ -190,6 +207,7 @@ act new_ruler(p, d, t, age)
     x >> ambition |= t{"ambition"}
     x >> competence |= t{"competence"}
     x >> piety |= t{"piety"}
+    if t{"unlike"} ?? false => x >> unlike |= true
     return x
 xx
 
@@ -470,6 +488,10 @@ act crown(p, x, how)
     p >> ruler |= x
     x >> court |= p
     x >> gone |= false
+    if x >> unlike
+        count("unlike")
+        :event(x, "unlike", p, {"they were nothing like those who ruled before them": 2.0, "the court did not know what to make of them": 1.0, "the old ways were not theirs": 1.0})
+    xx
     p >> term |= term_of(f)
     n | (p >> reigns{x >> given} ?? 0) + 1
     :update!(p >> reigns{x >> given}, n)
