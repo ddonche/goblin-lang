@@ -257,6 +257,11 @@ xx
     ~centralization: .1
     ~learning: .02
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -293,6 +298,11 @@ xx
     ~centralization: .2
     ~learning: .05
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -333,6 +343,11 @@ xx
     ~tolerance: .55
     ~learning: .25
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -372,6 +387,11 @@ xx
     ~centralization: .5
     ~learning: .15
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -550,6 +570,11 @@ xx
     ~tolerance: .55
     ~learning: .25
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -695,6 +720,11 @@ xx
     ~centralization: .75
     ~learning: .45
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -806,6 +836,11 @@ xx
     ~cooperation: .65
     ~centralization: .1
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
@@ -1625,7 +1660,6 @@ act account(lands, pairs)
             p >> cx |= b >> x
             p >> cy |= b >> y
         xx
-        settle_accounts(p)
     xx
     far | {}
     /// Each realm's court tongue and faith (the firmest at its capital).
@@ -1702,6 +1736,15 @@ act account(lands, pairs)
         :update!(nbs{b >> name}, ys)
     xx
     menace(ps, nbs)
+    bordering |= nbs
+xx
+
+/// Each realm's bordering realms this year, by name (set by `account`, in
+/// the program).
+bordering | {}
+
+act neighbours()
+    return bordering
 xx
 
 /// What each realm fears from each bordering realm, by name (set each

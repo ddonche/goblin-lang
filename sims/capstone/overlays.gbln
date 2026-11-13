@@ -483,8 +483,9 @@ xx
 /// - Where learning collapses (no city left), it fades, slower where a
 ///   library keeps the books.
 /// - Schools split often where scholars gather: a pupil turns on his
-///   master (Plato and Aristotle, the Confucian schools), more in a city
-///   of many libraries under a learned realm.
+///   master (Plato and Aristotle; the Confucians split into eight schools
+///   within two centuries of Confucius, the early Buddhists into
+///   eighteen), more in a city of many libraries under a learned realm.
 <^>Creed |
     hosts: Land
     ~intensity: .3
@@ -494,7 +495,7 @@ xx
     title: ..
     founded: 0
     at: ..
-    transition fracture where intensity >= .3 and chance(.002 * intensity * :min(host >> library, 3) / 3.0 * (.5 + learned(host)))
+    transition fracture where intensity >= .3 and chance(.02 * intensity * :min(host >> library, 3) / 3.0 * (.5 + learned(host)))
         fragment:
             intensity: intensity * .4
             bends: shifted(self >> bends)
@@ -1505,12 +1506,22 @@ act kindred(realms, spoken, faithful, court_t, court_f)
         xx
         :update!(fsh{k}, b)
     xx
+    /// Each bordering pair once, in the order of `realms`.
     n | :len(realms)
+    at | {}
+    repeat :range(0, n) as i
+        :update!(at{realms[i] >> name}, i)
+    xx
+    borders | polity::neighbours()
     repeat :range(0, n) as i
         p | realms[i]
-        repeat :range(i + 1, n) as j
+        js | []
+        repeat borders{p >> name} ?? [] as q
+            j | at{q >> name} ?? -1
+            if j > i => :put_last!(js, j)
+        xx
+        repeat :sort(js) as j
             q | realms[j]
-            if !:link_score(p, q, "border") => skip
             xs | nb{p >> name} ?? []
             :put_last!(xs, q)
             :update!(nb{p >> name}, xs)
