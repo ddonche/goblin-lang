@@ -9,7 +9,7 @@ in parentheses are the pull requests that made each change.
 - sims/capstone: the realms' shared tongue and faith are worked out for the year's bordering pairs only (from the border list `polity::account` makes), instead of testing every pair of realms for a border. The history is the same.
 - sims/capstone: schools of thought split ten times as often. They split about once in 1,500 years before, against the comment's "often" and real life (the Confucians split into eight schools within two centuries of Confucius, the early Buddhists into eighteen); now 1 to 10 times in 500 years. The `creed_split` check had been passing by luck.
 - Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 11.4% of polity-years at war (9.7%, 10.3%); empires last a median 114 years (128, 155); 18 coup attempts, 10 won (10/8, 23/15); 138 realm-years fighting for their faith (34, 2,480): that last number turns on whether a strongly militant faith appears and spreads. Expected history regenerated. Every check passes (78).
-- Speed, 4 cores, 100 years (seed 42), run back to back on one machine: 51 s, from 57 s (11% faster).
+- Speed, 4 cores, 60 years (seed 42), the median of four runs of each, interleaved on one machine: 24.5 s, from 26.1 s (6% faster; single runs vary by up to 10%).
 
 ## 0.51.32 — 2026-11-12
 
