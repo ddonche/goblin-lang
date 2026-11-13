@@ -5,11 +5,11 @@ in parentheses are the pull requests that made each change.
 
 ## 0.51.33 — 2026-11-13
 
-- sims/capstone: each realm's own year's accounts (its food, gold, trade, dues, tribute to its overlord and its traits' drift) run where the realm runs, on its region, in the `ideas` phase, instead of in the program. The program still counts each realm's land first.
+- sims/capstone: each realm's own year's accounts (its food, gold, trade, dues, tribute to its overlord and its traits' drift) run where the realm runs, on its region, at the start of the `inside` phase, instead of in the program. The program still counts each realm's land first, and the year's ideas have bent the realm's culture (`bends`, from its groups and from how much of its people share its court's tongue and faith) before its traits drift.
 - sims/capstone: the realms' shared tongue and faith are worked out for the year's bordering pairs only (from the border list `polity::account` makes), instead of testing every pair of realms for a border. The history is the same.
-- sims/capstone: schools of thought split ten times as often. They split about once in 1,500 years before, against the comment's "often" and real life (the Confucians split into eight schools within two centuries of Confucius, the early Buddhists into eighteen); now 2 to 7 times in 500 years. The `creed_split` check had been passing by luck.
-- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 12.8% of polity-years at war (11.3%, 8.8%); empires last a median 111 years (102, 266); 21 coup attempts, 9 won (20/14, 12/7); 125 realm-years fighting for their faith (26, 0). Whether a strongly militant faith (militancy .6) appears and spreads decides that last number: it did on seeds 7 and 99 before this and not now, and the faiths' militancy, the clergy's hold and the realms' spirituality are as before. Expected history regenerated. Every check passes (78).
-- Speed, 4 cores: 100 years (seed 42) in 43 s, from 49 s.
+- sims/capstone: schools of thought split ten times as often. They split about once in 1,500 years before, against the comment's "often" and real life (the Confucians split into eight schools within two centuries of Confucius, the early Buddhists into eighteen); now 1 to 10 times in 500 years. The `creed_split` check had been passing by luck.
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 11.4% of polity-years at war (9.7%, 10.3%); empires last a median 114 years (128, 155); 18 coup attempts, 10 won (10/8, 23/15); 138 realm-years fighting for their faith (34, 2,480): that last number turns on whether a strongly militant faith appears and spreads. Expected history regenerated. Every check passes (78).
+- Speed, 4 cores, 100 years (seed 42), run back to back on one machine: 51 s, from 57 s (11% faster).
 
 ## 0.51.32 — 2026-11-12
 

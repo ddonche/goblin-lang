@@ -257,16 +257,14 @@ xx
     ~centralization: .1
     ~learning: .02
     phase: inside
-        uses govern
-        uses answers
-        uses realm
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
         every 1 tick
             if self >> lands > 0 => settle_accounts(self)
         xx
+        uses govern
+        uses answers
+        uses realm
     xx
     phase: between
         uses dealings
@@ -300,16 +298,14 @@ xx
     ~centralization: .2
     ~learning: .05
     phase: inside
-        uses govern
-        uses answers
-        uses realm
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
         every 1 tick
             if self >> lands > 0 => settle_accounts(self)
         xx
+        uses govern
+        uses answers
+        uses realm
     xx
     phase: between
         uses dealings
@@ -347,17 +343,15 @@ xx
     ~tolerance: .55
     ~learning: .25
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
         uses court
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
-        every 1 tick
-            if self >> lands > 0 => settle_accounts(self)
-        xx
     xx
     phase: between
         uses dealings
@@ -393,17 +387,15 @@ xx
     ~centralization: .5
     ~learning: .15
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
         uses court
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
-        every 1 tick
-            if self >> lands > 0 => settle_accounts(self)
-        xx
     xx
     phase: between
         uses dealings
@@ -578,17 +570,15 @@ xx
     ~tolerance: .55
     ~learning: .25
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
         uses court
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
-        every 1 tick
-            if self >> lands > 0 => settle_accounts(self)
-        xx
     xx
     phase: between
         uses dealings
@@ -730,17 +720,15 @@ xx
     ~centralization: .75
     ~learning: .45
     phase: inside
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
         uses govern
         uses answers
         uses realm
         uses court
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
-        every 1 tick
-            if self >> lands > 0 => settle_accounts(self)
-        xx
     xx
     phase: between
         uses dealings
@@ -848,16 +836,14 @@ xx
     ~cooperation: .65
     ~centralization: .1
     phase: inside
-        uses govern
-        uses answers
-        uses realm
-    xx
-    /// The year's accounts, where it runs, once `account` has counted
-    /// its land.
-    phase: ideas
+        /// The year's accounts, where it runs, once `account` has counted
+        /// its land and the ideas have bent its culture (`bends`).
         every 1 tick
             if self >> lands > 0 => settle_accounts(self)
         xx
+        uses govern
+        uses answers
+        uses realm
     xx
     phase: between
         uses dealings
