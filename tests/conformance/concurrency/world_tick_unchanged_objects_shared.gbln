@@ -3,7 +3,8 @@
 /// as it was, and they keep their copy of it. A copy still follows every
 /// change, including one that comes back to the old value, and the main
 /// program's copy shows the region's value after a tick, not what the
-/// program wrote to it before.
+/// program wrote to it before. What the program wrote, every region reads
+/// in the next tick (the watcher sees level 5 in tick 5).
 <>Post |
     level: 1
     n: 0

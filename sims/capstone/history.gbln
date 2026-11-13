@@ -77,13 +77,14 @@ kinds   | map::terrain(m, cfg)
 width   | m{"width"}
 height  | m{"height"}
 
+land::set_cells(width * height)
 at    | {}
 lands | []
 repeat kinds as k
     if k == "sea" => skip
     x | idx % width
     y | idx // width
-    p <> Land | name: "{x},{y}", x: x, y: y, terrain: k, food: cfg{"food"}{k}
+    p <> Land | name: "{x},{y}", x: x, y: y, no: idx, terrain: k, food: cfg{"food"}{k}
     :update!(at{:str(idx)}, p)
     :put_last!(lands, p)
 xx
@@ -123,7 +124,7 @@ repeat homes as h
         if :len(held) > cfg{"kingdom_lands"} => stop
         :put_last!(held, q)
     xx
-    polity::found("Kingdom", polity::next_name(), held, 0)
+    polity::found("Kingdom", polity::name_of(land::name_no(h)), held, 0)
     made |= made + 1
 xx
 repeat :reverse(:sort_by(lands, "people_of")) as l
@@ -136,7 +137,7 @@ repeat :reverse(:sort_by(lands, "people_of")) as l
     xx
     class | "Tribe"
     if l >> settlement == "town" or l >> settlement == "city" or l >> settlement == "great city" => class |= "Village"
-    polity::found(class, polity::next_name(), held, 0)
+    polity::found(class, polity::name_of(land::name_no(l)), held, 0)
     made |= made + 1
 xx
 overlays::seed(:objects(Kingdom), :objects(uses govern, !:is_type(it, "Kingdom")), pairs)
@@ -144,6 +145,68 @@ nk | :len(:objects(Kingdom))
 nv | :len(:objects(Village))
 nt | :len(:objects(Tribe))
 :say("year 0: {nk} kingdoms, {nv} village communities, {nt} tribes")
+
+/// The world goes to `REGIONS` region actors (default 4), each a band of
+/// the map from west to east holding about as many provinces as the others
+/// (so each has as much to do), as the town, feudal and epidemic sims run
+/// theirs: a province by where it lies, a polity by its capital, a ruler
+/// with its court, a group with its realm, a house with its first ruler.
+/// What is made later is placed next to what it belongs to
+/// (`land::place`). Each region ticks its own part on its own thread;
+/// it sees the others as they were at the end of the last phase.
+regions_n | :int(:env("REGIONS") ?? "4")
+/// The band of a place at `x`: how many of the cuts between bands lie at
+/// or west of it.
+act band(x, cuts)
+    n | 0
+    repeat cuts as c
+        if x >= c => n |= n + 1
+    xx
+    return n
+xx
+if regions_n > 1
+    xs | []
+    repeat lands as l
+        :put_last!(xs, l >> x)
+    xx
+    xs |= :sort(xs)
+    cuts | []
+    repeat :range(1, regions_n) as k
+        :put_last!(cuts, xs[k * :len(xs) // regions_n])
+    xx
+    regions | []
+    repeat :range(0, regions_n)
+        :put_last!(regions, :actor({}))
+    xx
+    land::use_regions()
+    repeat lands as l
+        :move!(l, regions[band(l >> x, cuts)])
+    xx
+    repeat :objects(uses govern) as p
+        c | p >> capital ?? => skip
+        :move!(p, regions[band(c >> x, cuts)])
+    xx
+    repeat :objects(Ruler) as r
+        c | r >> court ?? => skip
+        :move!(r, c)
+    xx
+    repeat :objects(Dynasty) as d
+        repeat :objects(Ruler, it >> house == d) as r
+            :move!(d, r >> court)
+            stop
+        xx
+    xx
+    repeat :objects(Group) as g
+        r | g >> realm ?? => skip
+        :move!(g, r)
+    xx
+    /// The clock and the counts, which every region reads and adds to.
+    repeat [:objects(Clock), :objects(FamilyRecord), :objects(GroupRecord), :objects(IdeaRecord)] as xs
+        repeat xs as o
+            :move!(o, regions[0])
+        xx
+    xx
+xx
 
 /// Every `sample_every` years: speed, polities of each class, the largest
 /// polity's share of the held land, wars under way, and the share of
@@ -174,11 +237,14 @@ empire_from | {}
 empire_to   | {}
 repeat :range(0, years + 1) as year
     if year > 0
+        land::set_year(year)
         :tick()
             land
             polity::account(lands, pairs)
             family::account(year)
             factions::account(year, lands, :objects(uses govern))
+            overlays::prepare(lands, :objects(uses govern))
+            ideas
             overlays::account(year, lands, :objects(uses govern))
             inside
             between
@@ -186,7 +252,11 @@ repeat :range(0, years + 1) as year
         xx
         repeat :objects(Empire) as e
             if !:has(empire_from, e >> name) => :update!(empire_from{e >> name}, year)
-            :update!(empire_to{e >> name}, year)
+        xx
+        /// An empire lasts while its realm does, under its name, whatever
+        /// it is called (it may lose its other peoples and be a kingdom).
+        repeat :objects(uses govern) as q
+            if :has(empire_from, q >> name) => :update!(empire_to{q >> name}, year)
         xx
         repeat :objects(uses dealings) as p
             lived |= lived + 1
@@ -257,7 +327,7 @@ xx
 :say("check: forms at the end: {:join(:sort(held), ", ")}")
 /// What happened in the ruling families, and who rules at the end.
 tl | []
-repeat family::tally as k, n
+repeat family::tally() as k, n
     :put_last!(tl, "{k} {n}")
 xx
 :say("check: families: {:join(tl, ", ")}")
@@ -274,12 +344,12 @@ xx
 :say("check: succession laws at the end: {:join(:sort(held), ", ")}")
 /// What the groups did, and the largest group and idea at the end.
 tl |= []
-repeat factions::tally as k, n
+repeat factions::tally() as k, n
     :put_last!(tl, "{k} {n}")
 xx
 :say("check: groups: {:join(tl, ", ")}")
 tl |= []
-repeat overlays::tally as k, n
+repeat overlays::tally() as k, n
     :put_last!(tl, "{k} {n}")
 xx
 :say("check: overlays: {:join(tl, ", ")}")
@@ -291,8 +361,9 @@ repeat :objects(uses govern) as p
     if p >> holy >= .5 and government::form_of(p) == "theocracy" => priests |= priests + 1
 xx
 :say("check: faiths at the end: militant {ft{"militant"}}, mercantile {ft{"mercantile"}}; realms fighting for their faith {ft{"holy"}} ({priests} ruled by priests), trading for it {ft{"trading"}}; realm-years fighting for their faith {holy_years} ({priest_years} ruled by priests)")
-/// How long empires lasted (as empires, under one name): those still
-/// standing at the end count their years so far.
+/// How long empires lasted: from becoming an empire until the realm is
+/// gone (taken in, merged, erased) or renamed; those still standing at
+/// the end count their years so far.
 spans | []
 standing | 0
 repeat empire_from as n, y0
@@ -308,7 +379,7 @@ if ne > 0
     mid |= spans[h]
     longest |= spans[ne - 1]
 xx
-:say("check: empires: {ne}, years as an empire: median {mid}, longest {longest}; standing at the end {standing}")
+:say("check: empires: {ne}, years from becoming an empire until gone: median {mid}, longest {longest}; standing at the end {standing}")
 kc | overlays::kinship_counts()
 :say("check: bordering realms: {kc{"pairs"}} pairs, sharing a tongue (.5 or more) {kc{"tongue"}}, a faith {kc{"faith"}}; wars under way between faiths {kc{"wars_apart"}} of {kc{"wars"}}")
 gc | factions::counts(lands)

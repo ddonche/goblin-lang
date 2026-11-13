@@ -1,0 +1,31 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// An overlay class declared in an imported file: its members here (at the
+/// top level and inside an action) get its lines they don't write. calm
+/// writes its own `modify`; angry and glad take the class's, and its
+/// `dup: replace` puts each in the place of the one before.
+import "_support/modules/moods" as moods
+
+<>Person |
+    focus: 1.0
+xx
+overlay calm <^> Mood
+    modify
+        @focus + .2
+    xx
+xx
+overlay angry <^> Mood
+xx
+act cheer(p)
+    overlay glad <^> Mood
+    xx
+    :overlay!(p, glad)
+xx
+
+p <> Person | focus: 1.0
+:overlay!(p, calm)
+:say(p >> focus)
+:overlay!(p, angry)
+:say(p >> focus)
+:say(:overlays_of(p))
+cheer(p)
+:say(:overlays_of(p))

@@ -78,6 +78,7 @@ impl Base {
         for d in session.link_defs.values() { des.push_str(&format!("{d:?}")); }
         for d in session.object_link_defs.values() { des.push_str(&format!("{d:?}")); }
         for d in session.object_decisions.values() { des.push_str(&format!("{d:?}")); }
+        for d in session.overlay_classes.values() { des.push_str(&format!("{d:?}")); }
         if !des.is_empty() { w.words(&des, true); }
         // Field defaults that are not plain literals run when an object is
         // made, so the globals they read count too.

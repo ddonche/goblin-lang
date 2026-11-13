@@ -1,0 +1,34 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// What the program sets on a region's object before a tick, every region
+/// reads that tick, not only the region the object runs in: here each
+/// land, in two regions, reads the year the program set on the clock.
+<>Clock |
+    year: 0
+    word: ""
+xx
+<>Land |
+    name: ""
+    clock: nil
+    saw: 0
+    heard: ""
+    every 1 tick
+        @saw |= @clock >> year
+        @heard |= @clock >> word
+    xx
+xx
+clock <> Clock | year: 0, word: ""
+a <> Land | name: "a", clock: clock
+b <> Land | name: "b", clock: clock
+east | :actor({})
+west | :actor({})
+:move!(clock, east)
+:move!(a, east)
+:move!(b, west)
+repeat :range(1, 4) as y
+    clock >> year |= y
+    clock >> word |= "year {y}"
+    :tick()
+    repeat :objects(Land) as l
+        :say("{y}: {l >> name} saw {l >> saw}, {l >> heard}")
+    xx
+xx

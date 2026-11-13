@@ -1,0 +1,42 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// The program and the regions can count on one object: a whole number
+/// the program changes goes to the object's region as what it added, so
+/// what the regions add in the same tick counts too. Each of three
+/// regions adds 1 to the tally each tick; the program adds 100 after each
+/// tick. Anything else the program sets is set as it is.
+<>Tally |
+    n: 0
+    note: "none"
+xx
+<>Clerk |
+    every 1 tick
+        repeat :objects(Tally) as t
+            t >> n |= t >> n + 1
+        xx
+    end
+xx
+act make_desk(with_tally)
+    things | []
+    c <> Clerk |
+    :put_last!(things, c)
+    if with_tally
+        t <> Tally | n: 0
+        :put_last!(things, t)
+    xx
+    return {"things": things}
+xx
+act day(st, msg)
+    return st
+xx
+r1 | :actor(make_desk(true), day)
+r2 | :actor(make_desk(false), day)
+r3 | :actor(make_desk(false), day)
+repeat :range(1, 5) as d
+    :tick()
+    t | :objects(Tally)[0]
+    n | t >> n
+    note | t >> note
+    :say("tick {d}: {n} {note}")
+    t >> n |= t >> n + 100
+    t >> note |= "seen {d}"
+xx

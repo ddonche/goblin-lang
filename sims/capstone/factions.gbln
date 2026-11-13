@@ -12,8 +12,8 @@
 /// (Faith, Creed) are in overlays.gbln, which makes new ones: an overlay
 /// class is known only in the file that declares it.
 import overlays as overlays
+import land as land
 
-now | 0
 
 act chance(p)
     return (pick 1 from 0...9999) < p * 10000.0
@@ -34,11 +34,41 @@ act jitter(v)
 xx
 
 /// What the run's groups did, and how they came and went (printed at the end).
-tally | {"formed": 0, "split": 0, "merged": 0, "ended": 0, "give_gold": 0, "withhold": 0, "give_men": 0, "coup": 0,
-    "preach": 0, "found": 0, "press": 0, "rise": 0, "crush": 0, "concede": 0, "patronize": 0, "coups_won": 0}
+/// The counts are kept in an object, so every region adds to the same ones.
+<>GroupRecord |
+    formed: 0
+    split: 0
+    merged: 0
+    ended: 0
+    give_gold: 0
+    withhold: 0
+    give_men: 0
+    coup: 0
+    preach: 0
+    found: 0
+    press: 0
+    rise: 0
+    crush: 0
+    concede: 0
+    patronize: 0
+    coups_won: 0
+    coups_failed: 0
+xx
+
+record <> GroupRecord | formed: 0
+counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won", "coups_failed"]
+
+/// The counts so far, in order.
+act tally()
+    out | {}
+    repeat counted as k
+        :update!(out{k}, record >> {k})
+    xx
+    return out
+xx
 
 act count(k)
-    :update!(tally{k}, tally{k} + 1)
+    record >> {k} |= record >> {k} + 1
 xx
 
 traits | overlays::traits
@@ -128,8 +158,6 @@ kinds | [
     holy: 0.0
     wants: {}
     founded: 0
-    /// The year it last plotted a coup (-1 for never).
-    plotted: -1
     phase: inside
         decision give_gold
             targets: uses govern where target == @realm and @gold >= 1.0
@@ -137,7 +165,7 @@ kinds | [
         xx
         decision withhold
             targets: uses govern where target == @realm and target >> gold > 0.0
-            score => @greed * @power * (@grievance + .5 * @hard + .2 * @weak)
+            score => @greed * @power * (@grievance + .5 * @hard + .2 * @weak) * (1.0 - @loyalty)
         xx
         decision give_men
             targets: uses govern where target == @realm and @arms >= 1.0
@@ -145,7 +173,7 @@ kinds | [
         xx
         decision coup
             targets: uses govern where target == @realm and target >> rank >= 3 and @arms >= 1.0
-            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1))
+            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5) * (1.0 + 2.0 * :min(target >> coups, 1.0))
         xx
         decision preach
             targets: uses govern where target == @realm and @idea != ..
@@ -161,7 +189,7 @@ kinds | [
         xx
         decision rise
             targets: uses govern where target == @realm and target >> lands >= 3
-            score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power
+            score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power * (1.0 - @loyalty * .5)
         xx
         judge
             true:
@@ -196,7 +224,7 @@ kinds | [
             unity: :min(@unity + .3, 1.0)
             grievance: :min(@grievance + .1, 1.0)
             plotted: -1
-            founded: now
+            founded: land::year()
         xx
         carries:
             members: @members * .6
@@ -261,7 +289,8 @@ act form(k, p, idea, wants, s)
     repeat ["loyalty", "ambition", "militancy", "zeal", "greed", "unity"] as t
         :update!(born{t}, jitter(k{t}))
     xx
-    g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: now
+    g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: land::year()
+    land::place(g, p)
     count("formed")
     :event(g, "formed", p, {"they began to meet": 2.0, "a charter was written": .1 + born{"loyalty"}, "an oath was sworn": .1 + born{"unity"}})
 xx
@@ -271,7 +300,6 @@ xx
 /// polity::drift_traits), each group's members, gold, arms, traits and
 /// grievance, and new groups, by chance.
 act account(year, lands, realms)
-    now |= year
     /// Each realm's people, and how much of them hold each idea.
     people | {}
     held   | {}
@@ -313,7 +341,6 @@ act account(year, lands, realms)
         k  | p >> name
         hs | held{k} ?? {}
         p >> bends |= bends{k} ?? {}
-        p >> plot |= 0.0
         p >> unrest |= 0.0
         p >> clergy |= 0.0
         gs | of{k} ?? []
@@ -329,8 +356,6 @@ act account(year, lands, realms)
             taken |= taken + g >> share
             top |= :max(top, power(g))
             p >> clergy |= :max(p >> clergy, :min((g >> power) * (g >> zeal) * (1.0 + .5 * g >> holy), 1.0))
-            /// Plotters who took power: they get what they wanted.
-            if g >> plotted == year - 1 and p >> form_years == 0 => won_coup(g, p)
         xx
         /// New groups: likelier the stronger what they grow from, rarer
         /// as the realm's people are taken up, and likelier against one
@@ -449,20 +474,45 @@ act give_men(g, p)
     count("give_men")
 xx
 
-/// coup: it makes a coup likelier this year (government::odds reads
-/// `plot`); if the form falls next settle, they took power.
+/// coup: the group tries to take power. In real life about half of all
+/// attempts succeed (Powell and Thyne count 1950 to 2010): it turns on
+/// whether the rest of the army joins the plotters or stands by the
+/// ruler. A coup is made by the men under arms, not by numbers: the
+/// plotters' men are matched against the guard (a twentieth of the
+/// realm's soldiers), and fewer stand by a ruler whose right is doubted,
+/// or in an army without discipline.
 act coup(g, p)
-    /// A coup is made by the men under arms, not by numbers: plotters who
-    /// hold a twentieth of the realm's soldiers (the guard) can do it.
-    p >> plot |= :max(p >> plot, :min((g >> arms) / ((p >> army) * .05 + 1.0), 1.0) * (g >> militancy))
-    g >> plotted |= now
     count("coup")
     :event(g, "plotted", p, {"met in secret": 2.0, "weighed the throne": .5 + g >> ambition, "bought the guard": .1 + g >> greed})
+    guard | ((p >> army) * .05 + 1.0) * (.5 + p >> legitimacy) * (.5 + p >> discipline)
+    if chance((g >> arms) / ((g >> arms) + guard))
+        won_coup(g, p)
+    else
+        lost_coup(g, p)
+    xx
 xx
 
-/// The plotters took power: their anger is gone and the realm takes up
-/// what they want.
+/// The coup failed: the plotters are hanged or flee, and the ruler,
+/// frightened, trusts the army less.
+act lost_coup(g, p)
+    g >> members |= g >> members * .5
+    g >> grievance |= g >> grievance + .2
+    p >> fear |= p >> fear + .03
+    count("coups_failed")
+    :event(p, "put down", g, {"the plotters were hanged": 1.0 + p >> fear, "the plotters fled abroad": 1.0, "the guard stood by the throne": .5 + p >> legitimacy})
+xx
+
+/// The plotters took power: the officers rule (a coup against officers
+/// puts other officers in their place), their anger is gone and the
+/// realm takes up what they want. One coup invites the next (the coup
+/// trap: Londregan and Poole).
 act won_coup(g, p)
+    if p >> form == "military_junta"
+        p >> coups |= p >> coups + 1.0
+        p >> legitimacy |= p >> legitimacy - .1
+    else
+        if government::allowed(p, "military_junta") => government::rule(p, "military_junta")
+    xx
     g >> grievance |= 0.0
     g >> loyalty |= g >> loyalty + .2
     repeat g >> wants as t, v

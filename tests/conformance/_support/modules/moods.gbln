@@ -1,0 +1,7 @@
+/// An overlay class for modules/overlay_class_from_another_file.gbln.
+<^>Mood |
+    dup: replace
+    modify
+        @focus + .1
+    xx
+xx

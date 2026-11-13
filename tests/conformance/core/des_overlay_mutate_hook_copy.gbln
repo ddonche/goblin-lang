@@ -1,0 +1,26 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// An overlay's `on mutate` block gets the copy it became as `mutated`
+/// (a record with its kind, intensity and fields), beside `self` (the host)
+/// and the old overlay's `intensity` and fields.
+<>Land |
+    name: ..
+xx
+<^>Language |
+    hosts: Land
+    transition mutate where age >= 2
+        carries:
+            intensity: intensity * .5
+        xx
+    xx
+    on mutate => :say("{@name}: {mutated >> overlay_name} at {mutated >> intensity}, was {intensity}, speakers {mutated >> speakers}")
+xx
+overlay old_imperial <^> Language
+    ~intensity: .8
+    speakers: "many"
+xx
+a <> Land | name: "Varn"
+:overlay!(a, old_imperial)
+repeat 3
+    :tick()
+xx
+:say(:overlays_of(a))

@@ -46,6 +46,9 @@ pub(crate) struct Image {
     program: Arc<Program>,
     base_dir: std::path::PathBuf,
     project_root: std::path::PathBuf,
+    /// Each imported module's path and name prefix, so a DES formula or an
+    /// overlay block written in a module sees that module's names here too.
+    import_paths: HashMap<std::path::PathBuf, String>,
 }
 
 /// The program's code and name tables: what imports and declarations build,
@@ -254,6 +257,7 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
         program,
         base_dir: session.base_dir.clone(),
         project_root: session.project_root.clone(),
+        import_paths: session.import_paths.clone(),
     })
 }
 
@@ -307,6 +311,7 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
     let mut s = Session::new(img.gc_mode).with_worker_id(worker_id);
     s.base_dir = img.base_dir.clone();
     s.project_root = img.project_root.clone();
+    s.import_paths = img.import_paths.clone();
     let p = &img.program;
     let tables = if p.inert && fp.is_sharing() {
         let found = THREAD_PROGRAMS.with(|t| {

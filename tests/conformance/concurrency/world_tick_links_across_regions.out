@@ -1,0 +1,7 @@
+tick 1: a trusts b 0; b saw 0
+tick 2: a trusts b 1; b saw 0
+tick 2: the program reads back 11
+tick 3: a trusts b 12; b saw 1
+tick 4: a trusts b 13; b saw 12
+tick 5: a trusts b 0; b saw 13
+tick 6: a trusts b 1; b saw 0

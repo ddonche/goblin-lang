@@ -263,6 +263,12 @@ pub struct OverlayDefStmt {
     /// Its class's `dup:`: what putting it on a host that has another
     /// member of the class does (`Stack` when the class has none).
     pub class_dup: Option<OverlayDup>,
+    /// A member whose class is declared in another file: the runtime gives
+    /// it the class's lines when the `overlay` line runs.
+    pub class_pending: bool,
+    /// `<^>Mood |`: this is an overlay class, not an overlay. The runtime
+    /// keeps it for members declared in other files.
+    pub is_class: bool,
     /// The settings lines the block writes (`hosts`, `lasts`, `decays`,
     /// `intensity`, `dup`), so a class fills in only the others.
     pub written: Vec<String>,

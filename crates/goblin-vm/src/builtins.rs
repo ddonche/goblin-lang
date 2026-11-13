@@ -90,7 +90,7 @@ fn elsewhere_overlays(session: &mut Session, host: &Value) -> Vec<crate::session
     let uuid = match host { Value::Ref(u) => u.to_string(), Value::Object(o) => o.uuid.to_string(), _ => return Vec::new() };
     if session.region.is_some() { return crate::world::remote_overlays(session, Some(&uuid)); }
     if crate::world::in_view(session, &uuid) {
-        return crate::world::view_overlays_in(session).into_iter().filter(|i| i.host_uuid == uuid).collect();
+        return crate::world::view_overlays_of(session, Some(&uuid), None);
     }
     Vec::new()
 }

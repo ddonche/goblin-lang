@@ -728,7 +728,7 @@ fn fill_from_interfaces(class: &mut ast::ClassDecl, ifaces: &[Interface], aspect
     Ok(missing)
 }
 
-fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
+pub fn fill_from_overlay_class(m: &mut ast::OverlayDefStmt, c: &ast::OverlayDefStmt) {
     let writes = |m: &ast::OverlayDefStmt, k: &str| m.written.iter().any(|w| w == k);
     if !writes(m, "hosts") { m.host_types = c.host_types.clone(); }
     if !writes(m, "lasts") { m.default_duration = c.default_duration; }
@@ -7138,11 +7138,12 @@ impl<'t> Parser<'t> {
             let ast::Stmt::OverlayDef(def) = item else { continue };
             let Some(at) = self.overlay_members_waiting.iter().position(|(m, _)| *m == def.name) else { continue };
             let (_, class) = self.overlay_members_waiting.swap_remove(at);
+            // Declared in another file: the runtime fills it in.
             let Some(c) = self.overlay_classes.iter().find(|c| c.name == class) else {
-                return Err(derr_help("P1295", &format!("No overlay class named {class}"),
-                    &format!("Declare it in this file:\n  <^>{class} |\n      dup: replace\n  xx"), def.span.clone()));
+                continue;
             };
             fill_from_overlay_class(def, c);
+            def.class_pending = false;
         }
         for item in items.iter_mut() {
             let ast::Stmt::Class(class) = item else { continue };
@@ -7171,16 +7172,12 @@ impl<'t> Parser<'t> {
             };
             return Err(derr_help("P1340", &msg, &help, sp));
         }
-        // A member inside an action or block needs its class declared above it.
-        if let Some((m, class)) = self.overlay_members_waiting.first() {
+        // A member inside an action or block needs its class declared above
+        // it when the class is in this file; a class from another file is
+        // filled in by the runtime.
+        if let Some((m, class)) = self.overlay_members_waiting.iter().find(|(_, c)| self.overlay_classes.iter().any(|k| k.name == *c)) {
             let sp = self.toks.last().map(|t| t.span.clone()).unwrap_or_else(|| goblin_diagnostics::Span::new("<eof>", 0, 0, 0, 0, 0, 0));
-            let known = self.overlay_classes.iter().any(|c| c.name == *class);
-            let (msg, help) = if known {
-                (format!("Overlay {m} is inside a block, above its class {class}"), format!("Declare <^>{class} above overlay {m}."))
-            } else {
-                (format!("No overlay class named {class}"), format!("Declare it in this file:\n  <^>{class} |\n      dup: replace\n  xx"))
-            };
-            return Err(derr_help("P1295", &msg, &help, sp));
+            return Err(derr_help("P1295", &format!("Overlay {m} is inside a block, above its class {class}"), &format!("Declare <^>{class} above overlay {m}."), sp));
         }
 
         Ok(ast::Module { items })
@@ -8547,7 +8544,10 @@ impl<'t> Parser<'t> {
                 // action or block). Otherwise once the file is read.
                 match self.overlay_classes.iter().find(|c| c.name == class) {
                     Some(c) => fill_from_overlay_class(d, c),
-                    None => self.overlay_members_waiting.push((name, class)),
+                    None => {
+                        d.class_pending = true;
+                        self.overlay_members_waiting.push((name, class));
+                    }
                 }
             }
             return Ok(stmt);
@@ -8878,9 +8878,10 @@ impl<'t> Parser<'t> {
         }
         let stmt = self.with_self(|p| p.parse_overlay_block(name, start_i, col))?;
         let ast::Stmt::OverlayDef(def) = stmt else { unreachable!() };
-        let span = def.span.clone();
+        let mut kept = def.clone();
+        kept.is_class = true;
         self.overlay_classes.push(def);
-        Ok(ast::Stmt::Block { stmts: Vec::new(), span })
+        Ok(ast::Stmt::OverlayDef(kept))
     }
 
     /// `overlay plague` ... `xx` (the name is eaten): data lines
@@ -9098,6 +9099,8 @@ impl<'t> Parser<'t> {
                         match self.eat_ident().as_deref() {
                             Some("start") => "on start".to_string(),
                             Some("end") => "on end".to_string(),
+                            // An overlay's `on mutate` also gets the copy it became.
+                            Some("mutate") => { hook = Some(&["mutated"]); "on mutate".to_string() }
                             Some(w) if hook_params(w).is_some() && w != "subjugate" => { hook = hook_params(w); format!("on {w}") }
                             _ => return Err(s_help_site!("P1213", "Expected 'start', 'end' or a transition (split, fracture, merge, absorb, mutate, spawn) after 'on'", "Write: on start => @fear |= @fear + .05")),
                         }
@@ -9159,7 +9162,7 @@ impl<'t> Parser<'t> {
         Ok(ast::Stmt::OverlayDef(ast::OverlayDefStmt {
             name, host_types, spread_rules: Vec::new(), decay_rate, modifiers, conflict_rules: Vec::new(), spawn_rules: Vec::new(),
             transitions, default_duration, apply_behavior, extra_fields, on_end, each_tick: Vec::new(),
-            intensity, spreads, conflicts, dup, class: None, class_dup: None, written, actions, on_start, every, phases, span,
+            intensity, spreads, conflicts, dup, class: None, class_dup: None, class_pending: false, is_class: false, written, actions, on_start, every, phases, span,
         }))
     }
 
@@ -9614,6 +9617,8 @@ impl<'t> Parser<'t> {
             dup: None,
             class: None,
             class_dup: None,
+            class_pending: false,
+            is_class: false,
             written: Vec::new(),
             actions: Vec::new(),
             on_start: None,

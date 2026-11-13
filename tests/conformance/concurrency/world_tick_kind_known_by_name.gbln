@@ -1,0 +1,43 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A kind made while regions run reaches every region with the next
+/// round, not only with its overlays: town 1 makes a kind on tick 1 and
+/// keeps its name in a field; town 2, in another region, reads the name
+/// on tick 2 and looks for overlays of that kind on itself, where there
+/// have never been any.
+<^>Idea |
+    hosts: Town
+xx
+<>Town |
+    n: 0
+    made: ""
+    looked: -1
+    every 1 tick
+        if self >> n == 1 and self >> made == "" => make_on(self)
+        if self >> n == 2 and self >> looked < 0
+            repeat :objects(Town, it >> n == 1) as o
+                if o >> made != "" => self >> looked |= :len(:overlays(self, o >> made))
+            xx
+        xx
+    end
+xx
+act make_on(o)
+    overlay notion <^> Idea
+        from: 1
+    xx
+    :overlay!(o, notion, .5)
+    o >> made |= :overlays(o)[0] >> overlay_name
+xx
+act make_town(n)
+    t <> Town | n: n
+    return {"things": [t]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make_town(1), day)
+b | :actor(make_town(2), day)
+repeat :range(1, 4) as d
+    :tick()
+xx
+t | :objects(Town, it >> n == 2)[0]
+:say("town 2 found {t >> looked} overlays of town 1's kind")

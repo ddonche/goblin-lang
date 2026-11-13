@@ -1,0 +1,46 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An `overlay` line run while regions run makes a kind with a name of its
+/// own (numbered by region), so two regions running the same line never
+/// make two kinds of one name, and the kind goes along with its overlays
+/// to regions that have never seen it. Each town's region sees the other
+/// town as it was at the end of the last tick, so it puts an idea on it
+/// on ticks 1 and 2 (the first arrives at the start of tick 2).
+<^>Idea |
+    hosts: Town
+xx
+<>Town |
+    n: 0
+    every 1 tick
+        if self >> n > 0
+            repeat :objects(Town, it >> n != self >> n) as o
+                if :len(:overlays(o)) == 0 => make_on(o, self >> n)
+            xx
+        xx
+    end
+xx
+act make_on(o, n)
+    overlay notion <^> Idea
+        from: n
+    xx
+    :overlay!(o, notion, .5)
+xx
+act make_town(n)
+    t <> Town | n: n
+    return {"things": [t]}
+xx
+act day(st, msg)
+    return st
+xx
+a | :actor(make_town(1), day)
+b | :actor(make_town(2), day)
+repeat :range(1, 4) as d
+    :tick()
+xx
+repeat [1, 2] as which
+    t | :objects(Town, it >> n == which)[0]
+    repeat :overlays(t) as o
+        k | o >> overlay_name
+        f | o >> from
+        :say("town {which} holds {k}, from town {f}")
+    xx
+xx

@@ -147,9 +147,10 @@ aspect Polity |
     /// What its people's ideas pull its culture toward, by trait (set each
     /// year by factions::account).
     bends: {}
-    /// This year's coup plotting and unrest stirred by its factions.
-    plot: 0.0
+    /// This year's unrest stirred by its factions.
     unrest: 0.0
+    /// Its recent coups (1 a coup, fading by a tenth a year).
+    coups: 0.0
     /// The strongest group of believers' hold on the realm this year
     /// (its power times its zeal, 0 to 1; set by factions::account).
     clergy: 0.0
@@ -161,6 +162,18 @@ aspect Polity |
     /// twentieth a year (its neighbours remember an aggressor for a
     /// generation).
     seized: 0.0
+    /// The neighbours it fears, by name: how much (polity::menace, each year).
+    fears: {}
+    /// Its people over what its land feeds in a good year (set each year by
+    /// overlays::account).
+    fullness: 0.0
+    /// Its court's tongue and faith (the firmest at its capital), and last
+    /// year's share of its people holding each (set by overlays::prepare
+    /// and overlays::account).
+    court_tongue: ..
+    court_faith: ..
+    court_share: .5
+    court_fshare: .5
 xx
 
 /// What every class but League shares when it changes shape. Each
@@ -174,13 +187,13 @@ interface founding |
     transition spawn where !(@colony_at.nix?)
         into: Village
         child:
-            name: next_name()
+            name: next_name(self)
         xx
     xx
     transition spawn where chance(league_odds(self))
         into: League
         child:
-            name: next_name()
+            name: next_name(self)
         xx
     xx
     on spawn => founded_child(self, child)
@@ -399,7 +412,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -425,7 +438,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 wars: 0
@@ -451,7 +464,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -470,7 +483,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -497,7 +510,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -571,7 +584,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -597,7 +610,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -616,7 +629,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -643,7 +656,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -710,7 +723,7 @@ xx
                 food: @food * .5
             xx
             second:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 wars: 0
@@ -729,7 +742,7 @@ xx
         transition fracture where chance(breakaway(self, true))
             into: CityState
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 3
                 owner: nil
                 age: 0
@@ -756,7 +769,7 @@ xx
         transition fracture where chance(breakaway(self, false))
             into: Kingdom
             fragment:
-                name: next_name()
+                name: next_name(self)
                 rank: 4
                 owner: nil
                 age: 0
@@ -1013,7 +1026,7 @@ xx
 
 /// What `a` fears from `b` this year (`menace`), 0 to 1.
 act threat(a, b)
-    return (feared{a >> name} ?? {}){b >> name} ?? 0.0
+    return (a >> fears){b >> name} ?? 0.0
 xx
 
 /// A polity that is erased ends its wars (the other side keeps what it
@@ -1045,7 +1058,7 @@ xx
 interface govern |
     decision tax
         targets: Land where (target >> owner) == self and @rank >= 2 and (target >> people) >= 10.0
-        score => (short(@gold, @people * .05) + @ambition + @centralization + :min(@wars, 1)) / 4 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
+        score => (short(@gold, @people * .05) + @centralization + :min(@wars, 1)) / 3 * @legitimacy * (1.0 - short(@food, @people * .05)) * (.9 + .1 * (target >> people) / (@people + 1.0))
     xx
     decision relieve
         targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= .9 * (target >> food)
@@ -1053,11 +1066,11 @@ interface govern |
     xx
     decision build
         targets: Land where (target >> owner) == self and @rank >= 2 and @gold >= 20.0 and (@stone >= 5.0 or @wood >= 5.0) and land::buildings(target) < 12
-        score => (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
+        score => (@stability + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :min(@wars, 1) * .7) * (.5 + .5 * (target >> people) / (target >> food))
     xx
     decision levy
         targets: Land where (target >> owner) == self and @gold >= 10.0 and (target >> people) >= 50.0
-        score => (@fear + @ambition + :min(@wars, 1)) / 3 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
+        score => (@fear + :min(@wars, 1)) / 2 * (1.0 - weariness(self)) * (1.0 - short(@food, @people * .05)) * (1.0 - @army / (@people * .1 + 1.0)) * @lean_levy
     xx
     decision disband
         targets: Land where @army >= 1.0 and target == @capital
@@ -1065,7 +1078,7 @@ interface govern |
     xx
     decision borrow
         targets: Land where (target >> owner) == self and @cities >= 1 and target == @capital and @debt < @people * .5
-        score => short(@gold, @people * .05) * (@ambition + :min(@wars, 1)) / 2 * (1.0 - @debt / (@people * .5 + 1.0))
+        score => short(@gold, @people * .05) * (.5 + .5 * :min(@wars, 1)) * (1.0 - @debt / (@people * .5 + 1.0))
     xx
 
     /// One decision a year, drawn by weight among the possible ones.
@@ -1188,7 +1201,7 @@ interface dealings |
 
     decision spy
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "border")
-        score => (@fear + @ambition + @discipline) / 3 * (1.0 - @honor) * .5
+        score => (@fear + @discipline) / 2 * (1.0 - @honor) * .5
     xx
     decision denounce
         targets: uses dealings where :link_score(self, target, "border")
@@ -1196,7 +1209,7 @@ interface dealings |
     xx
     decision embargo
         targets: uses dealings where @cities >= 1 and :link_score(self, target, "trade") > 0
-        score => grudge(self, target) * (@ambition + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
+        score => grudge(self, target) * (@aggression + (1.0 - short(@gold, 100.0))) / 2 * (1.0 - :link_score(self, target, "trade") * .5) * @lean_embargo
     xx
     decision demand
         targets: uses dealings where :link_score(self, target, "border") and (self >> power) > 1.5 * (target >> power)
@@ -1207,7 +1220,7 @@ interface dealings |
 
     decision show_of_force
         targets: uses dealings where @army >= 10.0 and :link_score(self, target, "border")
-        score => (@fear + @ambition) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
+        score => (@fear + @aggression) / 2 * (1.0 - weariness(self)) * (.3 + grudge(self, target)) * .5
     xx
     decision raid
         targets: uses dealings where (@horses >= 1.0 or @ships >= 1.0) and @army >= 5.0 and :link_score(self, target, "border")
@@ -1408,6 +1421,7 @@ interface dealings |
             xx
         xx
         w <> War | name: "{p >> name}-{t >> name}", attacker: p, defender: t, started: :metrics(){"ticks"}
+        land::place(w, p)
         if !(aim.nix?) => w >> aim |= aim
         /// Struck first: the war is mostly against a feared neighbour.
         if threat(p, t) * (p >> fear) > :max(grudge(p, t), claim(p, t)) and threat(p, t) >= .3 => overlays::count("struck_first")
@@ -1692,7 +1706,6 @@ xx
 
 /// What each realm fears from each bordering realm, by name (set each
 /// year by `menace`): realm name to {neighbour name: threat}.
-feared | {}
 
 /// The threat each realm sees in each neighbour (2026-11-11, owner:
 /// rivals set their quarrels aside before a great threat). In real life a
@@ -1704,7 +1717,6 @@ feared | {}
 /// provinces is the most) and, against another faith, how far it fights
 /// for its own.
 act menace(ps, nbs)
-    out | {}
     repeat ps as p
         if p >> seized > 0.0 => p >> seized |= p >> seized * .95
     xx
@@ -1715,17 +1727,16 @@ act menace(ps, nbs)
             t | past(edge(b, a), .5) * done
             if t > 0.0 => :update!(m{b >> name}, t)
         xx
-        :update!(out{a >> name}, m)
+        a >> fears |= m
     xx
-    feared |= out
 xx
 
 /// The threat realms `a` and `b` both see in one realm (the larger, if
 /// several): 0 to 1.
 act shared_threat(a, b)
-    fa | feared{a >> name} ?? {}
+    fa | a >> fears
     if :len(fa) == 0 => send 0.0
-    fb | feared{b >> name} ?? {}
+    fb | b >> fears
     best | 0.0
     repeat fa as n, v
         w | fb{n} ?? 0.0
@@ -1844,8 +1855,6 @@ xx
 
 /// names
 
-named | 0
-
 /// A name from a number: two or three syllables.
 act name_of(i)
     s | ["ar", "bel", "cor", "dun", "esk", "fal", "gor", "hal", "isk", "jor", "kel", "lor", "mar", "nor", "or", "pel", "quar", "ros", "sar", "tor", "ul", "var", "wen", "yr", "zan"]
@@ -1859,11 +1868,9 @@ act name_of(i)
     return :title(w)
 xx
 
-/// The next polity's name.
-act next_name()
-    w | name_of(named)
-    named |= named + 1
-    return w
+/// A name for a new polity coming from `p`, drawn at `p`'s capital.
+act next_name(p)
+    return name_of(land::name_no(p >> capital))
 xx
 
 /// realm: its shape (the inside phase). Reform, settle (a colony), migrate
@@ -1884,7 +1891,7 @@ interface answers |
     xx
     decision concede
         targets: Group where (target >> realm) == self and :len(target >> wants) > 0
-        score => (target >> power) * (target >> grievance) * @cooperation
+        score => (target >> power) * (target >> grievance) * @cooperation * (1.0 - @legitimacy * .5)
     xx
     decision patronize
         targets: Group where (target >> realm) == self and (target >> idea) != .. and (target >> held) > .2
@@ -1937,7 +1944,7 @@ interface realm |
     xx
     decision revolt
         targets: uses govern where target == @owner
-        score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * @lean_revolt
+        score => (grudge(self, target) + (1.0 - edge(target, self))) / 2 * (.5 + @ambition * .5) * (1.0 - @honor * .5) * (1.0 - @stability * .5) * @lean_revolt
     xx
     /// Offer to serve the enemy at its gates rather than be taken
     /// (2026-11-11, owner): the towns that opened their gates to the
@@ -2201,9 +2208,11 @@ act settle_year(p)
         government::regime(p, lost, won, armed, unpaid)
     xx
     f | government::form_of(p) ?? ..
+    p >> coups |= p >> coups * .9
     if f == p >> form
         p >> form_years |= p >> form_years + 1
     else
+        if f == "military_junta" => p >> coups |= p >> coups + 1.0
         p >> form |= f
         p >> form_years |= 0
     xx
@@ -2297,9 +2306,11 @@ act breakaway(p, city)
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
     /// Another people breaks away more readily than the court's own.
-    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p))
+    /// An intolerant court drives its other peoples away (Austria-Hungary,
+    /// the late Ottomans); a stable realm holds its provinces.
+    apart | .5 + overlays::alien(r, overlays::court_tongue(p), overlays::court_faith(p)) * (1.5 - p >> tolerance)
     if city => send odds(far * loose * apart * (.5 + .5 * :min(r >> walls / 2.0, 1.0)) * :min(r >> people / 500.0, 1.0) * (1.0 + p >> unrest))
-    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 + p >> unrest))
+    return odds(far * loose * apart * (1.0 - p >> cohesion) * (1.0 - p >> stability * .5) * (1.0 + p >> unrest))
 xx
 /// A broken loser taken in: likelier the closer their cultures.
 act annex_odds(p, t)

@@ -462,10 +462,15 @@ act odds(p, c, lost, won, armed, unpaid)
         /// A coup.
         /// In real life an army takes power where it is large against the
         /// realm and the crown's right is doubted, mostly after a defeat,
-        /// when it goes unpaid, or when its officers plot.
-        c == "coup": send past(armed, .1) * under(p >> legitimacy, .6) * (.1 + .9 * :max(:max(lost, unpaid), :min(p >> plot, 1.0)))
+        /// or when it goes unpaid (a group of officers who plot try at once:
+        /// factions::coup).
+        /// A large army can also topple a ruler whose right nobody doubts
+        /// (Rome's praetorians); a disciplined, professional army less
+        /// often; a contested succession invites it. One coup invites the
+        /// next (the coup trap: Londregan and Poole).
+        c == "coup": send past(armed, .1) * :max(under(p >> legitimacy, .6), .3 * past(armed, .5)) * (.1 + .9 * :max(lost, unpaid)) * (1.5 - p >> discipline) * (1.5 - p >> succession) * (1.0 + 2.0 * :min(p >> coups, 1.0))
         /// A usurper.
-        c == "usurper": send under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5)
+        c == "usurper": send under(p >> legitimacy, .4) * past(p >> fear, .5) * past(p >> ambition, .5) * (1.5 - p >> succession)
         /// A revolution.
         c == "revolution": send past(p >> learning, .3) * past(p >> openness, .5) * :min(2.0 * (p >> cities) / :max(p >> lands, 1), 1.0) * under(p >> legitimacy, .6)
         /// The republic falls.

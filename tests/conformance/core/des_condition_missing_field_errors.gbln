@@ -1,0 +1,13 @@
+/// A transition's condition that reads a field its object doesn't have
+/// stops the tick with R0403; it is not taken as false.
+<>Land |
+    food: 1
+xx
+overlay famine
+    hosts: Land
+    transition erase where @fod > 0
+xx
+l <> Land | food: 1
+:overlay!(l, famine)
+:tick()
+:say("not reached")

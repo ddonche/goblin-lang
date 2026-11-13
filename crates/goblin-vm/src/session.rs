@@ -58,6 +58,10 @@ pub struct OverlayDef {
     /// Made by a transition while the program ran, not declared: it goes
     /// along with its overlays to other regions, which don't know it.
     pub generated: bool,
+    /// Made while actors ran (by an `overlay` line in a region, or in the
+    /// program once it started actors): their images do not have it, so it
+    /// goes along with its overlays too.
+    pub travels: bool,
     /// The kinds a transition made this one from (two for a merge); none
     /// for a declared overlay.
     pub parents: Vec<String>,
@@ -369,6 +373,9 @@ pub struct Session {
     pub object_link_defs: HashMap<(String, String), Rc<LinkDef>, rustc_hash::FxBuildHasher>,
     pub link_offsets: LinkTable,
     pub object_decisions: HashMap<String, Rc<goblin_ast::DecisionDef>>,
+    /// Overlay classes (`<^>Mood |`) by name, for members declared in
+    /// other files (`overlay calm <^> Mood`).
+    pub overlay_classes: HashMap<String, Rc<goblin_ast::OverlayDefStmt>>,
     pub unit_registry: Rc<HashMap<String, goblin_ast::UnitDecl>>,
     pub des_store: EntityStore,
     pub des_index: EntityIndex,
@@ -575,6 +582,7 @@ impl Session {
             object_link_defs: Default::default(),
             link_offsets: Default::default(),
             object_decisions: HashMap::new(),
+            overlay_classes: HashMap::new(),
             unit_registry: Default::default(),
             des_store: EntityStore::new(),
             des_index: EntityIndex::default(),

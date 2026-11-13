@@ -71,10 +71,10 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
             for t in &decl.transitions {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let target = if alone(&t.kind) {
-                    if !vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(uuid.clone()))]) { continue; }
+                    if !vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(uuid.clone()))]).map_err(|e| cond_error(class, t, e))? { continue; }
                     None
                 } else {
-                    match find_target(vm, uuid, t, &started, &done) { Some(x) => Some(x), None => continue }
+                    match find_target(vm, uuid, t, &started, &done).map_err(|e| cond_error(class, t, e))? { Some(x) => Some(x), None => continue }
                 };
                 done.insert(uuid.to_string());
                 if let Some(x) = &target { done.insert(x.clone()); }
@@ -93,8 +93,13 @@ pub(crate) fn object_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
     Ok(())
 }
 
-fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Option<String> {
-    let class = t.target_class.as_deref()?;
+/// A transition's condition that failed, said with what it belongs to.
+fn cond_error(owner: &str, t: &TransitionDef, e: GoblinError) -> GoblinError {
+    GoblinError::Runtime(format!("{owner}'s `transition {}` condition failed: {e}", word(&t.kind)))
+}
+
+fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<String>, done: &FxHashSet<String>) -> Result<Option<String>, GoblinError> {
+    let Some(class) = t.target_class.as_deref() else { return Ok(None) };
     let ids: Vec<ObjId> = if class.starts_with("uses ") {
         let store = &vm.session.object_store;
         vm.session.places_of_class(class).into_iter().filter_map(|i| store.get_index(i).map(|(u, _)| u.clone())).collect()
@@ -105,7 +110,7 @@ fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<S
     // objects that can pass the first test on `target` are tried, in the
     // same order (see `tick::narrow`).
     let ids: Vec<ObjId> = match vm.session.object_store.get_index_of(me.as_str()) {
-        Some(me_at) if ids.len() > 1 && vm.session.region.is_none() => {
+        Some(me_at) if ids.len() > 1 => {
             let all: Vec<(Value, usize)> = ids.iter()
                 .filter_map(|u| vm.session.object_store.get_index_of(u.as_str()).map(|i| (Value::Ref(u.clone()), i)))
                 .collect();
@@ -129,11 +134,11 @@ fn find_target(vm: &mut Vm, me: &ObjId, t: &TransitionDef, started: &FxHashSet<S
         if crate::world::is_remote(vm, &id) {
             if !anywhere { continue; }
         } else if !started.contains(id.as_str()) { continue; }
-        if vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(me.clone())), ("target", Value::Ref(id.clone()))]) {
-            return Some(id.to_string());
+        if vm.eval_tick_expr_bool(&t.trigger, vec![("self", Value::Ref(me.clone())), ("target", Value::Ref(id.clone()))])? {
+            return Ok(Some(id.to_string()));
         }
     }
-    None
+    Ok(None)
 }
 
 fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&str>) -> Result<(), GoblinError> {
@@ -611,10 +616,10 @@ pub(crate) fn overlay_transitions(vm: &mut Vm) -> Result<(), GoblinError> {
                 if alone(&t.kind) != (pass == 0) { continue; }
                 let me = self_record(&inst);
                 let target = if alone(&t.kind) {
-                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None, &def.maker)) { continue; }
+                    if !vm.eval_tick_expr_bool(&t.trigger, overlay_locals(&me, &inst, None, &def.maker)).map_err(|e| cond_error(&inst.overlay_name, t, e))? { continue; }
                     None
                 } else {
-                    match find_overlay_target(vm, &inst, &me, t, &done) { Some(x) => Some(x), None => continue }
+                    match find_overlay_target(vm, &inst, &me, t, &done).map_err(|e| cond_error(&inst.overlay_name, t, e))? { Some(x) => Some(x), None => continue }
                 };
                 done.insert(id.0);
                 if let Some(x) = &target { done.insert(x.des_id.0); }
@@ -677,8 +682,8 @@ fn maker_of(vm: &Vm, inst: &OverlayInstance) -> Vec<(String, Value)> {
 
 /// Another overlay on the same host, of the overlay (or overlay class)
 /// `targets:` names, that the condition holds for.
-fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &TransitionDef, done: &FxHashSet<u32>) -> Option<OverlayInstance> {
-    let wanted = t.target_class.as_deref()?;
+fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &TransitionDef, done: &FxHashSet<u32>) -> Result<Option<OverlayInstance>, GoblinError> {
+    let Some(wanted) = t.target_class.as_deref() else { return Ok(None) };
     let others: Vec<OverlayInstance> = {
         let list = &vm.session.overlay_instances;
         let defs = &vm.session.overlay_defs;
@@ -690,9 +695,9 @@ fn find_overlay_target(vm: &mut Vm, inst: &OverlayInstance, me: &Value, t: &Tran
     let maker = maker_of(vm, inst);
     for o in others {
         let rec = vm.overlay_record(&o);
-        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec), &maker)) { return Some(o); }
+        if vm.eval_tick_expr_bool(&t.trigger, overlay_locals(me, inst, Some(&rec), &maker))? { return Ok(Some(o)); }
     }
-    None
+    Ok(None)
 }
 
 /// An overlay's field list worked out: its intensity, and its other fields.
@@ -890,7 +895,8 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
             let now = vm.session.overlay_instances[p].clone();
             seed_kind(vm, made, &now);
             olog(vm, inst, K::Mutate, if kind != name { vec![kind] } else { Vec::new() })?;
-            overlay_hook(vm, def, K::Mutate, inst, Vec::new())
+            let recs = vec![vm.overlay_record(&now)];
+            overlay_hook(vm, def, K::Mutate, inst, recs)
         }
         K::Split => {
             let ((ka, ma), (kb, mb)) = (successor_kind(vm, t, 0, &name)?, successor_kind(vm, t, 1, &name)?);

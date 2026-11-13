@@ -14,7 +14,7 @@ use crate::session::{LinkDef, LinkOffset, OverlayApplyBehavior, OverlayDef, Over
 
 #[derive(Debug, Clone)]
 pub(crate) struct POverlayDef {
-    name: String,
+    pub(crate) name: String,
     host_types: Vec<String>,
     decay_rate: f64,
     default_duration: Option<u32>,
@@ -38,6 +38,7 @@ pub(crate) struct POverlayDef {
     phases: Vec<goblin_ast::OverlayPhase>,
     family: String,
     generated: bool,
+    travels: bool,
     parents: Vec<String>,
     maker: Vec<(String, PValue)>,
 }
@@ -53,7 +54,7 @@ pub(crate) struct POverlay {
     count: u64,
     applied: Vec<(String, f64)>,
     extra_fields: Vec<(String, PValue)>,
-    des_id: u32,
+    pub(crate) des_id: u32,
     /// The overlay's kind, when a transition made it while the program
     /// ran: the session it goes to may not know it.
     kind: Option<std::sync::Arc<POverlayDef>>,
@@ -66,6 +67,7 @@ pub(crate) struct DesImage {
     link_defs: Vec<((String, String), LinkDef)>,
     object_link_defs: Vec<((String, String), LinkDef)>,
     object_decisions: Vec<(String, goblin_ast::DecisionDef)>,
+    overlay_classes: Vec<(String, goblin_ast::OverlayDefStmt)>,
     overlays: Vec<POverlay>,
     object_names: Vec<(String, (String, bool))>,
     /// Link offsets (`a link to b on ch offset ...`) from or to the
@@ -101,6 +103,7 @@ pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDe
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        travels: d.travels,
         parents: d.parents.clone(),
         maker: d.maker.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect::<Result<Vec<_>, GoblinError>>()?,
     })
@@ -138,6 +141,7 @@ pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session
         phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
+        travels: d.travels,
         parents: d.parents.clone(),
     }
 }
@@ -160,6 +164,7 @@ pub(crate) fn des_image_of(session: &Session, tp: &mut ToPortable, objects: Opti
     img.link_defs = session.link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     img.object_link_defs = session.object_link_defs.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     img.object_decisions = session.object_decisions.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
+    img.overlay_classes = session.overlay_classes.iter().map(|(k, v)| (k.clone(), (**v).clone())).collect();
     if let Some(objs) = objects {
         for inst in session.overlay_instances.iter().filter(|i| objs.contains(&i.host_uuid)) {
             img.overlays.push(overlay_to_p(inst, tp)?);
@@ -192,6 +197,7 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
     s.link_defs = img.link_defs.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.object_link_defs = img.object_link_defs.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.object_decisions = img.object_decisions.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
+    s.overlay_classes = img.overlay_classes.iter().map(|(k, v)| (k.clone(), Rc::new(v.clone()))).collect();
     s.des_overlay_id_counter = img.overlay_ids;
     for (u, n) in &img.object_names {
         s.object_names.insert(u.clone(), n.clone());
@@ -214,6 +220,27 @@ pub(crate) fn install(img: &DesImage, fp: &mut FromPortable, s: &mut Session) {
 impl POverlay {
     pub(crate) fn host(&self) -> &str { &self.host_uuid }
     pub(crate) fn name(&self) -> &str { &self.overlay_name }
+    /// Its kind, when the kind travels with it (made while a world runs).
+    pub(crate) fn kind(&self) -> Option<&std::sync::Arc<POverlayDef>> { self.kind.as_ref() }
+}
+
+/// An overlay kind, ready to cross to another thread (converted once per
+/// session, `Session::portable_kinds`).
+pub(crate) fn kind_to_p(d: &Rc<OverlayDef>, tp: &mut ToPortable) -> Result<std::sync::Arc<POverlayDef>, GoblinError> {
+    let cached = tp.session.portable_kinds.borrow().get(&d.name).cloned();
+    if let Some(p) = cached { return Ok(p); }
+    let p = std::sync::Arc::new(def_to_p(d, tp)?);
+    tp.session.portable_kinds.borrow_mut().insert(d.name.clone(), p.clone());
+    Ok(p)
+}
+
+/// An overlay kind from another thread, made known in this session unless
+/// it already is.
+pub(crate) fn learn_kind(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session) {
+    if !s.overlay_defs.contains_key(&d.name) {
+        let def = def_from_p(d, fp, s);
+        s.overlay_defs.insert(d.name.clone(), Rc::new(def));
+    }
 }
 
 /// One overlay, ready to cross to another thread.
@@ -230,18 +257,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
         extra_fields: pfields(tp, &inst.extra_fields)?,
         des_id: inst.des_id.0,
         kind: match tp.session.overlay_defs.get(&inst.overlay_name) {
-            Some(d) if d.generated => {
-                let cached = tp.session.portable_kinds.borrow().get(&d.name).cloned();
-                match cached {
-                    Some(p) => Some(p),
-                    None => {
-                        let d = d.clone();
-                        let p = std::sync::Arc::new(def_to_p(&d, tp)?);
-                        tp.session.portable_kinds.borrow_mut().insert(d.name.clone(), p.clone());
-                        Some(p)
-                    }
-                }
-            }
+            Some(d) if d.generated || d.travels => Some(kind_to_p(&d.clone(), tp)?),
             _ => None,
         },
     })
@@ -249,12 +265,7 @@ pub(crate) fn overlay_to_p(inst: &OverlayInstance, tp: &mut ToPortable) -> Resul
 
 /// An overlay rebuilt in this session.
 pub(crate) fn overlay_from_p(o: &POverlay, fp: &mut FromPortable, s: &mut Session) -> OverlayInstance {
-    if let Some(d) = &o.kind {
-        if !s.overlay_defs.contains_key(&d.name) {
-            let def = def_from_p(d, fp, s);
-            s.overlay_defs.insert(d.name.clone(), Rc::new(def));
-        }
-    }
+    if let Some(d) = &o.kind { learn_kind(d, fp, s); }
     OverlayInstance {
         overlay_name: o.overlay_name.clone(),
         host_var: o.host_var.clone(),

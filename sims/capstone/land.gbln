@@ -30,6 +30,14 @@
     /// How much of the world's people hold the idea held most firmly
     /// here (set each year by factions::account).
     dominance: 0.0
+    /// This year: a plague or disaster its realm will dread (`struck`), and
+    /// famine (`hungry`) (set by overlays::land_year).
+    struck: false
+    hungry: false
+    /// Its place on the map (one number per cell), and how many names have
+    /// been drawn here (`name_no`).
+    no: 0
+    named: 0
     phase: land
         every 1 tick
             @people |= @people + @growth * @people * (1.0 - @people / @food)
@@ -41,6 +49,14 @@
         xx
         judge
             settle and (settle >> score) > 0: self.move_people(settle >> target, settle >> score)
+        xx
+    xx
+    /// Its tongues and faiths, its weather and disasters, each year
+    /// (overlays::land_year; overlays.gbln imports this file, so the
+    /// action is named here rather than imported).
+    phase: ideas
+        every 1 tick
+            :invoke("overlays::land_year", self)
         xx
     xx
     act move_people(to, gain)
@@ -112,4 +128,85 @@ xx
 act is_city(l)
     s | l >> settlement
     return s == "city" or s == "great city"
+xx
+
+/// Whether the world runs in regions (set by history.gbln before it hands
+/// the world out): then a new object is placed next to what it belongs to.
+in_regions | false
+
+act use_regions()
+    in_regions |= true
+xx
+
+/// Runs `o` where `near` runs (a no-op without regions, or when it already
+/// runs there).
+act place(o, near)
+    if in_regions and !near.nix? => :move!(o, near)
+xx
+
+/// The world's clock: the year, which the program sets as each year
+/// begins (`set_year`), and how many cells the map has. It is an object,
+/// so every region reads the same year.
+<>Clock |
+    year: 0
+    cells: 1
+    /// Years of dimmed sun left, this year's weather (the harvest lost in
+    /// each sixth of the map, "x,y"), and last year's share of all the
+    /// world's people holding each tongue and faith (`spread`) and how much
+    /// each faith seeks converts (`seeks`), by name: what every region
+    /// reads, set by the program each year (overlays::prepare, account).
+    cold: 0
+    weather: {}
+    spread: {}
+    seeks: {}
+xx
+
+clock <> Clock | year: 0, cells: 1
+
+act year()
+    return clock >> year
+xx
+
+act set_year(y)
+    clock >> year |= y
+xx
+
+act set_cells(n)
+    clock >> cells |= n
+xx
+
+act cold()
+    return clock >> cold
+xx
+
+act weather(key)
+    return (clock >> weather){key} ?? 0.0
+xx
+
+act spread(n)
+    return (clock >> spread){n} ?? 0.0
+xx
+
+act seeks(n)
+    return (clock >> seeks){n} ?? 0.0
+xx
+
+act set_world(cold, weather)
+    if clock >> cold != cold => clock >> cold |= cold
+    clock >> weather |= weather
+xx
+
+act set_ideas(spread, seeks)
+    clock >> spread |= spread
+    clock >> seeks |= seeks
+xx
+
+/// A number no name drawn anywhere else has had: the province's place on
+/// the map, then once round the map again for each name drawn here. A name
+/// drawn for a realm, a house or a person draws it at the realm's capital,
+/// so two regions never draw the same one.
+act name_no(l)
+    n | l >> named
+    l >> named |= n + 1
+    return l >> no + n * (clock >> cells)
 xx
