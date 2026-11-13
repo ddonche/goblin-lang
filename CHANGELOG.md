@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.33 — 2026-11-13
+
+- sims/capstone: each realm's own year's accounts (its food, gold, trade, dues, tribute to its overlord and its traits' drift) run where the realm runs, on its region, in the `ideas` phase, instead of in the program. The program still counts each realm's land first.
+- sims/capstone: the realms' shared tongue and faith are worked out for the year's bordering pairs only (from the border list `polity::account` makes), instead of testing every pair of realms for a border. The history is the same.
+- sims/capstone: schools of thought split ten times as often. They split about once in 1,500 years before, against the comment's "often" and real life (the Confucians split into eight schools within two centuries of Confucius, the early Buddhists into eighteen); now 2 to 7 times in 500 years. The `creed_split` check had been passing by luck.
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 12.8% of polity-years at war (11.3%, 8.8%); empires last a median 111 years (102, 266); 21 coup attempts, 9 won (20/14, 12/7); 125 realm-years fighting for their faith (26, 0). Whether a strongly militant faith (militancy .6) appears and spreads decides that last number: it did on seeds 7 and 99 before this and not now, and the faiths' militancy, the clergy's hold and the realms' spirituality are as before. Expected history regenerated. Every check passes (78).
+- Speed, 4 cores: 100 years (seed 42) in 43 s, from 49 s.
+
 ## 0.51.32 — 2026-11-12
 
 - DES regions: what the program sets on a region's object now reaches every region's copy in the same round, not only the owner's. Before this, a region far from the object read last round's value (in the capstone, last year's year in the first phase).

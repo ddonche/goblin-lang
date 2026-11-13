@@ -261,6 +261,13 @@ xx
         uses answers
         uses realm
     xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
+    xx
     phase: between
         uses dealings
     xx
@@ -296,6 +303,13 @@ xx
         uses govern
         uses answers
         uses realm
+    xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
     xx
     phase: between
         uses dealings
@@ -338,6 +352,13 @@ xx
         uses realm
         uses court
     xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
+    xx
     phase: between
         uses dealings
     xx
@@ -376,6 +397,13 @@ xx
         uses answers
         uses realm
         uses court
+    xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
     xx
     phase: between
         uses dealings
@@ -555,6 +583,13 @@ xx
         uses realm
         uses court
     xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
+    xx
     phase: between
         uses dealings
     xx
@@ -700,6 +735,13 @@ xx
         uses realm
         uses court
     xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
+    xx
     phase: between
         uses dealings
     xx
@@ -809,6 +851,13 @@ xx
         uses govern
         uses answers
         uses realm
+    xx
+    /// The year's accounts, where it runs, once `account` has counted
+    /// its land.
+    phase: ideas
+        every 1 tick
+            if self >> lands > 0 => settle_accounts(self)
+        xx
     xx
     phase: between
         uses dealings
@@ -1625,7 +1674,6 @@ act account(lands, pairs)
             p >> cx |= b >> x
             p >> cy |= b >> y
         xx
-        settle_accounts(p)
     xx
     far | {}
     /// Each realm's court tongue and faith (the firmest at its capital).
@@ -1702,6 +1750,15 @@ act account(lands, pairs)
         :update!(nbs{b >> name}, ys)
     xx
     menace(ps, nbs)
+    bordering |= nbs
+xx
+
+/// Each realm's bordering realms this year, by name (set by `account`, in
+/// the program).
+bordering | {}
+
+act neighbours()
+    return bordering
 xx
 
 /// What each realm fears from each bordering realm, by name (set each
