@@ -236,7 +236,9 @@ xx
 /// What may kill `r`, ruler of `p`, this year: each a chance a year. Their
 /// sum is its chance of dying; they are also the weights for how its
 /// death is told. Murder rises with kin and claimants and falls with the
-/// realm's legitimacy and discipline.
+/// realm's legitimacy and discipline. About one European monarch in seven
+/// from 600 to 1800 was murdered (Eisner, "Killing Kings", 2011): the
+/// plot's scale is set so a run comes near that.
 act hazards(r, p)
     a | r >> age
     ill | .004 * :pow(2.718281828, .08 * (a - 30))
@@ -251,7 +253,7 @@ act hazards(r, p)
     if p >> food == 0.0 => famine |= ill * .5
     battle | 0.0
     if a >= 16 and p >> wars > 0 => battle |= .01 * (r >> aggression)
-    plot | .02 * (1.0 - p >> legitimacy) * (1.0 - p >> discipline) * (.2 + .2 * :min(p >> kin, 3) + .2 * :min(p >> claimants, 2)) * (.5 + .5 * p >> ambition)
+    plot | .2 * (1.0 - p >> legitimacy) * (1.0 - p >> discipline) * (.2 + .2 * :min(p >> kin, 3) + .2 * :min(p >> claimants, 2)) * (.5 + .5 * p >> ambition)
     kin | 0.0
     if p >> kin > 0 => kin |= plot * .5
     wound | 0.0

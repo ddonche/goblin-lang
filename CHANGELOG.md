@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.35 — 2026-11-13
+
+- sims/capstone, tuning pass against real life. Empire lifespans (a median of 157 to 193 years across seeds 42, 7 and 99) and coup success (about half of attempts) were already near real life. Murdered rulers were not: about 1 in 100 of ruler deaths, against about one European monarch in seven murdered from 600 to 1800 (Eisner, "Killing Kings", 2011). The plot hazard's scale is ten times what it was: now 14% to 16% of ruler deaths are murders (247 of 1,723 on seed 42; 264 of 1,619 and 308 of 2,101 on seeds 7 and 99).
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 12% of polity-years at war (12.1%, 10.8%); empires last a median 106 years (140, 177); 75 usurpers (60, 92); the largest realm holds 31 provinces at the end (25, 32), down from 58. More murders weaken more realms. Expected history regenerated. Every check passes (80).
+- Determinism: 150 years on 1, 2, 4, 8 and 16 actor threads give byte-identical output and event logs.
+
 ## 0.51.34 — 2026-11-13
 
 - sims/capstone: some new rulers, groups and realms are unlike those that made them (owner: some new entities, not all). One in twenty of each has one trait drawn anew from anywhere between 0 and 1, instead of near its source:
