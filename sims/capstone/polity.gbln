@@ -2402,6 +2402,22 @@ xx
 
 /// Its traits and baselines from `p` (a colony's or a league's founder):
 /// what they hold, not as its form of government bends them.
+/// By chance (one in twenty) a new realm, a colony or a land broken
+/// away, takes one part of its culture anew, from anywhere between 0
+/// and 1, trait and baseline both: a people that sets itself apart from
+/// where it came from (the Dutch Republic's tolerance against Spain, the
+/// American colonies against the crown's centralizing, Sparta among the
+/// Dorians; the chance is chosen, not measured).
+act unlike(c)
+    if !chance(.05) => send nil
+    t | traits[pick 1 from 0...(:len(traits) - 1)]
+    v | (pick 1 from 0...100) / 100.0
+    c >> {t} |= v
+    c >> {"base_{t}"} |= v
+    overlays::count("unlike_realm")
+    :event(c, "unlike_realm", nil, {"they would not live as their fathers had": 2.0, "they made their own customs": 1.0})
+xx
+
 act take_culture(c, p)
     c >> aggression |= :field(p, "aggression")
     c >> cooperation |= :field(p, "cooperation")
@@ -2476,6 +2492,7 @@ xx
 /// gets the province, people from its founder, and is held by it).
 act founded_child(p, c)
     take_culture(c, p)
+    if !:is_type(c, "League") => unlike(c)
     c >> founded |= :metrics(){"ticks"}
     if :is_type(c, "League")
         ps | league_partners(p)
@@ -2512,6 +2529,7 @@ xx
 /// go to the fragment, which takes a form of its own.
 act broke_away(p, f)
     family::fresh(f)
+    unlike(f)
     r | p >> rebel
     r >> owner |= f
     n | 1

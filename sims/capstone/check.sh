@@ -42,7 +42,7 @@ LABEL="wars end ($(grep -c '| War .* | erase$' "$T/e1") of $(grep -c ' | war | '
 for k in mutate fracture split merge absorb subjugate spawn; do
     LABEL="transition happens: $k ($(grep -c "^tick [0-9]* | [A-Z][A-Za-z]* [^|]* | $k" "$T/e1"))"; check grep -q "^tick [0-9]* | [A-Z][A-Za-z]* [^|]* | $k" "$T/e1"
 done
-for a in give_gold withhold give_men coup preach found press rise crush concede patronize formed split merged ended; do
+for a in give_gold withhold give_men coup preach found press rise crush concede patronize formed split merged ended unlike; do
     n=$(grep '^check: groups:' "$T/h1" | grep -o "$a [0-9]*" | awk '{ print $2 }')
     LABEL="groups: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done
@@ -50,6 +50,10 @@ for a in tongue_new shifted faith_new schism converted creed_split plague strain
     n=$(grep '^check: overlays:' "$T/h1" | grep -oE " $a [0-9]+" | awk '{ print $2 }')
     LABEL="overlays: $a (${n:-0})"; check test "${n:-0}" -gt 0
 done
+# Some new rulers, groups and realms are unlike those that made them.
+n=$(grep '^check: families:' "$T/h1" | grep -o 'unlike [0-9]*' | awk '{ print $2 }')
+LABEL="rulers unlike their kin (${n:-0})"; check test "${n:-0}" -gt 0
+echo "     realms unlike the one they came from: $(grep '^check: overlays:' "$T/h1" | grep -o 'unlike_realm [0-9]*' | awk '{ print $2 }')"
 # A creole (two tongues merging) and a blend of two faiths are rare in real
 # life: counted, not required.
 echo "     faiths blended into a new one: $(grep '^check: overlays:' "$T/h1" | grep -o 'blend [0-9]*' | awk '{ print $2 }')"

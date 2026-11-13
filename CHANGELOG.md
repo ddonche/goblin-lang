@@ -3,6 +3,22 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.35 — 2026-11-13
+
+- sims/capstone, tuning pass against real life. Empire lifespans (a median of 157 to 193 years across seeds 42, 7 and 99) and coup success (about half of attempts) were already near real life. Murdered rulers were not: about 1 in 100 of ruler deaths, against about one European monarch in seven murdered from 600 to 1800 (Eisner, "Killing Kings", 2011). The plot hazard's scale is ten times what it was: now 14% to 16% of ruler deaths are murders (247 of 1,723 on seed 42; 264 of 1,619 and 308 of 2,101 on seeds 7 and 99).
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 12% of polity-years at war (12.1%, 10.8%); empires last a median 106 years (140, 177); 75 usurpers (60, 92); the largest realm holds 31 provinces at the end (25, 32), down from 58. More murders weaken more realms. Expected history regenerated. Every check passes (80).
+- Determinism: 150 years on 1, 2, 4, 8 and 16 actor threads give byte-identical output and event logs.
+
+## 0.51.34 — 2026-11-13
+
+- sims/capstone: some new rulers, groups and realms are unlike those that made them (owner: some new entities, not all). One in twenty of each has one trait drawn anew from anywhere between 0 and 1, instead of near its source:
+  - a ruler, unlike their kin and culture (Akhenaten, Caligula, Ivan the Terrible, Peter the Great), told when crowned (`unlike` in the families line);
+  - a group, unlike others of its kind (the Zealots, the Assassins, the Anabaptists of Münster), told when formed (`unlike` in the groups line);
+  - a colony or a land broken away, which takes one part of its culture anew, trait and baseline both (the Dutch Republic's tolerance, the American colonies against centralizing), told as `unlike_realm`.
+  Every other new entity is still drawn near its source as before. Faiths already draw their militancy and trade at random. The one-in-twenty chance is chosen, not measured.
+- check.sh: also checks that some rulers and groups are unlike, and prints how many realms were (80 checks).
+- Capstone, 500 years (seed 42; seeds 7 and 99 in parentheses): 58 unlike rulers of 1,172 crowned (66 of 1,324, 67 of 1,265), 36 unlike groups of 704 (26 of 713, 46 of 782), 4 unlike realms (7, 1); 11.7% of polity-years at war (10.6%, 11.9%); empires last a median 193 years (157, 170). Expected history regenerated. Every check passes.
+
 ## 0.51.33 — 2026-11-13
 
 - sims/capstone: each realm's own year's accounts (its food, gold, trade, dues, tribute to its overlord and its traits' drift) run where the realm runs, on its region, at the start of the `inside` phase, instead of in the program. The program still counts each realm's land first, and the year's ideas have bent the realm's culture (`bends`, from its groups and from how much of its people share its court's tongue and faith) before its traits drift.

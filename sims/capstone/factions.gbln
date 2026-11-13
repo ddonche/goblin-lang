@@ -53,10 +53,11 @@ xx
     patronize: 0
     coups_won: 0
     coups_failed: 0
+    unlike: 0
 xx
 
 record <> GroupRecord | formed: 0
-counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won", "coups_failed"]
+counted | ["formed", "split", "merged", "ended", "give_gold", "withhold", "give_men", "coup", "preach", "found", "press", "rise", "crush", "concede", "patronize", "coups_won", "coups_failed", "unlike"]
 
 /// The counts so far, in order.
 act tally()
@@ -286,13 +287,24 @@ xx
 /// A new group of kind `k` in realm `p`.
 act form(k, p, idea, wants, s)
     born | {}
-    repeat ["loyalty", "ambition", "militancy", "zeal", "greed", "unity"] as t
+    ts | ["loyalty", "ambition", "militancy", "zeal", "greed", "unity"]
+    repeat ts as t
         :update!(born{t}, jitter(k{t}))
     xx
+    /// By chance (one in twenty) one trait is drawn anew from anywhere
+    /// between 0 and 1: a group nothing like others of its kind (the
+    /// Zealots among the Jews, the Assassins among the Ismailis, the
+    /// Anabaptists of Münster; the chance is chosen, not measured).
+    odd | chance(.05)
+    if odd => :update!(born{ts[pick 1 from 0...5]}, (pick 1 from 0...100) / 100.0)
     g <> Group | name: "the {k{"word"}} of {p >> name}", realm: p, word: k{"word"}, from: k{"from"}, scale: k{"scale"}, per_head: k{"per_head"}, size: k{"size"}, earns: k{"earns"}, loyalty: born{"loyalty"}, ambition: born{"ambition"}, militancy: born{"militancy"}, zeal: born{"zeal"}, greed: born{"greed"}, unity: born{"unity"}, born: born, idea: idea, wants: wants, members: (p >> people) * s * k{"size"} * .5 + 1.0, founded: land::year()
     land::place(g, p)
     count("formed")
     :event(g, "formed", p, {"they began to meet": 2.0, "a charter was written": .1 + born{"loyalty"}, "an oath was sworn": .1 + born{"unity"}})
+    if odd
+        count("unlike")
+        :event(g, "unlike", p, {"they were not like the others of their kind": 2.0, "their own kind would have nothing to do with them": 1.0})
+    xx
 xx
 
 /// Each year, before the inside phase: what each realm's people hold,

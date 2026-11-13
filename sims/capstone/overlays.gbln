@@ -62,10 +62,11 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
     refused: 0
     people_broke_away: 0
     nominal: 0
+    unlike_realm: 0
 xx
 
 record <> IdeaRecord | tongue_new: 0
-counted | ["tongue_new", "tongue_merge", "shifted", "faith_new", "schism", "blend", "converted", "creed_split", "creed_shift", "plague", "strain", "famine", "flood", "quake", "drought", "fire", "dread", "golden_age", "elite_strife", "dark_years", "court_converted", "reaction", "holy_war", "holy_conquest", "rally", "discredited", "coalition", "struck_first", "submitted", "refused", "people_broke_away", "nominal"]
+counted | ["tongue_new", "tongue_merge", "shifted", "faith_new", "schism", "blend", "converted", "creed_split", "creed_shift", "plague", "strain", "famine", "flood", "quake", "drought", "fire", "dread", "golden_age", "elite_strife", "dark_years", "court_converted", "reaction", "holy_war", "holy_conquest", "rally", "discredited", "coalition", "struck_first", "submitted", "refused", "people_broke_away", "nominal", "unlike_realm"]
 
 /// The counts so far, in order.
 act tally()
