@@ -1,0 +1,27 @@
+/// An entity can mutate into an unrelated class without inheritance,
+/// a shared aspect, or a subtype relationship. The same identity survives;
+/// shared fields keep their values and new fields use destination defaults.
+<>Wolf |
+    name: ..
+    fur: 1
+    transition mutate where @fur > 0
+        into: Spoon
+    xx
+xx
+
+<>Spoon |
+    name: ..
+    material: "silver"
+xx
+
+w <> Wolf | name: "Lupin"
+same | w
+before | w >> id
+:tick()
+:say(:is_type(w, "Spoon"))
+:say((w >> id) == before)
+:say((same >> id) == before)
+:say(w >> name)
+:say(w >> material)
+:say(:len(:objects("Wolf")))
+:say(:len(:objects("Spoon")))
