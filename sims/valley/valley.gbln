@@ -72,13 +72,13 @@ xx
 /// The history found, stretch by stretch: walk back from the last try.
 by_try | {}
 repeat found{"log"} as r
-    :put!(by_try, :str(r{"try"}), r)
+    :put!(by_try, r{"try"}, r)
 xx
 last | :get_last(found{"milestones"})
 lineage | []
 at | last{"try"}
 while at > 0
-    r | by_try{:str(at)}
+    r | by_try{at}
     :put_first!(lineage, r)
     at |= r{"from_try"}
 xx

@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.38 — 2026-11-14
+
+- Maps: a key that isn't text reads back. `:put!(m, 3, x)` stores the key as the text "3", as map keys are text, but `m{3}` gave nil. It reads "3" now, in small and large maps alike.
+- sims/valley reads its tries by number (the workaround is gone).
+- Conformance: new case `map_number_key_reads_back`.
+
 ## 0.51.37 — 2026-11-14
 
 - Guided runs: `:guide(start, step, milestones, options)` looks for a history that passes a list of milestones in order, each by its tick. From the checkpoint `start` it runs copies of the world one after another, each with its own dice, `every` ticks at a time (`step` runs one tick). After every tick a copy asks the milestone's `reached`; at the end of the stretch it scores its `closeness`, and the `keep` closest copies of the round go on. A copy that reaches the milestone is saved there and the next milestone starts from it; when every copy of a round is past the milestone's `by` tick, it goes back one milestone and looks for it again. It gives `reached`, `passed`, `tries`, each milestone's tick, try and checkpoint, and a row for every try (`log`), and leaves the world at the last milestone passed. Only the found history's checkpoints stay. The program's dice choose every copy's dice, so a seed finds the same history on any number of threads. Options: `copies` (8), `every` (10), `keep` (half of `copies`), `tries` (1000), `dir` ("guide"). Errors are R1266.

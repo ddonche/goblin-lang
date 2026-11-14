@@ -116,6 +116,14 @@ pub fn value_to_map_key(v: &Value) -> Option<String> {
     }
 }
 
+/// The text key a map stores for a key that isn't text.
+fn map_key_text(key: &Value) -> Option<Value> {
+    match key {
+        Value::Str(_) => None,
+        other => value_to_map_key(other).map(|t| Value::Str(t.into())),
+    }
+}
+
 // ── Utility: resolve negative seq index ──────────────────────────────────────
 
 fn resolve_seq_index(idx: i64, len: usize) -> Result<usize, GoblinError> {
@@ -1341,11 +1349,19 @@ pub fn get_index(coll_val: &Value, key: &Value) -> Result<Value, GoblinError> {
         // Read one element in place: cloning the whole backing store here made
         // every `xs[i]` (and so every `for x in xs`) O(n).
         Value::Collection(c) => match &c.layout {
-            CollectionLayout::SmallMap(pairs) => Ok(pairs.iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(Value::Nil)),
-            CollectionLayout::HashMapBackend(m) => Ok(m.get(key).cloned().unwrap_or(Value::Nil)),
+            // Map keys are text: `:put!(m, 3, x)` writes the key "3", so
+            // `m{3}` reads it.
+            CollectionLayout::SmallMap(pairs) => {
+                let text = map_key_text(key);
+                Ok(pairs.iter()
+                    .find(|(k, _)| k == key)
+                    .or_else(|| text.as_ref().and_then(|t| pairs.iter().find(|(k, _)| k == t)))
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Value::Nil))
+            }
+            CollectionLayout::HashMapBackend(m) => Ok(m.get(key)
+                .or_else(|| map_key_text(key).and_then(|t| m.get(&t)))
+                .cloned().unwrap_or(Value::Nil)),
             layout => {
                 let idx = match key {
                     Value::Int(n) => *n,
