@@ -260,6 +260,15 @@ pub(crate) struct SessionState {
     owners_sent: Vec<(String, PValue)>,
 }
 
+impl SessionState {
+    /// New dice for this part of the world: what it draws, and what its
+    /// `:event` tellings draw.
+    pub(crate) fn reseed(&mut self, rng: u128) {
+        self.rng = rng | 1;
+        self.event_rng = crate::events::event_seed(self.rng);
+    }
+}
+
 fn sorted(m: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = m.iter().map(|(k, x)| (k.clone(), x.clone())).collect();
     v.sort();
@@ -335,21 +344,35 @@ struct Checkpoint {
     world: Option<crate::world::WorldState>,
 }
 
-fn path_arg(args: &[Value], name: &str) -> Result<String, GoblinError> {
-    match args {
-        [Value::Str(p)] => Ok(p.to_string()),
-        [other] => Err(err(format!("R1263: checkpoint: `:{name}` takes a file path, not {}", other.type_name()))),
-        _ => Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: name.into() }),
+fn path_arg(args: &[Value], name: &str, code: &str) -> Result<String, GoblinError> {
+    match args.first() {
+        Some(Value::Str(p)) => Ok(p.to_string()),
+        Some(other) => Err(err(format!("{code}: {name}: `:{name}` takes a file path, not {}", other.type_name()))),
+        None => Err(GoblinError::ArityMismatch { expected: 1, got: 0, name: name.into() }),
     }
+}
+
+/// The dice a whole number seeds, as `:rand_seed` seeds them.
+pub(crate) fn seed_of(n: i64) -> u128 {
+    (((n as f64).to_bits() as u128) ^ 0x9E37_79B9_7F4A_7C15u128) | 1
 }
 
 /// `:checkpoint(path)`: writes the world as it is now to `path`. Returns
 /// the tick it was taken at.
 pub(crate) fn checkpoint(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
-    let path = path_arg(args, "checkpoint")?;
+    if args.len() > 1 {
+        return Err(GoblinError::ArityMismatch { expected: 1, got: args.len(), name: "checkpoint".into() });
+    }
+    let path = path_arg(args, "checkpoint", "R1263")?;
     if vm.session.region.is_some() || crate::actor::on_worker() {
         return Err(err("R1263: checkpoint: only the program takes a checkpoint, not an actor or a region"));
     }
+    Ok(Value::Int(checkpoint_to(vm, &path)?))
+}
+
+/// Writes the world as it is now to `path`; the tick it was taken at.
+pub(crate) fn checkpoint_to(vm: &mut Vm, path: &str) -> Result<i64, GoblinError> {
+    let path = path.to_string();
     let world = crate::world::world_state(vm)?;
     let cp = Checkpoint { program: session_state(&vm.session)?, names: object_names(&vm.session), world };
     let tick = vm.session.des_ticks;
@@ -375,16 +398,32 @@ pub(crate) fn checkpoint(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinErr
         }
     }
     std::fs::write(&path, out).map_err(|e| err(format!("R1263: checkpoint: can't write {path}: {e}")))?;
-    Ok(Value::Int(tick))
+    Ok(tick)
 }
 
 /// `:restore(path)`: the world goes back to the checkpoint at `path`. What
-/// it holds now is gone. Returns the tick the checkpoint was taken at.
+/// it holds now is gone. `:restore(path, seed)` also gives the whole world
+/// new dice: the program and every region draw from `seed` on, so the run
+/// goes on differently. Returns the tick the checkpoint was taken at.
 pub(crate) fn restore(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
-    let path = path_arg(args, "restore")?;
+    if args.len() > 2 {
+        return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "restore".into() });
+    }
+    let path = path_arg(args, "restore", "R1264")?;
+    let seed = match args.get(1) {
+        None => None,
+        Some(Value::Int(n)) => Some(seed_of(*n)),
+        Some(other) => return Err(err(format!("R1264: restore: the seed is a whole number, not {}", other.type_name()))),
+    };
     if vm.session.region.is_some() || crate::actor::on_worker() {
         return Err(err("R1264: restore: only the program restores a checkpoint, not an actor or a region"));
     }
+    Ok(Value::Int(restore_from(vm, &path, seed)?))
+}
+
+/// The world goes back to the checkpoint at `path`, with new dice from
+/// `seed` when there is one; the tick it was taken at.
+pub(crate) fn restore_from(vm: &mut Vm, path: &str, seed: Option<u128>) -> Result<i64, GoblinError> {
     let bytes = std::fs::read(&path).map_err(|e| err(format!("R1264: restore: can't read {path}: {e}")))?;
     if bytes.len() < 12 || &bytes[..8] != MAGIC {
         return Err(err(format!("R1264: restore: {path} is not a checkpoint")));
@@ -407,7 +446,13 @@ pub(crate) fn restore(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError>
     KINDS_IN.with(|k| *k.borrow_mut() = kinds);
     let cp: Result<Checkpoint, _> = bincode::deserialize(rest);
     KINDS_IN.with(|k| k.borrow_mut().clear());
-    let cp = cp.map_err(bad)?;
+    let mut cp = cp.map_err(bad)?;
+    if let Some(seed) = seed {
+        // The program draws from the seed; region k from its own mix of it,
+        // so the new run depends only on the seed and the region count.
+        cp.program.reseed(seed);
+        if let Some(w) = cp.world.as_mut() { w.reseed(seed); }
+    }
     crate::world::end_world(vm);
     load_session_state(&cp.program, &mut vm.session);
     name_objects(&mut vm.session, &cp.names);
@@ -417,7 +462,7 @@ pub(crate) fn restore(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError>
         vm.session.rng_state = cp.program.rng;
         vm.session.event_rng = cp.program.event_rng;
     }
-    Ok(Value::Int(vm.session.des_ticks))
+    Ok(vm.session.des_ticks)
 }
 
 /// The program's variables that hold an object of the world.

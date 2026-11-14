@@ -1189,6 +1189,7 @@ pub enum BuiltinId {
     EventLog,
     Checkpoint,
     Restore,
+    Guide,
     /// `:event(who, what, whom, telling)`: a line of narration in the event log.
     Event,
     Need,

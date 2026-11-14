@@ -1810,6 +1810,15 @@ pub(crate) struct WorldState {
     rewritten: Vec<POverlay>,
 }
 
+impl WorldState {
+    /// New dice for every region, each its own mix of `seed`.
+    pub(crate) fn reseed(&mut self, seed: u128) {
+        for (k, r) in self.regions.iter_mut().enumerate() {
+            r.session.reseed(crate::swarm::task_seed(seed, k));
+        }
+    }
+}
+
 fn region_state(vm: &mut Vm, state: &Value, handler: &Value) -> Result<RegionState, GoblinError> {
     let session = crate::checkpoint::session_state(&vm.session)?;
     let state = ToPortable::new(&vm.session).objects_by_id().value(state)?;

@@ -2135,8 +2135,12 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
-                    BuiltinId::Checkpoint | BuiltinId::Restore => {
-                        let r = if id == BuiltinId::Checkpoint { crate::checkpoint::checkpoint(self, &arg_vals)? } else { crate::checkpoint::restore(self, &arg_vals)? };
+                    BuiltinId::Checkpoint | BuiltinId::Restore | BuiltinId::Guide => {
+                        let r = match id {
+                            BuiltinId::Checkpoint => crate::checkpoint::checkpoint(self, &arg_vals)?,
+                            BuiltinId::Restore => crate::checkpoint::restore(self, &arg_vals)?,
+                            _ => crate::guide::guide(self, &arg_vals)?,
+                        };
                         self.stack.push(Operand::Val(r));
                         return Ok(());
                     }

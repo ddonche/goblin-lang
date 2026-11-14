@@ -30,6 +30,7 @@ pub mod swarm;
 pub(crate) mod des_image;
 pub mod world;
 pub mod checkpoint;
+pub mod guide;
 pub mod actor;
 pub mod host;
 pub mod startup;

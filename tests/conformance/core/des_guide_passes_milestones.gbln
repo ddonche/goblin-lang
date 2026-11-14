@@ -1,0 +1,72 @@
+/// known-gap: interp has no guided runs (the interpreter is being retired)
+/// `:guide(start, step, milestones, options)` looks for a history that
+/// passes every milestone in order, each by its tick. Copies of the world
+/// go on from checkpoints with new dice, `every` ticks at a time; the
+/// closest go on, a copy that reaches a milestone is saved there, and the
+/// next milestone starts from it. A milestone no copy can reach in time
+/// sends it back to look for the one before again. It gives what each try
+/// did and the milestones' ticks, and leaves the world at the last one;
+/// only the found history's checkpoints stay. The same seed finds the
+/// same history.
+:rand_seed(7)
+<>Clock |
+    year: 0
+xx
+<>Village |
+    name: ..
+    people: 0
+xx
+clock <> Clock | year: 0
+ash <> Village | name: "Ash", people: 40
+oss <> Village | name: "Oss", people: 30
+act year()
+    :tick()
+    clock >> year |= clock >> year + 1
+    repeat :objects("Village") as v
+        v >> people |= :max(0, v >> people + pick 1 from -6...6)
+    xx
+xx
+act town()
+    return ash >> people >= 80
+xx
+act town_close()
+    return ash >> people
+xx
+act fall()
+    return ash >> people <= 20
+xx
+act fall_close()
+    return 0 - ash >> people
+xx
+dir | "{:env("GOBLIN_CONF_TMP")}/guide"
+:checkpoint("{dir}/start.gcp")
+milestones | [
+    {"name": "town", "by": 40, "reached": "town", "closeness": "town_close"},
+    {"name": "fall", "by": 80, "reached": "fall", "closeness": "fall_close"}
+]
+act find()
+    return :guide("{dir}/start.gcp", "year", milestones, {"copies": 8, "every": 5, "dir": dir})
+xx
+:rand_seed(7)
+found | find()
+:say("reached {found{"reached"}}, passed {found{"passed"}}")
+repeat found{"milestones"} as m
+    :say("{m{"name"}}: year {m{"tick"}}, saved {:file_exists(m{"checkpoint"})}")
+xx
+:say("world at year {clock >> year}, Ash {ash >> people}, tick {:metrics(){"ticks"}}")
+outcomes | []
+repeat found{"log"} as r
+    :put_last!(outcomes, r{"outcome"})
+xx
+:say(:sort(:unique(outcomes)))
+:say(:len(found{"log"}) == found{"tries"})
+:say(:sort(:map(:walk(dir, "*.gcp"), "basename")) == :sort(["start.gcp", "1_town_{found{"milestones"}[0]{"try"}}.gcp", "2_fall_{found{"milestones"}[1]{"try"}}.gcp"]))
+:restore("{dir}/start.gcp")
+:rand_seed(7)
+again | find()
+:say(again{"log"} == found{"log"})
+attempt
+    :guide("{dir}/start.gcp", "year", [{"name": "x", "reached": "town"}])
+rescue e
+    :say(:has("{e}", "R1266"))
+xx

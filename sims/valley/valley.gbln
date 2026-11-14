@@ -1,0 +1,112 @@
+/// The valley: three villages, and a history the sim is guided to.
+///
+/// Each year every village gains or loses up to 6 people, by chance. Left
+/// alone, Ash (40 people) almost never grows into a town and then falls.
+/// `:guide` finds a history in which it does:
+///   1. town  - Ash has 80 people by year 40
+///   2. fall  - Ash is down to 20 people by year 90
+///   3. rise  - Oss has 70 people by year 120
+:rand_seed(7)
+<>Clock |
+    year: 0
+xx
+<>Village |
+    name: ..
+    people: 0
+xx
+clock <> Clock | year: 0
+ash <> Village | name: "Ash", people: 40
+oss <> Village | name: "Oss", people: 30
+kel <> Village | name: "Kel", people: 35
+
+/// One year of the sim.
+act year()
+    :tick()
+    clock >> year |= clock >> year + 1
+    repeat :objects("Village") as v
+        v >> people |= :max(0, v >> people + pick 1 from -6...6)
+    xx
+xx
+
+act town()
+    return ash >> people >= 80
+xx
+act town_close()
+    return ash >> people
+xx
+act fall()
+    return ash >> people <= 20
+xx
+act fall_close()
+    return 0 - ash >> people
+xx
+act rise()
+    return oss >> people >= 70
+xx
+act rise_close()
+    return oss >> people
+xx
+
+act line()
+    return "year {clock >> year}: Ash {ash >> people}, Oss {oss >> people}, Kel {kel >> people}"
+xx
+
+dir | :env("VALLEY_DIR") ?? "runs/valley"
+:checkpoint("{dir}/start.gcp")
+
+milestones | [
+    {"name": "town", "by": 40, "reached": "town", "closeness": "town_close"},
+    {"name": "fall", "by": 90, "reached": "fall", "closeness": "fall_close"},
+    {"name": "rise", "by": 120, "reached": "rise", "closeness": "rise_close"}
+]
+found | :guide("{dir}/start.gcp", "year", milestones, {"copies": 8, "every": 5, "dir": dir})
+
+/// What every try did, counted per milestone.
+repeat milestones as m
+    outcomes | []
+    repeat found{"log"} as r
+        if r{"milestone"} == m{"name"} => :put_last!(outcomes, r{"outcome"})
+    xx
+    :say("{m{"name"}}: {:len(outcomes)} tries {:freq(outcomes)}")
+xx
+/// The history found, stretch by stretch: walk back from the last try.
+by_try | {}
+repeat found{"log"} as r
+    :put!(by_try, :str(r{"try"}), r)
+xx
+last | :get_last(found{"milestones"})
+lineage | []
+at | last{"try"}
+while at > 0
+    r | by_try{:str(at)}
+    :put_first!(lineage, r)
+    at |= r{"from_try"}
+xx
+:say("")
+:say("the history found:")
+repeat lineage as r
+    :say("  years {r{"from"}}-{r{"to"}} ({r{"milestone"}}): {r{"outcome"}}, try {r{"try"}}")
+xx
+:say("")
+repeat found{"milestones"} as m
+    :say("{m{"name"}} reached in year {m{"tick"}}, saved at {m{"checkpoint"}}")
+xx
+:say("all reached: {found{"reached"}} in {found{"tries"}} tries")
+:say(line())
+
+/// For comparison: the same valley left alone, 1000 times, each with its
+/// own dice. How many pass the three milestones in order, in time?
+passed | 0
+repeat :range(1, 1001) as seed
+    :restore("{dir}/start.gcp", seed)
+    stage | 0
+    repeat 120
+        year()
+        y | clock >> year
+        if stage == 2 and rise() and y <= 120 => stage |= 3
+        if stage == 1 and fall() and y <= 90 => stage |= 2
+        if stage == 0 and town() and y <= 40 => stage |= 1
+    xx
+    if stage == 3 => passed |= passed + 1
+xx
+:say("left alone: {passed} of 1000 runs pass all three")

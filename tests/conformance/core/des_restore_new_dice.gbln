@@ -1,0 +1,39 @@
+/// known-gap: interp has no checkpoints (the interpreter is being retired)
+/// `:restore(path, seed)` brings the world back with new dice: from the
+/// same checkpoint the same seed gives the same run, another seed another
+/// run, and `:restore(path)` the run the checkpoint was taken in.
+:rand_seed(5)
+<>Herd |
+    name: ..
+    size: 0
+xx
+herd <> Herd | name: "deer", size: 50
+act run()
+    sizes | []
+    repeat 6
+        :tick()
+        herd >> size |= herd >> size + pick 1 from -5...5
+        :put_last!(sizes, herd >> size)
+    xx
+    return sizes
+xx
+path | "{:env("GOBLIN_CONF_TMP")}/herd.gcp"
+:checkpoint(path)
+first | run()
+:restore(path, 1)
+one | run()
+:restore(path, 1)
+one_again | run()
+:restore(path, 2)
+two | run()
+:restore(path)
+plain | run()
+:say(one == one_again)
+:say(one == two)
+:say(plain == first)
+:say(one == first)
+attempt
+    :restore(path, "x")
+rescue e
+    :say(:has("{e}", "R1264"))
+xx
