@@ -1948,3 +1948,4 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
     });
     Ok(())
 }
+

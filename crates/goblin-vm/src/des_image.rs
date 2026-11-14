@@ -57,12 +57,14 @@ pub(crate) struct POverlay {
     pub(crate) des_id: u32,
     /// The overlay's kind, when a transition made it while the program
     /// ran: the session it goes to may not know it.
+    #[serde(with = "crate::checkpoint::kind_opt")]
     kind: Option<std::sync::Arc<POverlayDef>>,
 }
 
 /// DES definitions plus the overlays (and host names) that go along.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DesImage {
+    #[serde(with = "crate::checkpoint::kind_vec")]
     overlay_defs: Vec<POverlayDef>,
     link_defs: Vec<((String, String), LinkDef)>,
     object_link_defs: Vec<((String, String), LinkDef)>,

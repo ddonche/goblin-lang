@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.51.35"
+version = "0.51.36"
 dependencies = [
  "anyhow",
  "clap",
@@ -1170,6 +1170,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "comrak",
+ "flate2",
  "getrandom 0.2.16",
  "goblin-ast",
  "goblin-db",

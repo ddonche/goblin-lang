@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::des_image::DesImage;
+use crate::des_image::{DesImage, POverlayDef};
 use crate::error::GoblinError;
 use crate::portable::{FromPortable, PLayout, PValue, ToPortable};
 use crate::session::Session;
@@ -22,7 +22,7 @@ use crate::vm::Vm;
 
 const MAGIC: &[u8; 8] = b"GOBLINCP";
 /// Changes whenever what a checkpoint holds changes.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 3;
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
 
@@ -356,7 +356,19 @@ pub(crate) fn checkpoint(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinErr
     let mut out = Vec::with_capacity(1 << 16);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&FORMAT.to_le_bytes());
-    bincode::serialize_into(&mut out, &cp).map_err(|e| err(e.to_string()))?;
+    // The overlay kinds go once, ahead of the rest: every session and every
+    // overlay of a kind names it by its place in that table.
+    KINDS_OUT.with(|k| *k.borrow_mut() = Some(KindsOut::default()));
+    let body = bincode::serialize(&cp);
+    let kinds = KINDS_OUT.with(|k| k.borrow_mut().take()).unwrap_or_default();
+    let body = body.map_err(|e| err(e.to_string()))?;
+    {
+        use std::io::Write;
+        let mut z = flate2::write::DeflateEncoder::new(&mut out, flate2::Compression::fast());
+        bincode::serialize_into(&mut z, &kinds.blobs).map_err(|e| err(e.to_string()))?;
+        z.write_all(&body).map_err(|e| err(e.to_string()))?;
+        z.finish().map_err(|e| err(e.to_string()))?;
+    }
     if let Some(dir) = std::path::Path::new(&path).parent() {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             std::fs::create_dir_all(dir).map_err(|e| err(format!("R1263: checkpoint: can't make the folder {}: {e}", dir.display())))?;
@@ -381,13 +393,23 @@ pub(crate) fn restore(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError>
     if format != FORMAT {
         return Err(err(format!("R1264: restore: {path} was written by another version of Goblin (checkpoint format {format}, this one reads {FORMAT})")));
     }
-    let cp: Checkpoint = bincode::deserialize(&bytes[12..]).map_err(|e| err(format!("R1264: restore: {path} can't be read: {e}")))?;
+    let bad = |e: bincode::Error| err(format!("R1264: restore: {path} can't be read: {e}"));
+    let mut raw = Vec::with_capacity(bytes.len() * 8);
+    {
+        use std::io::Read;
+        flate2::read::DeflateDecoder::new(&bytes[12..]).read_to_end(&mut raw)
+            .map_err(|e| err(format!("R1264: restore: {path} can't be read: {e}")))?;
+    }
+    let mut rest = &raw[..];
+    let blobs: Vec<Vec<u8>> = bincode::deserialize_from(&mut rest).map_err(bad)?;
+    let mut kinds = Vec::with_capacity(blobs.len());
+    for b in &blobs { kinds.push(Arc::new(bincode::deserialize::<POverlayDef>(b).map_err(bad)?)); }
+    KINDS_IN.with(|k| *k.borrow_mut() = kinds);
+    let cp: Result<Checkpoint, _> = bincode::deserialize(rest);
+    KINDS_IN.with(|k| k.borrow_mut().clear());
+    let cp = cp.map_err(bad)?;
     crate::world::end_world(vm);
     load_session_state(&cp.program, &mut vm.session);
-    if std::env::var("GOBLIN_CP_DEBUG").is_ok() {
-        eprintln!("names {:?} objects {} world {}", cp.names, cp.program.objects.len(), cp.world.is_some());
-        for (u, _) in &cp.program.objects { eprintln!("  obj {u}"); }
-    }
     name_objects(&mut vm.session, &cp.names);
     if let Some(w) = cp.world {
         crate::world::load_world(vm, w)?;
@@ -420,5 +442,73 @@ fn name_objects(s: &mut Session, names: &[(String, String)]) {
             Some(t) => { if let Ok(st) = s.get_stash_mut(&t) { st.value = v; } }
             None => { let t = s.alloc_value(v); s.set_global(i, t); }
         }
+    }
+}
+
+// ── Overlay kinds, written once ─────────────────────────────────────────────
+
+/// While a checkpoint is written: each distinct kind, written out, and its
+/// place in the table (also by address, so a shared kind is written once).
+#[derive(Default)]
+struct KindsOut {
+    blobs: Vec<Vec<u8>>,
+    by_bytes: std::collections::HashMap<Vec<u8>, u32>,
+    by_addr: std::collections::HashMap<*const POverlayDef, u32>,
+}
+
+thread_local! {
+    static KINDS_OUT: std::cell::RefCell<Option<KindsOut>> = const { std::cell::RefCell::new(None) };
+    static KINDS_IN: std::cell::RefCell<Vec<Arc<POverlayDef>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn kind_place(d: &POverlayDef) -> Result<u32, String> {
+    let addr = d as *const POverlayDef;
+    if let Some(n) = KINDS_OUT.with(|k| k.borrow().as_ref().and_then(|t| t.by_addr.get(&addr).copied())) { return Ok(n); }
+    let bytes = bincode::serialize(d).map_err(|e| e.to_string())?;
+    KINDS_OUT.with(|k| {
+        let mut k = k.borrow_mut();
+        let t = k.as_mut().ok_or_else(|| "an overlay kind outside a checkpoint".to_string())?;
+        let n = match t.by_bytes.get(&bytes) {
+            Some(n) => *n,
+            None => {
+                let n = t.blobs.len() as u32;
+                t.blobs.push(bytes.clone());
+                t.by_bytes.insert(bytes, n);
+                n
+            }
+        };
+        t.by_addr.insert(addr, n);
+        Ok(n)
+    })
+}
+
+fn kind_at(n: u32) -> Result<Arc<POverlayDef>, String> {
+    KINDS_IN.with(|k| k.borrow().get(n as usize).cloned()).ok_or_else(|| format!("no overlay kind {n}"))
+}
+
+/// `Option<Arc<POverlayDef>>` as its place in the kinds table.
+pub(crate) mod kind_opt {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(v: &Option<Arc<POverlayDef>>, s: S) -> Result<S::Ok, S::Error> {
+        let n = match v { Some(d) => Some(kind_place(d).map_err(serde::ser::Error::custom)?), None => None };
+        n.serialize(s)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Arc<POverlayDef>>, D::Error> {
+        match Option::<u32>::deserialize(d)? {
+            Some(n) => Ok(Some(kind_at(n).map_err(serde::de::Error::custom)?)),
+            None => Ok(None),
+        }
+    }
+}
+
+/// `Vec<POverlayDef>` as places in the kinds table.
+pub(crate) mod kind_vec {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(v: &[POverlayDef], s: S) -> Result<S::Ok, S::Error> {
+        let ns = v.iter().map(kind_place).collect::<Result<Vec<u32>, String>>().map_err(serde::ser::Error::custom)?;
+        ns.serialize(s)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<POverlayDef>, D::Error> {
+        Vec::<u32>::deserialize(d)?.into_iter().map(|n| kind_at(n).map(|a| (*a).clone())).collect::<Result<Vec<_>, String>>().map_err(serde::de::Error::custom)
     }
 }
