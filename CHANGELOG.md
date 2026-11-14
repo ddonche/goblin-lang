@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.36 — 2026-11-13
+
+- DES checkpoints: `:checkpoint(path)` writes the DES world at this tick to a file, and `:restore(path)` brings the world back to it. Both give the tick. A checkpoint holds every object with its fields and traits, every overlay and overlay kind (also kinds made while the program ran), the links, every object's own link formulas and decisions, the tick count and the dice (the program's draws and the `:event` tellings' draws). With regions it holds each region's part, each region's dice, and what is on its way between the regions and the program; `:restore` starts as many regions again. The program's plain variables are not in it (keep what lasts in objects); a variable that names an object names it again after `:restore`. When to take one, and which to go back to, is up to the program. A path that isn't text is R1263 or R1264, a file that isn't a checkpoint R1264, code or an actor in the world R1265. The file is compressed and writes each overlay kind once.
+- sims/capstone: what the program keeps from year to year is in objects now, so a checkpoint holds it: last year's bordering realms, each court's last conversion and each faith's militancy (`overlays::IdeaMemory`), the dark years and each faith's seeking (read from `land::Clock`, which held them already), and the program's own tallies (`Annals` in history.gbln: polity-years, years at war, holy wars, empires). The history is the same.
+- sims/capstone/history.gbln: `CHECKPOINT=path CHECKPOINT_AT=year` writes a checkpoint at the end of that year; `RESTORE=path` goes on from one (with `PREHISTORY=0` it skips the land's prehistory, which the checkpoint replaces anyway).
+- Test: 200 years of the capstone (seed 42, 4 regions) straight, against 100 years, a checkpoint, a restore and 100 more: the event log after year 100 (83,178 lines) and the output are byte-identical, restored on 1, 2, 4 and 8 threads. The checkpoint at year 100 is 21 MB.
+- Conformance: new cases `des_checkpoint_restore_goes_on`, `des_checkpoint_errors`, `world_checkpoint_restore_goes_on` (a region's handler goes on after a restore too).
+
 ## 0.51.35 — 2026-11-13
 
 - sims/capstone, tuning pass against real life. Empire lifespans (a median of 157 to 193 years across seeds 42, 7 and 99) and coup success (about half of attempts) were already near real life. Murdered rulers were not: about 1 in 100 of ruler deaths, against about one European monarch in seven murdered from 600 to 1800 (Eisner, "Killing Kings", 2011). The plot hazard's scale is ten times what it was: now 14% to 16% of ruler deaths are murders (247 of 1,723 on seed 42; 264 of 1,619 and 308 of 2,101 on seeds 7 and 99).

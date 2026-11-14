@@ -23,6 +23,10 @@ act people_of(p)
     return p >> people
 xx
 
+act no_of(p)
+    return p >> no
+xx
+
 act text(v)
     return :str(v)
 xx
@@ -66,7 +70,7 @@ cfg | {
     /// The fewest people a province needs for a polity to form on it.
     "settled": 20.0,
     "csv": "history_metrics.csv",
-    "events": "history_events.txt"
+    "events": :env("EVENTS") ?? "history_events.txt"
 }
 years      | :int(:env("YEARS") ?? cfg{"years"})
 prehistory | :int(:env("PREHISTORY") ?? cfg{"prehistory"})
@@ -225,18 +229,46 @@ xx
 :write_text!(cfg{"csv"}, "{:join(head, ",")}\n")
 :event_log(cfg{"events"})
 t_run   | :epoch_ms()
-/// Polity-years, and how many of them a war was under way.
-lived  | 0
-fought | 0
-/// Polity-years a realm fought for its faith (holy .5 or more), and of
-/// those, years it was ruled by priests.
-holy_years   | 0
-priest_years | 0
-/// Each empire's first and last year as an empire, by name.
-empire_from | {}
-empire_to   | {}
-repeat :range(0, years + 1) as year
-    if year > 0
+/// What the program counts over the years: polity-years, and how many of
+/// them a war was under way; polity-years a realm fought for its faith
+/// (holy .5 or more), and of those, years it was ruled by priests; each
+/// empire's first and last year as an empire, by name. An object, so a
+/// checkpoint keeps it.
+<>Annals |
+    lived: 0
+    fought: 0
+    holy_years: 0
+    priest_years: 0
+    empire_from: {}
+    empire_to: {}
+xx
+annals <> Annals | lived: 0
+
+/// `CHECKPOINT=path` writes the world to path at the end of year
+/// `CHECKPOINT_AT`; `RESTORE=path` goes on from such a checkpoint.
+restore_from  | :env("RESTORE") ?? ""
+checkpoint_at | :int(:env("CHECKPOINT_AT") ?? "-1")
+start_year    | 0
+if restore_from != ""
+    :restore(restore_from)
+    start_year |= land::year()
+    lands |= :sort_by(:objects(Land), "no_of")
+    at    |= {}
+    repeat lands as p
+        :update!(at{:str(p >> no)}, p)
+    xx
+    pairs |= []
+    repeat lands as p
+        i | p >> y * width + p >> x
+        repeat map::around(i, width, height) as j
+            q | at{:str(j)} ?? => skip
+            if j > i => :put_last!(pairs, [p, q])
+        xx
+    xx
+    overlays::neighbours(pairs)
+xx
+repeat :range(start_year, years + 1) as year
+    if year > start_year
         land::set_year(year)
         :tick()
             land
@@ -250,6 +282,8 @@ repeat :range(0, years + 1) as year
             between
             settle
         xx
+        empire_from | annals >> empire_from
+        empire_to   | annals >> empire_to
         repeat :objects(Empire) as e
             if !:has(empire_from, e >> name) => :update!(empire_from{e >> name}, year)
         xx
@@ -258,15 +292,26 @@ repeat :range(0, years + 1) as year
         repeat :objects(uses govern) as q
             if :has(empire_from, q >> name) => :update!(empire_to{q >> name}, year)
         xx
+        annals >> empire_from |= empire_from
+        annals >> empire_to |= empire_to
+        lived  | 0
+        fought | 0
+        holy   | 0
+        priest | 0
         repeat :objects(uses dealings) as p
             lived |= lived + 1
             if p >> wars > 0 => fought |= fought + 1
             if p >> holy >= .5
-                holy_years |= holy_years + 1
-                if government::form_of(p) == "theocracy" => priest_years |= priest_years + 1
+                holy |= holy + 1
+                if government::form_of(p) == "theocracy" => priest |= priest + 1
             xx
         xx
+        annals >> lived |= annals >> lived + lived
+        annals >> fought |= annals >> fought + fought
+        annals >> holy_years |= annals >> holy_years + holy
+        annals >> priest_years |= annals >> priest_years + priest
     xx
+    if year == checkpoint_at => :checkpoint(:env("CHECKPOINT"))
     if year % cfg{"sample_every"} != 0 => skip
     now  | :epoch_ms() - t_run
     rate | 0.0
@@ -297,7 +342,7 @@ repeat :range(0, years + 1) as year
     :put_last!(row, :round(share, 3))
     :put_last!(row, :len(:objects(War)))
     ws | 0.0
-    if lived > 0 => ws |= :float(fought) / lived
+    if annals >> lived > 0 => ws |= :float(annals >> fought) / (annals >> lived)
     :put_last!(row, :round(ws, 3))
     fc | family::counts()
     :put_last!(row, fc{"rulers"})
@@ -310,7 +355,7 @@ xx
 :event_log(nil)
 :say("time: prehistory {prehistory} years {t_pre} ms, history {years} years {:epoch_ms() - t_run} ms")
 share | 0.0
-if lived > 0 => share |= :round(:float(fought) * 100.0 / lived, 1)
+if annals >> lived > 0 => share |= :round(:float(annals >> fought) * 100.0 / (annals >> lived), 1)
 :say("check: share of polity-years at war: {share}%")
 /// The forms of government at the end, most common first.
 forms | {}
@@ -360,13 +405,14 @@ priests | 0
 repeat :objects(uses govern) as p
     if p >> holy >= .5 and government::form_of(p) == "theocracy" => priests |= priests + 1
 xx
-:say("check: faiths at the end: militant {ft{"militant"}}, mercantile {ft{"mercantile"}}; realms fighting for their faith {ft{"holy"}} ({priests} ruled by priests), trading for it {ft{"trading"}}; realm-years fighting for their faith {holy_years} ({priest_years} ruled by priests)")
+:say("check: faiths at the end: militant {ft{"militant"}}, mercantile {ft{"mercantile"}}; realms fighting for their faith {ft{"holy"}} ({priests} ruled by priests), trading for it {ft{"trading"}}; realm-years fighting for their faith {annals >> holy_years} ({annals >> priest_years} ruled by priests)")
 /// How long empires lasted: from becoming an empire until the realm is
 /// gone (taken in, merged, erased) or renamed; those still standing at
 /// the end count their years so far.
 spans | []
 standing | 0
-repeat empire_from as n, y0
+empire_to | annals >> empire_to
+repeat annals >> empire_from as n, y0
     :put_last!(spans, empire_to{n} - y0 + 1)
     if empire_to{n} == years => standing |= standing + 1
 xx

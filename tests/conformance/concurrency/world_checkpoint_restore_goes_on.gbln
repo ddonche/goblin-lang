@@ -1,0 +1,104 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A checkpoint of a world that runs on regions holds every region's
+/// part: its objects, overlays and kinds, its dice, and what is on its way
+/// between the regions and the program. `:restore` starts as many regions
+/// again, each with its handler, and the world goes on exactly as it did
+/// the first time.
+:rand_seed(1)
+<>Land |
+    name: ..
+    town: 0
+    days: 0
+xx
+link road
+    hosts: Land
+    range: 0...1
+    score => 1 - :abs((@town) - (target >> town))
+xx
+<^>Language |
+    hosts: Land
+    spread: 1 where :link_score(@, target, road) > .3
+xx
+overlay old_tongue <^> Language
+    ~intensity: .9
+    gen: 0
+    transition mutate where age == 1 and (self >> gen) == 0
+        carries:
+            gen: 1
+        xx
+    xx
+xx
+<>Realm |
+    name: ..
+    power: 0
+    transition split where @power > 10
+        first:
+            power: @power / 2
+        xx
+        second:
+            name: "{@name} West"
+            power: @power / 2
+        xx
+    xx
+    transition absorb
+        targets: Realm where (target >> power) < @power
+    xx
+xx
+act make(t, names, speak)
+    things | []
+    repeat names as n
+        l <> Land | name: n, town: t
+        if speak => :overlay!(l, old_tongue)
+        :put_last!(things, l)
+    xx
+    return {"things": things}
+xx
+act make_realm(name, power)
+    r <> Realm | name: name, power: power
+    return {"things": [r]}
+xx
+/// Each region's own code for a tick, which goes on after a restore.
+act day(st, msg)
+    repeat st{"things"} as t
+        if :is_type(t, "Land") => t >> days |= t >> days + 1
+    xx
+    return st
+xx
+north | :actor(make(0, ["Varn"], true), day)
+south | :actor(make(.2, ["Oss"], false), day)
+east | :actor(make(.9, ["Kel"], true), day)
+big | :actor(make_realm("Big", 20), day)
+small | :actor(make_realm("Small", 3), day)
+act report()
+    langs | []
+    repeat :objects("Land") as x
+        ns | []
+        repeat :overlays(x) as o
+            :put_last!(ns, o >> overlay_name)
+        xx
+        :put_last!(langs, "{x >> name} day {x >> days}:{:sort(ns)}")
+    xx
+    realms | []
+    repeat :objects("Realm") as r
+        :put_last!(realms, "{r >> name} {r >> power}")
+    xx
+    return "{:sort(langs)} realms {:sort(realms)}"
+xx
+path | "{:env("GOBLIN_CONF_TMP")}/regions.gcp"
+:tick()
+:say("checkpoint at tick {:checkpoint(path)}")
+first | []
+repeat 3
+    n | :tick()
+    :put_last!(first, "tick {n}: {report()}")
+xx
+:say("restored to tick {:restore(path)}")
+again | []
+repeat 3
+    n | :tick()
+    :put_last!(again, "tick {n}: {report()}")
+xx
+repeat first as s
+    :say(s)
+xx
+:say(first == again)

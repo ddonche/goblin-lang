@@ -196,6 +196,10 @@ act set_world(cold, weather)
     clock >> weather |= weather
 xx
 
+act faith_seeks()
+    return clock >> seeks
+xx
+
 act set_ideas(spread, seeks)
     clock >> spread |= spread
     clock >> seeks |= seeks

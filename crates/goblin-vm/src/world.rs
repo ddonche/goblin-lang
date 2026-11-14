@@ -23,7 +23,7 @@ use crate::value::Value;
 use crate::vm::Vm;
 
 /// A region's objects and overlays at the end of a tick.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     /// Shared: an object unchanged since last tick is the same `Arc` as in
     /// last tick's snapshot (see `snapshot_of`), so who reads it can tell.
@@ -51,7 +51,7 @@ pub(crate) struct Copy {
 }
 
 /// A change to one field of another region's object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Change {
     /// Numbers add up: what this region added to (or took from) the field.
     AddInt(i64),
@@ -61,7 +61,7 @@ pub enum Change {
 }
 
 /// Something one region sends another, applied at the start of next tick.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Item {
     Change { uuid: String, field: String, change: Change },
     /// An overlay to put on; for the event log, the overlay it spread
@@ -110,7 +110,7 @@ pub enum Item {
 /// An absorb (`absorb`) or merge of `target`, another region's object, by
 /// `by`, with transition `index` of class `class`. A merge's successor gets
 /// `new_id`. `links`: the transition says `links: inherit`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Claim {
     pub absorb: bool,
     pub by: String,
@@ -123,7 +123,7 @@ pub struct Claim {
 
 /// Link offsets and an object's own link formulas, on their way to where
 /// the object they now belong to runs.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Links {
     pub offsets: Vec<((String, String, String), Vec<crate::session::LinkOffset>)>,
     pub defs: Vec<((String, String), crate::session::LinkDef)>,
@@ -132,7 +132,7 @@ pub struct Links {
 /// An object on its way to another region, with what goes along with it:
 /// its overlays, the name it was stored under, its link offsets and its own
 /// decision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Arrival {
     uuid: String,
     object: PValue,
@@ -170,6 +170,17 @@ pub struct WorldIn {
     remote_ids: Vec<u64>,
     regions: Vec<u64>,
     out: Mutex<Option<WorldOut>>,
+    /// A tick, or saving or loading the region for a checkpoint.
+    pub(crate) op: RegionOp,
+}
+
+/// What a region does with a `WorldIn`.
+pub(crate) enum RegionOp {
+    Tick,
+    /// `:checkpoint`: the region hands back its part of the world.
+    Save(Mutex<Option<Result<RegionState, String>>>),
+    /// `:restore`: the region takes this part of the world.
+    Load(Box<RegionState>),
 }
 
 impl std::fmt::Debug for WorldIn {
@@ -655,7 +666,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), kinds: kinds.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None) });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), kinds: kinds.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None), op: RegionOp::Tick });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -740,6 +751,19 @@ pub(crate) fn view_overlays_of(s: &mut crate::session::Session, host: Option<&st
 /// tick with the other regions' objects in view, then the region's handler
 /// with `{"tick": n}`. Returns its snapshot and what it sends.
 pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: &WorldIn) -> Result<(), GoblinError> {
+    match &job.op {
+        RegionOp::Tick => {}
+        RegionOp::Save(slot) => {
+            let saved = region_state(vm, state, handler).map_err(|e| e.to_string());
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(saved);
+            return Ok(());
+        }
+        RegionOp::Load(r) => {
+            crate::checkpoint::load_session_state(&r.session, &mut vm.session);
+            *state = FromPortable::new().value(&r.state, &mut vm.session);
+            return Ok(());
+        }
+    }
     vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect(), rewritten: Vec::new() });
     // The region's own event log, if one was started in it, stays its own.
     let own_log = if job.log { vm.session.event_log.replace(crate::events::Sink::Lines(Vec::new())) } else { None };
@@ -1747,3 +1771,185 @@ fn take_for_region(vm: &mut Vm, uuid: &str) -> Result<Option<Item>, GoblinError>
     s.object_decisions.remove(uuid);
     Ok(Some(Item::Arrive(Box::new(Arrival { uuid: uuid.to_string(), object, overlays, name, links, link_defs, decision }))))
 }
+
+// ── Checkpoints ──────────────────────────────────────────────────────────────
+
+/// A region's part of a checkpoint: its objects and the rest of its DES
+/// state, the actor's state, and the action that handles its messages.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct RegionState {
+    session: crate::checkpoint::SessionState,
+    state: PValue,
+    handler: Option<String>,
+}
+
+/// The world's part of a checkpoint: every region, and what is on its way
+/// between them and the program at the end of the last tick.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct WorldState {
+    regions: Vec<RegionState>,
+    /// The regions' actor ids when saved, to find them in `inbox`.
+    ids: Vec<u64>,
+    tick: i64,
+    snaps: Vec<Snapshot>,
+    inbox: Vec<Vec<Item>>,
+    main_sets: Vec<(String, String, PValue)>,
+    kinds_sent: Vec<String>,
+    /// The program's copies of the regions' objects, and those of them it
+    /// has changed since the last tick (what it adds to whole numbers goes
+    /// to their regions next tick).
+    view: Vec<String>,
+    touched: Vec<String>,
+    in_flight: Vec<(String, PValue, usize)>,
+    in_flight_overlays: Vec<POverlay>,
+    flying: Vec<Snapshot>,
+    pending_overlays: Vec<POverlay>,
+    dropped_overlays: Vec<(String, Option<String>)>,
+    moving: Vec<(String, usize)>,
+    counts: Vec<crate::metrics::Counts>,
+    rewritten: Vec<POverlay>,
+}
+
+fn region_state(vm: &mut Vm, state: &Value, handler: &Value) -> Result<RegionState, GoblinError> {
+    let session = crate::checkpoint::session_state(&vm.session)?;
+    let state = ToPortable::new(&vm.session).objects_by_id().value(state)?;
+    let handler = match handler {
+        Value::Nil => None,
+        Value::Str(s) => Some(s.to_string()),
+        Value::Function(f) => Some(f.name.clone()),
+        other => return Err(err(format!("R1265: checkpoint-holds-code: a region's handler is {}, which a checkpoint can't hold; give the region a named action", other.type_name()))),
+    };
+    Ok(RegionState { session, state, handler })
+}
+
+fn job(op: RegionOp, me: u64, ids: &[u64], tick: i64) -> Arc<WorldIn> {
+    Arc::new(WorldIn { tick, me, prime: true, phase: None, log: false, inbox: Vec::new(), remote: Vec::new(), main_sets: Arc::new(Vec::new()), kinds: Arc::new(Vec::new()), remote_ids: Vec::new(), regions: ids.to_vec(), out: Mutex::new(None), op })
+}
+
+/// The world's part of a checkpoint; None when no regions run.
+pub(crate) fn world_state(vm: &mut Vm) -> Result<Option<WorldState>, GoblinError> {
+    let live = crate::actor::region_actors(&vm.session);
+    let Some(w) = vm.session.world.as_ref() else {
+        if live.is_empty() { return Ok(None); }
+        return Err(err("R1263: checkpoint: the regions have not ticked yet; take the checkpoint after a `:tick()`"));
+    };
+    if live.len() != w.actors.len() || !live.iter().all(|a| w.actors.iter().any(|b| Arc::ptr_eq(a, b))) {
+        return Err(err("R1263: checkpoint: a region started or ended since the last tick; take the checkpoint after a `:tick()`"));
+    }
+    let actors = w.actors.clone();
+    let ids = w.ids.clone();
+    let mut asked = Vec::with_capacity(actors.len());
+    for (a, id) in actors.iter().zip(&ids) {
+        let j = job(RegionOp::Save(Mutex::new(None)), *id, &ids, w.tick);
+        let reply = crate::actor::send_world(a, j.clone())?;
+        asked.push((j, reply));
+    }
+    let mut regions = Vec::with_capacity(asked.len());
+    for (j, reply) in asked {
+        crate::actor::wait_reply(reply, &mut vm.session)?;
+        let RegionOp::Save(slot) = &j.op else { unreachable!() };
+        match slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            Some(Ok(r)) => regions.push(r),
+            Some(Err(e)) => return Err(err(e)),
+            None => return Err(err("R1263: checkpoint: a region gave no state")),
+        }
+    }
+    let w = vm.session.world.as_ref().unwrap();
+    let mut view: Vec<String> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for (u, _) in vm.session.object_store.iter() {
+        if !w.view.contains(u) { continue; }
+        view.push(u.to_string());
+        if let (Some((_, base)), Some(Value::Object(o))) = (w.view_from.get(u), vm.session.object_store.get(u)) {
+            if !std::rc::Rc::ptr_eq(base, &o.fields) { touched.push(u.to_string()); }
+        }
+    }
+    let mut kinds_sent: Vec<String> = w.kinds_sent.iter().cloned().collect();
+    kinds_sent.sort();
+    Ok(Some(WorldState {
+        regions, ids, tick: w.tick,
+        snaps: w.snaps.iter().map(|s| (**s).clone()).collect(),
+        inbox: w.inbox.clone(),
+        main_sets: w.main_sets.clone(),
+        kinds_sent, view, touched,
+        in_flight: w.in_flight.clone(),
+        in_flight_overlays: w.in_flight_overlays.clone(),
+        flying: w.flying.iter().map(|s| (**s).clone()).collect(),
+        pending_overlays: w.pending_overlays.clone(),
+        dropped_overlays: w.dropped_overlays.clone(),
+        moving: w.moving.clone(),
+        counts: w.counts.clone(),
+        rewritten: w.rewritten.clone(),
+    }))
+}
+
+/// Before a restore: the regions running now end, and the world with them.
+pub(crate) fn end_world(vm: &mut Vm) {
+    let mut gone = crate::actor::region_actors(&vm.session);
+    if let Some(w) = vm.session.world.take() { gone.extend(w.actors); }
+    for a in &gone { a.cancel(); }
+    vm.session.owned_actors.retain(|a| !gone.iter().any(|b| Arc::ptr_eq(a, b)));
+}
+
+/// `:restore` of a checkpoint taken while regions ran: as many regions
+/// again, each with its part of the world, and what was on its way. The
+/// program's own part is restored already.
+pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError> {
+    let mut actors = Vec::with_capacity(ws.regions.len());
+    for r in &ws.regions {
+        // The state comes with the region's part (below); the handler is
+        // the same action again.
+        let mut args = vec![Value::MapOrd(Box::new(IndexMap::new()))];
+        if let Some(h) = &r.handler { args.push(Value::Str(h.as_str().into())); }
+        let h = vm.actor_create(args, false)?;
+        let a = crate::actor::actor_of(&h).ok_or_else(|| err("R1264: restore: a region could not start"))?;
+        crate::actor::mark_region(&a);
+        actors.push(a);
+    }
+    let ids: Vec<u64> = actors.iter().map(|a| crate::actor::actor_id(a)).collect();
+    let mut asked = Vec::with_capacity(actors.len());
+    for ((a, id), r) in actors.iter().zip(&ids).zip(ws.regions) {
+        let reply = crate::actor::send_world(a, job(RegionOp::Load(Box::new(r)), *id, &ids, ws.tick))?;
+        asked.push(reply);
+    }
+    for reply in asked { crate::actor::wait_reply(reply, &mut vm.session)?; }
+    // An object on its way to a region goes to the same one again.
+    let new_id = |old: u64| ws.ids.iter().position(|x| *x == old).map(|i| ids[i]).unwrap_or(old);
+    let inbox: Vec<Vec<Item>> = ws.inbox.into_iter().map(|items| items.into_iter().map(|it| match it {
+        Item::MoveTo { uuid, to } => Item::MoveTo { uuid, to: new_id(to) },
+        other => other,
+    }).collect()).collect();
+    let snaps: Vec<Arc<Snapshot>> = ws.snaps.into_iter().map(Arc::new).collect();
+    // The program's copies, and what each was built from: a copy it has
+    // changed since is compared with the snapshot it came from.
+    let mut entry: HashMap<&str, &Arc<PValue>> = HashMap::default();
+    for s in &snaps { for (u, p) in &s.objects { entry.insert(u.as_str(), p); } }
+    let touched: HashSet<&str> = ws.touched.iter().map(String::as_str).collect();
+    let mut view = IdSet::default();
+    let mut view_from = HashMap::default();
+    let mut fp = FromPortable::new();
+    for u in &ws.view {
+        let id = crate::value::ObjId::from(u.as_str());
+        if let Some(p) = entry.get(u.as_str()) {
+            let base = if touched.contains(u.as_str()) {
+                match fp.value(p, &mut vm.session) { Value::Object(o) => Some(o.fields), _ => None }
+            } else {
+                match vm.session.object_store.get(&id) { Some(Value::Object(o)) => Some(o.fields.clone()), _ => None }
+            };
+            if let Some(b) = base { view_from.insert(id.clone(), ((*p).clone(), b)); }
+        }
+        view.insert(id);
+    }
+    vm.session.world = Some(World {
+        actors, ids, tick: ws.tick, snaps, inbox, main_sets: ws.main_sets,
+        kinds_sent: ws.kinds_sent.into_iter().collect(),
+        view, view_from,
+        in_flight: ws.in_flight, in_flight_overlays: ws.in_flight_overlays,
+        flying: ws.flying.into_iter().map(Arc::new).collect(),
+        pending_overlays: ws.pending_overlays, dropped_overlays: ws.dropped_overlays,
+        moving: ws.moving, counts: ws.counts, rewritten: ws.rewritten,
+        by_host: None, home_of: None,
+    });
+    Ok(())
+}
+

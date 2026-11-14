@@ -2135,6 +2135,11 @@ impl Vm {
                         self.stack.push(Operand::Val(result));
                         return Ok(());
                     }
+                    BuiltinId::Checkpoint | BuiltinId::Restore => {
+                        let r = if id == BuiltinId::Checkpoint { crate::checkpoint::checkpoint(self, &arg_vals)? } else { crate::checkpoint::restore(self, &arg_vals)? };
+                        self.stack.push(Operand::Val(r));
+                        return Ok(());
+                    }
                     BuiltinId::MoveObject => {
                         if arg_vals.len() != 2 {
                             return Err(GoblinError::ArityMismatch { expected: 2, got: arg_vals.len(), name: "move!".into() });

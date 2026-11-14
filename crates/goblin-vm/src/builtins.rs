@@ -3777,6 +3777,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
         BuiltinId::Event => crate::events::event(args, session),
+        BuiltinId::Checkpoint | BuiltinId::Restore => Err(GoblinError::Runtime("checkpoint/restore: must be called through VM dispatch".to_string())),
         BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
                 "tick/tick_db: DES tick runner is not yet implemented in the VM".to_string()
