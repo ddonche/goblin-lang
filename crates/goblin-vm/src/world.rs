@@ -1896,8 +1896,12 @@ pub(crate) fn end_world(vm: &mut Vm) {
 /// program's own part is restored already.
 pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError> {
     let mut actors = Vec::with_capacity(ws.regions.len());
-    for _ in &ws.regions {
-        let h = vm.actor_create(vec![Value::MapOrd(Box::new(IndexMap::new()))], false)?;
+    for r in &ws.regions {
+        // The state comes with the region's part (below); the handler is
+        // the same action again.
+        let mut args = vec![Value::MapOrd(Box::new(IndexMap::new()))];
+        if let Some(h) = &r.handler { args.push(Value::Str(h.as_str().into())); }
+        let h = vm.actor_create(args, false)?;
         let a = crate::actor::actor_of(&h).ok_or_else(|| err("R1264: restore: a region could not start"))?;
         crate::actor::mark_region(&a);
         actors.push(a);

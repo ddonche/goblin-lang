@@ -1,6 +1,6 @@
 checkpoint at tick 1
 restored to tick 1
-tick 2: [Kel:[language_4], Oss:[language_3], Varn:[language_2]] realms [Big 10, Big West 10]
-tick 3: [Kel:[language_10, language_4], Oss:[language_2, language_3, language_4], Varn:[language_2, language_8]] realms [Big 10, Big West 10]
-tick 4: [Kel:[language_10, language_2, language_3, language_4], Oss:[language_2, language_3, language_4, language_9], Varn:[language_2, language_3, language_4, language_8]] realms [Big 10, Big West 10]
+tick 2: [Kel day 2:[language_4], Oss day 2:[language_3], Varn day 2:[language_2]] realms [Big 10, Big West 10]
+tick 3: [Kel day 3:[language_10, language_4], Oss day 3:[language_2, language_3, language_4], Varn day 3:[language_2, language_8]] realms [Big 10, Big West 10]
+tick 4: [Kel day 4:[language_10, language_2, language_3, language_4], Oss day 4:[language_2, language_3, language_4, language_9], Varn day 4:[language_2, language_3, language_4, language_8]] realms [Big 10, Big West 10]
 true

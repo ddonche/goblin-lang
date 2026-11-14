@@ -9,7 +9,7 @@ in parentheses are the pull requests that made each change.
 - sims/capstone: what the program keeps from year to year is in objects now, so a checkpoint holds it: last year's bordering realms, each court's last conversion and each faith's militancy (`overlays::IdeaMemory`), the dark years and each faith's seeking (read from `land::Clock`, which held them already), and the program's own tallies (`Annals` in history.gbln: polity-years, years at war, holy wars, empires). The history is the same.
 - sims/capstone/history.gbln: `CHECKPOINT=path CHECKPOINT_AT=year` writes a checkpoint at the end of that year; `RESTORE=path` goes on from one (with `PREHISTORY=0` it skips the land's prehistory, which the checkpoint replaces anyway).
 - Test: 200 years of the capstone (seed 42, 4 regions) straight, against 100 years, a checkpoint, a restore and 100 more: the event log after year 100 (83,178 lines) and the output are byte-identical, restored on 1, 2, 4 and 8 threads. The checkpoint at year 100 is 21 MB.
-- Conformance: new cases `des_checkpoint_restore_goes_on`, `des_checkpoint_errors`, `world_checkpoint_restore_goes_on`.
+- Conformance: new cases `des_checkpoint_restore_goes_on`, `des_checkpoint_errors`, `world_checkpoint_restore_goes_on` (a region's handler goes on after a restore too).
 
 ## 0.51.35 — 2026-11-13
 
