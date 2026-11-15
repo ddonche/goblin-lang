@@ -100,7 +100,7 @@ impl OverlayDef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OverlayApplyBehavior { Caps, Replaces, Stacks { label: Option<String> }, Stronger }
 
 impl Default for OverlayApplyBehavior { fn default() -> Self { OverlayApplyBehavior::Caps } }
@@ -124,7 +124,7 @@ pub struct OverlayInstance {
 
 // ── Link runtime types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkDef {
     pub class_name: String,
     pub channel: String,
@@ -145,7 +145,7 @@ pub const GC_MIN_THRESHOLD: usize = 1 << 16;
 /// rewriting a large string makes one dead copy per pass.
 pub const GC_BYTE_BUDGET: usize = 64 << 20;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkOffset {
     pub value: f64,
     pub ticks_remaining: Option<u32>,

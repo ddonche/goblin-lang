@@ -1,0 +1,60 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// `:guide` on a world that runs on regions: every copy restores all the
+/// regions with new dice of their own (each region its own mix of the
+/// copy's seed), so the history found is the same on any number of
+/// threads.
+:rand_seed(11)
+<>Land |
+    name: ..
+    grain: 0
+xx
+act make(names)
+    things | []
+    repeat names as n
+        l <> Land | name: n, grain: 20
+        :put_last!(things, l)
+    xx
+    return {"things": things}
+xx
+act season(st, msg)
+    repeat st{"things"} as t
+        t >> grain |= :max(0, t >> grain + pick 1 from -4...4)
+    xx
+    return st
+xx
+north | :actor(make(["Varn", "Oss"]), season)
+south | :actor(make(["Kel"]), season)
+act step()
+    :tick()
+xx
+act grain_of(n)
+    repeat :objects("Land") as l
+        if l >> name == n => send l >> grain
+    xx
+    return 0
+xx
+act rich()
+    return grain_of("Varn") >= 40
+xx
+act rich_close()
+    return grain_of("Varn")
+xx
+act poor()
+    return grain_of("Kel") <= 5
+xx
+act poor_close()
+    return 0 - grain_of("Kel")
+xx
+dir | "{:env("GOBLIN_CONF_TMP")}/guide_regions"
+step()
+:checkpoint("{dir}/start.gcp")
+milestones | [
+    {"name": "rich", "by": 30, "reached": "rich", "closeness": "rich_close"},
+    {"name": "poor", "by": 60, "reached": "poor", "closeness": "poor_close"}
+]
+found | :guide("{dir}/start.gcp", "step", milestones, {"copies": 6, "every": 4, "dir": dir})
+:say("reached {found{"reached"}} in {found{"tries"}} tries")
+repeat found{"milestones"} as m
+    :say("{m{"name"}}: tick {m{"tick"}}")
+xx
+:say("Varn {grain_of("Varn")}, Kel {grain_of("Kel")}, tick {:metrics(){"ticks"}}")

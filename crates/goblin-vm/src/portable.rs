@@ -156,6 +156,9 @@ pub struct ToPortable<'s> {
     /// Between regions: an object another value names crosses as its id,
     /// not as a copy, so it reads the object where it lives.
     by_id: bool,
+    /// Values converted once and shared by what holds them (the variables
+    /// overlay kinds keep), by the collection they were converted from.
+    once: HashMap<usize, Arc<PValue>>,
 }
 
 /// Texts up to this long are converted once per conversion and shared.
@@ -166,7 +169,7 @@ const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default(), by_id: false }
+        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default(), by_id: false, once: HashMap::new() }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -183,6 +186,15 @@ impl<'s> ToPortable<'s> {
     /// Only the objects in `handed` cross; the session's other objects stay
     /// where they are (an actor owns what it was handed, nothing more).
     pub(crate) fn only_objects(mut self, handed: std::collections::HashSet<String>) -> Self { self.home = Some(handed); self }
+
+    /// `v` converted once: the same collection again gives the same copy.
+    pub(crate) fn shared_value(&mut self, v: &Value) -> Result<Arc<PValue>, GoblinError> {
+        let key = match v { Value::Collection(c) => Some(Rc::as_ptr(c) as *const () as usize), _ => None };
+        if let Some(k) = key { if let Some(p) = self.once.get(&k) { return Ok(p.clone()); } }
+        let p = Arc::new(self.value(v)?);
+        if let Some(k) = key { self.once.insert(k, p.clone()); }
+        Ok(p)
+    }
 
     /// An object of this session that does not go with the actor.
     fn stays_home(&self, uuid: &str) -> Option<PValue> {
@@ -435,6 +447,8 @@ pub struct FromPortable {
     stored: HashMap<String, Vec<(usize, Value)>>,
     /// The field layout of the last object rebuilt (see `FieldMap::from_names`).
     layout: Option<Rc<crate::fields::Layout>>,
+    /// Values `shared_value_of` rebuilt in this session, by their copy.
+    once: HashMap<*const PValue, Value>,
 }
 
 /// Strings up to this long are shared by content when rebuilt.
@@ -448,7 +462,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, stored: HashMap::new(), layout: None }
+        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, stored: HashMap::new(), layout: None, once: HashMap::new() }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -458,6 +472,17 @@ impl FromPortable {
     pub fn forget_values(&mut self) {
         self.frozen.retain(|_, (_, cells)| !*cells);
         self.values.clear();
+        self.once.clear();
+    }
+
+    /// A value converted by `ToPortable::shared_value`, rebuilt once in this
+    /// session: what held one value before holds one value again.
+    pub(crate) fn shared_value_of(&mut self, p: &Arc<PValue>, session: &mut Session) -> Value {
+        let k = Arc::as_ptr(p);
+        if let Some(v) = self.once.get(&k) { return v.clone(); }
+        let v = self.value(p, session);
+        self.once.insert(k, v.clone());
+        v
     }
 
     /// While on, every object rebuilt is stored in the session's object

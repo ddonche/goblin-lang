@@ -359,7 +359,7 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
     s
 }
 
-fn task_seed(base: u128, i: usize) -> u128 {
+pub(crate) fn task_seed(base: u128, i: usize) -> u128 {
     // splitmix-style mix, so each item's random sequence depends only on the
     // swarm and the item's position, never on which worker ran it.
     let mut z = base ^ ((i as u128).wrapping_add(1).wrapping_mul(0x9E3779B97F4A7C15F39CC0605CEDC835));

@@ -1,0 +1,15 @@
+/// known-gap: interp `:put` takes no key (the interpreter is being retired)
+/// Map keys are text: `:put!(m, 3, x)` writes the key "3", and `m{3}`
+/// reads it back, in a small map and in a large one.
+m | {}
+:put!(m, 3, "x")
+:say(m{3})
+:say(m{"3"})
+:say(:keys(m)[0] == "3")
+big | {}
+repeat :range(0, 20) as i
+    :put!(big, i, i * 2)
+xx
+:say(big{17})
+:say(big{"17"})
+:say(m{4})

@@ -4242,6 +4242,9 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         // DES tick
         "tick" | "tick_db"               => BuiltinId::Tick,
         "event_log"                      => BuiltinId::EventLog,
+        "checkpoint"                     => BuiltinId::Checkpoint,
+        "restore"                        => BuiltinId::Restore,
+        "guide"                          => BuiltinId::Guide,
         "event"                          => BuiltinId::Event,
 
         // DES / overlay

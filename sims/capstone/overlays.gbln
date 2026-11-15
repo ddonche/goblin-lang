@@ -66,6 +66,17 @@ traits | ["aggression", "cooperation", "fear", "ambition", "cohesion", "stabilit
 xx
 
 record <> IdeaRecord | tongue_new: 0
+
+/// What the program keeps of the ideas from year to year, by name: each
+/// realm's bordering realms last year, when its court took a new faith and
+/// what it held before, and how militant each faith is.
+<>IdeaMemory |
+    beside: {}
+    converted: {}
+    militancy: {}
+xx
+
+memory <> IdeaMemory | beside: {}
 counted | ["tongue_new", "tongue_merge", "shifted", "faith_new", "schism", "blend", "converted", "creed_split", "creed_shift", "plague", "strain", "famine", "flood", "quake", "drought", "fire", "dread", "golden_age", "elite_strife", "dark_years", "court_converted", "reaction", "holy_war", "holy_conquest", "rally", "discredited", "coalition", "struck_first", "submitted", "refused", "people_broke_away", "nominal", "unlike_realm"]
 
 /// The counts so far, in order.
@@ -694,9 +705,8 @@ xx
 /// The weather. Each year a region of the map (6 by 6 provinces) has a
 /// bad harvest by chance, one year in about sixteen, cutting it by a
 /// tenth to a third; and once in a few centuries a great eruption
-/// darkens the whole world's sky for two years. `weather` holds this
-/// year's draw for each region.
-cold_left | 0
+/// darkens the whole world's sky for two years (the years left are the
+/// Clock's `cold`). `weather` holds this year's draw for each region.
 
 /// Dry, open land, where a bad year is a drought that lasts.
 act dry(k)
@@ -796,6 +806,7 @@ xx
 near | {}
 
 act neighbours(pairs)
+    near |= {}
     repeat pairs as pr
         a | pr[0]
         b | pr[1]
@@ -905,6 +916,7 @@ xx
 /// this year's weather, and each realm's court tongue and faith, which
 /// every land reads in `land_year`.
 act prepare(lands, realms)
+    cold_left | land::cold()
     if cold_left > 0 => cold_left |= cold_left - 1
     if cold_left == 0 and chance(.003)
         cold_left |= 2
@@ -1098,6 +1110,10 @@ xx
 /// `bends`; dread after a plague or disaster on its land, discontent from
 /// famine, and by chance a golden age.
 act account(year, lands, realms)
+    /// How much each faith seeks converts and how militant it is: last
+    /// year's, brought up to date from this year's copies below.
+    faith_seeks     | land::faith_seeks()
+    faith_militancy | memory >> militancy
     court_t | {}
     court_f | {}
     repeat realms as p
@@ -1184,6 +1200,7 @@ act account(year, lands, realms)
         xx
     xx
     land::set_ideas(nxt, faith_seeks)
+    memory >> militancy |= faith_militancy
     repeat realms as p
         k | p >> name
         total | p >> people
@@ -1240,12 +1257,6 @@ link shared_faith
     range: 0...1
 xx
 
-/// Each realm's bordering realms (last year's), by name.
-beside | {}
-
-/// When a court took a new faith and what it held before, by realm name.
-converted | {}
-
 /// A court takes the faith of a bordering realm's court (2026-11-10,
 /// real life first). Most of the great conversions came from the top:
 /// Clovis, Vladimir of Kiev, Mieszko of Poland, the Khazar khagans, the
@@ -1262,6 +1273,7 @@ converted | {}
 act convert(p, own, fshare, court_f, reach, inside)
     c | p >> capital ?? => send nil
     k | p >> name
+    converted | memory >> converted
     was | converted{k}
     if !was.nix? and land::year() - was[0] <= 40
         if fshare < .3 and chance(.02 * (1.0 - fshare))
@@ -1269,6 +1281,7 @@ act convert(p, own, fshare, court_f, reach, inside)
             firm_up(c, back, .6)
             cut_down(c, own, .4)
             :update!(converted{k}, [land::year() - 100, back])
+            memory >> converted |= converted
             count("reaction")
             :event(p, "reaction", nil, {"the people rose for the old gods": 2.0, "the new priests were driven out": 1.0})
         xx
@@ -1280,6 +1293,7 @@ act convert(p, own, fshare, court_f, reach, inside)
     /// pull together (the kings of the north converted as their
     /// neighbours had, for alliances and marriages).
     pulls | {}
+    beside | memory >> beside
     repeat beside{k} ?? [] as q
         if q.nix? => skip
         g | court_f{q >> name} ?? ..
@@ -1319,6 +1333,7 @@ act convert(p, own, fshare, court_f, reach, inside)
         firm_up(l, best, .2)
     xx
     :update!(converted{k}, [land::year(), own])
+    memory >> converted |= converted
     count("court_converted")
     :event(p, "court_converted", nil, {"the ruler was baptized and the lords with him": 2.0, "the ruler took the faith of the strong neighbour": 1.0, "the old shrines were pulled down": 1.0})
 xx
@@ -1439,11 +1454,9 @@ act militancy_of(p, n)
         cs | :overlays(c, n)
         if :len(cs) > 0 and :is_type(cs[0], "Faith") => send cs[0] >> militancy
     xx
-    return faith_militancy{n} ?? 0.0
+    fm | memory >> militancy
+    return fm{n} ?? 0.0
 xx
-
-/// How militant each faith is, by name (set each year by `account`).
-faith_militancy | {}
 
 /// How much the faith named `n` seeks converts, read from its copy on land `l`.
 act seeks_of(l, n)
@@ -1453,11 +1466,11 @@ act seeks_of(l, n)
     return cs[0] >> seeks
 xx
 
-/// How much each faith seeks converts, by name (set each year by `account`).
-faith_seeks | {}
-
+/// How much the faith named `n` seeks converts (the world's, set each
+/// year by `account`).
 act seeks_of_any(n)
-    return faith_seeks{n} ?? 0.0
+    fs | land::faith_seeks()
+    return fs{n} ?? 0.0
 xx
 
 /// The copy of `n` on land `l` held by at least `x` (a new copy if none).
@@ -1539,7 +1552,7 @@ act kindred(realms, spoken, faithful, court_t, court_f)
         xx
     xx
     kin_seen |= seen
-    beside |= nb
+    memory >> beside |= nb
 xx
 
 /// Half the overlap of two realms' shares, half whether their courts agree.

@@ -4,19 +4,19 @@ use goblin_diagnostics::Span;
 
 pub type Ident = (String, Span);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Module {
     pub items: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BindMode {
     Tether,    // |
     Retether,  // |=
     Shadow,    // [=
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BindStmt {
     pub name: Ident,
     pub expr: Expr,
@@ -28,7 +28,7 @@ pub struct BindStmt {
     pub lock_type: Option<String>, // type suffix on declaration: age.i32 | 46
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TupleBindStmt {
     pub names: Vec<Ident>,
     pub expr: Expr,
@@ -38,7 +38,7 @@ pub struct TupleBindStmt {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Stmt {
     Expr(Expr),
     Class(ClassDecl),
@@ -86,7 +86,7 @@ pub enum Stmt {
 // ── Ownership AST nodes ──────────────────────────────────────────────────────
 
 /// How capacity is measured on an owning object.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CapacityDecl {
     /// `capacity: N` — owner can hold at most N objects.
     Count(u64),
@@ -96,7 +96,7 @@ pub enum CapacityDecl {
 }
 
 /// `unit name | types: a, b; N a = M b end` — user-defined unit conversion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UnitDecl {
     pub name: String,
     /// All type names in this unit family.
@@ -109,7 +109,7 @@ pub struct UnitDecl {
 
 /// `link ClassName [channel] by [ formula ]` — defines a class-level link formula.
 /// If channel is None, defaults to "default".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkDefStmt {
     pub class_name: String,
     /// Named channel (e.g. "border", "trade", "culture"). None = "default".
@@ -126,7 +126,7 @@ pub struct LinkDefStmt {
 }
 
 /// The values a link can take, written when it is declared.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LinkRange {
     /// `bool`: true or false.
     Bool,
@@ -135,7 +135,7 @@ pub enum LinkRange {
 }
 
 /// `ObjectName link [channel] by [ formula ]` — defines an object-level link formula override.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ObjectLinkDefStmt {
     pub object_var: String,
     /// Named channel. None = "default".
@@ -146,7 +146,7 @@ pub struct ObjectLinkDefStmt {
 }
 
 /// `VarA link to VarB on channel offset value [for N ticks]` — pair-level link offset.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LinkOffsetStmt {
     pub from_var: String,
     pub to_var: String,
@@ -161,7 +161,7 @@ pub struct LinkOffsetStmt {
 }
 
 /// `clear link VarA to VarB on channel` — removes all offsets on a pair+channel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClearLinkStmt {
     pub from_var: String,
     pub to_var: String,
@@ -172,7 +172,7 @@ pub struct ClearLinkStmt {
 // ── Overlay AST nodes ────────────────────────────────────────────────────────
 
 /// How an overlay propagates to new hosts each tick.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SpreadRule {
     /// `spreads through channel at rate` — to hosts linked on channel; the chance scales with the link score.
     Channel { channel: String, rate: f64 },
@@ -187,7 +187,7 @@ pub enum SpreadRule {
 }
 
 /// What happens when an overlay is applied to a host that already carries it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OverlayDup {
     /// `dup: ignore`: the one already there stays; the new one doesn't take.
     Ignore,
@@ -200,7 +200,7 @@ pub enum OverlayDup {
     Stronger,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OverlayApplyBehavior {
     /// First application wins. Subsequent applications are silently dropped. Default.
     Caps,
@@ -216,7 +216,7 @@ impl Default for OverlayApplyBehavior {
 }
 
 /// `overlay Name | ... end` — defines an overlay type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlayDefStmt {
     pub name: String,
     /// Class names this overlay may occupy. Empty = any host.
@@ -288,7 +288,7 @@ pub struct OverlayDefStmt {
 
 /// An overlay's `phase: NAME` block: its spreads, `every` blocks (actions
 /// in the overlay's `actions`) and transitions for that phase.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OverlayPhase {
     pub name: String,
     pub spreads: Vec<OverlaySpread>,
@@ -299,20 +299,20 @@ pub struct OverlayPhase {
 /// `spread: chance where condition`: each tick, each object the
 /// condition allows (`self` the carrier, `target` the object) catches the
 /// overlay with that chance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlaySpread {
     pub chance: Expr,
     pub condition: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlayConflictRule {
     pub opponent: String,
     /// Multiplier on the weaker overlay's decay rate during conflict. Default 2.0.
     pub suppress_rate: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlaySpawnRule {
     pub condition: Expr,
     pub spawn_overlay: String,
@@ -320,7 +320,7 @@ pub struct OverlaySpawnRule {
 }
 
 /// `overlay Name on target at strength` — applies an overlay instance to a host.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlayApplyStmt {
     pub overlay_name: String,
     /// Expression that evaluates to the host object variable name.
@@ -337,14 +337,14 @@ pub struct OverlayApplyStmt {
 }
 
 /// `detach Name from target` — removes an overlay instance from a host.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OverlayDetachStmt {
     pub overlay_name: String,
     pub host_expr: Expr,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassDecl {
     pub name: String,
     pub fields: Vec<FieldDecl>,
@@ -389,7 +389,7 @@ pub struct ClassDecl {
 
 /// A class's `phase: NAME` block: its decisions, judge, `every` blocks and
 /// transitions for that phase.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassPhase {
     pub name: String,
     pub transitions: Vec<TransitionDef>,
@@ -402,7 +402,7 @@ pub struct ClassPhase {
 }
 
 /// One of a class's decisions, with the judge that acts on its score.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NamedDecision {
     pub name: String,
     pub decision: DecisionDef,
@@ -410,7 +410,7 @@ pub struct NamedDecision {
 }
 
 /// `every N ticks ... end` inside a class body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EveryDecl {
     pub ticks: u64,
     /// The class action that holds the block's body.
@@ -420,7 +420,7 @@ pub struct EveryDecl {
 
 // ── Transition AST nodes ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TransitionKind {
     Spawn,
     Erase,
@@ -432,21 +432,21 @@ pub enum TransitionKind {
     Mutate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OverlayContinuity {
     Split,    // distribute overlays to all successors
     Transfer, // move overlays to primary successor
     Drop,     // remove all overlays
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LinkContinuity {
     Inherit, // transfer links to successors
     Reset,   // drop all links
 }
 
 /// One named successor state block: `first: ... end`, `carries: ... end`, etc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SuccessorDef {
     /// Label: "first", "second", "child", "fragment", "carries"
     pub label: String,
@@ -459,7 +459,7 @@ pub struct SuccessorDef {
 /// When declared on an overlay, the runtime executes the transition against
 /// the overlay record rather than the object store. No agency is implied —
 /// overlay transitions are always threshold-triggered by the runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TransitionDef {
     pub kind: TransitionKind,
     /// Trigger condition. Evaluated each tick with `self` (and `target` for binary transitions).
@@ -481,7 +481,7 @@ pub struct TransitionDef {
 /// `score | decision against TargetClass by [ formula ]`
 /// Declared inside a class body. The runtime evaluates this formula
 /// against all valid targets each tick and selects the best one.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DecisionDef {
     /// The class of objects to evaluate as potential targets.
     pub target_class: String,
@@ -499,7 +499,7 @@ pub struct DecisionDef {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldDecl {
     pub name: String,
     pub private: bool,
@@ -511,21 +511,21 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RelationDef {
     Of { class_name: String, as_name: String },
     With { class_name: String },
     Re { class_name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UseStmt {
     pub namespace: String,
     pub alias: Option<String>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportStmt {
     pub items: ImportItems,
     pub alias: Option<String>,  // Only used for single-path imports
@@ -534,7 +534,7 @@ pub struct ImportStmt {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ImportItems {
     /// Single path: import game/hero
     Path(String),
@@ -547,13 +547,13 @@ pub enum ImportItems {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportItem {
     pub name: String,
     pub alias: Option<String>,  // For: import { hero as h } from game
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Param {
     pub name: String,
     pub type_name: Option<String>,
@@ -561,13 +561,13 @@ pub struct Param {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ActionBody {
     Block(Vec<Stmt>),
     Expr(Expr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActionDecl {
     pub name: String,
     pub params: Vec<Param>,
@@ -576,13 +576,13 @@ pub struct ActionDecl {
     pub ret: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReturnStmt {
     pub values: Vec<Expr>, // expressions; empty = bare return
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum JudgeArmBody {
     Expr(Expr),
     Stmts(Vec<Stmt>),
@@ -590,7 +590,7 @@ pub enum JudgeArmBody {
 
 /// One arm of a **statement-form** judge.
 /// `condition = None` means this is the implicit `else` arm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JudgeArmStmt {
     pub condition: Option<Box<Expr>>, // None for `else`
     pub body: JudgeArmBody,
@@ -598,36 +598,36 @@ pub struct JudgeArmStmt {
 }
 
 /// Statement-form judge node. Independent from the expression form (`Expr::Judge`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JudgeStmt {
     pub arms: Vec<JudgeArmStmt>,          // one or more arms
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JudgeAllStmt {
     pub arms: Vec<JudgeArmStmt>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SweepMode { Match, All }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum SweepArmKind {
     Pattern(String),                          // "needle" :
     Range { start: String, end: String },     // "a" ... "b" :
     AllBody,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SweepArmRepeat {
     All,    // default: operate on every match
     First,  // only the first match in this file
     Last,   // only the last match in this file
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SweepArm {
     pub kind: SweepArmKind,
     pub repeat: SweepArmRepeat,
@@ -635,7 +635,7 @@ pub struct SweepArm {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SweepStmt {
     pub mode: SweepMode,
     pub targets: Vec<Expr>,
@@ -643,28 +643,28 @@ pub struct SweepStmt {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EnumDecl {
     pub name: String,
     pub variants: Vec<EnumVariant>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EnumVariant {
     pub name: String,
     pub fields: Option<Vec<FieldDecl>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JudgeArm {
     pub condition: Option<Box<Expr>>,  // None for else
     pub value: Option<Box<Expr>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
     // Literals & identifiers
     Nil(Span),

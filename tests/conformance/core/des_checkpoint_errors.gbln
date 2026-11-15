@@ -1,0 +1,35 @@
+/// known-gap: interp has no checkpoints (the interpreter is being retired)
+/// `:checkpoint` takes a file path (R1263). `:restore` reads only a
+/// checkpoint (R1264). A checkpoint holds plain values: code in an
+/// object's field can't go in one (R1265).
+<>Box |
+    name: ..
+    held: 0
+xx
+act hello()
+    return "hi"
+xx
+d | :env("GOBLIN_CONF_TMP")
+attempt
+    :checkpoint(3)
+rescue e
+    :say(:has("{e}", "R1263"))
+xx
+attempt
+    :restore("{d}/no_such.gcp")
+rescue e
+    :say(:has("{e}", "R1264"))
+xx
+:write_text!("{d}/plain.txt", "not a checkpoint")
+attempt
+    :restore("{d}/plain.txt")
+rescue e
+    :say(:has("{e}", "R1264"))
+xx
+b <> Box | name: "b"
+b >> held |= hello
+attempt
+    :checkpoint("{d}/code.gcp")
+rescue e
+    :say(:has("{e}", "R1265"))
+xx

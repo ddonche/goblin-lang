@@ -1,0 +1,63 @@
+/// known-gap: interp has no checkpoints (the interpreter is being retired)
+/// `:checkpoint(path)` writes the DES world to a file: every object, the
+/// overlays and their kinds (also those made while the program ran), the
+/// links, the tick count and the dice. `:restore(path)` brings it back;
+/// what the world held before is gone. Both give the tick. From a restored
+/// checkpoint the world goes on exactly as it did the first time, and a
+/// variable that named an object names it again.
+:rand_seed(3)
+<>Land |
+    name: ..
+    grain: 0
+xx
+link road
+    hosts: Land
+    range: 0...10
+xx
+<^>Language |
+    hosts: Land
+    transition mutate where age >= 2
+xx
+overlay old_tongue <^> Language
+    ~intensity: .8
+xx
+a <> Land | name: "Varn"
+b <> Land | name: "Oss"
+:overlay!(a, old_tongue)
+:overlay!(b, old_tongue)
+act state()
+    out | []
+    repeat :objects("Land") as l
+        ns | []
+        repeat :overlays(l) as o
+            :put_last!(ns, o >> overlay_name)
+        xx
+        :put_last!(out, "{l >> name} {l >> grain} {:sort(ns)}")
+    xx
+    d | pick 1 from 0...1000
+    return "tick {:metrics(){"ticks"} ?? ""} {:join(out, "; ")} road {:link_score(a, b, "road")} draw {d}"
+xx
+act year()
+    :tick()
+    a >> grain |= a >> grain + pick 1 from 1...6
+    :link!(a, b, road, 1)
+    return state()
+xx
+path | "{:env("GOBLIN_CONF_TMP")}/world.gcp"
+year()
+year()
+:say("checkpoint at tick {:checkpoint(path)}")
+first | []
+repeat 3
+    :put_last!(first, year())
+xx
+:say("restored to tick {:restore(path)}")
+again | []
+repeat 3
+    :put_last!(again, year())
+xx
+repeat first as s
+    :say(s)
+xx
+:say(first == again)
+:say(:len(:objects("Land")))

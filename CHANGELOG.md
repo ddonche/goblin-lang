@@ -3,6 +3,32 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.39 — 2026-11-15
+
+- Checkpoints are fast to write. An overlay kind keeps the variables of the code that made it, and every kind a transition makes from it keeps them too. In the capstone those variables reach every province pair (about 10 MB), and each kind wrote its own copy: 578 kinds came to 170 MB before compression. Kinds now share one copy of what they keep: it is converted once, written once in its own table (equal values from other years and regions too), and rebuilt once on restore. The compressor also gets the tables whole instead of a byte at a time. Capstone at year 100 (4 regions): writing a checkpoint takes 1.4 s, was 36 s; restoring takes under 1 s, was 3 s; the file is 10 MB, was 21 MB. Checkpoint format 4; files written before can't be read.
+- Test: capstone 200 years straight against 100 years, a checkpoint, a restore and 100 more (seed 42): the event log after year 100 (83,178 lines) and the output are byte-identical, restored on 1 and 4 threads.
+
+## 0.51.38 — 2026-11-14
+
+- Maps: a key that isn't text reads back. `:put!(m, 3, x)` stores the key as the text "3", as map keys are text, but `m{3}` gave nil. It reads "3" now, in small and large maps alike.
+- sims/valley reads its tries by number (the workaround is gone).
+- Conformance: new case `map_number_key_reads_back`.
+
+## 0.51.37 — 2026-11-14
+
+- Guided runs: `:guide(start, step, milestones, options)` looks for a history that passes a list of milestones in order, each by its tick. From the checkpoint `start` it runs copies of the world one after another, each with its own dice, `every` ticks at a time (`step` runs one tick). After every tick a copy asks the milestone's `reached`; at the end of the stretch it scores its `closeness`, and the `keep` closest copies of the round go on. A copy that reaches the milestone is saved there and the next milestone starts from it; when every copy of a round is past the milestone's `by` tick, it goes back one milestone and looks for it again. It gives `reached`, `passed`, `tries`, each milestone's tick, try and checkpoint, and a row for every try (`log`), and leaves the world at the last milestone passed. Only the found history's checkpoints stay. The program's dice choose every copy's dice, so a seed finds the same history on any number of threads. Options: `copies` (8), `every` (10), `keep` (half of `copies`), `tries` (1000), `dir` ("guide"). Errors are R1266.
+- `:restore(path, seed)` gives the whole world new dice, the program's and every region's (each region its own mix of the seed); `:restore(path)` still brings back the dice as saved. A seed that isn't a whole number is R1264, and a `:restore` path that isn't text is R1264 now (it was R1263).
+- sims/valley: three villages that gain or lose people by chance, guided to three milestones (Ash grows to 80 people by year 40, falls to 20 by year 90, Oss reaches 70 by year 120). It prints what every milestone's tries did and the history found, stretch by stretch. Guided: found in 488 tries. Left alone: 0 of 1,000 runs pass all three.
+- Conformance: new cases `des_restore_new_dice`, `des_guide_passes_milestones`, `world_guide_on_regions` (same history on 1, 2 and 8 threads).
+
+## 0.51.36 — 2026-11-13
+
+- DES checkpoints: `:checkpoint(path)` writes the DES world at this tick to a file, and `:restore(path)` brings the world back to it. Both give the tick. A checkpoint holds every object with its fields and traits, every overlay and overlay kind (also kinds made while the program ran), the links, every object's own link formulas and decisions, the tick count and the dice (the program's draws and the `:event` tellings' draws). With regions it holds each region's part, each region's dice, and what is on its way between the regions and the program; `:restore` starts as many regions again. The program's plain variables are not in it (keep what lasts in objects); a variable that names an object names it again after `:restore`. When to take one, and which to go back to, is up to the program. A path that isn't text is R1263 or R1264, a file that isn't a checkpoint R1264, code or an actor in the world R1265. The file is compressed and writes each overlay kind once.
+- sims/capstone: what the program keeps from year to year is in objects now, so a checkpoint holds it: last year's bordering realms, each court's last conversion and each faith's militancy (`overlays::IdeaMemory`), the dark years and each faith's seeking (read from `land::Clock`, which held them already), and the program's own tallies (`Annals` in history.gbln: polity-years, years at war, holy wars, empires). The history is the same.
+- sims/capstone/history.gbln: `CHECKPOINT=path CHECKPOINT_AT=year` writes a checkpoint at the end of that year; `RESTORE=path` goes on from one (with `PREHISTORY=0` it skips the land's prehistory, which the checkpoint replaces anyway).
+- Test: 200 years of the capstone (seed 42, 4 regions) straight, against 100 years, a checkpoint, a restore and 100 more: the event log after year 100 (83,178 lines) and the output are byte-identical, restored on 1, 2, 4 and 8 threads. The checkpoint at year 100 is 21 MB.
+- Conformance: new cases `des_checkpoint_restore_goes_on`, `des_checkpoint_errors`, `world_checkpoint_restore_goes_on` (a region's handler goes on after a restore too).
+
 ## 0.51.35 — 2026-11-13
 
 - sims/capstone, tuning pass against real life. Empire lifespans (a median of 157 to 193 years across seeds 42, 7 and 99) and coup success (about half of attempts) were already near real life. Murdered rulers were not: about 1 in 100 of ruler deaths, against about one European monarch in seven murdered from 600 to 1800 (Eisner, "Killing Kings", 2011). The plot hazard's scale is ten times what it was: now 14% to 16% of ruler deaths are murders (247 of 1,723 on seed 42; 264 of 1,619 and 308 of 2,101 on seeds 7 and 99).
