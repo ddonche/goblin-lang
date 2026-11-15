@@ -49,6 +49,8 @@ pub(crate) struct Image {
     /// Each imported module's path and name prefix, so a DES formula or an
     /// overlay block written in a module sees that module's names here too.
     import_paths: HashMap<std::path::PathBuf, String>,
+    /// The session's grids: a worker or an actor gets its own copy.
+    grids: crate::grid::PGrids,
 }
 
 /// The program's code and name tables: what imports and declarations build,
@@ -246,7 +248,9 @@ pub(crate) fn image_for(session: &Session, tp: &mut ToPortable, roots: Option<&[
     };
     let box_store = pairs(tp, session.box_store.iter())?;
     let des = crate::des_image::des_image_of(session, tp, handed)?;
+    let grids = crate::grid::grids_to_p(&session.grid_store, tp)?;
     Ok(Image {
+        grids,
         des,
         globals,
         omitted,
@@ -343,6 +347,7 @@ pub(crate) fn build_session(img: &Image, fp: &mut FromPortable, worker_id: usize
         s.box_store.insert(k.clone(), v);
     }
     crate::des_image::install(&img.des, fp, &mut s);
+    s.grid_store = crate::grid::grids_from_p(&img.grids, fp, &mut s);
     for (ns, m) in &img.token_store {
         let m = m.iter().map(|(k, v)| (k.clone(), fp.value(v, &mut s))).collect();
         s.token_store.insert(ns.clone(), m);

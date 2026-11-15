@@ -1,0 +1,37 @@
+/// known-gap: interp has no checkpoints (the interpreter is being retired)
+/// A checkpoint holds the program's grids: every cell of every layer, the
+/// void cells, and the cells an object owns, which name the object again
+/// after `:restore`. A grid made after the checkpoint is gone.
+<>Realm |
+    name: ..
+    land: 0
+xx
+red <> Realm | name: "red"
+:grid("map", 4, 3)
+:grid_void("map", 3, 2)
+:grid_set("map", 0, 0, "owner", red)
+:grid_set("map", 1, 0, "owner", red)
+:grid_set("map", 2, 1, "terrain", "hill")
+path | "{:env("GOBLIN_CONF_TMP")}/grids.gcp"
+:checkpoint(path)
+:grid_set("map", 0, 0, "owner", nil)
+:grid_set("map", 2, 1, "terrain", "sea")
+:grid("later", 2, 2)
+:restore(path)
+:say(:grid_occupied_count("map"))
+:say(:grid_get("map", 2, 1, "terrain"))
+:say(:grid_get("map", 0, 0, "owner") >> name)
+owner | :grid_get("map", 1, 0, "owner")
+owner >> land |= 5
+:say(red >> land)
+attempt
+    :grid_set("map", 3, 2, "owner", red)
+rescue e
+    :say("void")
+xx
+attempt
+    :grid_get("later", 0, 0, "owner")
+    :say("later is there")
+rescue e
+    :say("later is gone")
+xx

@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.41 — 2026-11-15
+
+- Checkpoints hold the grids: every grid's cells on every layer, void cells, tiles, regions and defaults. A cell an object owns names that object again after `:restore`. Guided-run copies have them too. Checkpoint format 5.
+- An actor (and a `:swarm` task) starts with its own copy of the program's grids as they were when it started. It reads them and changes only its copy. Before, it had no grids.
+- Conformance: new cases `des_checkpoint_keeps_grids`, `actor_gets_grid_copy`.
+
 ## 0.51.40 — 2026-11-15
 
 - Guided runs run their copies side by side: each round's copies run at once, one per core (`GOBLIN_GUIDE_THREADS` sets how many), each in a session of its own built from the program as it was when `:guide` was called. The history found is the same however many run at once. A copy's plain variables stay its own; the program's are as they were.

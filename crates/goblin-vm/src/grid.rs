@@ -580,3 +580,110 @@ impl GridStore {
         names
     }
 }
+
+// ── Portable form (checkpoints, actors) ───────────────────────────────────────
+
+use crate::error::GoblinError;
+use crate::portable::{FromPortable, PValue, ToPortable};
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+enum PCell { Occupied(PValue), Void }
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PLayer { name: String, cells: Vec<((i32, i32), PCell)> }
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PWorld {
+    name: String,
+    width: i32,
+    height: i32,
+    mode: u8,
+    hierarchy: Option<[i32; 8]>,
+    tiles: Vec<Vec<(String, PValue)>>,
+    regions: Vec<Vec<(String, PValue)>>,
+    layers: Vec<PLayer>,
+    defaults: Vec<(String, PValue)>,
+    snapshot: Option<Vec<PLayer>>,
+}
+
+/// Every grid of a session, ready to be written or to cross to another
+/// thread. Cells and states keep their values (an owner stays the object
+/// it names).
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PGrids { worlds: Vec<PWorld> }
+
+fn p_state(tp: &mut ToPortable, m: &HashMap<String, Value>) -> Result<Vec<(String, PValue)>, GoblinError> {
+    let mut v: Vec<(String, PValue)> = m.iter().map(|(k, x)| Ok((k.clone(), tp.value(x)?))).collect::<Result<_, GoblinError>>()?;
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(v)
+}
+
+fn p_layer(tp: &mut ToPortable, l: &GridLayer) -> Result<PLayer, GoblinError> {
+    let mut cells = Vec::with_capacity(l.cells.len());
+    for (c, s) in &l.cells {
+        cells.push((*c, match s {
+            CellState::Occupied(v) => PCell::Occupied(tp.value(v)?),
+            CellState::Void => PCell::Void,
+            CellState::Unoccupied => continue,
+        }));
+    }
+    cells.sort_by_key(|(c, _)| (c.1, c.0));
+    Ok(PLayer { name: l.name.clone(), cells })
+}
+
+fn layer_of(fp: &mut FromPortable, s: &mut crate::session::Session, p: &PLayer) -> GridLayer {
+    let mut l = GridLayer::new(p.name.clone());
+    for (c, cell) in &p.cells {
+        l.cells.insert(*c, match cell { PCell::Occupied(v) => CellState::Occupied(fp.value(v, s)), PCell::Void => CellState::Void });
+    }
+    l
+}
+
+pub(crate) fn grids_to_p(g: &GridStore, tp: &mut ToPortable) -> Result<PGrids, GoblinError> {
+    let mut worlds = Vec::with_capacity(g.worlds.len());
+    for name in g.names() {
+        let w = &g.worlds[&name];
+        let mut layers: Vec<PLayer> = w.layers.values().map(|l| p_layer(tp, l)).collect::<Result<_, _>>()?;
+        layers.sort_by(|a, b| a.name.cmp(&b.name));
+        let snapshot = match &w.snapshot {
+            Some(m) => {
+                let mut v: Vec<PLayer> = m.values().map(|l| p_layer(tp, l)).collect::<Result<_, _>>()?;
+                v.sort_by(|a, b| a.name.cmp(&b.name));
+                Some(v)
+            }
+            None => None,
+        };
+        worlds.push(PWorld {
+            name: w.name.clone(), width: w.width, height: w.height,
+            mode: match w.neighbor_mode { NeighborMode::Four => 4, NeighborMode::Eight => 8, NeighborMode::Hex => 6, NeighborMode::Wrapped => 0 },
+            hierarchy: w.hierarchy.as_ref().map(|h| [h.tile_w, h.tile_h, h.tile_cols, h.tile_rows, h.tile_count, h.region_dim, h.region_count, h.tiles_per_region_edge]),
+            tiles: w.tiles.iter().map(|t| p_state(tp, &t.state)).collect::<Result<_, _>>()?,
+            regions: w.regions.iter().map(|r| p_state(tp, &r.state)).collect::<Result<_, _>>()?,
+            layers,
+            defaults: p_state(tp, &w.world_defaults)?,
+            snapshot,
+        });
+    }
+    Ok(PGrids { worlds })
+}
+
+pub(crate) fn grids_from_p(p: &PGrids, fp: &mut FromPortable, s: &mut crate::session::Session) -> GridStore {
+    let mut g = GridStore::new();
+    for w in &p.worlds {
+        let state = |fp: &mut FromPortable, s: &mut crate::session::Session, v: &Vec<(String, PValue)>| -> HashMap<String, Value> {
+            v.iter().map(|(k, x)| (k.clone(), fp.value(x, s))).collect()
+        };
+        let tiles = w.tiles.iter().map(|t| GridTile { state: state(fp, s, t) }).collect();
+        let regions = w.regions.iter().map(|r| GridRegion { state: state(fp, s, r) }).collect();
+        let layers = w.layers.iter().map(|l| (l.name.clone(), layer_of(fp, s, l))).collect();
+        let world_defaults = state(fp, s, &w.defaults);
+        let snapshot = w.snapshot.as_ref().map(|v| v.iter().map(|l| (l.name.clone(), layer_of(fp, s, l))).collect());
+        g.insert(GridWorld {
+            name: w.name.clone(), width: w.width, height: w.height,
+            neighbor_mode: match w.mode { 4 => NeighborMode::Four, 8 => NeighborMode::Eight, 6 => NeighborMode::Hex, _ => NeighborMode::Wrapped },
+            hierarchy: w.hierarchy.map(|h| HierarchyConfig { tile_w: h[0], tile_h: h[1], tile_cols: h[2], tile_rows: h[3], tile_count: h[4], region_dim: h[5], region_count: h[6], tiles_per_region_edge: h[7] }),
+            tiles, regions, layers, world_defaults, snapshot,
+        });
+    }
+    g
+}

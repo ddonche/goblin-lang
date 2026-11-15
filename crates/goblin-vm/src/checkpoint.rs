@@ -22,7 +22,7 @@ use crate::vm::Vm;
 
 const MAGIC: &[u8; 8] = b"GOBLINCP";
 /// Changes whenever what a checkpoint holds changes.
-const FORMAT: u32 = 4;
+const FORMAT: u32 = 5;
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
 
@@ -258,6 +258,8 @@ pub(crate) struct SessionState {
     handed_off: Vec<(String, String)>,
     /// In a region: the owners it gave other regions' objects last tick.
     owners_sent: Vec<(String, PValue)>,
+    /// Its grids: every cell, tile, region and default.
+    grids: crate::grid::PGrids,
 }
 
 impl SessionState {
@@ -284,6 +286,7 @@ pub(crate) fn session_state(s: &Session) -> Result<SessionState, GoblinError> {
     let des = crate::des_image::des_image_of(s, &mut tp, Some(&ids))?;
     let mut owners_sent = Vec::with_capacity(s.owners_sent.len());
     for (u, v) in &s.owners_sent { owners_sent.push((u.to_string(), tp.value(v)?)); }
+    let grids = crate::grid::grids_to_p(&s.grid_store, &mut tp)?;
     drop(tp);
     let mut kind_counts: Vec<(String, u64)> = s.kind_counts.iter().map(|(k, n)| (k.clone(), *n)).collect();
     kind_counts.sort();
@@ -294,7 +297,7 @@ pub(crate) fn session_state(s: &Session) -> Result<SessionState, GoblinError> {
         ticks: s.des_ticks, link_ids: s.des_link_id_counter, rng: s.rng_state, event_rng: s.event_rng,
         objects_made: s.des_metrics.objects_made, overlays_made: s.des_metrics.overlays_made,
         moved_away: sorted(&s.moved_away), kept_home: sorted(&s.kept_home), handed_off: sorted(&s.handed_off),
-        owners_sent,
+        owners_sent, grids,
     })
 }
 
@@ -322,6 +325,7 @@ pub(crate) fn load_session_state(st: &SessionState, s: &mut Session) {
         s.object_store.insert(crate::value::ObjId::from(u.as_str()), v);
     }
     crate::des_image::install(&st.des, &mut fp, s);
+    s.grid_store = crate::grid::grids_from_p(&st.grids, &mut fp, s);
     s.owners_sent = st.owners_sent.iter().map(|(u, p)| (crate::value::ObjId::from(u.as_str()), fp.value(p, s))).collect();
     s.kind_counts = st.kind_counts.iter().cloned().collect();
     s.kind_order = st.kind_order.clone();
