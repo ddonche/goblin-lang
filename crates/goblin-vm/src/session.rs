@@ -390,6 +390,12 @@ pub struct Session {
     pub kind_order: Vec<String>,
     /// Generated overlay kinds converted to cross threads, made once each.
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
+    /// The overlay kinds' variables (`OverlayDef::maker`), converted once
+    /// for as long as the session holds them: by the collection and whether
+    /// objects went by id. Kinds a transition makes share their maker's.
+    pub(crate) portable_makers: std::cell::RefCell<HashMap<(usize, bool), (Value, std::sync::Arc<crate::portable::PValue>)>>,
+    /// And rebuilt once from another session's copy, by that copy.
+    pub(crate) rebuilt_makers: HashMap<usize, (std::sync::Arc<crate::portable::PValue>, Value)>,
     pub des_link_id_counter: u32,
     pub des_link_ids: HashMap<(String, String, String), LinkId>,
 
@@ -592,6 +598,8 @@ impl Session {
             overlay_lines_run: Default::default(),
             kind_order: Vec::new(),
             portable_kinds: Default::default(),
+            portable_makers: Default::default(),
+            rebuilt_makers: Default::default(),
             des_link_id_counter: 0,
             des_link_ids: HashMap::new(),
             global_type_locks: Default::default(),

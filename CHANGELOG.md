@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.40 — 2026-11-15
+
+- Guided runs run their copies side by side: each round's copies run at once, one per core (`GOBLIN_GUIDE_THREADS` sets how many), each in a session of its own built from the program as it was when `:guide` was called. The history found is the same however many run at once. A copy's plain variables stay its own; the program's are as they were.
+- With an event log on, `:guide` writes the tellings of the history it found, from the start to the last milestone, in order. The tries it dropped are left out.
+- Memory: after a restore, every region rebuilt its own copy of each overlay kind's variables (in the capstone, every province pair, for each of 578 kinds) on the first tick, and a run went from 1 GB to 5 GB. A session now converts and rebuilds each such value once and keeps it. The capstone stays at about 1 GB after a restore; the history is the same (200 years straight against 100, a restore and 100 more, byte-identical on 1 and 4 threads).
+- Capstone, a guided run from year 100 (16 tries of 5 years, 4 regions): 1 copy at a time 34 s, 2 side by side 21 s, 4 side by side 15 s (peak 5.4 GB).
+- Conformance: new case `des_guide_event_log`.
+
 ## 0.51.39 — 2026-11-15
 
 - Checkpoints are fast to write. An overlay kind keeps the variables of the code that made it, and every kind a transition makes from it keeps them too. In the capstone those variables reach every province pair (about 10 MB), and each kind wrote its own copy: 578 kinds came to 170 MB before compression. Kinds now share one copy of what they keep: it is converted once, written once in its own table (equal values from other years and regions too), and rebuilt once on restore. The compressor also gets the tables whole instead of a byte at a time. Capstone at year 100 (4 regions): writing a checkpoint takes 1.4 s, was 36 s; restoring takes under 1 s, was 3 s; the file is 10 MB, was 21 MB. Checkpoint format 4; files written before can't be read.

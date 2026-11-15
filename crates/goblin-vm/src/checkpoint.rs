@@ -308,6 +308,8 @@ pub(crate) fn load_session_state(st: &SessionState, s: &mut Session) {
     s.remote_copies.clear();
     s.sent_objects.clear();
     s.portable_kinds.borrow_mut().clear();
+    s.portable_makers.borrow_mut().clear();
+    s.rebuilt_makers.clear();
     s.phase_views.clear();
     s.transitioned.clear();
     s.des_erasing.clear();
