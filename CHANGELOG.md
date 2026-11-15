@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.43 — 2026-11-15
+
+- Pictures: `:write_png!(path, width, height, pixels)` writes a PNG from a list of colors, row by row (cell i at x = i % width, y = i // width); a color is `"#rrggbb"`, `"#rrggbbaa"`, or nil for clear. `:read_png(path)` gives `{"width", "height", "pixels"}` in the same form (8-bit pictures). Errors are R1270 (write) and R1271 (read). The coder is built in; no image library is added.
+- A cell reference (from `:grid_neighbors`) has its place: `n >> x`, `n >> y`, `n >> grid`.
+- `pick 1 from` a long list no longer copies the list first: on a 20,000-item list a pick went from 120 µs to under 1 µs. Same draws as before.
+- `sims/maptest`: a Map Spawner map (`start.json`, its JSON export) loaded into a grid, a run where realms press their borders, and a picture before and after (1000 ticks on 320 × 200 cells, 11 s; 5 minutes before the pick fix).
+- Conformance: new cases `image_png_round_trip`, `grid_cell_ref_place`.
+
 ## 0.51.42 — 2026-11-15
 
 - Grids with regions (ruling of 11-15): the program keeps one grid. Each tick every region sees it as it was when the tick (or the phase) started, plus its own writes. What any region or the program writes reaches every region by the next tick, in region order: when two regions write one cell in the same tick, the later region's write stands, in every region and in the program. A region that joins gets the grids whole. The same history on any number of threads.

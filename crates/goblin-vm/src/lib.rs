@@ -5,6 +5,7 @@ pub mod fields;
 pub mod session;
 pub mod store;
 pub mod grid;
+pub mod image;
 pub mod vm;
 pub mod collections;
 pub mod agenda;

@@ -1,0 +1,108 @@
+/// Map test: load a Map Spawner map (its "Export JSON state") into a grid,
+/// write a picture, let the realms push their borders for a while, and write
+/// a picture again. Cell i of the map is at x = i % width, y = i // width.
+<>Realm |
+    name: ..
+    color: ..
+    might: 0.5
+    land: 0
+xx
+
+:rand_seed(7)
+m      | :read_json("start.json")
+w      | m{"width"}
+h      | m{"height"}
+valid  | m{"valid"}
+ids    | m{"layers"}{"regions"}
+sea    | "#305b72"
+wild   | "#dacfab"
+
+:grid("world", w, h, 4)
+realms | []
+repeat m{"palette"} as p
+    r <> Realm | name: p{"label"}, color: p{"color"}, might: 0.2 + (pick 1 from 0...800) / 1000.0
+    :put_last!(realms, r)
+xx
+land | []
+repeat :range(0, w * h) as i
+    if valid[i] == 0
+        :grid_void("world", i % w, i // w)
+    else
+        :put_last!(land, i)
+        if ids[i] >= 0
+            r | realms[ids[i]]
+            :grid_set("world", i % w, i // w, "owner", r)
+            r >> land |= r >> land + 1
+        xx
+    xx
+xx
+
+/// The map as a picture: sea, unclaimed land, and each realm's color.
+act picture(path)
+    px | []
+    repeat :range(0, w * h) as i
+        if valid[i] == 0
+            :put_last!(px, sea)
+        else
+            r | :grid_get("world", i % w, i // w, "owner")
+            if r.nix?
+                :put_last!(px, wild)
+            else
+                :put_last!(px, r >> color)
+            xx
+        xx
+    xx
+    :write_png!(path, w, h, px)
+xx
+
+/// How hard a realm pushes: its might, thinned by how much land it holds.
+act push(r)
+    return r >> might / (1.0 + r >> land / 4000.0)
+xx
+
+/// One tick: cells on a border change hands. A held cell is drawn at random;
+/// its holder presses a random neighbor, and takes it with the chance
+/// push / (push + the neighbor holder's push).
+act season()
+    repeat 4000
+        i | pick 1 from land
+        a | :grid_get("world", i % w, i // w, "owner")
+        if not a.nix?
+            ns | :grid_neighbors("world", i % w, i // w)
+            n  | pick 1 from ns
+            b  | :grid_get("world", n >> x, n >> y, "owner")
+            if b != a
+                pa | push(a)
+                pb | 0.1
+                if not b.nix?
+                    pb |= push(b)
+                xx
+                if (pick 1 from 0...999) / 1000.0 < pa / (pa + pb)
+                    :grid_set("world", n >> x, n >> y, "owner", a)
+                    a >> land |= a >> land + 1
+                    if not b.nix?
+                        b >> land |= b >> land - 1
+                    xx
+                xx
+            xx
+        xx
+    xx
+    repeat realms as r
+        r >> might |= :clamp(r >> might + ((pick 1 from 0...100) - 50) / 1000.0, 0.05, 1.0)
+    xx
+xx
+
+act report(when)
+    :say(when)
+    repeat realms as r
+        :say("  {r >> name}: {r >> land} cells, might {:round(r >> might, 2)}")
+    xx
+xx
+
+report("start")
+picture("before.png")
+repeat 1000
+    season()
+xx
+report("after 1000 ticks")
+picture("after.png")

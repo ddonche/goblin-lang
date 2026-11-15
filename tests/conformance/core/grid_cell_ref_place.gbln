@@ -1,0 +1,8 @@
+/// known-gap: interp cell references have no fields (the interpreter is being retired)
+/// A cell reference, as `:grid_neighbors` gives them, has its place: `>> x`,
+/// `>> y`, and the grid's name `>> grid`.
+:grid("map", 3, 3)
+:grid_void("map", 1, 0)
+repeat :grid_neighbors("map", 1, 1) as n
+    :say("{n >> grid} {n >> x},{n >> y}")
+xx

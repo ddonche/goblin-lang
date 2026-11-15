@@ -1029,6 +1029,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
 
+        BuiltinId::WritePng => {
+            if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "write_png".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_png path")) };
+            let w = match read(1)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png width")) };
+            let h = match read(2)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png height")) };
+            let pixels = read(3)?;
+            crate::image::write_png(&path, w, h, &pixels)
+        }
+
+        BuiltinId::ReadPng => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_png path")) };
+            crate::image::read_png(&path)
+        }
+
         BuiltinId::AppendFile => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "append_file".into() }); }
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file path")) };
@@ -5748,6 +5763,20 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
                 for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                 result
             };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+        // A list: draw by position, without copying the list out first.
+        Some(whole @ Value::Collection(c)) if !c.is_map() => {
+            let len = crate::collections::count(c);
+            if len == 0 { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+            if !allow_dups && n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, len))); }
+            let ks: Vec<usize> = if allow_dups {
+                (0..n_out).map(|_| rng_bounded(session, len as u64) as usize).collect()
+            } else {
+                pick_indices(session, len, n_out)
+            };
+            let mut out = Vec::with_capacity(n_out);
+            for k in ks { out.push(crate::collections::get_index(whole, &Value::Int(k as i64))?); }
             if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
         }
         Some(Value::Collection(c)) => {

@@ -7923,6 +7923,16 @@ fn member_dispatch(v: &Value, name: &str, session: &mut Session) -> Result<Value
         }
     }
 
+    // A cell reference (`world[x, y]`, `:grid_neighbors`) gives its place.
+    if let Value::GridRef { grid_id, x, y } = v {
+        match name {
+            "x" => return Ok(Value::Int(*x as i64)),
+            "y" => return Ok(Value::Int(*y as i64)),
+            "grid" => return Ok(Value::Str(grid_id.to_string().into())),
+            _ => {}
+        }
+    }
+
     // Try builtin method dispatch first
     let bid = member_builtin(name);
 
