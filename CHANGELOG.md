@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.39 — 2026-11-14
+
+- Checkpoints are fast to write. An overlay kind keeps the variables of the code that made it, and every kind a transition makes from it keeps them too. In the capstone those variables reach every province pair (about 10 MB), and each kind wrote its own copy: 578 kinds came to 170 MB before compression. Kinds now share one copy of what they keep: it is converted once, written once in its own table (equal values from other years and regions too), and rebuilt once on restore. The compressor also gets the tables whole instead of a byte at a time. Capstone at year 100 (4 regions): writing a checkpoint takes 1.4 s, was 36 s; restoring takes under 1 s, was 3 s; the file is 10 MB, was 21 MB. Checkpoint format 4; files written before can't be read.
+- Test: capstone 200 years straight against 100 years, a checkpoint, a restore and 100 more (seed 42): the event log after year 100 (83,178 lines) and the output are byte-identical, restored on 1 and 4 threads.
+
 ## 0.51.38 — 2026-11-14
 
 - Maps: a key that isn't text reads back. `:put!(m, 3, x)` stores the key as the text "3", as map keys are text, but `m{3}` gave nil. It reads "3" now, in small and large maps alike.

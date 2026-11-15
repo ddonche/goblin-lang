@@ -40,7 +40,10 @@ pub(crate) struct POverlayDef {
     generated: bool,
     travels: bool,
     parents: Vec<String>,
-    maker: Vec<(String, PValue)>,
+    /// The maker's variables. Kinds made from one another share them, so
+    /// each is converted once and a checkpoint writes it once.
+    #[serde(with = "crate::checkpoint::maker_vec")]
+    maker: Vec<(String, std::sync::Arc<PValue>)>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -107,14 +110,14 @@ pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDe
         generated: d.generated,
         travels: d.travels,
         parents: d.parents.clone(),
-        maker: d.maker.iter().map(|(k, v)| Ok((k.clone(), tp.value(v)?))).collect::<Result<Vec<_>, GoblinError>>()?,
+        maker: d.maker.iter().map(|(k, v)| Ok((k.clone(), tp.shared_value(v)?))).collect::<Result<Vec<_>, GoblinError>>()?,
     })
 }
 
 /// An overlay definition rebuilt in this session (its blocks compiled again).
 pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session) -> OverlayDef {
     let extra_fields: indexmap::IndexMap<String, crate::value::Value> = d.extra_fields.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
-    let maker: Vec<(String, crate::value::Value)> = d.maker.iter().map(|(k, v)| (k.clone(), fp.value(v, s))).collect();
+    let maker: Vec<(String, crate::value::Value)> = d.maker.iter().map(|(k, v)| (k.clone(), fp.shared_value_of(v, s))).collect();
     let extra_names: Vec<String> = extra_fields.keys().cloned().chain(maker.iter().map(|(k, _)| k.clone())).collect();
     OverlayDef {
         maker,

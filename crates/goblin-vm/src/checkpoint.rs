@@ -22,7 +22,7 @@ use crate::vm::Vm;
 
 const MAGIC: &[u8; 8] = b"GOBLINCP";
 /// Changes whenever what a checkpoint holds changes.
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 4;
 
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
 
@@ -381,14 +381,22 @@ pub(crate) fn checkpoint_to(vm: &mut Vm, path: &str) -> Result<i64, GoblinError>
     out.extend_from_slice(&FORMAT.to_le_bytes());
     // The overlay kinds go once, ahead of the rest: every session and every
     // overlay of a kind names it by its place in that table.
+    // The kinds' variables go once too, ahead of the kinds.
     KINDS_OUT.with(|k| *k.borrow_mut() = Some(KindsOut::default()));
+    MAKERS_OUT.with(|m| *m.borrow_mut() = Some(MakersOut::default()));
     let body = bincode::serialize(&cp);
     let kinds = KINDS_OUT.with(|k| k.borrow_mut().take()).unwrap_or_default();
+    let makers = MAKERS_OUT.with(|m| m.borrow_mut().take()).unwrap_or_default();
     let body = body.map_err(|e| err(e.to_string()))?;
     {
         use std::io::Write;
+        // The tables are written out first and handed over whole: bincode
+        // writes a byte string a byte at a time, and the compressor is slow
+        // on many small writes.
+        let mut head = bincode::serialize(&makers.blobs).map_err(|e| err(e.to_string()))?;
+        bincode::serialize_into(&mut head, &kinds.blobs).map_err(|e| err(e.to_string()))?;
         let mut z = flate2::write::DeflateEncoder::new(&mut out, flate2::Compression::fast());
-        bincode::serialize_into(&mut z, &kinds.blobs).map_err(|e| err(e.to_string()))?;
+        z.write_all(&head).map_err(|e| err(e.to_string()))?;
         z.write_all(&body).map_err(|e| err(e.to_string()))?;
         z.finish().map_err(|e| err(e.to_string()))?;
     }
@@ -440,9 +448,19 @@ pub(crate) fn restore_from(vm: &mut Vm, path: &str, seed: Option<u128>) -> Resul
             .map_err(|e| err(format!("R1264: restore: {path} can't be read: {e}")))?;
     }
     let mut rest = &raw[..];
+    let makers: Vec<Vec<u8>> = bincode::deserialize_from(&mut rest).map_err(bad)?;
+    let mut vals = Vec::with_capacity(makers.len());
+    for b in &makers { vals.push(Arc::new(bincode::deserialize::<PValue>(b).map_err(bad)?)); }
+    MAKERS_IN.with(|m| *m.borrow_mut() = vals);
     let blobs: Vec<Vec<u8>> = bincode::deserialize_from(&mut rest).map_err(bad)?;
     let mut kinds = Vec::with_capacity(blobs.len());
-    for b in &blobs { kinds.push(Arc::new(bincode::deserialize::<POverlayDef>(b).map_err(bad)?)); }
+    for b in &blobs {
+        match bincode::deserialize::<POverlayDef>(b) {
+            Ok(d) => kinds.push(Arc::new(d)),
+            Err(e) => { MAKERS_IN.with(|m| m.borrow_mut().clear()); return Err(bad(e)); }
+        }
+    }
+    MAKERS_IN.with(|m| m.borrow_mut().clear());
     KINDS_IN.with(|k| *k.borrow_mut() = kinds);
     let cp: Result<Checkpoint, _> = bincode::deserialize(rest);
     KINDS_IN.with(|k| k.borrow_mut().clear());
@@ -501,7 +519,22 @@ struct KindsOut {
     by_addr: std::collections::HashMap<*const POverlayDef, u32>,
 }
 
+/// While a checkpoint is written: each distinct variable value the kinds
+/// keep, written out, and its place in the table (by the copy they share,
+/// and by what it holds: kinds made in other years or regions keep equal
+/// values of their own).
+#[derive(Default)]
+struct MakersOut {
+    blobs: Vec<Vec<u8>>,
+    by_bytes: std::collections::HashMap<Vec<u8>, u32>,
+    by_addr: std::collections::HashMap<*const PValue, u32>,
+    /// Keeps each value seen alive, so its address names only it.
+    seen: Vec<Arc<PValue>>,
+}
+
 thread_local! {
+    static MAKERS_OUT: std::cell::RefCell<Option<MakersOut>> = const { std::cell::RefCell::new(None) };
+    static MAKERS_IN: std::cell::RefCell<Vec<Arc<PValue>>> = const { std::cell::RefCell::new(Vec::new()) };
     static KINDS_OUT: std::cell::RefCell<Option<KindsOut>> = const { std::cell::RefCell::new(None) };
     static KINDS_IN: std::cell::RefCell<Vec<Arc<POverlayDef>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -555,5 +588,47 @@ pub(crate) mod kind_vec {
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<POverlayDef>, D::Error> {
         Vec::<u32>::deserialize(d)?.into_iter().map(|n| kind_at(n).map(|a| (*a).clone())).collect::<Result<Vec<_>, String>>().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A kind's variables, each as its place in the table of their values.
+pub(crate) mod maker_vec {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(v: &[(String, Arc<PValue>)], s: S) -> Result<S::Ok, S::Error> {
+        let ns = MAKERS_OUT.with(|m| {
+            let mut m = m.borrow_mut();
+            let t = m.as_mut().ok_or_else(|| "an overlay kind outside a checkpoint".to_string())?;
+            let mut ns: Vec<(&str, u32)> = Vec::with_capacity(v.len());
+            for (name, p) in v {
+                let n = match t.by_addr.get(&Arc::as_ptr(p)) {
+                    Some(n) => *n,
+                    None => {
+                        let bytes = bincode::serialize(p.as_ref()).map_err(|e| e.to_string())?;
+                        let n = match t.by_bytes.get(&bytes) {
+                            Some(n) => *n,
+                            None => {
+                                let n = t.blobs.len() as u32;
+                                t.blobs.push(bytes.clone());
+                                t.by_bytes.insert(bytes, n);
+                                n
+                            }
+                        };
+                        t.by_addr.insert(Arc::as_ptr(p), n);
+                        t.seen.push(p.clone());
+                        n
+                    }
+                };
+                ns.push((name.as_str(), n));
+            }
+            Ok::<_, String>(ns)
+        }).map_err(serde::ser::Error::custom)?;
+        ns.serialize(s)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, Arc<PValue>)>, D::Error> {
+        let ns = Vec::<(String, u32)>::deserialize(d)?;
+        MAKERS_IN.with(|m| {
+            let m = m.borrow();
+            ns.into_iter().map(|(name, n)| m.get(n as usize).cloned().map(|p| (name, p)).ok_or_else(|| format!("no kind variable {n}"))).collect::<Result<Vec<_>, String>>()
+        }).map_err(serde::de::Error::custom)
     }
 }
