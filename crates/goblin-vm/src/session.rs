@@ -389,6 +389,9 @@ pub struct Session {
     /// while the program ran), for `:objects(Government)`.
     pub kind_order: Vec<String>,
     /// Generated overlay kinds converted to cross threads, made once each.
+    /// While a world runs on regions: the grid writes made here since the
+    /// last round, sent to the other regions (`world::round`).
+    pub(crate) grid_log: Option<Vec<crate::grid::GridWrite>>,
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
     /// The overlay kinds' variables (`OverlayDef::maker`), converted once
     /// for as long as the session holds them: by the collection and whether
@@ -598,6 +601,7 @@ impl Session {
             overlay_lines_run: Default::default(),
             kind_order: Vec::new(),
             portable_kinds: Default::default(),
+            grid_log: None,
             portable_makers: Default::default(),
             rebuilt_makers: Default::default(),
             des_link_id_counter: 0,
@@ -624,6 +628,11 @@ impl Session {
     }
 
     /// Take the captured output, leaving the buffer empty.
+    /// A grid write, kept while a world runs on regions.
+    pub(crate) fn note_grid(&mut self, w: crate::grid::GridWrite) {
+        if let Some(log) = self.grid_log.as_mut() { log.push(w); }
+    }
+
     pub fn take_output(&mut self) -> String {
         self.output_buf.take().unwrap_or_default()
     }

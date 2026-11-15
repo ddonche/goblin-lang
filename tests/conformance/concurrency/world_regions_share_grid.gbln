@@ -1,0 +1,43 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// With a world on regions, the program keeps one grid. Each tick every
+/// region sees it as it was when the tick started, plus its own writes;
+/// what any region or the program writes reaches every region by the next
+/// tick, in region order (a later region's write to the same cell wins).
+<>Land |
+    name: ..
+    x: 0
+    seen: ""
+xx
+:grid("map", 4, 1)
+:grid_set("map", 3, 0, "owner", "sea")
+act make(n, x)
+    l <> Land | name: n, x: x
+    return {"things": [l]}
+xx
+/// Each tick a region writes its own cell and the shared one, and notes
+/// what it sees in the other region's cell.
+act day(st, msg)
+    repeat st{"things"} as l
+        other | 1 - l >> x
+        :grid_set("map", l >> x, 0, "owner", "{l >> name} {msg{"tick"} ?? 0}")
+        :grid_set("map", 2, 0, "owner", l >> name)
+        l >> seen |= "{l >> seen}|{:grid_get("map", other, 0, "owner") ?? "-"} {:grid_get("map", 3, 0, "owner")}"
+    xx
+    return st
+xx
+west | :actor(make("west", 0), day)
+east | :actor(make("east", 1), day)
+:tick()
+:grid_set("map", 3, 0, "owner", "lake")
+:tick()
+:tick()
+act name_of(l)
+    return l >> name
+xx
+repeat :sort_by(:objects("Land"), "name_of") as l
+    :say("{l >> name} saw {l >> seen}")
+xx
+:say(:grid_get("map", 0, 0, "owner"))
+:say(:grid_get("map", 1, 0, "owner"))
+:say(:grid_get("map", 2, 0, "owner"))
+:say(:grid_get("map", 3, 0, "owner"))

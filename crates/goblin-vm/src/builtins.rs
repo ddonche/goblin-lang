@@ -4065,6 +4065,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let world = crate::grid::GridWorld::new(&*name, width, height, mode, hierarchy);
             session.grid_store.insert(world);
+            session.note_grid(crate::grid::GridWrite::New(name.to_string()));
             Ok(Value::Str(name))
         }
         BuiltinId::GridGet => {
@@ -4095,8 +4096,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_set: no grid named '{}'", grid_id)))?;
             if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) out of bounds", x, y))); }
             if world.is_void(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) is void", x, y))); }
-            let state = match value { Value::Nil => crate::grid::CellState::Unoccupied, v => crate::grid::CellState::Occupied(v) };
+            let state = match value.clone() { Value::Nil => crate::grid::CellState::Unoccupied, v => crate::grid::CellState::Occupied(v) };
             world.set(x, y, &layer, state);
+            session.note_grid(crate::grid::GridWrite::Cell { grid: grid_id.to_string(), x, y, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridVoid => {
@@ -4109,6 +4111,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_void: no grid named '{}'", grid_id)))?;
             if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_void: ({},{}) out of bounds", x, y))); }
             world.void_cell(x, y);
+            session.note_grid(crate::grid::GridWrite::Void { grid: grid_id.to_string(), x, y });
             Ok(Value::Unit)
         }
         BuiltinId::GridTileGet => {
@@ -4137,7 +4140,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: no grid named '{}'", grid_id)))?;
             require_tile_in_bounds(world, tx, ty, "grid_tile_set")?;
-            world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value);
+            world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Tile { grid: grid_id.to_string(), x: tx, y: ty, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridRegionGet => {
@@ -4166,7 +4170,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: no grid named '{}'", grid_id)))?;
             require_region_in_bounds(world, rx, ry, "grid_region_set")?;
-            world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value);
+            world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Region { grid: grid_id.to_string(), x: rx, y: ry, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridDefaultGet => {
@@ -4189,7 +4194,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let layer = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_default_set layer")) };
             let value = read(2)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_default_set: no grid named '{}'", grid_id)))?;
-            world.set_world_default(&layer, value);
+            world.set_world_default(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Default { grid: grid_id.to_string(), layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridNeighbors => {

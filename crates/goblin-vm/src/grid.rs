@@ -687,3 +687,86 @@ pub(crate) fn grids_from_p(p: &PGrids, fp: &mut FromPortable, s: &mut crate::ses
     }
     g
 }
+
+// ── Writes between regions ────────────────────────────────────────────────────
+
+/// One change to a grid, kept while a world runs on regions so the other
+/// regions make it too.
+#[derive(Debug, Clone)]
+pub enum GridWrite {
+    Cell { grid: String, x: i32, y: i32, layer: String, val: Value },
+    Void { grid: String, x: i32, y: i32 },
+    Tile { grid: String, x: i32, y: i32, layer: String, val: Value },
+    Region { grid: String, x: i32, y: i32, layer: String, val: Value },
+    Default { grid: String, layer: String, val: Value },
+    /// A grid made here: it goes whole.
+    New(String),
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PGridWrite {
+    Cell { grid: String, x: i32, y: i32, layer: String, val: PValue },
+    Void { grid: String, x: i32, y: i32 },
+    Tile { grid: String, x: i32, y: i32, layer: String, val: PValue },
+    Region { grid: String, x: i32, y: i32, layer: String, val: PValue },
+    Default { grid: String, layer: String, val: PValue },
+    New(Box<PWorld>),
+}
+
+/// The writes, ready to cross; a grid made here goes as it is now.
+pub(crate) fn writes_to_p(log: &[GridWrite], g: &GridStore, tp: &mut ToPortable) -> Result<Vec<PGridWrite>, GoblinError> {
+    let mut out = Vec::with_capacity(log.len());
+    for w in log {
+        out.push(match w {
+            GridWrite::Cell { grid, x, y, layer, val } => PGridWrite::Cell { grid: grid.clone(), x: *x, y: *y, layer: layer.clone(), val: tp.value(val)? },
+            GridWrite::Void { grid, x, y } => PGridWrite::Void { grid: grid.clone(), x: *x, y: *y },
+            GridWrite::Tile { grid, x, y, layer, val } => PGridWrite::Tile { grid: grid.clone(), x: *x, y: *y, layer: layer.clone(), val: tp.value(val)? },
+            GridWrite::Region { grid, x, y, layer, val } => PGridWrite::Region { grid: grid.clone(), x: *x, y: *y, layer: layer.clone(), val: tp.value(val)? },
+            GridWrite::Default { grid, layer, val } => PGridWrite::Default { grid: grid.clone(), layer: layer.clone(), val: tp.value(val)? },
+            GridWrite::New(name) => {
+                let Some(world) = g.worlds.get(name) else { continue };
+                let one = GridStore { worlds: std::iter::once((name.clone(), world.clone())).collect() };
+                match grids_to_p(&one, tp)?.worlds.pop() { Some(p) => PGridWrite::New(Box::new(p)), None => continue }
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// Makes the writes here, in order.
+pub(crate) fn apply_writes(ws: &[PGridWrite], fp: &mut FromPortable, s: &mut crate::session::Session) {
+    for w in ws {
+        match w {
+            PGridWrite::New(p) => {
+                let g = grids_from_p(&PGrids { worlds: vec![(**p).clone()] }, fp, s);
+                for (_, world) in g.worlds { s.grid_store.insert(world); }
+            }
+            PGridWrite::Cell { grid, x, y, layer, val } => {
+                let v = fp.value(val, s);
+                if let Some(world) = s.grid_store.get_mut(grid) {
+                    world.set(*x, *y, layer, match v { Value::Nil => CellState::Unoccupied, v => CellState::Occupied(v) });
+                }
+            }
+            PGridWrite::Void { grid, x, y } => { if let Some(world) = s.grid_store.get_mut(grid) { world.void_cell(*x, *y); } }
+            PGridWrite::Tile { grid, x, y, layer, val } => {
+                let v = fp.value(val, s);
+                if let Some(t) = s.grid_store.get_mut(grid).and_then(|w| w.tile_at_mut(*x, *y)) { t.set(layer, v); }
+            }
+            PGridWrite::Region { grid, x, y, layer, val } => {
+                let v = fp.value(val, s);
+                if let Some(r) = s.grid_store.get_mut(grid).and_then(|w| w.region_at_mut(*x, *y)) { r.set(layer, v); }
+            }
+            PGridWrite::Default { grid, layer, val } => {
+                let v = fp.value(val, s);
+                if let Some(world) = s.grid_store.get_mut(grid) { world.set_world_default(layer, v); }
+            }
+        }
+    }
+}
+
+impl PGrids {
+    /// Every grid, as writes that make it whole.
+    pub(crate) fn into_writes(self) -> Vec<PGridWrite> {
+        self.worlds.into_iter().map(|w| PGridWrite::New(Box::new(w))).collect()
+    }
+}

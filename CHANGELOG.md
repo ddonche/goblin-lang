@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.42 — 2026-11-15
+
+- Grids with regions (ruling of 11-15): the program keeps one grid. Each tick every region sees it as it was when the tick (or the phase) started, plus its own writes. What any region or the program writes reaches every region by the next tick, in region order: when two regions write one cell in the same tick, the later region's write stands, in every region and in the program. A region that joins gets the grids whole. The same history on any number of threads.
+- Checkpoints of a world on regions hold the grid writes still on their way to the regions; after `:restore` the grid goes on exactly as it did.
+- Capstone (no grid): 100 years, a checkpoint, a restore and 100 more against 200 straight, byte-identical as before.
+- Conformance: new cases `world_regions_share_grid`, `world_checkpoint_keeps_grid`.
+
 ## 0.51.41 — 2026-11-15
 
 - Checkpoints hold the grids: every grid's cells on every layer, void cells, tiles, regions and defaults. A cell an object owns names that object again after `:restore`. Guided-run copies have them too. Checkpoint format 5.
