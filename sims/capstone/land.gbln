@@ -153,6 +153,10 @@ xx
 <>Clock |
     year: 0
     cells: 1
+    /// How many cells of this map make one province of the 400-province
+    /// world the sim was first built on: the world is as big on any map,
+    /// so a war's prize, a breakaway and a day's march cover as much land.
+    scale: 1.0
     /// Years of dimmed sun left, this year's weather (the harvest lost in
     /// each sixth of the map, "x,y"), and last year's share of all the
     /// world's people holding each tongue and faith (`spread`) and how much
@@ -172,6 +176,14 @@ xx
 
 act set_year(y)
     clock >> year |= y
+xx
+
+act scale()
+    return clock >> scale
+xx
+
+act set_scale(s)
+    clock >> scale |= s
 xx
 
 act set_cells(n)

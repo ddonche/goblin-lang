@@ -1011,10 +1011,12 @@ act drift(v, own, base)
     return v + (base - own) * .02
 xx
 
+/// How far land `l` lies from `p`'s capital, in provinces of the
+/// 400-province world (a map of finer cells counts more cells to a step).
 act distance(p, l)
     dx | p >> cx - l >> x
     dy | p >> cy - l >> y
-    return :sqrt(dx * dx + dy * dy)
+    return :sqrt((dx * dx + dy * dy) / land::scale())
 xx
 
 /// People it can bring to bear at province `l`: halved for every `reach`
@@ -1580,7 +1582,18 @@ act end_war(w, winner)
     :link!(loser, winner, "grievance", .4, 80)
     aim | w >> aim
     if winner == a and !(aim.nix?) and aim >> owner == d
-        aim >> owner |= a
+        /// The prize is the province fought over and the loser's land
+        /// joined to it where the winner can now bring more to bear than
+        /// the loser (power fades with distance from each capital:
+        /// Boulding's loss-of-strength gradient), so a crushing win takes a
+        /// wide frontier and a narrow one a strip; never the loser's capital.
+        prize | [aim]
+        repeat won_land(a, d, aim) as q
+            :put_last!(prize, q)
+        xx
+        repeat prize as q
+            q >> owner |= a
+        xx
         a >> seized |= a >> seized + 1.0
         if w >> holy => overlays::holy_conquest(a, aim)
     xx
@@ -1588,9 +1601,62 @@ act end_war(w, winner)
     if w >> holy and winner == d => overlays::discredit(a)
     /// A loser left with little land or no army is broken: the winner may
     /// take it in or make it a vassal (the settle phase's transitions).
-    if loser >> lands <= 3 or loser >> army < 1.0
+    if loser >> lands <= 3.0 * land::scale() or loser >> army < 1.0
         loser >> beaten_by |= winner
     xx
+xx
+
+/// What `p` can bring to bear at land `l`, its whole might halved for
+/// every `reach` provinces from its capital.
+act projected(p, l)
+    return might(p, l) * :pow(0.5, distance(p, l) / (p >> reach))
+xx
+
+/// The lands `d` holds joined to land `l` (not `l` itself, nor `d`'s
+/// capital) where `a` brings more to bear than `d`, nearest first.
+act won_land(a, d, l)
+    out  | []
+    seen | {}
+    :put!(seen, l >> name, true)
+    edge | [l]
+    repeat :len(edge) > 0
+        nxt | []
+        repeat edge as e
+            repeat :objects(Land, it >> owner == d and it != d >> capital and :link_score(e, it, "border")) as q
+                if :has(seen, q >> name) => skip
+                :put!(seen, q >> name, true)
+                if projected(a, q) <= projected(d, q) => skip
+                :put_last!(out, q)
+                :put_last!(nxt, q)
+            xx
+        xx
+        edge |= nxt
+    xx
+    return out
+xx
+
+/// Up to `most` lands `p` holds around land `l` (not `l` itself, nor
+/// `p`'s capital), nearest first: the lands beside `l`, then the lands
+/// beside those, and so on.
+act around(p, l, most)
+    out  | []
+    seen | {}
+    :put!(seen, l >> name, true)
+    edge | [l]
+    repeat :len(edge) > 0 and :len(out) < most
+        nxt | []
+        repeat edge as e
+            repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(e, it, "border")) as q
+                if :len(out) >= most => stop
+                if :has(seen, q >> name) => skip
+                :put!(seen, q >> name, true)
+                :put_last!(out, q)
+                :put_last!(nxt, q)
+            xx
+        xx
+        edge |= nxt
+    xx
+    return out
 xx
 
 /// The polities of `xs` still in the world (one a transition took in
@@ -2300,8 +2366,8 @@ act rise_kingdom(p)
 xx
 /// Kingdom to city-state: down to one city and its hinterland.
 act fall_kingdom(p)
-    if p >> cities > 1 or p >> lands > 3 => send 0.0
-    return odds((4 - p >> lands) / 6.0)
+    if p >> cities > 1 or p >> lands > 3.0 * land::scale() => send 0.0
+    return odds((4.0 - (p >> lands) / land::scale()) / 6.0)
 xx
 /// Kingdom to empire: several peoples, or kings as vassals.
 act rise_empire(p)
@@ -2329,7 +2395,7 @@ xx
 /// A civil war splits it: cohesion and succession low, worse in an
 /// interregnum.
 act civil_war(p)
-    if p >> lands < 4 => send 0.0
+    if p >> lands < 4.0 * land::scale() => send 0.0
     gap | .3
     if government::contested(p >> form) => gap |= 1.0
     return odds(under(p >> cohesion, .5) * under(p >> succession, .45) * gap)
@@ -2345,7 +2411,7 @@ xx
 /// that does not hold together.
 act breakaway(p, city)
     r | p >> rebel ?? => send 0.0
-    if p >> lands < 3 or land::is_city(r) != city => send 0.0
+    if p >> lands < 3.0 * land::scale() or land::is_city(r) != city => send 0.0
     far   | past(:min(distance(p, r) / (p >> reach * 2.0), 1.0), .3)
     loose | (1.0 - p >> centralization) * (1.0 - p >> legitimacy)
     /// Another people breaks away more readily than the court's own.
@@ -2554,8 +2620,9 @@ act broke_away(p, f)
                 edge_lands |= nxt
             xx
         else
-            repeat :objects(Land, it >> owner == p and it != p >> capital and :link_score(r, it, "border")) as q
-                if n >= 3 => stop
+            /// The far province and the land around it: three provinces'
+            /// worth of the first world in all.
+            repeat around(p, r, :round(3.0 * land::scale()) - 1) as q
                 q >> owner |= f
                 n |= n + 1
             xx

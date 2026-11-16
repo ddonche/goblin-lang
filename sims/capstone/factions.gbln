@@ -189,7 +189,7 @@ kinds | [
             score => @ambition * @unmet * @power
         xx
         decision rise
-            targets: uses govern where target == @realm and target >> lands >= 3
+            targets: uses govern where target == @realm and target >> lands >= 3.0 * land::scale()
             score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power * (1.0 - @loyalty * .5)
         xx
         judge

@@ -1,18 +1,23 @@
 year 0: 20 kingdoms, 63 village communities, 65 tribes
 year 0: 148 polities, largest Dunquarar with 5 provinces, 0 wars
-year 100: 100 polities, largest Jorgorwen with 19 provinces, 6 wars
-year 200: 83 polities, largest Norbeloryr with 25 provinces, 4 wars
-year 300: 65 polities, largest Norbeloryr with 27 provinces, 3 wars
-year 400: 59 polities, largest Noryroror with 34 provinces, 8 wars
-year 500: 41 polities, largest Torhaljor-Dunwenlor-Falgorlor with 36 provinces, 5 wars
-check: share of polity-years at war: 12%
-check: forms at the end: aristocratic_republic 2, chieftainship 7, client_regime 2, elders_council 5, elective_monarchy 4, hereditary_monarchy 3, imperial_autocracy 2, merchant_oligarchy 5, military_junta 8, theocracy 3
-check: families: deaths 1568, murders 209, executions 15, crowned 1220, regencies 33, usurped 54, interregnums 67, lines_ended 6, elections 929, claims_won 26, new_houses 207, marriages 346, births 563, partitions 0, unlike 61
-check: succession laws at the end: eldest_child 3, eldest_son 2, elective 5, faith 2, force 8, term 6
-check: groups: formed 723, split 201, merged 12, ended 625, give_gold 3600, withhold 87, give_men 3593, coup 22, preach 3860, found 73, press 2349, rise 27, crush 124, concede 170, patronize 2784, coups_won 10, coups_failed 12, unlike 54
-check: overlays: tongue_new 14, tongue_merge 0, shifted 200, faith_new 4, schism 28, blend 18, converted 351, creed_split 5, creed_shift 0, plague 8, strain 28, famine 2815, flood 609, quake 80, drought 2226, fire 2606, dread 824, golden_age 61, elite_strife 35, dark_years 2, court_converted 91, reaction 4, holy_war 137, holy_conquest 9, rally 14, discredited 1, coalition 160, struck_first 1, submitted 212, refused 76, people_broke_away 31, nominal 3, unlike_realm 6
-check: ideas at the end: tongues 50 (largest holds 0.061 of all people), faiths 91 (largest 0.501), creeds 26; realms of more than one people 15
-check: faiths at the end: militant 18, mercantile 9; realms fighting for their faith 2 (0 ruled by priests), trading for it 0; realm-years fighting for their faith 176 (0 ruled by priests)
-check: empires: 41, years from becoming an empire until gone: median 132, longest 478; standing at the end 19
-check: bordering realms: 84 pairs, sharing a tongue (.5 or more) 16, a faith 60; wars under way between faiths 2 of 5
-check: groups at the end: 287, largest share of a realm 0.514; ideas 117, largest holds 0.501 of all people
+year 100: 102 polities, largest Norbeloryr with 13 provinces, 5 wars
+  held land with another holder than 100 years before: 47.8%
+year 200: 87 polities, largest Ulrosvartor with 20 provinces, 5 wars
+  held land with another holder than 100 years before: 36.7%
+year 300: 69 polities, largest Mararisk with 28 provinces, 2 wars
+  held land with another holder than 100 years before: 35.1%
+year 400: 63 polities, largest Mararisk with 29 provinces, 1 wars
+  held land with another holder than 100 years before: 31%
+year 500: 42 polities, largest Noryroror-Falmargornor with 43 provinces, 3 wars
+  held land with another holder than 100 years before: 42.3%
+check: share of polity-years at war: 12.4%
+check: forms at the end: aristocratic_republic 1, chieftainship 3, citizen_republic 2, client_regime 3, elders_council 12, elective_monarchy 1, hereditary_monarchy 2, imperial_autocracy 1, merchant_oligarchy 4, military_junta 8, theocracy 3, tyranny 2
+check: families: deaths 1623, murders 223, executions 16, crowned 1211, regencies 25, usurped 70, interregnums 64, lines_ended 4, elections 937, claims_won 33, new_houses 221, marriages 368, births 606, partitions 1, unlike 66
+check: succession laws at the end: eldest_child 3, elective 1, faith 3, force 11, term 8
+check: groups: formed 709, split 197, merged 14, ended 624, give_gold 3442, withhold 84, give_men 3691, coup 18, preach 3521, found 84, press 2187, rise 41, crush 101, concede 139, patronize 2932, coups_won 8, coups_failed 10, unlike 47
+check: overlays: tongue_new 10, tongue_merge 1, shifted 79, faith_new 4, schism 19, blend 14, converted 290, creed_split 10, creed_shift 0, plague 19, strain 18, famine 2714, flood 646, quake 80, drought 2473, fire 2725, dread 783, golden_age 58, elite_strife 34, dark_years 4, court_converted 95, reaction 5, holy_war 37, holy_conquest 4, rally 3, discredited 1, coalition 195, struck_first 0, submitted 211, refused 61, people_broke_away 47, nominal 1, unlike_realm 9
+check: ideas at the end: tongues 46 (largest holds 0.075 of all people), faiths 99 (largest 0.671), creeds 28; realms of more than one people 14
+check: faiths at the end: militant 14, mercantile 15; realms fighting for their faith 0 (0 ruled by priests), trading for it 0; realm-years fighting for their faith 5 (0 ruled by priests)
+check: empires: 43, years from becoming an empire until gone: median 123, longest 474; standing at the end 15
+check: bordering realms: 80 pairs, sharing a tongue (.5 or more) 18, a faith 29; wars under way between faiths 3 of 3
+check: groups at the end: 268, largest share of a realm 0.539; ideas 127, largest holds 0.671 of all people

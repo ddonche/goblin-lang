@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.51 — 2026-11-16
+
+- Capstone borders scale with the map. `land::scale()` is how many cells of the map make one province of the 400-province world the sim was built on (the world is as big on any map): distances from a capital count in those provinces, and the land-count thresholds (a broken loser, a city-state, civil war, breakaways, a group's rising) are in them too. A breakaway kingdom takes the far province and the land around it, three provinces' worth.
+- A won war's prize is the province fought over and the loser's land joined to it where the winner can now bring more to bear than the loser (each side's might halved for every `reach` provinces from its capital: Boulding's loss-of-strength gradient), never the loser's capital. Before, it was the one province.
+- The capstone reports, every `sample_every` years, how much held land has another holder than at the last sample (a conqueror, a new realm or a union). The 400-province world: 30% to 45% a century. Daniel's continent map (3,037 provinces, 20 kingdoms), 300 years: 34%, 29%, 45%, 20 realms to 41 (it was 19% in the first century before these changes, with one province a war).
+- expected_history.txt made again; check.sh 80/80.
+
 ## 0.51.50 — 2026-11-16
 
 - Spreads are narrowed as decisions' targets are: the first parts of a spread's condition that don't name `target` (`intensity >= .3`, `land::is_city(self)`) run once for each host, and false leaves no one to catch it; then a link test, a field test (`target >> city == true`), `target == x` or an ownership test cuts the candidates. Before, only a first-part link test did.

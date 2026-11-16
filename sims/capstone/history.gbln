@@ -96,6 +96,7 @@ repeat kinds as k
     :update!(at{:str(idx)}, p)
     :put_last!(lands, p)
 xx
+land::set_scale(:max(1.0, :len(lands) / 400.0))
 /// Every pair of bordering provinces, once.
 pairs | []
 repeat lands as p
@@ -279,6 +280,8 @@ t_run   | :epoch_ms()
     empire_to: {}
 xx
 annals <> Annals | lived: 0
+/// Who held each land at the last sample (the program's own record).
+owners_then | []
 
 /// `CHECKPOINT=path` writes the world to path at the end of year
 /// `CHECKPOINT_AT`; `RESTORE=path` goes on from such a checkpoint.
@@ -394,6 +397,24 @@ repeat :range(start_year, years + 1) as year
     np  | :len(ps)
     now_at_war | :len(:objects(War))
     :say("year {year}: {np} polities, largest {big >> name} with {big >> lands} provinces, {now_at_war} wars")
+    /// How much of the held land has another holder than at the last
+    /// sample, by the holder's name: a conqueror, a new realm and a union
+/// (Castile and Aragon becoming Spain) all count.
+    owners_now | []
+    moved      | 0
+    held_then  | 0
+    repeat lands as l
+        o  | l >> owner
+        on | ""
+        if !o.nix? => on |= o >> name
+        :put_last!(owners_now, on)
+        if :len(owners_then) > 0 and owners_then[idx] != ""
+            held_then |= held_then + 1
+            if on != owners_then[idx] => moved |= moved + 1
+        xx
+    xx
+    if held_then > 0 => :say("  held land with another holder than {cfg{"sample_every"}} years before: {:round(moved * 100.0 / held_then, 1)}%")
+    owners_then |= owners_now
 xx
 :event_log(nil)
 :say("time: prehistory {prehistory} years {t_pre} ms, history {years} years {:epoch_ms() - t_run} ms")
