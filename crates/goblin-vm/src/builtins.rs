@@ -3793,6 +3793,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
         BuiltinId::Event => crate::events::event(args, session),
+        BuiltinId::Timeline => crate::events::timeline(args, session),
         BuiltinId::Checkpoint | BuiltinId::Restore | BuiltinId::Guide => Err(GoblinError::Runtime("checkpoint/restore: must be called through VM dispatch".to_string())),
         BuiltinId::Tick | BuiltinId::TickPhase => {
             Err(GoblinError::Runtime(
@@ -4229,65 +4230,36 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 .collect();
             Ok(Value::Array(refs))
         }
-        BuiltinId::GridOccupied => {
-            expect_n(1)?;
-            let grid_id = grid_world_name_from(read(0)?)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied: no grid named '{}'", grid_id)))?;
-            let refs: Vec<Value> = world.occupied("owner").into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
-                .collect();
-            Ok(Value::Array(refs))
-        }
-        BuiltinId::GridUnoccupied => {
-            expect_n(1)?;
-            let grid_id = grid_world_name_from(read(0)?)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_unoccupied: no grid named '{}'", grid_id)))?;
-            let refs: Vec<Value> = world.unoccupied_cells().into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
-                .collect();
-            Ok(Value::Array(refs))
-        }
-        BuiltinId::GridOccupiedCount => {
-            expect_n(1)?;
-            let grid_id = grid_world_name_from(read(0)?)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied_count: no grid named '{}'", grid_id)))?;
-            Ok(Value::Int(world.occupied("owner").len() as i64))
-        }
-        BuiltinId::GridUnoccupiedCount => {
-            expect_n(1)?;
-            let grid_id = grid_world_name_from(read(0)?)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_unoccupied_count: no grid named '{}'", grid_id)))?;
-            Ok(Value::Int(world.unoccupied_cells().len() as i64))
-        }
-        BuiltinId::GridCount => {
-            if args.len() != 2 {
-                return Err(GoblinError::Runtime(format!("grid_count: expected 2 args, got {}", args.len())));
+        BuiltinId::GridOccupied | BuiltinId::GridUnoccupied | BuiltinId::GridOccupiedCount | BuiltinId::GridUnoccupiedCount => {
+            let name = match id { BuiltinId::GridOccupied => "grid_occupied", BuiltinId::GridUnoccupied => "grid_unoccupied",
+                BuiltinId::GridOccupiedCount => "grid_occupied_count", _ => "grid_unoccupied_count" };
+            if args.is_empty() || args.len() > 2 {
+                return Err(GoblinError::Runtime(format!("{name}: expected a grid and an optional layer, got {} args", args.len())));
             }
             let grid_id = grid_world_name_from(read(0)?)?;
-            let target = read(1)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_count: no grid named '{}'", grid_id)))?;
-            Ok(Value::Int(world.count_value("owner", &target) as i64))
+            let layer = if args.len() == 2 { grid_layer_arg(read(1)?, name)? } else { "owner".to_string() };
+            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("{name}: no grid named '{}'", grid_id)))?;
+            let cells = match id { BuiltinId::GridOccupied | BuiltinId::GridOccupiedCount => world.occupied(&layer), _ => world.unoccupied_in(&layer) };
+            match id {
+                BuiltinId::GridOccupiedCount | BuiltinId::GridUnoccupiedCount => Ok(Value::Int(cells.len() as i64)),
+                _ => Ok(Value::Array(cells.into_iter().map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y }).collect())),
+            }
         }
-        BuiltinId::GridOccupiedBy => {
-            if args.len() != 2 {
-                return Err(GoblinError::Runtime(format!("grid_occupied_by: expected 2 args, got {}", args.len())));
+        BuiltinId::GridCount | BuiltinId::GridOccupiedBy | BuiltinId::GridHas => {
+            let name = match id { BuiltinId::GridCount => "grid_count", BuiltinId::GridOccupiedBy => "grid_occupied_by", _ => "grid_has" };
+            if args.len() != 2 && args.len() != 3 {
+                return Err(GoblinError::Runtime(format!("{name}: expected a grid, an optional layer and a value, got {} args", args.len())));
             }
             let grid_id = grid_world_name_from(read(0)?)?;
-            let target = read(1)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_occupied_by: no grid named '{}'", grid_id)))?;
-            let refs: Vec<Value> = world.cells_with_value("owner", &target).into_iter()
-                .map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y })
-                .collect();
-            Ok(Value::Array(refs))
-        }
-        BuiltinId::GridHas => {
-            if args.len() != 2 {
-                return Err(GoblinError::Runtime(format!("grid_has: expected 2 args, got {}", args.len())));
+            let layer = if args.len() == 3 { grid_layer_arg(read(1)?, name)? } else { "owner".to_string() };
+            let target = read(args.len() - 1)?;
+            if !session.grid_store.contains(&grid_id) { return Err(GoblinError::Runtime(format!("{name}: no grid named '{}'", grid_id))); }
+            let cells = grid_cells_matching(session, &grid_id, &layer, &target);
+            match id {
+                BuiltinId::GridCount => Ok(Value::Int(cells.len() as i64)),
+                BuiltinId::GridHas => Ok(Value::Bool(!cells.is_empty())),
+                _ => Ok(Value::Array(cells.into_iter().map(|(x, y)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x, y }).collect())),
             }
-            let grid_id = grid_world_name_from(read(0)?)?;
-            let target = read(1)?;
-            let world = session.grid_store.get(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_has: no grid named '{}'", grid_id)))?;
-            Ok(Value::Bool(world.count_value("owner", &target) > 0))
         }
         BuiltinId::GridInfo => {
             expect_n(1)?;
@@ -4807,6 +4779,34 @@ fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Re
         }
         other => Err(GoblinError::Runtime(format!("slice expects array or string, got {}", other.type_name()))),
     }
+}
+
+fn grid_layer_arg(v: Value, name: &'static str) -> Result<String, GoblinError> {
+    match v { Value::Str(s) => Ok(s.to_string()), other => Err(GoblinError::type_error("str (layer name)", other.type_name(), name)) }
+}
+
+/// The cells of `layer` holding `target`, row by row. When `target` names
+/// an overlay kind or overlay class, a cell whose object carries one counts
+/// too (the grid spec: `:grid_count(world, Plague)` counts cells whose
+/// owners carry the overlay).
+fn grid_cells_matching(session: &Session, grid: &str, layer: &str, target: &Value) -> Vec<(i32, i32)> {
+    let Some(world) = session.grid_store.get(grid) else { return Vec::new() };
+    let Some(l) = world.layer(layer) else { return Vec::new() };
+    let mut cells = l.cells_with_value(target);
+    if let Value::Str(t) = target {
+        let kinds: Vec<&String> = session.overlay_defs.iter()
+            .filter(|(k, d)| k.as_str() == &**t || d.class.as_deref() == Some(&**t)).map(|(k, _)| k).collect();
+        if !kinds.is_empty() {
+            let mut hosts: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for k in kinds {
+                for &p in session.overlay_instances.named(k) { hosts.insert(session.overlay_instances[p].host_uuid.as_str()); }
+            }
+            for h in l.objects().filter(|o| hosts.contains(o)) { cells.extend(l.cells_of_object(h)); }
+            cells.sort_by_key(|&(x, y)| (y, x));
+            cells.dedup();
+        }
+    }
+    cells
 }
 
 fn grid_world_name_from(v: Value) -> Result<String, GoblinError> {

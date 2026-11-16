@@ -665,7 +665,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
         vm.session.des_overlay_id_counter += 1;
         let how = match from {
-            Some(f) => Put::Spread(format!("{name} on {}", crate::events::who(vm, &f))),
+            Some(f) => Put::Spread(crate::events::overlay_on(vm, &name, &f)),
             None => Put::On,
         };
         overlay_put_as(vm, OverlayInstance {

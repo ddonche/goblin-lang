@@ -24,14 +24,6 @@ use crate::session::Session;
 use crate::value::Value;
 use std::collections::HashMap;
 
-fn names(v: &Value, id: &str) -> bool {
-    match v {
-        Value::Ref(r) => r.as_str() == id,
-        Value::Object(o) => &*o.uuid == id,
-        _ => false,
-    }
-}
-
 /// The cells naming `id`, by grid and layer (both sorted), cells by row.
 fn cells_of(s: &Session, id: &str) -> Vec<((String, String), Vec<(i32, i32)>)> {
     let mut out = Vec::new();
@@ -41,9 +33,8 @@ fn cells_of(s: &Session, id: &str) -> Vec<((String, String), Vec<(i32, i32)>)> {
         layers.sort();
         for l in layers {
             let Some(layer) = world.layer(&l) else { continue };
-            let mut cells: Vec<(i32, i32)> = layer.occupied_cells().filter(|(_, v)| names(v, id)).map(|(c, _)| c).collect();
+            let cells = layer.cells_of_object(id);
             if cells.is_empty() { continue; }
-            cells.sort_by_key(|&(x, y)| (y, x));
             out.push(((g.clone(), l), cells));
         }
     }

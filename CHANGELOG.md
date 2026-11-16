@@ -3,6 +3,18 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.48 — 2026-11-16
+
+- Timelines: `:timeline(x)` gives the event log's lines about one object, and about what it came from up to the line it was born on (the split, fracture, merge or spawn that made it, back through every forebear), in order. `:timeline(x, from, to)` keeps those ticks only (nil for an open end). An overlay kind's timeline is asked for by its name (`:timeline("old_rite")`): where it was put on, spread, ended, and the kinds it came from by mutation, split, fracture or merge. Lines handed back by regions and by guided-run copies count the same. The log's text is unchanged: each line is noted (its objects' ids and kinds, where it starts in the file) as it is written, and `:timeline` reads the lines back from the file. The log must be on (R1254). What a log started after a `:restore` knows starts there.
+- Conformance: new cases `des_timeline`, `world_timeline`.
+
+## 0.51.47 — 2026-11-16
+
+- Grid layers keep, for each object their cells name, the set of those cells, so the cells an object holds (`:grid_occupied_by`, `:grid_count` of an object, the grid following transitions) are found without scanning the map. A layer starts sparse and turns into one slot per cell once an eighth of its cells are in use. Cells come back row by row (before, in no fixed order). The map test: 300 years in 4.9 s (was 8.9 s).
+- `:grid_occupied`, `:grid_unoccupied`, `:grid_occupied_count` and `:grid_unoccupied_count` take an optional layer (default `"owner"`); `:grid_count`, `:grid_has` and `:grid_occupied_by` take an optional layer before the value.
+- As the grid spec says, `:grid_count(world, Plague)` (and `:grid_has`, `:grid_occupied_by`) also count cells whose object carries an overlay of that kind or overlay class.
+- Conformance: new case `grid_layers_and_overlay_counts`.
+
 ## 0.51.46 — 2026-11-16
 
 - `sims/maptest` forces rebalanced (Daniel: realms only split, none grew). Unity no longer wears down with size alone at a rate that broke every big realm: it mends with time and wears down with fast growth (recent gains as a share of the realm) and with reach (the realm's share of all the land). Splits and fractures come only as unity fails; a strong, united realm absorbs weaker neighbors it touches, likelier the bigger the gap; border pressure is might times unity. A bug made every realm count its whole starting land as new in year 1 and crash its unity. 300 years: map 1 ends with 6 realms, the largest holding 56% (splits 3, fractures 3, absorbs 7); longshore ends with 8, the largest 30% (2, 1, 2). New realms take colors no realm has, from 44.

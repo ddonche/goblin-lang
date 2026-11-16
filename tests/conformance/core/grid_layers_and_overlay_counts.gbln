@@ -1,0 +1,41 @@
+/// known-gap: interp grid builtins take no layer and count no overlays (the interpreter is being retired)
+/// `:grid_occupied`, `:grid_unoccupied` and their counts take an optional
+/// layer; `:grid_count`, `:grid_has` and `:grid_occupied_by` take an
+/// optional layer before the value. When the value names an overlay (its
+/// kind or its overlay class), cells whose object carries one count too.
+/// Cells come row by row.
+<>Realm |
+    name: ..
+xx
+<^>Sickness |
+    ~intensity: .5
+xx
+overlay plague <^> Sickness
+    hosts: Realm
+xx
+r <> Realm | name: "Rus"
+s <> Realm | name: "Sib"
+:grid("world", 4, 3)
+:grid_void("world", 3, 2)
+:grid_set("world", 2, 1, "owner", r)
+:grid_set("world", 0, 0, "owner", r)
+:grid_set("world", 1, 2, "owner", s)
+:grid_set("world", 0, 2, "faith", "old")
+:grid_set("world", 1, 2, "faith", "old")
+:grid_set("world", 3, 0, "owner", "plague")
+:say(:grid_count("world", r))
+:say(:grid_occupied_count("world", "faith"))
+:say(:grid_unoccupied_count("world", "faith"))
+:say(:grid_count("world", "faith", "old"))
+:say(:grid_has("world", "faith", "new"))
+repeat :grid_occupied_by("world", r) as c
+    :say("rus {c >> x},{c >> y}")
+xx
+:say(:grid_count("world", "plague"))
+:overlay!(r, plague)
+:say(:grid_count("world", "plague"))
+:say(:grid_count("world", "Sickness"))
+:say(:grid_has("world", "Sickness"))
+repeat :grid_occupied("world") as c
+    :say("held {c >> x},{c >> y}")
+xx

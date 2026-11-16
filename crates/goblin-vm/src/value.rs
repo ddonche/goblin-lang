@@ -1163,6 +1163,7 @@ pub enum BuiltinId {
     AppendFile,
     WriteJson,
     WritePng,
+    Timeline,
     ReadPng,
     ReapSample,
     ReapBang,

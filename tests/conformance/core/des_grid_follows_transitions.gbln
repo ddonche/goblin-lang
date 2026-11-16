@@ -33,6 +33,7 @@
     xx
     transition erase where @cmd == "erase"
 xx
+:rand_seed(3)
 :grid("map", 6, 2, 4)
 :grid_void("map", 5, 1)
 a <> Realm | name: "A"

@@ -984,6 +984,7 @@ fn fire_overlay(vm: &mut Vm, def: &Rc<OverlayDef>, t: &TransitionDef, inst: &Ove
 fn olog(vm: &mut Vm, inst: &OverlayInstance, kind: K, whom: Vec<String>) -> Result<(), GoblinError> {
     if !crate::events::on(vm) { return Ok(()); }
     let who = crate::events::overlay(vm, inst);
+    let whom: Vec<String> = whom.iter().map(|n| crate::events::kind(n)).collect();
     crate::events::log(vm, who, word(&kind), &whom)
 }
 
