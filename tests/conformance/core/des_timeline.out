@@ -1,0 +1,16 @@
+runtime error: R1254: timeline: the event log is off; start it with `:event_log(path)` before the history you want
+-- Varn East
+tick 2 | Realm Varn | absorb | Realm Osk
+tick 2 | Realm Varn | built a wall
+tick 3 | Realm Varn | split | Realm Varn West, Realm Varn East
+tick 3 | rite on Realm Varn East | put on
+tick 4 | Realm Varn East | held a feast | Realm Kor
+-- Varn East, ticks 3 to 4
+tick 3 | Realm Varn | split | Realm Varn West, Realm Varn East
+tick 3 | rite on Realm Varn East | put on
+tick 4 | Realm Varn East | held a feast | Realm Kor
+-- Kor
+tick 0 | Realm Kor | crowned a king
+tick 4 | Realm Varn East | held a feast | Realm Kor
+-- rite
+tick 3 | rite on Realm Varn East | put on

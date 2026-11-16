@@ -1,0 +1,72 @@
+/// known-gap: interp has no timelines (the interpreter is being retired)
+/// `:timeline(x)` gives the event log's lines about object `x`, and about
+/// what it came from up to the line it was born on (a split, fracture,
+/// merge or spawn), in order. `:timeline(x, from, to)` keeps those ticks
+/// only. An overlay kind's timeline is asked for by its name. The log must
+/// be on.
+<>Realm |
+    name: ..
+    cmd: ""
+    transition split where @cmd == "split"
+        first:
+            name: "{@name} West"
+            cmd: ""
+        xx
+        second:
+            name: "{@name} East"
+            cmd: ""
+        xx
+    xx
+    transition absorb
+        targets: Realm where @cmd == "absorb" and (target >> name) == "Osk"
+        carries:
+            cmd: ""
+        xx
+    xx
+xx
+overlay rite
+    hosts: Realm
+xx
+attempt
+    :timeline("rite")
+rescue e
+    :say(e)
+xx
+d | :env("GOBLIN_CONF_TMP")
+:event_log("{d}/timeline.log")
+varn <> Realm | name: "Varn"
+osk <> Realm | name: "Osk"
+kor <> Realm | name: "Kor"
+:event(kor, "crowned a king")
+:tick()
+varn >> cmd |= "absorb"
+:tick()
+:event(varn, "built a wall")
+varn >> cmd |= "split"
+:tick()
+east | nil
+repeat :objects("Realm") as r
+    if r >> name == "Varn East"
+        east |= r
+    xx
+xx
+:overlay!(east, rite)
+:tick()
+:event(east, "held a feast", kor)
+:tick()
+:say("-- Varn East")
+repeat :timeline(east) as l
+    :say(l)
+xx
+:say("-- Varn East, ticks 3 to 4")
+repeat :timeline(east, 3, 4) as l
+    :say(l)
+xx
+:say("-- Kor")
+repeat :timeline(kor) as l
+    :say(l)
+xx
+:say("-- rite")
+repeat :timeline("rite") as l
+    :say(l)
+xx

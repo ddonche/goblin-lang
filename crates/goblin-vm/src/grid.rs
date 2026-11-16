@@ -49,59 +49,137 @@ impl CellState {
     pub fn is_occupied(&self) -> bool { matches!(self, CellState::Occupied(_)) }
 }
 
-// ── GridLayer (cell-level sparse storage) ────────────────────────────────────
+// ── GridLayer (cell storage) ─────────────────────────────────────────────────
 
+/// The id of the object a cell value names, if it names one.
+pub(crate) fn object_key(v: &Value) -> Option<&str> {
+    match v {
+        Value::Ref(r) => Some(r.as_str()),
+        Value::Object(o) => Some(&o.uuid),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Cells {
+    /// Few cells in use: only those are kept.
+    Sparse(HashMap<(i32, i32), CellState>),
+    /// Many in use: one slot per cell, row by row.
+    Dense(Vec<CellState>),
+}
+
+/// One layer's cells. A layer starts sparse and turns dense once an eighth
+/// of its cells are in use. It keeps, for each object its cells name, the
+/// set of those cells (by row), so "the cells this object holds" never
+/// scans the map.
 #[derive(Debug, Clone)]
 pub struct GridLayer {
     pub name: String,
-    cells: HashMap<(i32, i32), CellState>,
+    w: i32,
+    h: i32,
+    cells: Cells,
+    used: usize,
+    by_object: HashMap<String, std::collections::BTreeSet<(i32, i32)>>,
 }
 
+const UNOCCUPIED: CellState = CellState::Unoccupied;
+
 impl GridLayer {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), cells: HashMap::new() }
+    pub fn new(name: impl Into<String>) -> Self { Self::sized(name, 0, 0) }
+
+    pub fn sized(name: impl Into<String>, w: i32, h: i32) -> Self {
+        Self { name: name.into(), w, h, cells: Cells::Sparse(HashMap::new()), used: 0, by_object: HashMap::new() }
+    }
+
+    fn slot(&self, x: i32, y: i32) -> Option<usize> {
+        (x >= 0 && y >= 0 && x < self.w && y < self.h).then(|| y as usize * self.w as usize + x as usize)
     }
 
     pub fn get(&self, x: i32, y: i32) -> &CellState {
-        self.cells.get(&(x, y)).unwrap_or(&CellState::Unoccupied)
-    }
-
-    pub fn set(&mut self, x: i32, y: i32, state: CellState) {
-        match &state {
-            CellState::Unoccupied => { self.cells.remove(&(x, y)); }
-            _ => { self.cells.insert((x, y), state); }
+        match &self.cells {
+            Cells::Sparse(m) => m.get(&(x, y)).unwrap_or(&UNOCCUPIED),
+            Cells::Dense(v) => self.slot(x, y).and_then(|i| v.get(i)).unwrap_or(&UNOCCUPIED),
         }
     }
 
-    pub fn void(&mut self, x: i32, y: i32) {
-        self.cells.insert((x, y), CellState::Void);
+    pub fn set(&mut self, x: i32, y: i32, state: CellState) {
+        // Out of the old state's index, into the new one's.
+        let old_key = match self.get(x, y) { CellState::Occupied(v) => object_key(v).map(str::to_string), _ => None };
+        if let Some(k) = old_key {
+            if let Some(set) = self.by_object.get_mut(&k) { set.remove(&(y, x)); if set.is_empty() { self.by_object.remove(&k); } }
+        }
+        if let CellState::Occupied(v) = &state {
+            if let Some(k) = object_key(v) { self.by_object.entry(k.to_string()).or_default().insert((y, x)); }
+        }
+        let was_used = !matches!(self.get(x, y), CellState::Unoccupied);
+        let now_used = !matches!(state, CellState::Unoccupied);
+        match &mut self.cells {
+            Cells::Sparse(m) => { if now_used { m.insert((x, y), state); } else { m.remove(&(x, y)); } }
+            Cells::Dense(v) => {
+                let i = y as usize * self.w as usize + x as usize;
+                if (x >= 0 && y >= 0 && x < self.w && y < self.h) && i < v.len() { v[i] = state; }
+            }
+        }
+        match (was_used, now_used) { (false, true) => self.used += 1, (true, false) => self.used -= 1, _ => {} }
+        self.densify();
     }
 
-    pub fn is_void(&self, x: i32, y: i32) -> bool {
-        matches!(self.cells.get(&(x, y)), Some(CellState::Void))
+    fn densify(&mut self) {
+        let total = self.w as usize * self.h as usize;
+        if total == 0 || total > 1 << 26 || self.used * 8 < total { return; }
+        if let Cells::Sparse(m) = &mut self.cells {
+            let mut v = vec![CellState::Unoccupied; total];
+            for ((x, y), st) in m.drain() {
+                if x >= 0 && y >= 0 && x < self.w && y < self.h { v[y as usize * self.w as usize + x as usize] = st; }
+            }
+            self.cells = Cells::Dense(v);
+        }
     }
 
+    pub fn void(&mut self, x: i32, y: i32) { self.set(x, y, CellState::Void); }
+
+    pub fn is_void(&self, x: i32, y: i32) -> bool { matches!(self.get(x, y), CellState::Void) }
+
+    /// Every cell in use (occupied or void), row by row.
+    pub fn used_cells(&self) -> Vec<((i32, i32), &CellState)> {
+        match &self.cells {
+            Cells::Sparse(m) => {
+                let mut v: Vec<((i32, i32), &CellState)> = m.iter().map(|(c, s)| (*c, s)).collect();
+                v.sort_by_key(|((x, y), _)| (*y, *x));
+                v
+            }
+            Cells::Dense(cells) => {
+                let w = self.w.max(1) as usize;
+                cells.iter().enumerate().filter(|(_, s)| !matches!(s, CellState::Unoccupied))
+                    .map(|(i, s)| (((i % w) as i32, (i / w) as i32), s)).collect()
+            }
+        }
+    }
+
+    /// Occupied cells and their values, row by row.
     pub fn occupied_cells(&self) -> impl Iterator<Item = ((i32, i32), &Value)> {
-        self.cells.iter().filter_map(|(&coord, state)| {
-            if let CellState::Occupied(v) = state { Some((coord, v)) } else { None }
-        })
+        self.used_cells().into_iter().filter_map(|(c, s)| if let CellState::Occupied(v) = s { Some((c, v)) } else { None })
     }
+
+    /// The cells naming object `id`, row by row.
+    pub fn cells_of_object(&self, id: &str) -> Vec<(i32, i32)> {
+        self.by_object.get(id).map(|set| set.iter().map(|&(y, x)| (x, y)).collect()).unwrap_or_default()
+    }
+
+    /// Ids of the objects this layer's cells name.
+    pub fn objects(&self) -> impl Iterator<Item = &str> { self.by_object.keys().map(String::as_str) }
 
     pub fn count_value(&self, target: &Value) -> usize {
-        self.cells.values().filter(|s| {
-            matches!(s, CellState::Occupied(v) if v == target)
-        }).count()
+        if let Some(k) = object_key(target) { return self.by_object.get(k).map_or(0, |s| s.len()); }
+        self.occupied_cells().filter(|(_, v)| *v == target).count()
     }
 
     pub fn cells_with_value(&self, target: &Value) -> Vec<(i32, i32)> {
-        self.cells.iter().filter_map(|(&coord, state)| {
-            if matches!(state, CellState::Occupied(v) if v == target) { Some(coord) } else { None }
-        }).collect()
+        if let Some(k) = object_key(target) { return self.cells_of_object(k); }
+        self.occupied_cells().filter(|(_, v)| *v == target).map(|(c, _)| c).collect()
     }
 
-    pub fn snapshot(&self) -> Self {
-        Self { name: self.name.clone(), cells: self.cells.clone() }
-    }
+    pub fn snapshot(&self) -> Self { self.clone() }
 }
 
 // ── GridTile ──────────────────────────────────────────────────────────────────
@@ -292,7 +370,7 @@ impl GridWorld {
         };
 
         let mut layers = HashMap::new();
-        layers.insert("owner".into(), GridLayer::new("owner"));
+        layers.insert("owner".into(), GridLayer::sized("owner", width, height));
 
         Self {
             name: name.into(),
@@ -408,7 +486,7 @@ impl GridWorld {
 
     pub fn layer_or_create(&mut self, name: &str) -> &mut GridLayer {
         if !self.layers.contains_key(name) {
-            self.layers.insert(name.to_string(), GridLayer::new(name));
+            self.layers.insert(name.to_string(), GridLayer::sized(name, self.width, self.height));
         }
         self.layers.get_mut(name).unwrap()
     }
@@ -495,12 +573,15 @@ impl GridWorld {
             .unwrap_or_default()
     }
 
-    pub fn unoccupied_cells(&self) -> Vec<(i32, i32)> {
+    pub fn unoccupied_cells(&self) -> Vec<(i32, i32)> { self.unoccupied_in("owner") }
+
+    /// Cells of `layer` holding nothing (void cells excluded), row by row.
+    pub fn unoccupied_in(&self, layer: &str) -> Vec<(i32, i32)> {
         let mut result = Vec::new();
         for y in 0..self.height {
             for x in 0..self.width {
                 if !self.is_void(x, y) {
-                    if let CellState::Unoccupied = self.get(x, y, "owner") {
+                    if let CellState::Unoccupied = self.get(x, y, layer) {
                         result.push((x, y));
                     }
                 }
@@ -564,7 +645,7 @@ impl GridStore {
     pub fn for_each_value(&self, f: &mut dyn FnMut(&Value)) {
         for w in self.worlds.values() {
             let layer_vals = |l: &GridLayer, f: &mut dyn FnMut(&Value)| {
-                for s in l.cells.values() { if let CellState::Occupied(v) = s { f(v) } }
+                for (_, v) in l.occupied_cells() { f(v) }
             };
             for l in w.layers.values() { layer_vals(l, f); }
             if let Some(snap) = &w.snapshot { for l in snap.values() { layer_vals(l, f); } }
@@ -619,9 +700,10 @@ fn p_state(tp: &mut ToPortable, m: &HashMap<String, Value>) -> Result<Vec<(Strin
 }
 
 fn p_layer(tp: &mut ToPortable, l: &GridLayer) -> Result<PLayer, GoblinError> {
-    let mut cells = Vec::with_capacity(l.cells.len());
-    for (c, s) in &l.cells {
-        cells.push((*c, match s {
+    let used = l.used_cells();
+    let mut cells = Vec::with_capacity(used.len());
+    for (c, s) in used {
+        cells.push((c, match s {
             CellState::Occupied(v) => PCell::Occupied(tp.value(v)?),
             CellState::Void => PCell::Void,
             CellState::Unoccupied => continue,
@@ -631,10 +713,10 @@ fn p_layer(tp: &mut ToPortable, l: &GridLayer) -> Result<PLayer, GoblinError> {
     Ok(PLayer { name: l.name.clone(), cells })
 }
 
-fn layer_of(fp: &mut FromPortable, s: &mut crate::session::Session, p: &PLayer) -> GridLayer {
-    let mut l = GridLayer::new(p.name.clone());
+fn layer_of(fp: &mut FromPortable, s: &mut crate::session::Session, p: &PLayer, w: i32, h: i32) -> GridLayer {
+    let mut l = GridLayer::sized(p.name.clone(), w, h);
     for (c, cell) in &p.cells {
-        l.cells.insert(*c, match cell { PCell::Occupied(v) => CellState::Occupied(fp.value(v, s)), PCell::Void => CellState::Void });
+        l.set(c.0, c.1, match cell { PCell::Occupied(v) => CellState::Occupied(fp.value(v, s)), PCell::Void => CellState::Void });
     }
     l
 }
@@ -675,9 +757,9 @@ pub(crate) fn grids_from_p(p: &PGrids, fp: &mut FromPortable, s: &mut crate::ses
         };
         let tiles = w.tiles.iter().map(|t| GridTile { state: state(fp, s, t) }).collect();
         let regions = w.regions.iter().map(|r| GridRegion { state: state(fp, s, r) }).collect();
-        let layers = w.layers.iter().map(|l| (l.name.clone(), layer_of(fp, s, l))).collect();
+        let layers = w.layers.iter().map(|l| (l.name.clone(), layer_of(fp, s, l, w.width, w.height))).collect();
         let world_defaults = state(fp, s, &w.defaults);
-        let snapshot = w.snapshot.as_ref().map(|v| v.iter().map(|l| (l.name.clone(), layer_of(fp, s, l))).collect());
+        let snapshot = w.snapshot.as_ref().map(|v| v.iter().map(|l| (l.name.clone(), layer_of(fp, s, l, w.width, w.height))).collect());
         g.insert(GridWorld {
             name: w.name.clone(), width: w.width, height: w.height,
             neighbor_mode: match w.mode { 4 => NeighborMode::Four, 8 => NeighborMode::Eight, 6 => NeighborMode::Hex, _ => NeighborMode::Wrapped },

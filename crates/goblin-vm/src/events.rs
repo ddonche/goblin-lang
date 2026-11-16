@@ -11,15 +11,111 @@ use crate::value::Value;
 use crate::vm::Vm;
 
 pub enum Sink {
-    File(std::io::BufWriter<std::fs::File>),
-    /// A region's lines for this tick.
+    File(std::io::BufWriter<std::fs::File>, Box<Timelines>),
+    /// A region's lines for this tick, still carrying their keys (they are
+    /// indexed when the main program writes them).
     Lines(Vec<String>),
+}
+
+/// Marks a key in a line as it is built: `Realm Tesh\u{1}<id>`. Keys say
+/// which objects and overlay kinds a line is about; the file never shows them.
+const KEY: char = '\u{1}';
+
+/// What `:timeline` reads: for each line written, where it starts in the
+/// file and its tick; for each key, its lines; for each object or overlay
+/// kind a transition made, where it came from.
+#[derive(Default)]
+pub struct Timelines {
+    path: String,
+    bytes: u64,
+    lines: Vec<(u64, i64)>,
+    by_key: std::collections::HashMap<String, Vec<u32>>,
+    /// child key -> (parent keys, the line it was born on)
+    born: std::collections::HashMap<String, (Vec<String>, u32)>,
+}
+
+/// A line without its keys, and its keys by segment (who, what, whom...).
+fn strip(line: &str) -> (String, Vec<Vec<String>>) {
+    let mut text = String::with_capacity(line.len());
+    let mut segs: Vec<Vec<String>> = vec![Vec::new()];
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == KEY {
+            let mut k = String::new();
+            while let Some(&n) = chars.peek() {
+                if n == KEY || n == ',' || n == '|' || n == ' ' { break; }
+                k.push(n);
+                chars.next();
+            }
+            if !k.is_empty() { segs.last_mut().unwrap().push(k); }
+            continue;
+        }
+        if c == '|' || c == ',' { segs.push(Vec::new()); }
+        text.push(c);
+    }
+    (text, segs)
+}
+
+fn same_sort(a: &str, b: &str) -> bool { a.starts_with("kind:") == b.starts_with("kind:") }
+
+impl Timelines {
+    fn note_what(&mut self, tick: i64, line_len: usize, segs: Vec<Vec<String>>, what: &str) {
+        let at = self.lines.len() as u32;
+        self.lines.push((self.bytes, tick));
+        self.bytes += line_len as u64 + 1;
+        // segs: [tick] [who] [what] [whom, ...] [telling]
+        let who: Vec<String> = segs.get(1).cloned().unwrap_or_default();
+        let whom: Vec<Vec<String>> = segs.iter().skip(3).cloned().collect();
+        let mut seen = std::collections::HashSet::new();
+        for k in segs.iter().flatten() {
+            if seen.insert(k.clone()) { self.by_key.entry(k.clone()).or_default().push(at); }
+        }
+        let (children, mut parents): (Vec<String>, Vec<String>) = match what {
+            "split" | "fracture" | "spawn" | "mutate" => (whom.iter().flatten().cloned().collect(), who.clone()),
+            "merge" if !whom.is_empty() => {
+                let mut ps = who.clone();
+                for w in &whom[..whom.len() - 1] { ps.extend(w.iter().cloned()); }
+                (whom[whom.len() - 1].clone(), ps)
+            }
+            _ => return,
+        };
+        parents.dedup();
+        for c in children {
+            if parents.contains(&c) || self.born.contains_key(&c) { continue; }
+            let ps: Vec<String> = parents.iter().filter(|p| same_sort(p, &c)).cloned().collect();
+            if !ps.is_empty() { self.born.insert(c, (ps, at)); }
+        }
+    }
+
+    /// The lines of `key` and of its forebears up to its birth, in order.
+    fn lines_of(&self, key: &str) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        let mut todo: Vec<(String, u32)> = vec![(key.to_string(), u32::MAX)];
+        let mut done = std::collections::HashSet::new();
+        while let Some((k, until)) = todo.pop() {
+            if !done.insert((k.clone(), until)) { continue; }
+            if let Some(ls) = self.by_key.get(&k) { out.extend(ls.iter().copied().filter(|&l| l <= until)); }
+            if let Some((ps, at)) = self.born.get(&k) {
+                let at = (*at).min(until);
+                for p in ps { todo.push((p.clone(), at)); }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 impl Sink {
     fn put(&mut self, line: String) -> Result<(), GoblinError> {
         match self {
-            Sink::File(f) => writeln!(f, "{line}").map_err(|e| GoblinError::Runtime(format!("R1252: event-log-write: can't write the event log: {e}"))),
+            Sink::File(f, t) => {
+                let (text, segs) = strip(&line);
+                let tick = text.strip_prefix("tick ").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+                let what = text.split(" | ").nth(2).unwrap_or("").to_string();
+                t.note_what(tick, text.len(), segs, &what);
+                writeln!(f, "{text}").map_err(|e| GoblinError::Runtime(format!("R1252: event-log-write: can't write the event log: {e}")))
+            }
             Sink::Lines(v) => { v.push(line); Ok(()) }
         }
     }
@@ -32,12 +128,12 @@ pub fn start(session: &mut crate::session::Session, path: Option<&str>) -> Resul
     let Some(path) = path else { return Ok(()) };
     let f = std::fs::File::create(path)
         .map_err(|e| GoblinError::Runtime(format!("R1252: event-log-write: can't open {path} for the event log: {e}")))?;
-    session.event_log = Some(Sink::File(std::io::BufWriter::new(f)));
+    session.event_log = Some(Sink::File(std::io::BufWriter::new(f), Box::new(Timelines { path: path.to_string(), ..Default::default() })));
     Ok(())
 }
 
 pub fn stop(session: &mut crate::session::Session) -> Result<(), GoblinError> {
-    if let Some(Sink::File(mut f)) = session.event_log.take() {
+    if let Some(Sink::File(mut f, _)) = session.event_log.take() {
         f.flush().map_err(|e| GoblinError::Runtime(format!("R1252: event-log-write: can't write the event log: {e}")))?;
     }
     Ok(())
@@ -52,7 +148,7 @@ pub fn put_lines(session: &mut crate::session::Session, lines: Vec<String>) -> R
 
 /// Ends a tick: what was written so far reaches the file.
 pub fn flush(session: &mut crate::session::Session) -> Result<(), GoblinError> {
-    if let Some(Sink::File(f)) = session.event_log.as_mut() {
+    if let Some(Sink::File(f, _)) = session.event_log.as_mut() {
         f.flush().map_err(|e| GoblinError::Runtime(format!("R1252: event-log-write: can't write the event log: {e}")))?;
     }
     Ok(())
@@ -75,7 +171,7 @@ fn named(vm: &Vm, class: &str, uuid: &str, name: Option<&Value>) -> String {
         Some(Value::Str(s)) if !s.is_empty() => s.to_string(),
         _ => vm.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| uuid.to_string()),
     };
-    if class.is_empty() { name } else { format!("{class} {name}") }
+    if class.is_empty() { format!("{name}{KEY}{uuid}") } else { format!("{class} {name}{KEY}{uuid}") }
 }
 
 /// An object given as a value: by reference, or a copy of one that is
@@ -91,7 +187,12 @@ pub fn who_value(vm: &Vm, v: &Value) -> Option<String> {
 
 /// An overlay as the log names it: `flu on Town a`.
 pub fn overlay(vm: &Vm, inst: &crate::session::OverlayInstance) -> String {
-    format!("{} on {}", inst.overlay_name, who(vm, &inst.host_uuid))
+    overlay_on(vm, &inst.overlay_name, &inst.host_uuid)
+}
+
+/// Overlay kind `name` on object `host`, as the log names it.
+pub fn overlay_on(vm: &Vm, name: &str, host: &str) -> String {
+    format!("{name} on {}{KEY}kind:{name}", who(vm, host))
 }
 
 /// One event: `who` did `what` to `whom` (none, one or more).
@@ -119,7 +220,7 @@ fn named_in(session: &crate::session::Session, v: &Value) -> Option<String> {
             Some(Value::Str(s)) if !s.is_empty() => s.to_string(),
             _ => session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| uuid.to_string()),
         };
-        if class.is_empty() { n } else { format!("{class} {n}") }
+        if class.is_empty() { format!("{n}{KEY}{uuid}") } else { format!("{class} {n}{KEY}{uuid}") }
     };
     match v {
         Value::Str(s) => Some(s.to_string()),
@@ -219,4 +320,46 @@ pub fn event(args: Vec<Value>, session: &mut crate::session::Session) -> Result<
     if let Some(t) = &telling { line.push_str(&format!(" | {t:?}")); }
     if let Some(sink) = session.event_log.as_mut() { sink.put(line)?; }
     Ok(telling.map(|t| Value::Str(t.into())).unwrap_or(Value::Nil))
+}
+
+/// An overlay kind's name as a line names it (with its key).
+pub fn kind(name: &str) -> String { format!("{name}{KEY}kind:{name}") }
+
+/// `:timeline(x)` / `:timeline(x, from, to)`: the event log's lines about
+/// `x` (an object, or an overlay kind by name), and about what it came
+/// from up to the line it was born on (a split's, fracture's, merge's,
+/// spawn's or mutation's), in order; with `from`/`to`, only those ticks.
+/// It reads the lines back from the log's file.
+pub fn timeline(args: Vec<Value>, session: &mut crate::session::Session) -> Result<Value, GoblinError> {
+    let bad = |m: String| GoblinError::Runtime(format!("R1254: timeline: {m}"));
+    if args.is_empty() || args.len() == 2 || args.len() > 3 {
+        return Err(GoblinError::ArityMismatch { expected: 3, got: args.len(), name: "timeline".into() });
+    }
+    let key = match &args[0] {
+        Value::Ref(u) => u.to_string(),
+        Value::Object(o) => o.uuid.to_string(),
+        Value::Str(s) => format!("kind:{s}"),
+        other => return Err(bad(format!("give an object or an overlay kind's name, not {}", other.type_name()))),
+    };
+    let tick = |v: &Value| match v { Value::Int(i) => Ok(Some(*i)), Value::Nil => Ok(None), other => Err(bad(format!("ticks are whole numbers, not {}", other.type_name()))) };
+    let (from, to) = if args.len() == 3 { (tick(&args[1])?, tick(&args[2])?) } else { (None, None) };
+    let Some(Sink::File(f, t)) = session.event_log.as_mut() else {
+        return Err(bad("the event log is off; start it with `:event_log(path)` before the history you want".into()));
+    };
+    f.flush().map_err(|e| bad(format!("can't read the event log: {e}")))?;
+    let picks: Vec<u64> = t.lines_of(&key).into_iter()
+        .map(|l| t.lines[l as usize])
+        .filter(|(_, tk)| from.is_none_or(|a| *tk >= a) && to.is_none_or(|b| *tk <= b))
+        .map(|(off, _)| off).collect();
+    use std::io::{BufRead, Seek, SeekFrom};
+    let file = std::fs::File::open(&t.path).map_err(|e| bad(format!("can't read the event log {}: {e}", t.path)))?;
+    let mut r = std::io::BufReader::new(file);
+    let mut out = Vec::with_capacity(picks.len());
+    for off in picks {
+        r.seek(SeekFrom::Start(off)).map_err(|e| bad(format!("can't read the event log: {e}")))?;
+        let mut line = String::new();
+        r.read_line(&mut line).map_err(|e| bad(format!("can't read the event log: {e}")))?;
+        out.push(Value::Str(line.trim_end_matches('\n').to_string().into()));
+    }
+    Ok(Value::Array(out))
 }

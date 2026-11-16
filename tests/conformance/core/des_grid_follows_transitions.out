@@ -1,15 +1,15 @@
 A A A A A A
 B B B . . ~
 
-A1 A1 A1 A2 A2 A2
+A1 A1 A2 A2 A2 A2
 B B B . . ~
 
-A1 A1 A1 A2 A2 A2
+A1 A1 A2 A2 A2 A2
 A1 A1 A1 . . ~
 
-A1 A1 A1 A2f A2 A2
+A1 A1 A2 A2 A2 A2f
 A1 A1 A1 . . ~
 
-. . . A2f A2 A2
+. . A2 A2 A2 A2f
 . . . . . ~
 
