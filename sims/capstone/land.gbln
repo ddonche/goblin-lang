@@ -19,6 +19,8 @@
     leaving: 0.05
     owner: nil
     settlement: "none"
+    /// Whether it is a city or great city (set with the settlement).
+    city: false
     /// The holder's trade, 0 to 1 (set each year from its trade links).
     trade: 0.0
     granary: 0
@@ -42,6 +44,7 @@
         every 1 tick
             @people |= @people + @growth * @people * (1.0 - @people / @food)
             @settlement |= settlement_of(self)
+            @city |= @settlement == "city" or @settlement == "great city"
         xx
         decision settle
             targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food

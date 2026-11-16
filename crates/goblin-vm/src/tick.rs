@@ -613,16 +613,33 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
                 Some(fewer) => fewer,
                 None => candidates,
             };
-            // `:link_score(self, target, "border") and ...`: only the objects
-            // linked to its host can pass (the first part stops the rest), in
-            // the same order.
-            let candidates = match (def.host_types.as_slice(), cond_parts.first()) {
-                ([class], Some(first)) => match narrow_by_link(vm, first, class, &self_ref, self_at) {
-                    Some(Some(linked)) => {
-                        let keep: std::collections::HashSet<usize> = linked.iter().map(|(_, i)| *i).collect();
+            // The first parts that don't name `target` (`intensity >= .3`,
+            // `land::is_city(self)`) are the same for every target: run once;
+            // false means no one catches it from this host.
+            let mut none_can = false;
+            for c in &cond_parts {
+                if self::names(c, "target") || !reads(vm, c) { break; }
+                let f = vm.tick_formula(c, &names)?;
+                let mut args: Vec<(&str, &Value)> = vec![("self", &self_ref), ("target", &Value::Nil), ("intensity", &intensity)];
+                for (k, v) in names[3..].iter().zip(&extras) { args.push((k, v)); }
+                match vm.run_tick_formula_ref(&f, &args, &[self_at, usize::MAX])? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) => { none_can = true; break; }
+                    _ => break,
+                }
+            }
+            if none_can { continue; }
+            // Cut down as a decision's targets are (`narrow`): a first part
+            // that doesn't name `target` runs once (false: no one can catch
+            // it); `:link_score(self, target, "border") and ...` leaves only
+            // the objects linked to its host; and so on. Same order.
+            let candidates = match def.host_types.as_slice() {
+                [class] => match narrow(vm, &rule.condition, false, class, &self_ref, self_at, &candidates) {
+                    Some(fewer) => {
+                        let keep: std::collections::HashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
                         std::rc::Rc::new(candidates.iter().filter(|(_, i)| keep.contains(i)).cloned().collect())
                     }
-                    _ => candidates,
+                    None => candidates,
                 },
                 _ => candidates,
             };
@@ -1086,7 +1103,7 @@ fn names(e: &goblin_ast::Expr, who: &str) -> bool {
         E::Ident(n, _) => n == who,
         E::Binary(l, _, r, _) | E::Index(l, r, _) | E::IndexMap(l, r, _) => names(l, who) || names(r, who),
         E::Prefix(_, x, _) | E::Member(x, _, _) | E::OptMember(x, _, _) => names(x, who),
-        E::Array(xs, _) | E::FreeCall(_, xs, _) => xs.iter().any(|x| names(x, who)),
+        E::Array(xs, _) | E::FreeCall(_, xs, _) | E::NsCall(_, _, xs, _) => xs.iter().any(|x| names(x, who)),
         _ => false,
     }
 }
@@ -1126,7 +1143,10 @@ pub(crate) fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool,
         // A part of a condition that only reads only reads.
         if !filter_reads && !reads(vm, c) { return None; }
         if !names(c, "target") {
-            let f = vm.tick_formula(c, &["self", "target"]).ok()?;
+            // A part that names something else of the caller's (a spread's
+            // `intensity`) is the same for every target too, so it can't
+            // tell them apart: go on to the next part (the caller checks it).
+            let Ok(f) = vm.tick_formula(c, &["self", "target"]) else { continue };
             let r = vm.run_tick_formula_ref(&f, &[("self", self_ref), ("target", &Value::Nil)], &[self_at, usize::MAX]);
             // Something it called turned out to change things: check every target.
             if changed(vm, epoch) { return None; }

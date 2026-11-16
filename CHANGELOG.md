@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.50 — 2026-11-16
+
+- Spreads are narrowed as decisions' targets are: the first parts of a spread's condition that don't name `target` (`intensity >= .3`, `land::is_city(self)`) run once for each host, and false leaves no one to catch it; then a link test, a field test (`target >> city == true`), `target == x` or an ownership test cuts the candidates. Before, only a first-part link test did.
+- A module's action (`land::is_city(l)`) that only reads counts as reading in conditions, as the program's own actions do, so a `where` that calls one can be narrowed and its answers kept. A part that passes `target` to a module's action counts as naming `target`.
+- Capstone: on a Map Spawner map each starting area is one kingdom holding the whole area from year 0, with people across all of it (Daniel's ruling). Plague spreads overland to the lands beside it, and by ship and caravan from a city to the cities of realms its realm trades with (two spread rules; a land's `city` is kept with its settlement). Daniel's continent map (shrunk to 120x75, 3,037 provinces), 100 years: 463 s to 149 s. The capstone's history without a map is unchanged by the runtime part; the plague rule changes it (expected_history.txt made again; every other check passes).
+- Conformance: new case `des_spread_module_condition`.
+
 ## 0.51.49 — 2026-11-16
 
 - Guided runs: a milestone can say when guiding toward it starts (`from`) and how long its stretches are (`every`, in place of the option). Before `from`, one copy runs on unguided, straight to it; from there copies are chosen as usual. A milestone guided only near its tick, in short stretches, comes suddenly; one guided from early on, in long stretches, is bent toward slowly. A `from` at or after `by` is R1266.

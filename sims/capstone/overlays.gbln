@@ -592,7 +592,11 @@ xx
     ~intensity: .8
     decays: .15
     deadly: .12
-    spread: catch(self, target, intensity) where target >> people >= 20.0 and open_to(target) and (:link_score(self, target, "border") or (land::is_city(target) and land::is_city(self) and traded(self, target)))
+    /// Overland, to the lands beside it.
+    spread: catch(self, target, intensity) where :link_score(self, target, "border") and target >> people >= 20.0 and open_to(target)
+    /// By ship and caravan, from a city to the cities of realms its realm
+    /// trades with (a city beside it is reached overland already).
+    spread: catch(self, target, intensity) where land::is_city(self) and target >> city == true and !:link_score(self, target, "border") and target >> people >= 20.0 and open_to(target) and traded(self, target)
     every 1 tick => @people |= @people * (1.0 - deadly * intensity * toll(self))
     modify
         @trade - @trade * .5 * intensity

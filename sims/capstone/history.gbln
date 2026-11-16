@@ -130,6 +130,13 @@ repeat :reverse(:sort_by(lands, "food_of")) as p
     :put_last!(homes, p)
     p >> people |= cfg{"homeland_fill"} * p >> food
 xx
+/// On a map with starting areas, each area is a kingdom's land from the
+/// start, and people live across all of it from the first year.
+if :len(areas) > 0
+    repeat lands as p
+        if areas[p >> no] >= 0 and p >> people == 0.0 => p >> people |= cfg{"homeland_fill"} * p >> food
+    xx
+xx
 
 /// Prehistory: only the land.
 repeat prehistory
@@ -139,14 +146,23 @@ repeat prehistory
 xx
 t_pre | :epoch_ms() - t_start
 
-/// Year 0: the kingdoms at the homelands, then tribes and village
-/// communities on the settled land left, the most peopled first.
+/// Year 0: the kingdoms at the homelands (on a map with starting areas,
+/// each holding its whole area), then tribes and village communities on
+/// the settled land left, the most peopled first.
 made | 0
 repeat homes as h
     held | [h]
-    repeat free_beside(h, cfg{"settled"}) as q
-        if :len(held) > cfg{"kingdom_lands"} => stop
-        :put_last!(held, q)
+    if :len(areas) > 0
+        /// The kingdom holds its whole area.
+        a | areas[h >> no]
+        repeat lands as q
+            if q != h and areas[q >> no] == a => :put_last!(held, q)
+        xx
+    else
+        repeat free_beside(h, cfg{"settled"}) as q
+            if :len(held) > cfg{"kingdom_lands"} => stop
+            :put_last!(held, q)
+        xx
     xx
     polity::found("Kingdom", polity::name_of(land::name_no(h)), held, 0)
     made |= made + 1

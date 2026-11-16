@@ -3820,6 +3820,8 @@ pub(crate) fn only_reads_with(e: &Expr, calls: &mut dyn FnMut(&str) -> bool) -> 
             };
             ok && args.iter().all(|x| only_reads(x, calls))
         }
+        // A module's action (`land::is_city(l)`), looked up by its full name.
+        Expr::NsCall(ns, name, args, _) => calls(&format!("{ns}::{name}")) && args.iter().all(|x| only_reads(x, calls)),
         _ => false,
     }
 }
