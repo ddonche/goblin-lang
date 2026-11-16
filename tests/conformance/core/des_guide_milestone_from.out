@@ -1,0 +1,6 @@
+reached true, passed 2
+fall at or after 60: true
+first fall stretch: from the town (true) to 60 (true), alone (true)
+later fall stretches start at 60 or after and run 2 ticks at most: true
+town stretches run 5 ticks at most: true
+runtime error: R1266: guide: milestone x starts (`from`) at or after its `by`

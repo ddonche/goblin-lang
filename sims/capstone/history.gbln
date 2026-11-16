@@ -10,6 +10,7 @@
 import map as map
 import land as land
 import polity as polity
+import picture as picture
 import government as government
 import family as family
 import factions as factions
@@ -50,6 +51,9 @@ xx
 
 cfg | {
     "seed": :int(:env("SEED") ?? "42"),
+    /// A map file (Map Spawner JSON) to play on instead of a generated
+    /// continent; each of its starting areas gets one kingdom.
+    "map_file": :env("MAP") ?? "",
     "provinces": 400,
     "kingdoms": 20,
     "prehistory": 1200,
@@ -103,10 +107,26 @@ repeat lands as p
     xx
 xx
 
-homes | []
+/// Homelands: the best-fed provinces, no two side by side; on a map with
+/// starting areas, the best-fed province of each area.
+areas  | m{"areas"} ?? []
+homes  | []
+used   | {}
+wanted | cfg{"kingdoms"}
+if :len(areas) > 0
+    repeat areas as a
+        if a >= 0 => :put!(used, :str(a), false)
+    xx
+    wanted |= :len(used)
+xx
 repeat :reverse(:sort_by(lands, "food_of")) as p
-    if :len(homes) >= cfg{"kingdoms"} => stop
+    if :len(homes) >= wanted => stop
     if beside_any(p, homes) => skip
+    if :len(areas) > 0
+        a | :str(areas[p >> no])
+        if !:has(used, a) or used{a} => skip
+        :put!(used, a, true)
+    xx
     :put_last!(homes, p)
     p >> people |= cfg{"homeland_fill"} * p >> food
 xx
@@ -247,6 +267,8 @@ annals <> Annals | lived: 0
 /// `CHECKPOINT=path` writes the world to path at the end of year
 /// `CHECKPOINT_AT`; `RESTORE=path` goes on from such a checkpoint.
 restore_from  | :env("RESTORE") ?? ""
+pictures      | :env("PICTURES") ?? ""
+picture_every | :int(:env("PICTURE_EVERY") ?? :str(cfg{"sample_every"}))
 checkpoint_at | :int(:env("CHECKPOINT_AT") ?? "-1")
 start_year    | 0
 if restore_from != ""
@@ -312,6 +334,11 @@ repeat :range(start_year, years + 1) as year
         annals >> priest_years |= annals >> priest_years + priest
     xx
     if year == checkpoint_at => :checkpoint(:env("CHECKPOINT"))
+    /// `PICTURES=dir` writes the political map there every
+    /// `PICTURE_EVERY` years (default: `sample_every`) and at the end.
+    if pictures != "" and (year % picture_every == 0 or year == years)
+        picture::political("{pictures}/year_{year}.png", width, height, lands, :objects(uses govern))
+    xx
     if year % cfg{"sample_every"} != 0 => skip
     now  | :epoch_ms() - t_run
     rate | 0.0

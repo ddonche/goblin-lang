@@ -69,6 +69,10 @@ fn number(v: &Value) -> Option<f64> {
 struct Milestone {
     name: String,
     by: i64,
+    /// The tick guiding toward it starts; before it one copy runs on.
+    from: Option<i64>,
+    /// Its own stretch length, in place of the option.
+    every: Option<i64>,
     reached: Value,
     closeness: Option<Value>,
 }
@@ -80,6 +84,8 @@ struct Entry {
     path: String,
     /// The try that made it; 0 for the start.
     id: usize,
+    /// The tick it is at; None for the start.
+    tick: Option<i64>,
     score: f64,
     /// The milestones it has passed: (name, tick, checkpoint, try).
     chain: Vec<(String, i64, String, usize)>,
@@ -109,6 +115,8 @@ struct Spec<'a> {
     name: &'a str,
     by: i64,
     every: i64,
+    /// A stretch is not over before this tick.
+    from: i64,
     dir: &'a str,
     step: &'a PValue,
     reached: &'a PValue,
@@ -185,7 +193,7 @@ fn run_copy(image: &crate::swarm::Image, fp: &mut FromPortable, worker: usize, s
             other => return Err(err(format!("R1266: guide: `reached` of milestone {} gave {}, not true or false", spec.name, other.type_name()))),
         }
         if t >= spec.by { break ("too late", t); }
-        if t - from >= spec.every { break ("kept", t); }
+        if t - from >= spec.every && t >= spec.from { break ("kept", t); }
     };
     let mut score = None;
     let path = match outcome {
@@ -238,7 +246,11 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
         let name = match field(m, "name") { Some(Value::Str(s)) => s.to_string(), _ => format!("{}", i + 1) };
         let by = whole(&field(m, "by").ok_or_else(|| err(format!("R1266: guide: milestone {name} has no `by` (the tick it is reached by)")))?, "`by`")?;
         let reached = field(m, "reached").ok_or_else(|| err(format!("R1266: guide: milestone {name} has no `reached` (the action that says it is reached)")))?;
-        ms.push(Milestone { name, by, reached, closeness: field(m, "closeness") });
+        let from = match field(m, "from") { Some(v) => Some(whole(&v, "`from`")?), None => None };
+        if from.is_some_and(|f| f >= by) { return Err(err(format!("R1266: guide: milestone {name} starts (`from`) at or after its `by`"))); }
+        let every = match field(m, "every") { Some(v) => Some(whole(&v, "`every`")?), None => None };
+        if every.is_some_and(|e| e < 1) { return Err(err(format!("R1266: guide: `every` of milestone {name} is 1 or more"))); }
+        ms.push(Milestone { name, by, from, every, reached, closeness: field(m, "closeness") });
     }
     let opts = args.get(3).cloned().unwrap_or(Value::Nil);
     if !matches!(opts, Value::Nil) && !is_map(&opts) {
@@ -279,13 +291,17 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
         (image, p_step, p_ms)
     };
     let logging = vm.session.event_log.is_some();
+    // With a milestone that starts later (`from`), the start's tick tells
+    // whether the first stretch is before it. The world is replaced at the
+    // end in any case.
+    let start_tick = if ms.iter().any(|m| m.from.is_some()) { Some(restore_from(vm, &start, None)?) } else { None };
     // As many side by side as there are cores, or `GOBLIN_GUIDE_THREADS`.
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let threads = std::env::var("GOBLIN_GUIDE_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(cores).min(copies).max(1);
     let mut rows: Vec<Row> = Vec::new();
     let mut tried = 0usize;
     let mut tries_of = vec![0usize; ms.len()];
-    let first = Entry { path: start.clone(), id: 0, score: 0.0, chain: Vec::new(), stretch: false, log: None };
+    let first = Entry { path: start.clone(), id: 0, tick: start_tick, score: 0.0, chain: Vec::new(), stretch: false, log: None };
     // starts[i]: the copies milestone i is looked for from.
     let mut starts: Vec<Vec<Entry>> = vec![vec![first]];
     let mut stage = 0usize;
@@ -299,15 +315,18 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
         loop {
             let mut won: Vec<Entry> = Vec::new();
             let mut kept: Vec<(Entry, usize)> = Vec::new();
-            let mut jobs = Vec::with_capacity(copies);
-            for c in 0..copies {
+            // Before the milestone's `from`, one copy runs on, unguided, to it.
+            let lead = m.from.is_some_and(|f| pool.iter().all(|e| e.tick.is_none_or(|t| t < f)));
+            let round = if lead { 1 } else { copies };
+            let mut jobs = Vec::with_capacity(round);
+            for c in 0..round {
                 if tried >= most { gave_up = true; break; }
                 tried += 1;
                 tries_of[stage] += 1;
                 let parent = &pool[c % pool.len()];
                 jobs.push(Job { tried, parent: parent.path.clone(), seed: crate::swarm::task_seed(base, tried) });
             }
-            let spec = Spec { stage, name: &m.name, by: m.by, every, dir: &dir, step: &p_step, reached: &p_ms[stage].0, closeness: p_ms[stage].1.as_ref(), logging };
+            let spec = Spec { stage, name: &m.name, by: m.by, every: m.every.unwrap_or(every), from: m.from.unwrap_or(i64::MIN), dir: &dir, step: &p_step, reached: &p_ms[stage].0, closeness: p_ms[stage].1.as_ref(), logging };
             let done = run_round(&image, &spec, &jobs, threads);
             for (c, (job, res)) in jobs.iter().zip(done).enumerate() {
                 let parent = &pool[c % pool.len()];
@@ -320,10 +339,10 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
                         made.push(path.clone());
                         let mut chain = parent.chain.clone();
                         chain.push((m.name.clone(), r.to, path.clone(), job.tried));
-                        won.push(Entry { path, id: job.tried, score: 0.0, chain, stretch: false, log });
+                        won.push(Entry { path, id: job.tried, tick: Some(r.to), score: 0.0, chain, stretch: false, log });
                     }
                     ("kept", Some(path)) => {
-                        kept.push((Entry { path, id: job.tried, score: r.score.unwrap_or(0.0), chain: parent.chain.clone(), stretch: true, log }, rows.len() - 1));
+                        kept.push((Entry { path, id: job.tried, tick: Some(r.to), score: r.score.unwrap_or(0.0), chain: parent.chain.clone(), stretch: true, log }, rows.len() - 1));
                     }
                     _ => {}
                 }

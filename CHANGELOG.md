@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.49 — 2026-11-16
+
+- Guided runs: a milestone can say when guiding toward it starts (`from`) and how long its stretches are (`every`, in place of the option). Before `from`, one copy runs on unguided, straight to it; from there copies are chosen as usual. A milestone guided only near its tick, in short stretches, comes suddenly; one guided from early on, in long stretches, is bent toward slowly. A `from` at or after `by` is R1266.
+- The capstone plays on a Map Spawner map: `MAP=file.json` takes the map's land (its sea and coasts as drawn), raises heights inland from the coast with the same noise as a generated continent, and runs rivers and rain over it; each of the map's starting areas gets one kingdom, at its best-fed province. Each land cell is one province, as on a generated map. `PICTURES=dir` writes the political map every `PICTURE_EVERY` years and at the end (each realm its own color, kept from picture to picture; painting draws no dice, so the history is the same with or without pictures).
+- Conformance: new case `des_guide_milestone_from`.
+
 ## 0.51.48 — 2026-11-16
 
 - Timelines: `:timeline(x)` gives the event log's lines about one object, and about what it came from up to the line it was born on (the split, fracture, merge or spawn that made it, back through every forebear), in order. `:timeline(x, from, to)` keeps those ticks only (nil for an open end). An overlay kind's timeline is asked for by its name (`:timeline("old_rite")`): where it was put on, spread, ended, and the kinds it came from by mutation, split, fracture or merge. Lines handed back by regions and by guided-run copies count the same. The log's text is unchanged: each line is noted (its objects' ids and kinds, where it starts in the file) as it is written, and `:timeline` reads the lines back from the file. The log must be on (R1254). What a log started after a `:restore` knows starts there.

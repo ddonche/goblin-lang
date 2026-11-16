@@ -1,0 +1,78 @@
+/// Pictures of the world: each province one cell of the map, sea blue,
+/// land no one holds pale, each realm its own color. Painting draws no dice,
+/// so taking pictures never changes the history.
+
+sea  | "#a9c4d6"
+wild | "#e8e0c8"
+colors | [
+    "#cf6e6e", "#516fb8", "#badf86", "#c85bbb", "#75c7b9", "#cc8a3e", "#9f8cd9", "#67bf63",
+    "#d6668b", "#4794c2", "#cdd392", "#b652d1", "#6ecf9e", "#b86651", "#868edf", "#84c85b",
+    "#c775ac", "#3ec6cc", "#d9c58c", "#8d63bf", "#66d678", "#c24757", "#92add3", "#acd152",
+    "#ce6ecf", "#51b89a", "#dfab86", "#685bc8", "#83c775", "#cc3e7f", "#8cc6d9", "#bfbb63",
+    "#b066d6", "#47c275", "#d39792", "#526dd1", "#9fcf6e", "#b851a3", "#86dfd7", "#c89f5b",
+    "#9075c7", "#3ecc43", "#d98ca0", "#6396bf", "#c4d666", "#b247c2", "#92d3b7", "#d17652",
+    "#6e6ecf", "#70b851", "#df86ba", "#5bbbc8", "#c7b975", "#8a3ecc", "#8cd99f", "#bf6368",
+    "#668cd6", "#95c247", "#d392ce", "#52d1b5", "#cf9d6e", "#6651b8", "#8edf86", "#c85b85",
+    "#75acc7", "#c7cc3e", "#c58cd9", "#63bf8d", "#d67866", "#4758c2", "#aed392", "#d152ad",
+    "#6ecfce", "#b89951", "#aa86df", "#5bc867", "#c77584", "#3e80cc", "#c6d98c", "#bb63bf",
+    "#66d6b0", "#c27447", "#9792d3", "#6ed152", "#cf6e9f", "#51a4b8", "#dfd686", "#9e5bc8",
+    "#75c790", "#cc423e", "#8ca0d9", "#96bf63", "#d666c5", "#47c2b1", "#d3b792", "#7552d1",
+    "#6fcf6e", "#b85170", "#86bbdf", "#bcc85b", "#b875c7", "#3ecc89", "#d99e8c", "#6368bf",
+    "#8dd666", "#c24796", "#92ced3", "#d1b552", "#9d6ecf", "#51b865", "#df868f", "#5b85c8",
+    "#adc775", "#cc3ec8", "#8cd9c4", "#bf8c63", "#7766d6", "#59c247", "#d392ae", "#52aed1",
+    "#cfcd6e", "#9851b8", "#86dfaa", "#c8665b", "#7584c7", "#81cc3e", "#d98cc7", "#63bfba"
+]
+/// The color each realm was painted, by name, so a realm keeps its color
+/// from picture to picture.
+painted | {}
+
+act name_of(p)
+    return p >> name
+xx
+
+/// Gives each living realm a color: the one it had, or the first no other
+/// realm has (in the order of their names); past 128 realms colors repeat.
+act paint(realms)
+    keep  | {}
+    taken | {}
+    repeat realms as r
+        n | r >> name
+        if :has(painted, n)
+            :put!(keep, n, painted{n})
+            :put!(taken, painted{n}, true)
+        xx
+    xx
+    next | 0
+    nc   | :len(colors)
+    repeat :sort_by(realms, "name_of") as r
+        n | r >> name
+        if :has(keep, n) => skip
+        c | nil
+        repeat nc
+            if c.nix? and !:has(taken, colors[next % nc]) => c |= colors[next % nc]
+            next |= next + 1
+        xx
+        c |= c ?? colors[next % nc]
+        :put!(keep, n, c)
+        :put!(taken, c, true)
+    xx
+    painted |= keep
+xx
+
+/// Writes the political map to `path`: `width` x `height` cells, drawn
+/// smooth and about 1920 pixels wide with borders between colors.
+act political(path, width, height, lands, realms)
+    paint(realms)
+    px | []
+    repeat width * height
+        :put_last!(px, sea)
+    xx
+    repeat lands as l
+        o | l >> owner
+        c | wild
+        if !o.nix? => c |= painted{o >> name} ?? wild
+        :update!(px[l >> no], c)
+    xx
+    look | {"scale": :max(1, 1920 // width), "border": "#404040", "border_width": 1.5}
+    :write_png!(path, width, height, px, look)
+xx

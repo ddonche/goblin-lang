@@ -63,9 +63,10 @@ act around(i, width, height)
     return out
 xx
 
-/// The map for `cfg`: per cell its elevation, whether it is land, its
-/// terrain, river flow and rain.
+/// The map for `cfg` (read from `map_file` when it names one): per cell
+/// its elevation, whether it is land, its terrain, river flow and rain.
 act generate(cfg)
+    if (cfg{"map_file"} ?? "") != "" => send from_file(cfg)
     :rand_seed(cfg{"seed"})
     cells  | :ceil(cfg{"provinces"} / cfg{"land_share"})
     height | :round(:sqrt(cells / 1.5))
@@ -86,6 +87,12 @@ act generate(cfg)
     repeat elev as e
         :put_last!(land, e > sea_level)
     xx
+    return waters(width, height, elev, land, sea_level, cfg)
+xx
+
+/// Rivers and rain over a map whose land and heights are set.
+act waters(width, height, elev, land, sea_level, cfg)
+    total | width * height
     /// Rivers: water fills every hollow up to its rim (each land cell's
     /// water level is at least a step above its lowest neighbour's, with the
     /// sea at sea level), then each cell drains to the neighbour whose water
@@ -150,6 +157,63 @@ act generate(cfg)
     xx
     return {"width": width, "height": height, "elev": elev, "sea_level": sea_level, "land": land, "down": down,
         "flow": flow, "rain": rain, "coast": coast}
+xx
+
+/// A map drawn elsewhere (a Map Spawner JSON file: `width`, `height`,
+/// `valid` with 0 for sea, `layers.regions` with each cell's starting area
+/// or -1). Its land is the file's; heights are the same noise as a
+/// generated map's, raised with the distance from the sea (land rises
+/// inland), so rivers run to the nearest coast. `areas` gives each cell's
+/// starting area.
+act from_file(cfg)
+    :rand_seed(cfg{"seed"})
+    d      | :read_json(cfg{"map_file"})
+    width  | d{"width"}
+    height | d{"height"}
+    total  | width * height
+    land   | []
+    repeat d{"valid"} as v
+        :put_last!(land, v != 0)
+    xx
+    /// Steps to the nearest sea cell, outward from the coast.
+    dist  | []
+    front | []
+    repeat :range(0, total) as i
+        if land[i]
+            :put_last!(dist, -1)
+        else
+            :put_last!(dist, 0)
+            :put_last!(front, i)
+        xx
+    xx
+    far | 1
+    repeat :len(front) > 0
+        next | []
+        repeat front as i
+            repeat around(i, width, height) as j
+                if dist[j] == -1
+                    :update!(dist[j], dist[i] + 1)
+                    far |= :max(far, dist[i] + 1)
+                    :put_last!(next, j)
+                xx
+            xx
+        xx
+        front |= next
+    xx
+    raw  | noise(width, height)
+    elev | []
+    repeat :range(0, total) as i
+        /// A tiny step by cell keeps every elevation distinct.
+        tiny | i / 1000000000.0
+        if land[i]
+            :put_last!(elev, 0.01 + 0.5 * raw[i] + 0.5 * dist[i] / far + tiny)
+        else
+            :put_last!(elev, -1.0 + tiny)
+        xx
+    xx
+    m | waters(width, height, elev, land, 0.0, cfg)
+    :put!(m, "areas", d{"layers"}{"regions"})
+    return m
 xx
 
 /// The value at fraction q (0..1) of the sorted list.
