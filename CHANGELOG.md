@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.54 — 2026-11-16
+
+- Capstone: the amounts sized for a realm of the 400-province world scale with the map (`land::scale`), as its land thresholds do: a group's arms and gold when it weighs a coup or a gift of men or gold, the realm's people a group's size is measured against, and the treasury a realm counts as enough. On Daniel's continent map a realm has about eight times the people, so these were always full: coups were 35 times as many as on the 400-province world and 16 of 27 realms ended as military juntas. Now, 1,000 years: 242 coup attempts (about 0.7% a realm-year; Eisner finds about 1% a year for European kings murdered or deposed, 600-1800), juntas 11 of 41 at the end, a junta lasting about 10 years (Geddes: military regimes are the shortest-lived, about 9). The 400-province world is unchanged (check.sh as 0.51.53).
+
 ## 0.51.53 — 2026-11-16
 
 - Memory follows the objects, not the number of overlay kinds or regions (Daniel: never copy what doesn't need a copy). Daniel's continent map (3,037 provinces, 4 regions), 1,000 years: peak 8.9 GB before, 1.05 GB now (year 0: 811 MB to 319 MB), 1,942 s to 1,787 s, the same history. Before, the run was killed for want of memory.
