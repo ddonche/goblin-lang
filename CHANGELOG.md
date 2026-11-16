@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.46 — 2026-11-16
+
+- `sims/maptest` forces rebalanced (Daniel: realms only split, none grew). Unity no longer wears down with size alone at a rate that broke every big realm: it mends with time and wears down with fast growth (recent gains as a share of the realm) and with reach (the realm's share of all the land). Splits and fractures come only as unity fails; a strong, united realm absorbs weaker neighbors it touches, likelier the bigger the gap; border pressure is might times unity. A bug made every realm count its whole starting land as new in year 1 and crash its unity. 300 years: map 1 ends with 6 realms, the largest holding 56% (splits 3, fractures 3, absorbs 7); longshore ends with 8, the largest 30% (2, 1, 2). New realms take colors no realm has, from 44.
+
 ## 0.51.45 — 2026-11-16
 
 - `sims/maptest` takes any Map Spawner export (`MAP=file.json`), draws it 1920 pixels wide whatever its size, and presses borders in proportion to the land (a fifth of the land cells a year). Daniel's 480 × 300 "longshore" map: 7 realms became 31 in 300 years (26 s).
