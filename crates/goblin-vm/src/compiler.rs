@@ -331,6 +331,9 @@ fn collect_bind_names(stmts: &[Stmt], out: &mut Vec<String>) {
 
 /// The stateful bytecode compiler.
 /// Maintains a stack of FunctionScopes (one per nested function body).
+/// `compile_action` on a shared globals list that it had to add to.
+pub const SHARED_GLOBALS_GREW: &str = "compile: globals grew";
+
 pub struct Compiler {
     /// Compiling the base of a `[]`/`{}` read: the outermost read fuses
     /// the whole path into one step.
@@ -439,6 +442,17 @@ impl Compiler {
     /// preventing different modules from clobbering each other's slots in session.globals.
     pub fn with_initial_globals(mut self, names: Vec<String>) -> Self {
         self.globals = names;
+        self
+    }
+
+    /// Start from the program's globals as `cell` holds them, and give the
+    /// compiled functions that same list, so a formula compiled many times
+    /// over (each kind's, each region's) keeps no copy of its own. A unit
+    /// that adds a global can't share it: `shared_globals_grew` says so,
+    /// and it is compiled again with `with_initial_globals`.
+    pub fn with_shared_globals(mut self, cell: std::rc::Rc<std::cell::OnceCell<Vec<String>>>) -> Self {
+        self.globals = cell.get().cloned().unwrap_or_default();
+        self.unit_globals = cell;
         self
     }
 
@@ -619,6 +633,11 @@ impl Compiler {
         }
         let f = self.pop_scope();
         self.seal_globals();
+        // Compiled against a shared list (`with_shared_globals`) that it
+        // added to: its functions can't use that list.
+        if self.unit_globals.get().map_or(0, Vec::len) < self.globals.len() {
+            return Err(GoblinError::Runtime(SHARED_GLOBALS_GREW.to_string()));
+        }
         Ok(f)
     }
 

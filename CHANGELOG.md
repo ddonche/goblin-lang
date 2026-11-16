@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.53 — 2026-11-16
+
+- Memory follows the objects, not the number of overlay kinds or regions (Daniel: never copy what doesn't need a copy). Daniel's continent map (3,037 provinces, 4 regions), 1,000 years: peak 8.9 GB before, 1.05 GB now (year 0: 811 MB to 319 MB), 1,942 s to 1,787 s, the same history. Before, the run was killed for want of memory.
+- An overlay kind keeps only the variables of the code that made it that its lines name, as a closure does. Before, it kept every variable of the action that ran its `overlay` line: a faith or tongue made in an action holding the world's lands kept a copy of every land, and carried it to each region it reached (80% of the memory, measured with massif). New test in `perf_regression`: 160 kinds over 2,000 objects grew memory 1.6 GB before, 26 MB now.
+- The kinds made from one another share their lines (spreads, transitions, blocks) and the blocks compiled from them, on every thread.
+- DES formulas and overlay blocks are compiled against one shared list of the program's global names; each used to keep its own copy (about 650 names).
+- A link test in a spread's condition was copied before it was compiled, so the same formulas were compiled again hundreds of times a year; it is compiled once.
+
 ## 0.51.52 — 2026-11-16
 
 - While a world runs, each region and the program number overlay copies apart (region k of n: k, k + n + 1, ...; the program: n, 2n + 1, ...). Before, every region counted from the same number, so a copy put on from another region (or spread, or come over with its host) could have the id of one already there, and a field write on it (`o >> f |= v`) went to the other copy, or failed as R1249 (seen on Daniel's continent map after about 250 years).

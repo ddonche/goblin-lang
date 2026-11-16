@@ -191,6 +191,9 @@ pub struct Vm {
     /// compiled, and its `on erase:` action (tick.rs `erase_changed`).
     /// Emptied with `tick_exprs`, when definitions change.
     pub(crate) erase_conds: rustc_hash::FxHashMap<Rc<str>, Rc<crate::tick::EraseConds>>,
+    /// Each `overlay` line's words (by the line's span): its overlays keep
+    /// only the variables of the code that ran it that its lines name.
+    overlay_words: std::collections::HashMap<String, Rc<std::collections::HashSet<String>>>,
     /// Each decision's compiled formulas (tick.rs `decide_plan`), for the
     /// class table `decide_classes`.
     pub(crate) decide_plans: rustc_hash::FxHashMap<(usize, usize, usize, usize, usize), Rc<crate::tick::DecidePlan>>,
@@ -235,7 +238,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), overlay_words: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -2788,10 +2791,20 @@ impl Vm {
                 // never share one.
                 let fresh = self.session.overlay_lines_run.contains(&line)
                     || self.session.region.is_some() || self.session.world.is_some();
-                self.session.overlay_lines_run.insert(line);
+                self.session.overlay_lines_run.insert(line.clone());
                 let family = def.class.as_ref().map(|c| c.to_lowercase()).unwrap_or_else(|| def.name.clone());
                 let kind = if fresh { crate::transition::new_root_name(self, &family) } else { def.name.clone() };
                 let mut vm_def = OverlayDef {
+                    code: std::rc::Rc::new(crate::session::OverlayCode {
+                        modifiers: def.modifiers.iter().map(|(k, e)| (k.clone(), e.clone())).collect(),
+                        spread_rules: def.spread_rules.clone(),
+                        spawn_rules: def.spawn_rules.clone(),
+                        transitions: def.transitions.clone(),
+                        each_tick: def.each_tick.clone(),
+                        spreads: def.spreads.clone(),
+                        actions: def.actions.clone(),
+                        phases: def.phases.clone(),
+                    }),
                     name: kind.clone(),
                     host_types: def.host_types.clone(),
                     decay_rate: def.decay_rate,
@@ -2804,21 +2817,13 @@ impl Vm {
                     },
                     class: def.class.clone(),
                     class_dup: def.class_dup.as_ref().map(crate::tick::dup_rule).unwrap_or(OverlayApplyBehavior::Stacks { label: None }),
-                    modifiers: def.modifiers.iter().map(|(k, e)| (k.clone(), e.clone())).collect(),
                     conflict_rules: def.conflict_rules.iter().map(|r| (r.opponent.clone(), r.suppress_rate)).collect(),
-                    spread_rules: def.spread_rules.clone(),
-                    spawn_rules: def.spawn_rules.clone(),
-                    transitions: def.transitions.clone(),
                     on_end: def.on_end.clone(),
-                    each_tick: def.each_tick.clone(),
                     intensity: def.intensity,
-                    spreads: def.spreads.clone(),
                     conflicts: def.conflicts.clone(),
                     methods: std::collections::HashMap::new(),
-                    actions: def.actions.clone(),
                     on_start: def.on_start.clone(),
                     every: def.every.clone(),
-                    phases: def.phases.clone(),
                     family,
                     generated: fresh,
                     travels: fresh || !self.session.owned_actors.is_empty(),
@@ -2842,10 +2847,21 @@ impl Vm {
                 // The maker's variables its lines see: not the ones its own
                 // fields or the tick's names (`self`, `target`, ...) take.
                 const TICK_NAMES: [&str; 5] = ["self", "target", "intensity", "strength", "age"];
+                // Only those its lines name (as a closure keeps only the
+                // variables it uses): a kind made in an action that holds
+                // the world's lands keeps no copy of them.
+                let words = match self.overlay_words.get(&line) {
+                    Some(w) => w.clone(),
+                    None => {
+                        let w = Rc::new(words_of(&format!("{:?}", def)));
+                        self.overlay_words.insert(line.clone(), w.clone());
+                        w
+                    }
+                };
                 vm_def.maker = maker.into_iter()
-                    .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()))
+                    .filter(|(n, _)| !vm_def.extra_fields.contains_key(n) && !TICK_NAMES.contains(&n.as_str()) && words.contains(n))
                     .collect();
-                vm_def.methods = crate::tick::compile_overlay_methods(&self.session, &vm_def.name, &vm_def.actions, &vm_def.own_names())?;
+                vm_def.methods = crate::tick::compile_overlay_methods(&self.session, &vm_def.name, &vm_def.code.actions, &vm_def.own_names())?;
                 if fresh {
                     let frame = self.call_stack.last_mut().unwrap();
                     let made = frame.made_overlays.get_or_insert_with(Default::default);
@@ -5647,9 +5663,17 @@ impl Vm {
         // variable and call an action (`where [ kingdom(target) == 2 ]`); a
         // formula written in an imported module sees that module's names,
         // as the rest of its code does.
-        let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec())
-            .with_global_prefix(self.module_prefix_of(&expr.span().file));
-        let f = Self::compile_expr_fn(expr, param_names, compiler)?;
+        let prefix = self.module_prefix_of(&expr.span().file);
+        let cell = self.session.globals_cell();
+        let compiler = crate::compiler::Compiler::new().with_shared_globals(cell).with_global_prefix(prefix.clone());
+        let f = match Self::compile_expr_fn(expr, param_names, compiler) {
+            Err(GoblinError::Runtime(m)) if m == GLOBALS_GREW => {
+                let compiler = crate::compiler::Compiler::new().with_initial_globals(self.session.global_names.to_vec())
+                    .with_global_prefix(prefix);
+                Self::compile_expr_fn(expr, param_names, compiler)?
+            }
+            r => r?,
+        };
         let hints = (0..f.bytecode.len()).map(|_| std::cell::Cell::new(u32::MAX)).collect();
         let tree = crate::formula_tree::FormulaTree::build(&f);
         let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default(), tree });
@@ -5765,6 +5789,14 @@ impl Vm {
             items: vec![goblin_ast::Stmt::Action(action_decl)],
         };
         let compiled = compiler.compile_module(&module)?;
+        // Compiled sharing the program's globals (`with_shared_globals`)
+        // but adding one: its functions would see too short a list.
+        // (The wrapper's own name, which only the discarded entry stores,
+        // doesn't count.)
+        let shared = compiled.entry.global_names.get().map_or(0, Vec::len);
+        if compiled.global_names.get(shared..).is_some_and(|extra| extra.iter().any(|n| !n.ends_with("__tick_expr"))) {
+            return Err(GoblinError::Runtime(GLOBALS_GREW.into()));
+        }
         // The entry function just declares the action as a local; we need the inner FunctionObject.
         // It should be in constants[0] or similar. Let's find it.
         for c in &compiled.entry.constants {
@@ -7428,6 +7460,17 @@ fn value_to_str(v: &Value) -> String {
 /// A field default that is not a plain literal, compiled against the
 /// program's globals, so a default that reads a variable sees its current
 /// value, as in the interpreter.
+/// The words in `text` (runs of letters, digits and `_`): every name an
+/// `overlay` line's code holds, as its parsed form prints it, string
+/// literals included (`"{k}"` names `k`). It may hold more than the line
+/// reads, never less.
+fn words_of(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).map(str::to_string).collect()
+}
+
+/// `compile_expr_fn`: the unit added a global to a list it shares.
+const GLOBALS_GREW: &str = crate::compiler::SHARED_GLOBALS_GREW;
+
 pub(crate) fn compile_field_default(expr: &goblin_ast::Expr, global_names: &[String]) -> Result<std::rc::Rc<crate::value::FunctionObject>, GoblinError> {
     let compiler = crate::compiler::Compiler::new().with_initial_globals(global_names.to_vec());
     Vm::compile_expr_fn(expr, &[], compiler)
@@ -8600,4 +8643,5 @@ pub(crate) fn segment_matches(pat: &str, name: &str) -> bool {
     }
     true
 }
+
 

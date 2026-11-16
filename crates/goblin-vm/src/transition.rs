@@ -770,7 +770,7 @@ fn seed_kind(vm: &mut Vm, made: bool, inst: &OverlayInstance) {
     if !inst.extra_fields.keys().eq(d.extra_fields.keys()) {
         let fields = &seeded.extra_fields;
         seeded.maker.retain(|(n, _)| !fields.contains_key(n));
-        seeded.methods = crate::tick::compile_overlay_methods(&vm.session, &seeded.name, &seeded.actions, &seeded.own_names()).unwrap_or_default();
+        seeded.methods = crate::tick::compile_overlay_methods(&vm.session, &seeded.name, &seeded.code.actions, &seeded.own_names()).unwrap_or_default();
     }
     vm.session.overlay_defs.insert(inst.overlay_name.clone(), Rc::new(seeded));
 }

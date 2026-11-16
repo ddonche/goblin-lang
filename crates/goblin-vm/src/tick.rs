@@ -51,7 +51,7 @@ pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
 /// A phase some class (or overlay) has a `phase: NAME` block for.
 pub fn check_phase(vm: &Vm, name: &str) -> Result<(), GoblinError> {
     if vm.session.classes.values().any(|c| c.phases.iter().any(|p| p.name == name))
-        || vm.session.overlay_defs.values().any(|d| d.phases.iter().any(|p| p.name == name)) { return Ok(()); }
+        || vm.session.overlay_defs.values().any(|d| d.code.phases.iter().any(|p| p.name == name)) { return Ok(()); }
     Err(GoblinError::Runtime(format!(
         "R1250: unknown-phase: no class or overlay has a `phase: {name}` block, so `{name}` in this tick() block runs nothing")))
 }
@@ -409,13 +409,13 @@ fn constant_amount(e: &goblin_ast::Expr) -> bool {
 pub(crate) fn modify_amounts(vm: &mut Vm, at: usize) -> Result<Vec<(String, f64)>, GoblinError> {
     let inst = &vm.session.overlay_instances[at];
     let Some(def) = vm.session.overlay_defs.get(&inst.overlay_name).cloned() else { return Ok(Vec::new()) };
-    if def.modifiers.is_empty() { return Ok(Vec::new()); }
+    if def.code.modifiers.is_empty() { return Ok(Vec::new()); }
     let host = inst.host_uuid.clone();
     let strength = inst.strength;
     let extra = inst.extra_fields.clone();
     let name = &def.name;
-    let mut out = Vec::with_capacity(def.modifiers.len());
-    for (field, expr) in &def.modifiers {
+    let mut out = Vec::with_capacity(def.code.modifiers.len());
+    for (field, expr) in &def.code.modifiers {
         let fail = |what: String| GoblinError::Runtime(format!(
             "R1221: overlay-modify: overlay {name}, `@{field}`: {what}"));
         match vm.session.object_store.get(&host) {
@@ -457,7 +457,7 @@ fn refresh_films(vm: &mut Vm) -> Result<(), GoblinError> {
     let live: Vec<usize> = {
         let defs = &vm.session.overlay_defs;
         vm.session.overlay_instances.iter().enumerate()
-            .filter(|(_, i)| defs.get(&i.overlay_name).is_some_and(|d| d.modifiers.iter().any(|(_, e)| !constant_amount(e))))
+            .filter(|(_, i)| defs.get(&i.overlay_name).is_some_and(|d| d.code.modifiers.iter().any(|(_, e)| !constant_amount(e))))
             .filter(|(_, i)| !crate::world::is_remote(vm, &i.host_uuid))
             .map(|(p, _)| p)
             .collect()
@@ -1288,10 +1288,14 @@ pub(crate) fn narrow(vm: &mut Vm, filter: &goblin_ast::Expr, filter_reads: bool,
 /// (see `Vm::unset_link_fails`). None: not this kind of condition.
 fn narrow_by_link(vm: &mut Vm, c: &goblin_ast::Expr, class: &str, self_ref: &Value, self_at: usize) -> Option<Option<Vec<(Value, usize)>>> {
     use goblin_ast::Expr as E;
-    let link_call = |e: &E| match e {
-        E::FreeCall(n, args, _) if n.trim_start_matches(':') == "link_score" && args.len() == 3 => Some(args.clone()),
-        _ => None,
-    };
+    // The call's own arguments, not a copy: a formula is kept by where it
+    // sits, so a copy would be compiled again every time.
+    fn link_call(e: &goblin_ast::Expr) -> Option<&[goblin_ast::Expr]> {
+        match e {
+            goblin_ast::Expr::FreeCall(n, args, _) if n.trim_start_matches(':') == "link_score" && args.len() == 3 => Some(&args[..]),
+            _ => None,
+        }
+    }
     let (args, test) = match c {
         E::Binary(l, op, r, _) if ["==", "!=", ">", ">=", "<", "<="].contains(&op.as_str()) => match (link_call(l), &**r) {
             (Some(a), E::Number(n, _)) => {
@@ -1390,10 +1394,20 @@ pub(crate) fn compile_overlay_methods(session: &crate::session::Session, name: &
         params.extend(action.params.clone());
         params.extend(extra.iter().map(|k| p(k)));
         let pseudo = goblin_ast::ActionDecl { params, ..action.clone() };
-        let mut c = crate::compiler::Compiler::new().with_initial_globals(session.global_names.to_vec())
-            .with_global_prefix(module_prefix(session, &action.span.file));
+        // Each kind's methods share the program's list of global names
+        // (a made kind compiles them again); one that adds a global gets
+        // its own.
+        let prefix = module_prefix(session, &action.span.file);
+        let mut c = crate::compiler::Compiler::new().with_shared_globals(session.globals_cell()).with_global_prefix(prefix.clone());
         c.is_class_method = true;
-        let f = c.compile_action(&pseudo).map_err(|e| GoblinError::Runtime(format!("overlay {name}, `{}`: {e}", action.name)))?;
+        let f = match c.compile_action(&pseudo) {
+            Err(GoblinError::Runtime(m)) if m == crate::compiler::SHARED_GLOBALS_GREW => {
+                let mut c = crate::compiler::Compiler::new().with_initial_globals(session.global_names.to_vec()).with_global_prefix(prefix);
+                c.is_class_method = true;
+                c.compile_action(&pseudo)
+            }
+            r => r,
+        }.map_err(|e| GoblinError::Runtime(format!("overlay {name}, `{}`: {e}", action.name)))?;
         m.insert(action.name.clone(), std::rc::Rc::new(f));
     }
     Ok(m)
@@ -1902,7 +1916,7 @@ pub(crate) fn overlay_put_as(vm: &mut Vm, inst: OverlayInstance, start: bool, ho
     vm.session.des_metrics.overlays_made += 1;
     // A `modify` amount that reads the host reads it as stored, as
     // `refresh_films` does.
-    if def.modifiers.iter().any(|(_, e)| !constant_amount(e)) { film_off(&mut vm.session, &host); }
+    if def.code.modifiers.iter().any(|(_, e)| !constant_amount(e)) { film_off(&mut vm.session, &host); }
     let amounts = modify_amounts(vm, at)?;
     vm.session.overlay_instances[at].applied = amounts;
     settle_films(&mut vm.session);

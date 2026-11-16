@@ -14,28 +14,23 @@ use crate::session::{LinkDef, LinkOffset, OverlayApplyBehavior, OverlayDef, Over
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct POverlayDef {
+    /// Its lines, shared by the kinds made from one another
+    /// (`Session::portable_code`).
+    code: std::sync::Arc<crate::session::OverlayCode>,
     pub(crate) name: String,
     host_types: Vec<String>,
     decay_rate: f64,
     default_duration: Option<u32>,
     apply_behavior: OverlayApplyBehavior,
-    modifiers: Vec<(String, goblin_ast::Expr)>,
     conflict_rules: Vec<(String, f64)>,
-    spread_rules: Vec<goblin_ast::SpreadRule>,
-    spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
-    transitions: Vec<goblin_ast::TransitionDef>,
     extra_fields: Vec<(String, PValue)>,
     on_end: Option<String>,
-    each_tick: Vec<(String, goblin_ast::Expr)>,
     intensity: f64,
-    spreads: Vec<goblin_ast::OverlaySpread>,
     conflicts: Vec<String>,
     class: Option<String>,
     class_dup: OverlayApplyBehavior,
-    actions: Vec<goblin_ast::ActionDecl>,
     on_start: Option<String>,
     every: Vec<(u64, String)>,
-    phases: Vec<goblin_ast::OverlayPhase>,
     family: String,
     generated: bool,
     travels: bool,
@@ -81,31 +76,55 @@ pub(crate) struct DesImage {
     overlay_ids: u32,
 }
 
+/// An overlay kind's lines for another thread: converted once for all the
+/// kinds that share them.
+fn code_to_p(c: &Rc<crate::session::OverlayCode>, tp: &mut ToPortable) -> std::sync::Arc<crate::session::OverlayCode> {
+    let key = Rc::as_ptr(c) as usize;
+    if let Some((_, a)) = tp.session.portable_code.borrow().get(&key) { return a.clone(); }
+    let a = std::sync::Arc::new((**c).clone());
+    tp.session.portable_code.borrow_mut().insert(key, (c.clone(), a.clone()));
+    a
+}
+
+/// An overlay kind's lines from another thread: rebuilt once for all the
+/// kinds that share them, so their formulas are compiled once.
+fn code_from_p(a: &std::sync::Arc<crate::session::OverlayCode>, s: &mut Session) -> Rc<crate::session::OverlayCode> {
+    let key = std::sync::Arc::as_ptr(a) as usize;
+    if let Some((_, c)) = s.code_from_portable.get(&key) { return c.clone(); }
+    let c = Rc::new((**a).clone());
+    s.code_from_portable.insert(key, (a.clone(), c.clone()));
+    c
+}
+
+/// A kind's blocks, compiled: once for all the kinds from another thread
+/// that share their lines and fields (a plague's thousand strains compile
+/// the plague's blocks once).
+fn methods_from_p(d: &POverlayDef, extra: &[String], s: &mut Session) -> HashMap<String, Rc<crate::value::FunctionObject>> {
+    let key = (std::sync::Arc::as_ptr(&d.code) as usize, extra.to_vec());
+    if let Some(m) = s.methods_from_portable.get(&key) { return m.clone(); }
+    let m = crate::tick::compile_overlay_methods(s, &d.name, &d.code.actions, extra).unwrap_or_default();
+    s.methods_from_portable.insert(key, m.clone());
+    m
+}
+
 /// An overlay definition, ready to cross to another thread.
 pub(crate) fn def_to_p(d: &OverlayDef, tp: &mut ToPortable) -> Result<POverlayDef, GoblinError> {
     Ok(POverlayDef {
+        code: code_to_p(&d.code, tp),
         name: d.name.clone(),
         host_types: d.host_types.clone(),
         decay_rate: d.decay_rate,
         default_duration: d.default_duration,
         apply_behavior: d.apply_behavior.clone(),
-        modifiers: d.modifiers.clone(),
         conflict_rules: d.conflict_rules.clone(),
-        spread_rules: d.spread_rules.clone(),
-        spawn_rules: d.spawn_rules.clone(),
-        transitions: d.transitions.clone(),
         extra_fields: pfields(tp, &d.extra_fields)?,
         on_end: d.on_end.clone(),
-        each_tick: d.each_tick.clone(),
         intensity: d.intensity,
-        spreads: d.spreads.clone(),
         conflicts: d.conflicts.clone(),
         class: d.class.clone(),
         class_dup: d.class_dup.clone(),
-        actions: d.actions.clone(),
         on_start: d.on_start.clone(),
         every: d.every.clone(),
-        phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
         travels: d.travels,
@@ -120,30 +139,23 @@ pub(crate) fn def_from_p(d: &POverlayDef, fp: &mut FromPortable, s: &mut Session
     let maker: Vec<(String, crate::value::Value)> = d.maker.iter().map(|(k, v)| (k.clone(), fp.shared_value_of(v, s))).collect();
     let extra_names: Vec<String> = extra_fields.keys().cloned().chain(maker.iter().map(|(k, _)| k.clone())).collect();
     OverlayDef {
+        code: code_from_p(&d.code, s),
         maker,
         name: d.name.clone(),
         host_types: d.host_types.clone(),
         decay_rate: d.decay_rate,
         default_duration: d.default_duration,
         apply_behavior: d.apply_behavior.clone(),
-        modifiers: d.modifiers.clone(),
         conflict_rules: d.conflict_rules.clone(),
-        spread_rules: d.spread_rules.clone(),
-        spawn_rules: d.spawn_rules.clone(),
-        transitions: d.transitions.clone(),
         extra_fields,
         on_end: d.on_end.clone(),
-        each_tick: d.each_tick.clone(),
         intensity: d.intensity,
-        spreads: d.spreads.clone(),
         conflicts: d.conflicts.clone(),
         class: d.class.clone(),
         class_dup: d.class_dup.clone(),
-        methods: crate::tick::compile_overlay_methods(s, &d.name, &d.actions, &extra_names).unwrap_or_default(),
-        actions: d.actions.clone(),
+        methods: methods_from_p(d, &extra_names, s),
         on_start: d.on_start.clone(),
         every: d.every.clone(),
-        phases: d.phases.clone(),
         family: d.family.clone(),
         generated: d.generated,
         travels: d.travels,
