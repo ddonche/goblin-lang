@@ -534,9 +534,7 @@ fn take_overlays_off(vm: &mut Vm, host: &str) {
 }
 
 fn next_overlay_id(vm: &mut Vm) -> OverlayInstanceId {
-    let id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-    vm.session.des_overlay_id_counter += 1;
-    id
+    vm.session.next_overlay_id()
 }
 
 /// `to` gets `from`'s link offsets and its own link formulas.

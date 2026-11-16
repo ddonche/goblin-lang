@@ -122,7 +122,9 @@ xx
 ///   contact at all than across a border, slower under a learned realm
 ///   (a written standard). `drift` is the years of it, set by `diverge`.
 ///   When it has gone far enough, by chance, it is a new tongue, and the
-///   whole cut-off region speaks it (`born`).
+///   whole cut-off region speaks it (`born`): none before 500 years apart,
+///   about half by 800 (Latin's daughters were told apart from it about
+///   eight centuries on; Icelandic from Norwegian after about nine).
 /// - A creole: almost never, only in a trading city where two tongues
 ///   meet and neither is on top.
 <^>Tongue |
@@ -133,7 +135,7 @@ xx
     drift: 0.0
     /// Carried by people from where it is spoken by many (.3 or more).
     spread: carry(self, target, intensity) where :link_score(self, target, "border") and intensity >= .3 and target >> people > 0.0
-    transition mutate where chance(.01 * past(:min((self >> drift) / 500.0, 1.0), .4))
+    transition mutate where chance(.01 * past(:min((self >> drift) / 1000.0, 1.0), .5))
         carries:
             drift: 0.0
         xx
@@ -381,9 +383,11 @@ act region(l, o, share)
 xx
 
 /// How likely a tongue spreads from land `a` to `b`: more with trade,
-/// twice as likely under one holder, less into the mountains.
+/// twice as likely under one holder, less into the mountains. On a map
+/// of smaller provinces (`land::scale`) a border is crossed more often,
+/// so speech moves as many miles a year.
 act carry(a, b, i)
-    c | .03 * i * (1.0 + a >> trade)
+    c | .03 * i * (1.0 + a >> trade) * :sqrt(land::scale())
     if a >> owner == b >> owner => c |= c * 2.0
     if b >> terrain == "mountains" => c |= c * .3
     return c
@@ -399,11 +403,14 @@ xx
 ///   land (`spread`), and groups preach and found it (factions.gbln).
 /// - Isolated believers drift into rites of their own, slower than a
 ///   tongue (scripture and clergy hold a faith together): `drift`, set by
-///   `diverge`, and the whole cut-off region takes the new faith.
+///   `diverge`, and the whole cut-off region takes the new faith: none
+///   before 500 years apart, and then at half the pace of its tongue.
 /// - Schisms split whole regions and follow politics: a region whose own
 ///   ruler holds the faith apart from its heartland builds up `tension`,
 ///   more under a learned ruler, and by chance breaks away; most of the
-///   region follows its ruler (Reformation, East and West).
+///   region follows its ruler (Reformation, East and West). Rarely: the
+///   Latin church held a dozen kingdoms together for a thousand years,
+///   so no break before about four centuries apart.
 /// - Blending of two faiths into a new one, where both are held side by
 ///   side and neither is on top: rare.
 <^>Faith |
@@ -436,7 +443,7 @@ xx
     mercantile: 0.0
     /// The tongue of its scripture: the tongue of the land it began in.
     tongue: ..
-    transition mutate where chance(.005 * past(:min((self >> drift) / 600.0, 1.0), .4))
+    transition mutate where chance(.005 * past(:min((self >> drift) / 1000.0, 1.0), .5))
         carries:
             drift: 0.0
             tension: 0.0
@@ -444,7 +451,7 @@ xx
         xx
     xx
     on mutate => faith_born(self, mutated, 1.0, "faith_new", {"the old rites were kept there in a way of their own": 2.0, "a local saint was worshipped as a god": 1.0})
-    transition fracture where chance(.01 * past(:min((self >> tension) / 300.0, 1.0), .3))
+    transition fracture where chance(.01 * past(:min((self >> tension) / 1000.0, 1.0), .3))
         fragment:
             intensity: intensity * .7
             drift: 0.0
@@ -474,9 +481,10 @@ xx
 
 /// How likely preachers carry a faith from land `a` to `b`: more from
 /// trading land (up to three times more for a merchants' faith), twice as
-/// likely into a town or city.
+/// likely into a town or city; more often on a map of smaller provinces,
+/// as for a tongue (`carry`).
 act missions(a, b, i, seeks, m)
-    c | .02 * i * (1.0 + 2.0 * (a >> trade) * (1.0 + 2.0 * m)) * (.1 + 1.8 * seeks)
+    c | .02 * i * (1.0 + 2.0 * (a >> trade) * (1.0 + 2.0 * m)) * (.1 + 1.8 * seeks) * :sqrt(land::scale())
     if b >> settlement == "town" or b >> settlement == "city" or b >> settlement == "great city" => c |= c * 2.0
     return c
 xx
@@ -898,7 +906,7 @@ act hold(p, t, ti, f, fi)
         :overlay!(l, t, ti)
         :overlay!(l, f, fi)
         repeat :overlays(l) as o
-            o >> at |= l >> name
+            if :is_type(o, "Tongue") or :is_type(o, "Faith") => o >> at |= l >> name
         xx
     xx
 xx

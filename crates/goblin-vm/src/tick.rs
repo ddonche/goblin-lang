@@ -679,8 +679,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
         let Some(def) = vm.session.overlay_defs.get(&name).cloned() else { continue };
         clock.at(&mut vm.session.des_metrics, def.class.as_deref().unwrap_or(&name));
         let host_var = host_name(vm, &host);
-        let des_id = OverlayInstanceId(vm.session.des_overlay_id_counter);
-        vm.session.des_overlay_id_counter += 1;
+        let des_id = vm.session.next_overlay_id();
         let how = match from {
             Some(f) => Put::Spread(crate::events::overlay_on(vm, &name, &f)),
             None => Put::On,

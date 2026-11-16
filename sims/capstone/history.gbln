@@ -139,10 +139,20 @@ if :len(areas) > 0
     xx
 xx
 
-/// Prehistory: only the land.
-repeat prehistory
-    :tick()
-        land
+/// Prehistory: only the land, and in its last century the weather, the
+/// floods, droughts, fires and sicknesses as well, so the people at year 0
+/// are as many as the land feeds with them (they always lived with them).
+repeat :range(0, prehistory) as y
+    if prehistory - y > 100
+        :tick()
+            land
+        xx
+    else
+        overlays::prepare(lands, [])
+        :tick()
+            land
+            ideas
+        xx
     xx
 xx
 t_pre | :epoch_ms() - t_start
@@ -282,6 +292,8 @@ xx
 annals <> Annals | lived: 0
 /// Who held each land at the last sample (the program's own record).
 owners_then | []
+tongues_then | []
+faiths_then  | []
 
 /// `CHECKPOINT=path` writes the world to path at the end of year
 /// `CHECKPOINT_AT`; `RESTORE=path` goes on from such a checkpoint.
@@ -415,6 +427,65 @@ repeat :range(start_year, years + 1) as year
     xx
     if held_then > 0 => :say("  held land with another holder than {cfg{"sample_every"}} years before: {:round(moved * 100.0 / held_then, 1)}%")
     owners_then |= owners_now
+    /// How many people live where the main tongue, or the main faith, is
+    /// another than at the last sample (a shift or a new kind born there).
+    tongues_now | []
+    faiths_now  | []
+    alive_t | {}
+    alive_f | {}
+    shifted_t | 0.0
+    shifted_f | 0.0
+    born_t    | 0.0
+    split_f   | 0.0
+    counted   | 0.0
+    repeat lands as l
+        t | overlays::top(l, "Tongue") ?? ""
+        f | overlays::top(l, "Faith") ?? ""
+        :put_last!(tongues_now, t)
+        :put_last!(faiths_now, f)
+        if t != "" => :update!(alive_t{t}, true)
+        if f != "" => :update!(alive_f{f}, true)
+        if :len(tongues_then) > 0 and l >> people > 0.0
+            counted |= counted + l >> people
+            was_t | tongues_then[idx]
+            if t != was_t
+                /// A tongue born of the one spoken before (drifted apart)
+                /// is not a shift.
+                kin | false
+                if t != ""
+                    repeat :overlays(l, t) as o
+                        if :has(o >> parents ?? [], was_t) => kin |= true
+                    xx
+                xx
+                if kin
+                    born_t |= born_t + l >> people
+                else
+                    shifted_t |= shifted_t + l >> people
+                xx
+            xx
+            was_f | faiths_then[idx]
+            if f != was_f
+                /// A faith born of the one held before (a schism, a
+                /// reform, rites drifted apart) is not a conversion.
+                kin | false
+                if f != ""
+                    repeat :overlays(l, f) as o
+                        if :has(o >> parents ?? [], was_f) => kin |= true
+                    xx
+                xx
+                if kin
+                    split_f |= split_f + l >> people
+                else
+                    shifted_f |= shifted_f + l >> people
+                xx
+            xx
+        xx
+    xx
+    if counted > 0.0 => :say("  people who went over to another tongue: {:round(shifted_t * 100.0 / counted, 1)}%, whose tongue drifted into a new one: {:round(born_t * 100.0 / counted, 1)}%; converted to another faith: {:round(shifted_f * 100.0 / counted, 1)}%, to a faith born of their own: {:round(split_f * 100.0 / counted, 1)}%")
+    sc | overlays::counts(lands, ps)
+    :say("  main tongues {:len(alive_t)}, main faiths {:len(alive_f)}; largest tongue holds {sc{"largest_tongue"}} of all people, largest faith {sc{"largest_faith"}}")
+    tongues_then |= tongues_now
+    faiths_then  |= faiths_now
 xx
 :event_log(nil)
 :say("time: prehistory {prehistory} years {t_pre} ms, history {years} years {:epoch_ms() - t_run} ms")

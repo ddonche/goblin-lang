@@ -449,6 +449,23 @@ pub struct Session {
 }
 
 impl Session {
+    /// The next overlay copy's id. While a world runs, every region and
+    /// the program number copies apart (region k of n takes the ids
+    /// k, k + n + 1, ..., the program n, 2n + 1, ...), so a copy that
+    /// moves to another region, with its host or by spreading, never has
+    /// the id of one already there.
+    pub(crate) fn next_overlay_id(&mut self) -> OverlayInstanceId {
+        let (k, n) = match (&self.region, &self.world) {
+            (Some(c), _) => (c.regions.iter().position(|&r| r == c.me).unwrap_or(0) as u32, c.regions.len() as u32 + 1),
+            (None, Some(w)) => { let n = w.region_count() as u32; (n, n + 1) }
+            _ => (0, 1),
+        };
+        let mut c = self.des_overlay_id_counter;
+        c += (k + n - c % n) % n;
+        self.des_overlay_id_counter = c + 1;
+        OverlayInstanceId(c)
+    }
+
     /// Whether an object of `class` is one of `wanted`: that class, or,
     /// for `uses diplomacy`, any class that uses the interface.
     pub fn class_matches(&self, wanted: &str, class: &str) -> bool {

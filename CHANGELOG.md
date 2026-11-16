@@ -3,6 +3,15 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.52 — 2026-11-16
+
+- While a world runs, each region and the program number overlay copies apart (region k of n: k, k + n + 1, ...; the program: n, 2n + 1, ...). Before, every region counted from the same number, so a copy put on from another region (or spread, or come over with its host) could have the id of one already there, and a field write on it (`o >> f |= v`) went to the other copy, or failed as R1249 (seen on Daniel's continent map after about 250 years).
+- Capstone tuning, from real life (100-year and 1,000-year runs on the 400-province world and on Daniel's continent map): a tongue cut off from the rest of its speakers becomes a new one no sooner than 500 years apart, about half by 800 (Latin's daughters, Icelandic from Norwegian; it was about 400). A faith's rites drift into a new faith no sooner than its tongue and then at half its pace (it was earlier than the tongue). A schism needs about four centuries of a region apart from the faith's heartland (one church held a dozen Latin kingdoms for a thousand years); before, almost every realm ended with its own church.
+- Capstone: on a map of smaller provinces, tongues and missions cross a border more often (by the square root of `land::scale`), so they move as many miles a year as on the 400-province world. The last century of prehistory has the weather, disasters and sicknesses too, so the people at year 0 are as many as the land feeds with them (on the continent map a quarter of them died in the first 40 years). `hold` marks only the tongue and faith it puts on.
+- The capstone's report every `sample_every` years: the share of people who went over to another tongue or whose tongue drifted into a new one, who converted to another faith or to one born of their own, and how many main tongues and faiths there are and the share of the largest.
+- check.sh runs 1,000 years of history (new tongues and faiths take five centuries apart or more); expected_history.txt made again. 79 of 80: no faith is born of drifted rites within 1,000 years on the 400-province world (new tongues 6, schisms 9, blends 27).
+- Conformance: new case `world_tick_overlay_ids_apart`.
+
 ## 0.51.51 — 2026-11-16
 
 - Capstone borders scale with the map. `land::scale()` is how many cells of the map make one province of the 400-province world the sim was built on (the world is as big on any map): distances from a capital count in those provinces, and the land-count thresholds (a broken loser, a city-state, civil war, breakaways, a group's rising) are in them too. A breakaway kingdom takes the far province and the land around it, three provinces' worth.

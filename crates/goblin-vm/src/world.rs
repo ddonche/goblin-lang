@@ -303,6 +303,10 @@ pub struct World {
     home_of: Option<HashMap<String, usize>>,
 }
 
+impl World {
+    pub(crate) fn region_count(&self) -> usize { self.ids.len() }
+}
+
 fn err(msg: impl Into<String>) -> GoblinError { GoblinError::Runtime(msg.into()) }
 
 // ── Main program ─────────────────────────────────────────────────────────────

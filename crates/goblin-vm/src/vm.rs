@@ -2909,8 +2909,7 @@ impl Vm {
                 let strength = strength.clamp(0.0, 1.0);
                 // The overlay's own `lasts N ticks` applies when the statement has no `for`.
                 let duration = duration_override.or(def.default_duration);
-                let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
-                self.session.des_overlay_id_counter += 1;
+                let des_id = self.session.next_overlay_id();
                 let inst = OverlayInstance {
                     overlay_name: overlay_name.clone(),
                     host_var,
@@ -7073,8 +7072,7 @@ impl Vm {
             Some(v) => return Err(bad("needs a whole number of ticks, 0 or more", v)),
         };
         let host_var = crate::tick::host_name(self, &host_uuid);
-        let des_id = OverlayInstanceId(self.session.des_overlay_id_counter);
-        self.session.des_overlay_id_counter += 1;
+        let des_id = self.session.next_overlay_id();
         crate::tick::overlay_push(self, OverlayInstance {
             overlay_name: name,
             host_var,
