@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.45 — 2026-11-16
+
+- `sims/maptest` takes any Map Spawner export (`MAP=file.json`), draws it 1920 pixels wide whatever its size, and presses borders in proportion to the land (a fifth of the land cells a year). Daniel's 480 × 300 "longshore" map: 7 realms became 31 in 300 years (26 s).
+
 ## 0.51.44 — 2026-11-16
 
 - The grid follows the DES: a cell that names an object (any layer, any grid) goes with it through its transitions. Absorb and merge hand the cells to the absorber or the merged object; a split divides them between its two successors and a fracture's fragment takes the far side of them, each part grown from a seed cell through the object's own cells, so each is one connected piece where the land allows it (each cell costs a random number of steps to cross, from the program's dice, so the new border wanders); an erase, or `:delete_object!`, leaves them unclaimed. Subjugate, mutate and spawn leave cells where they are. Every change is a grid write, so regions get it like any other (`holdings.rs`).

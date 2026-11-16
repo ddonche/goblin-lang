@@ -8,14 +8,14 @@
 
 :rand_seed(:int(:env("SEED") ?? "7"))
 years  | :int(:env("YEARS") ?? "300")
-m      | :read_json("start.json")
+m      | :read_json(:env("MAP") ?? "start.json")
 w      | m{"width"}
 h      | m{"height"}
 valid  | m{"valid"}
 ids    | m{"layers"}{"regions"}
 sea    | "#a9c4d6"
 wild   | "#e8e0c8"
-look   | {"scale": 6, "border": "#404040", "border_width": 1.5}
+look   | {"scale": 1920 // m{"width"}, "border": "#404040", "border_width": 1.5}
 colors | ["#d77b67", "#78ad8e", "#e0bd66", "#8b9dc7", "#b48db7", "#67a9ba", "#ce9b67",
           "#c96f8f", "#9bb86b", "#6f8fc9", "#d9a05b", "#8fc9b8", "#b07a5a", "#a3a3d9",
           "#e3c98f", "#7aa37a", "#c98fc4", "#5f9ea0", "#d4b26f", "#9c6fb0", "#e08c6f",
@@ -145,7 +145,7 @@ act season()
     repeat :objects("Realm") as r
         r >> touching |= []
     xx
-    repeat 4000
+    repeat :len(land) // 5
         i | pick 1 from land
         a | :grid_get("world", i % w, i // w, "owner")
         if not a.nix?
