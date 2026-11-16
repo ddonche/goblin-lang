@@ -1,0 +1,16 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// An actor starts with its own copy of the program's grids, as of when it
+/// started: it reads them and changes its copy only.
+:grid("map", 3, 3)
+:grid_set("map", 1, 1, "terrain", "hill")
+act look(st, msg)
+    :grid_set("map", 1, 1, "terrain", "lake")
+    return {"saw": :grid_get("map", 0, 0, "terrain") ?? "plain", "mine": :grid_get("map", 1, 1, "terrain")}
+xx
+:grid_set("map", 0, 0, "terrain", "wood")
+a | :actor({}, look)
+r | :request(a, "go")
+st | :await(r)
+:say(st{"saw"})
+:say(st{"mine"})
+:say(:grid_get("map", 1, 1, "terrain"))

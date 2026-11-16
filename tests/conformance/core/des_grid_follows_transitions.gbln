@@ -1,0 +1,84 @@
+/// known-gap: interp has no grid-following transitions (the interpreter is being retired)
+/// A cell that names an object goes with it through its transitions: a
+/// split divides the cells into two connected parts (grown from the two
+/// cells farthest apart), a fracture's fragment takes the far side, an
+/// absorb or merge hands the cells over, and an erase leaves them unclaimed.
+<>Realm |
+    name: ..
+    cmd: ""
+    transition split where @cmd == "split"
+        first:
+            name: "{@name}1"
+            cmd: ""
+        xx
+        second:
+            name: "{@name}2"
+            cmd: ""
+        xx
+    xx
+    transition fracture where @cmd == "fracture"
+        fragment:
+            name: "{@name}f"
+            cmd: ""
+        xx
+        carries:
+            cmd: ""
+        xx
+    xx
+    transition absorb
+        targets: Realm where @cmd == "absorb" and (target >> name) == "B"
+        carries:
+            cmd: ""
+        xx
+    xx
+    transition erase where @cmd == "erase"
+xx
+:grid("map", 6, 2, 4)
+:grid_void("map", 5, 1)
+a <> Realm | name: "A"
+b <> Realm | name: "B"
+repeat :range(0, 6) as x
+    :grid_set("map", x, 0, "owner", a)
+xx
+repeat :range(0, 3) as x
+    :grid_set("map", x, 1, "owner", b)
+xx
+act show()
+    repeat :range(0, 2) as y
+        row | []
+        repeat :range(0, 6) as x
+            if x == 5 and y == 1
+                :put_last!(row, "~")
+            else
+                r | :grid_get("map", x, y, "owner")
+                if r.nix?
+                    :put_last!(row, ".")
+                else
+                    :put_last!(row, r >> name)
+                xx
+            xx
+        xx
+        :say(:join(row, " "))
+    xx
+    :say("")
+xx
+act give_order(name, what)
+    repeat :objects("Realm") as r
+        if r >> name == name
+            r >> cmd |= what
+        xx
+    xx
+xx
+show()
+a >> cmd |= "split"
+:tick()
+show()
+give_order("A1", "absorb")
+:tick()
+show()
+give_order("A2", "fracture")
+:tick()
+show()
+give_order("A1", "erase")
+:tick()
+show()

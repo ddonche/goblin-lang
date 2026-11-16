@@ -1,0 +1,49 @@
+/// known-gap: interp has no guided runs (the interpreter is being retired)
+/// With an event log on, `:guide` writes the tellings of the history it
+/// found, from the start to the last milestone, in order: those of the
+/// tries it dropped are left out. Every copy runs in a session of its own,
+/// so a plain variable a copy changes stays as it was in the program.
+:rand_seed(3)
+<>Clock |
+    year: 0
+xx
+<>Well |
+    name: ..
+    water: 10
+xx
+clock <> Clock | year: 0
+well <> Well | name: "deep", water: 10
+steps | 0
+act year()
+    :tick()
+    clock >> year |= clock >> year + 1
+    well >> water |= :max(0, well >> water + pick 1 from -3...3)
+    steps |= steps + 1
+    :event(well, "has", nil, "year {clock >> year}: {well >> water}")
+xx
+act dry()
+    return well >> water <= 2
+xx
+act dry_close()
+    return 0 - well >> water
+xx
+d | :env("GOBLIN_CONF_TMP")
+:checkpoint("{d}/well/start.gcp")
+:event_log("{d}/well/events.txt")
+found | :guide("{d}/well/start.gcp", "year", [{"name": "dry", "by": 30, "reached": "dry", "closeness": "dry_close"}], {"copies": 4, "every": 3, "dir": "{d}/well"})
+:event_log(nil)
+lines | :lines(:read_text("{d}/well/events.txt"))
+years | []
+repeat lines as l
+    if l != "" => :put_last!(years, l)
+xx
+:say(found{"reached"})
+:say(:len(years) == found{"milestones"}[0]{"tick"})
+in_order | true
+repeat :range(0, :len(years)) as i
+    if !:starts_with(years[i], "tick {i + 1} |") => in_order |= false
+xx
+:say(in_order)
+:say(well >> water <= 2)
+:say(steps)
+:say(:len(found{"log"}) > 4)

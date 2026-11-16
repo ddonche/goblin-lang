@@ -1162,6 +1162,8 @@ pub enum BuiltinId {
     WriteText,
     AppendFile,
     WriteJson,
+    WritePng,
+    ReadPng,
     ReapSample,
     ReapBang,
     // The event queue (agenda.rs).

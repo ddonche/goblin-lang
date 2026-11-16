@@ -3,6 +3,50 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.46 — 2026-11-16
+
+- `sims/maptest` forces rebalanced (Daniel: realms only split, none grew). Unity no longer wears down with size alone at a rate that broke every big realm: it mends with time and wears down with fast growth (recent gains as a share of the realm) and with reach (the realm's share of all the land). Splits and fractures come only as unity fails; a strong, united realm absorbs weaker neighbors it touches, likelier the bigger the gap; border pressure is might times unity. A bug made every realm count its whole starting land as new in year 1 and crash its unity. 300 years: map 1 ends with 6 realms, the largest holding 56% (splits 3, fractures 3, absorbs 7); longshore ends with 8, the largest 30% (2, 1, 2). New realms take colors no realm has, from 44.
+
+## 0.51.45 — 2026-11-16
+
+- `sims/maptest` takes any Map Spawner export (`MAP=file.json`), draws it 1920 pixels wide whatever its size, and presses borders in proportion to the land (a fifth of the land cells a year). Daniel's 480 × 300 "longshore" map: 7 realms became 31 in 300 years (26 s).
+
+## 0.51.44 — 2026-11-16
+
+- The grid follows the DES: a cell that names an object (any layer, any grid) goes with it through its transitions. Absorb and merge hand the cells to the absorber or the merged object; a split divides them between its two successors and a fracture's fragment takes the far side of them, each part grown from a seed cell through the object's own cells, so each is one connected piece where the land allows it (each cell costs a random number of steps to cross, from the program's dice, so the new border wanders); an erase, or `:delete_object!`, leaves them unclaimed. Subjugate, mutate and spawn leave cells where they are. Every change is a grid write, so regions get it like any other (`holdings.rs`).
+- `:write_png!(path, width, height, pixels, options)`: `scale` (output pixels per pixel, 1 to 64), `smooth` (curved edges between colors, on when scaled), `border` (a color for lines where colors meet) and `border_width` (pixels, default 1.5). A 320 × 200 map draws at 1920 × 1200 with smooth borders.
+- `sims/maptest` runs on DES realms: border pressure each year, and transitions (big realms that lose unity split or lose a far province, strong realms absorb small neighbors they touch, a realm with no land is erased). 7 realms became 24 in 300 years (11 s).
+- Conformance: new case `des_grid_follows_transitions`; `image_png_round_trip` covers the options.
+
+## 0.51.43 — 2026-11-15
+
+- Pictures: `:write_png!(path, width, height, pixels)` writes a PNG from a list of colors, row by row (cell i at x = i % width, y = i // width); a color is `"#rrggbb"`, `"#rrggbbaa"`, or nil for clear. `:read_png(path)` gives `{"width", "height", "pixels"}` in the same form (8-bit pictures). Errors are R1270 (write) and R1271 (read). The coder is built in; no image library is added.
+- A cell reference (from `:grid_neighbors`) has its place: `n >> x`, `n >> y`, `n >> grid`.
+- `pick 1 from` a long list no longer copies the list first: on a 20,000-item list a pick went from 120 µs to under 1 µs. Same draws as before.
+- `sims/maptest`: a Map Spawner map (`start.json`, its JSON export) loaded into a grid, a run where realms press their borders, and a picture before and after (1000 ticks on 320 × 200 cells, 11 s; 5 minutes before the pick fix).
+- Conformance: new cases `image_png_round_trip`, `grid_cell_ref_place`.
+
+## 0.51.42 — 2026-11-15
+
+- Grids with regions (ruling of 11-15): the program keeps one grid. Each tick every region sees it as it was when the tick (or the phase) started, plus its own writes. What any region or the program writes reaches every region by the next tick, in region order: when two regions write one cell in the same tick, the later region's write stands, in every region and in the program. A region that joins gets the grids whole. The same history on any number of threads.
+- Checkpoints of a world on regions hold the grid writes still on their way to the regions; after `:restore` the grid goes on exactly as it did.
+- Capstone (no grid): 100 years, a checkpoint, a restore and 100 more against 200 straight, byte-identical as before.
+- Conformance: new cases `world_regions_share_grid`, `world_checkpoint_keeps_grid`.
+
+## 0.51.41 — 2026-11-15
+
+- Checkpoints hold the grids: every grid's cells on every layer, void cells, tiles, regions and defaults. A cell an object owns names that object again after `:restore`. Guided-run copies have them too. Checkpoint format 5.
+- An actor (and a `:swarm` task) starts with its own copy of the program's grids as they were when it started. It reads them and changes only its copy. Before, it had no grids.
+- Conformance: new cases `des_checkpoint_keeps_grids`, `actor_gets_grid_copy`.
+
+## 0.51.40 — 2026-11-15
+
+- Guided runs run their copies side by side: each round's copies run at once, one per core (`GOBLIN_GUIDE_THREADS` sets how many), each in a session of its own built from the program as it was when `:guide` was called. The history found is the same however many run at once. A copy's plain variables stay its own; the program's are as they were.
+- With an event log on, `:guide` writes the tellings of the history it found, from the start to the last milestone, in order. The tries it dropped are left out.
+- Memory: after a restore, every region rebuilt its own copy of each overlay kind's variables (in the capstone, every province pair, for each of 578 kinds) on the first tick, and a run went from 1 GB to 5 GB. A session now converts and rebuilds each such value once and keeps it. The capstone stays at about 1 GB after a restore; the history is the same (200 years straight against 100, a restore and 100 more, byte-identical on 1 and 4 threads).
+- Capstone, a guided run from year 100 (16 tries of 5 years, 4 regions): 1 copy at a time 34 s, 2 side by side 21 s, 4 side by side 15 s (peak 5.4 GB).
+- Conformance: new case `des_guide_event_log`.
+
 ## 0.51.39 — 2026-11-15
 
 - Checkpoints are fast to write. An overlay kind keeps the variables of the code that made it, and every kind a transition makes from it keeps them too. In the capstone those variables reach every province pair (about 10 MB), and each kind wrote its own copy: 578 kinds came to 170 MB before compression. Kinds now share one copy of what they keep: it is converted once, written once in its own table (equal values from other years and regions too), and rebuilt once on restore. The compressor also gets the tables whole instead of a byte at a time. Capstone at year 100 (4 regions): writing a checkpoint takes 1.4 s, was 36 s; restoring takes under 1 s, was 3 s; the file is 10 MB, was 21 MB. Checkpoint format 4; files written before can't be read.

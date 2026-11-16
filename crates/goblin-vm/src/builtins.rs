@@ -1029,6 +1029,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Nil)
         }
 
+        BuiltinId::WritePng => {
+            if args.len() != 4 && args.len() != 5 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "write_png".into() }); }
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_png path")) };
+            let w = match read(1)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png width")) };
+            let h = match read(2)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png height")) };
+            let pixels = read(3)?;
+            let look = if args.len() == 5 { crate::image::Look::from_options(&read(4)?)? } else { crate::image::Look::plain() };
+            crate::image::write_png_with(&path, w, h, &pixels, &look)
+        }
+
+        BuiltinId::ReadPng => {
+            expect_n(1)?;
+            let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "read_png path")) };
+            crate::image::read_png(&path)
+        }
+
         BuiltinId::AppendFile => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "append_file".into() }); }
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "append_file path")) };
@@ -3916,6 +3932,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
+            crate::holdings::hand_over(session, &uuid, None);
             session.object_store.move_contents_up(uuid.as_str());
             session.object_store.shift_remove(&uuid);
             Ok(Value::Nil)
@@ -4065,6 +4082,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let world = crate::grid::GridWorld::new(&*name, width, height, mode, hierarchy);
             session.grid_store.insert(world);
+            session.note_grid(crate::grid::GridWrite::New(name.to_string()));
             Ok(Value::Str(name))
         }
         BuiltinId::GridGet => {
@@ -4095,8 +4113,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_set: no grid named '{}'", grid_id)))?;
             if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) out of bounds", x, y))); }
             if world.is_void(x, y) { return Err(GoblinError::Runtime(format!("grid_set: ({},{}) is void", x, y))); }
-            let state = match value { Value::Nil => crate::grid::CellState::Unoccupied, v => crate::grid::CellState::Occupied(v) };
+            let state = match value.clone() { Value::Nil => crate::grid::CellState::Unoccupied, v => crate::grid::CellState::Occupied(v) };
             world.set(x, y, &layer, state);
+            session.note_grid(crate::grid::GridWrite::Cell { grid: grid_id.to_string(), x, y, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridVoid => {
@@ -4109,6 +4128,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_void: no grid named '{}'", grid_id)))?;
             if !world.in_bounds(x, y) { return Err(GoblinError::Runtime(format!("grid_void: ({},{}) out of bounds", x, y))); }
             world.void_cell(x, y);
+            session.note_grid(crate::grid::GridWrite::Void { grid: grid_id.to_string(), x, y });
             Ok(Value::Unit)
         }
         BuiltinId::GridTileGet => {
@@ -4137,7 +4157,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: no grid named '{}'", grid_id)))?;
             require_tile_in_bounds(world, tx, ty, "grid_tile_set")?;
-            world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value);
+            world.tile_at_mut(tx, ty).ok_or_else(|| GoblinError::Runtime(format!("grid_tile_set: tile ({},{}) out of bounds", tx, ty)))?.set(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Tile { grid: grid_id.to_string(), x: tx, y: ty, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridRegionGet => {
@@ -4166,7 +4187,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let value = read(4)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: no grid named '{}'", grid_id)))?;
             require_region_in_bounds(world, rx, ry, "grid_region_set")?;
-            world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value);
+            world.region_at_mut(rx, ry).ok_or_else(|| GoblinError::Runtime(format!("grid_region_set: region ({},{}) out of bounds", rx, ry)))?.set(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Region { grid: grid_id.to_string(), x: rx, y: ry, layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridDefaultGet => {
@@ -4189,7 +4211,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let layer = match read(1)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "grid_default_set layer")) };
             let value = read(2)?;
             let world = session.grid_store.get_mut(&grid_id).ok_or_else(|| GoblinError::Runtime(format!("grid_default_set: no grid named '{}'", grid_id)))?;
-            world.set_world_default(&layer, value);
+            world.set_world_default(&layer, value.clone());
+            session.note_grid(crate::grid::GridWrite::Default { grid: grid_id.to_string(), layer: layer.to_string(), val: value });
             Ok(Value::Unit)
         }
         BuiltinId::GridNeighbors => {
@@ -5502,6 +5525,7 @@ fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     crate::world::note_erased(session, uuid);
+    crate::holdings::hand_over(session, uuid, None);
     session.object_store.move_contents_up(uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
@@ -5742,6 +5766,20 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
                 for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                 result
             };
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+        }
+        // A list: draw by position, without copying the list out first.
+        Some(whole @ Value::Collection(c)) if !c.is_map() => {
+            let len = crate::collections::count(c);
+            if len == 0 { return Err(GoblinError::Runtime("pick: empty src array".into())); }
+            if !allow_dups && n_out > len { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, len))); }
+            let ks: Vec<usize> = if allow_dups {
+                (0..n_out).map(|_| rng_bounded(session, len as u64) as usize).collect()
+            } else {
+                pick_indices(session, len, n_out)
+            };
+            let mut out = Vec::with_capacity(n_out);
+            for k in ks { out.push(crate::collections::get_index(whole, &Value::Int(k as i64))?); }
             if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
         }
         Some(Value::Collection(c)) => {

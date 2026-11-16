@@ -172,6 +172,10 @@ pub struct WorldIn {
     out: Mutex<Option<WorldOut>>,
     /// A tick, or saving or loading the region for a checkpoint.
     pub(crate) op: RegionOp,
+    /// The grid writes since the last round, every region's and the
+    /// program's, in order (on a first round, every grid whole): made here
+    /// before the tick, so every region sees the same grid.
+    grid: Arc<Vec<crate::grid::PGridWrite>>,
 }
 
 /// What a region does with a `WorldIn`.
@@ -215,6 +219,8 @@ pub struct WorldOut {
     transitioned: Vec<String>,
     /// Its event log lines.
     events: Vec<String>,
+    /// The grid writes it made this round, in order.
+    grid: Vec<crate::grid::PGridWrite>,
 }
 
 /// While a region runs a world tick: who else is in the world, which of
@@ -238,6 +244,9 @@ pub struct RegionCtx {
 /// snapshots, and what each gets at the start of the next tick.
 #[derive(Default)]
 pub struct World {
+    /// The regions' grid writes of the last round, made in the program's
+    /// grids already, for every region next round.
+    grid_pending: Vec<crate::grid::PGridWrite>,
     /// The regions, in the order they joined.
     actors: Vec<Arc<crate::actor::ActorShared>>,
     ids: Vec<u64>,
@@ -406,7 +415,7 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
         }
         in_flight_overlays = old.in_flight_overlays;
     }
-    vm.session.world = Some(World { actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
+    vm.session.world = Some(World { grid_pending: Vec::new(), actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
     let outs = round(vm, &actors, &ids, true, None)?;
@@ -656,6 +665,21 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
     let w = vm.session.world.as_mut().unwrap();
     for d in &fresh { w.kinds_sent.insert(d.name.clone()); }
     let kinds = Arc::new(kinds);
+    // The grids: whole for regions that start now, else what changed.
+    let grid = {
+        // From the first round on, the program's own writes are kept too.
+        if vm.session.grid_log.is_none() { vm.session.grid_log = Some(Vec::new()); }
+        if prime {
+            let whole = crate::grid::grids_to_p(&vm.session.grid_store, &mut ToPortable::new(&vm.session).objects_by_id())?;
+            Arc::new(whole.into_writes())
+        } else {
+            let log = vm.session.grid_log.replace(Vec::new()).unwrap_or_default();
+            let mut gw = std::mem::take(&mut vm.session.world.as_mut().unwrap().grid_pending);
+            gw.extend(crate::grid::writes_to_p(&log, &vm.session.grid_store, &mut ToPortable::new(&vm.session).objects_by_id())?);
+            Arc::new(gw)
+        }
+    };
+    let w = vm.session.world.as_mut().unwrap();
     let mut sent = Vec::with_capacity(actors.len());
     for (i, a) in actors.iter().enumerate() {
         // The other regions' objects, and those on their way to them.
@@ -666,7 +690,7 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 .unzip()
         };
         let inbox = if prime { Vec::new() } else { std::mem::take(&mut w.inbox[i]) };
-        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), kinds: kinds.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None), op: RegionOp::Tick });
+        let job = Arc::new(WorldIn { tick, me: ids[i], prime, phase: phase.clone(), log, inbox, remote, main_sets: main_sets.clone(), kinds: kinds.clone(), remote_ids, regions: ids.to_vec(), out: Mutex::new(None), op: RegionOp::Tick, grid: grid.clone() });
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
@@ -690,6 +714,18 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
                 let lines = std::mem::take(&mut o.events);
                 crate::events::put_lines(&mut vm.session, lines)?;
             }
+            // Their grid writes, in region order: in the program's grids
+            // now, in every region's next round.
+            let mut fp = FromPortable::new();
+            let log = vm.session.grid_log.take();
+            let mut pending = Vec::new();
+            for o in outs.iter_mut() {
+                let ws = std::mem::take(&mut o.grid);
+                crate::grid::apply_writes(&ws, &mut fp, &mut vm.session);
+                pending.extend(ws);
+            }
+            vm.session.grid_log = log;
+            if let Some(w) = vm.session.world.as_mut() { w.grid_pending.extend(pending); }
             Ok(outs)
         }
     }
@@ -764,6 +800,13 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
             return Ok(());
         }
     }
+    // The grid as every region sees it this round; what this one writes
+    // from now on goes back.
+    if !job.grid.is_empty() {
+        vm.session.grid_log = None;
+        crate::grid::apply_writes(&job.grid, &mut FromPortable::new(), &mut vm.session);
+    }
+    vm.session.grid_log = Some(Vec::new());
     vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect(), rewritten: Vec::new() });
     // The region's own event log, if one was started in it, stays its own.
     let own_log = if job.log { vm.session.event_log.replace(crate::events::Sink::Lines(Vec::new())) } else { None };
@@ -792,7 +835,9 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
     let snapshot = snapshot_of(vm)?;
     let counts = crate::metrics::own_counts(&vm.session, false);
     let transitioned = std::mem::take(&mut vm.session.transitioned);
-    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts, transitioned, events });
+    let log = vm.session.grid_log.take().unwrap_or_default();
+    let grid = crate::grid::writes_to_p(&log, &vm.session.grid_store, &mut ToPortable::new(&vm.session).objects_by_id())?;
+    *job.out.lock().unwrap_or_else(|e| e.into_inner()) = Some(WorldOut { snapshot: Arc::new(snapshot), sent, counts, transitioned, events, grid });
     Ok(())
 }
 
@@ -1795,6 +1840,8 @@ pub(crate) struct WorldState {
     inbox: Vec<Vec<Item>>,
     main_sets: Vec<(String, String, PValue)>,
     kinds_sent: Vec<String>,
+    /// The regions' grid writes of the last round, for every region next.
+    grid_pending: Vec<crate::grid::PGridWrite>,
     /// The program's copies of the regions' objects, and those of them it
     /// has changed since the last tick (what it adds to whole numbers goes
     /// to their regions next tick).
@@ -1832,7 +1879,7 @@ fn region_state(vm: &mut Vm, state: &Value, handler: &Value) -> Result<RegionSta
 }
 
 fn job(op: RegionOp, me: u64, ids: &[u64], tick: i64) -> Arc<WorldIn> {
-    Arc::new(WorldIn { tick, me, prime: true, phase: None, log: false, inbox: Vec::new(), remote: Vec::new(), main_sets: Arc::new(Vec::new()), kinds: Arc::new(Vec::new()), remote_ids: Vec::new(), regions: ids.to_vec(), out: Mutex::new(None), op })
+    Arc::new(WorldIn { tick, me, prime: true, phase: None, log: false, inbox: Vec::new(), remote: Vec::new(), main_sets: Arc::new(Vec::new()), kinds: Arc::new(Vec::new()), remote_ids: Vec::new(), regions: ids.to_vec(), out: Mutex::new(None), op, grid: Arc::new(Vec::new()) })
 }
 
 /// The world's part of a checkpoint; None when no regions run.
@@ -1875,12 +1922,17 @@ pub(crate) fn world_state(vm: &mut Vm) -> Result<Option<WorldState>, GoblinError
     }
     let mut kinds_sent: Vec<String> = w.kinds_sent.iter().cloned().collect();
     kinds_sent.sort();
+    // The regions' grid writes not sent yet, then the program's own.
+    let mut grid_pending = w.grid_pending.clone();
+    if let Some(log) = vm.session.grid_log.as_ref() {
+        grid_pending.extend(crate::grid::writes_to_p(log, &vm.session.grid_store, &mut ToPortable::new(&vm.session).objects_by_id())?);
+    }
     Ok(Some(WorldState {
         regions, ids, tick: w.tick,
         snaps: w.snaps.iter().map(|s| (**s).clone()).collect(),
         inbox: w.inbox.clone(),
         main_sets: w.main_sets.clone(),
-        kinds_sent, view, touched,
+        kinds_sent, view, touched, grid_pending,
         in_flight: w.in_flight.clone(),
         in_flight_overlays: w.in_flight_overlays.clone(),
         flying: w.flying.iter().map(|s| (**s).clone()).collect(),
@@ -1894,6 +1946,7 @@ pub(crate) fn world_state(vm: &mut Vm) -> Result<Option<WorldState>, GoblinError
 
 /// Before a restore: the regions running now end, and the world with them.
 pub(crate) fn end_world(vm: &mut Vm) {
+    vm.session.grid_log = None;
     let mut gone = crate::actor::region_actors(&vm.session);
     if let Some(w) = vm.session.world.take() { gone.extend(w.actors); }
     for a in &gone { a.cancel(); }
@@ -1950,6 +2003,7 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
         view.insert(id);
     }
     vm.session.world = Some(World {
+        grid_pending: ws.grid_pending,
         actors, ids, tick: ws.tick, snaps, inbox, main_sets: ws.main_sets,
         kinds_sent: ws.kinds_sent.into_iter().collect(),
         view, view_from,
@@ -1959,6 +2013,8 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
         moving: ws.moving, counts: ws.counts, rewritten: ws.rewritten,
         by_host: None, home_of: None,
     });
+    // The program's grid writes from now on go to the regions too.
+    vm.session.grid_log = Some(Vec::new());
     Ok(())
 }
 

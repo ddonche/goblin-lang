@@ -15,6 +15,7 @@
 use crate::checkpoint::{checkpoint_to, restore_from};
 use crate::error::GoblinError;
 use crate::value::{CollectionValue, Value};
+use crate::portable::{FromPortable, PValue};
 use crate::vm::Vm;
 use std::rc::Rc;
 
@@ -85,6 +86,126 @@ struct Entry {
     /// Its checkpoint is a stretch's end, which Goblin removes once no
     /// copy goes on from it.
     stretch: bool,
+    /// What its history's `:event` tellings were, stretch by stretch.
+    log: Option<Rc<LogNode>>,
+}
+
+/// One stretch's event lines, after the stretches before it.
+struct LogNode {
+    lines: Vec<String>,
+    parent: Option<Rc<LogNode>>,
+}
+
+/// One copy to run: the try it is, the checkpoint it goes on from, its dice.
+struct Job {
+    tried: usize,
+    parent: String,
+    seed: u128,
+}
+
+/// What every copy of a round runs.
+struct Spec<'a> {
+    stage: usize,
+    name: &'a str,
+    by: i64,
+    every: i64,
+    dir: &'a str,
+    step: &'a PValue,
+    reached: &'a PValue,
+    closeness: Option<&'a PValue>,
+    logging: bool,
+}
+
+/// What a copy did.
+struct Done {
+    outcome: &'static str,
+    from: i64,
+    to: i64,
+    score: Option<f64>,
+    /// Its checkpoint, when it reached the milestone or is kept.
+    path: Option<String>,
+    output: String,
+    events: Vec<String>,
+}
+
+/// Runs a round's copies side by side, each in its own session built from
+/// `image`; their results in the jobs' order.
+fn run_round(image: &crate::swarm::Image, spec: &Spec, jobs: &[Job], threads: usize) -> Vec<Result<Done, String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let out: std::sync::Mutex<Vec<Option<Result<Done, String>>>> = std::sync::Mutex::new((0..jobs.len()).map(|_| None).collect());
+    std::thread::scope(|sc| {
+        for w in 0..threads.min(jobs.len()) {
+            let (next, out) = (&next, &out);
+            let spawned = std::thread::Builder::new()
+                .name(format!("goblin-guide-{w}"))
+                .stack_size(64 * 1024 * 1024)
+                .spawn_scoped(sc, move || {
+                    let mut fp = FromPortable::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::SeqCst);
+                        if i >= jobs.len() { break; }
+                        fp.forget_values();
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_copy(image, &mut fp, w + 1, spec, &jobs[i])));
+                        let r = match r {
+                            Ok(Ok(d)) => Ok(d),
+                            Ok(Err(e)) => Err(e.to_string()),
+                            Err(_) => Err(format!("R1266: guide: try {} crashed (internal error)", jobs[i].tried)),
+                        };
+                        out.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
+                    }
+                });
+            if spawned.is_err() { break; }
+        }
+    });
+    out.into_inner().unwrap_or_else(|e| e.into_inner()).into_iter().enumerate()
+        .map(|(i, r)| r.unwrap_or_else(|| Err(format!("R1266: guide: try {} could not start a thread", jobs[i].tried))))
+        .collect()
+}
+
+/// One copy: back to its checkpoint with its dice, then on, a tick at a
+/// time, until the milestone is reached, its tick has passed, or the
+/// stretch is over.
+fn run_copy(image: &crate::swarm::Image, fp: &mut FromPortable, worker: usize, spec: &Spec, job: &Job) -> Result<Done, GoblinError> {
+    let mut vm = Vm::new(crate::swarm::build_session(image, fp, worker));
+    vm.session.output_buf = Some(String::new());
+    if spec.logging { vm.session.event_log = Some(crate::events::Sink::Lines(Vec::new())); }
+    let step = fp.value(spec.step, &mut vm.session);
+    let reached = fp.value(spec.reached, &mut vm.session);
+    let closeness = spec.closeness.map(|c| fp.value(c, &mut vm.session));
+    let from = restore_from(&mut vm, &job.parent, Some(job.seed))?;
+    let (outcome, to) = loop {
+        let before = vm.session.des_ticks;
+        vm.call_callable(step.clone(), Vec::new())?;
+        let t = vm.session.des_ticks;
+        if t <= before { return Err(err("R1266: guide: the step ran no tick (it calls `:tick()` once)")); }
+        match vm.call_callable(reached.clone(), Vec::new())? {
+            Value::Bool(true) => break ("reached", t),
+            Value::Bool(false) => {}
+            other => return Err(err(format!("R1266: guide: `reached` of milestone {} gave {}, not true or false", spec.name, other.type_name()))),
+        }
+        if t >= spec.by { break ("too late", t); }
+        if t - from >= spec.every { break ("kept", t); }
+    };
+    let mut score = None;
+    let path = match outcome {
+        "reached" => Some(format!("{}/{}_{}_{}.gcp", spec.dir, spec.stage + 1, spec.name, job.tried)),
+        "kept" => {
+            score = Some(match &closeness {
+                None => 0.0,
+                Some(f) => {
+                    let v = vm.call_callable(f.clone(), Vec::new())?;
+                    number(&v).ok_or_else(|| err(format!("R1266: guide: `closeness` of milestone {} gave {}, not a number", spec.name, v.type_name())))?
+                }
+            });
+            Some(format!("{}/try_{}.gcp", spec.dir, job.tried))
+        }
+        _ => None,
+    };
+    if let Some(p) = &path { checkpoint_to(&mut vm, p)?; }
+    let events = match vm.session.event_log.take() { Some(crate::events::Sink::Lines(v)) => v, _ => Vec::new() };
+    let output = vm.session.take_output();
+    Ok(Done { outcome, from, to, score, path, output, events })
 }
 
 struct Row {
@@ -143,10 +264,28 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
     // The program's dice choose every copy's dice, so the same seed finds
     // the same history.
     let base = vm.session.rng_state;
+    // Every copy runs in a session of its own, built from the program as it
+    // is now: what one copy leaves in a plain variable no other copy sees,
+    // so the history found is the same however many run side by side.
+    let (image, p_step, p_ms) = {
+        let mut tp = crate::portable::ToPortable::new(&vm.session);
+        let image = crate::swarm::image_of(&vm.session, &mut tp, None)?;
+        let p_step = tp.value(&step)?;
+        let mut p_ms = Vec::with_capacity(ms.len());
+        for m in &ms {
+            let c = match &m.closeness { Some(c) => Some(tp.value(c)?), None => None };
+            p_ms.push((tp.value(&m.reached)?, c));
+        }
+        (image, p_step, p_ms)
+    };
+    let logging = vm.session.event_log.is_some();
+    // As many side by side as there are cores, or `GOBLIN_GUIDE_THREADS`.
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let threads = std::env::var("GOBLIN_GUIDE_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(cores).min(copies).max(1);
     let mut rows: Vec<Row> = Vec::new();
     let mut tried = 0usize;
     let mut tries_of = vec![0usize; ms.len()];
-    let first = Entry { path: start.clone(), id: 0, score: 0.0, chain: Vec::new(), stretch: false };
+    let first = Entry { path: start.clone(), id: 0, score: 0.0, chain: Vec::new(), stretch: false, log: None };
     // starts[i]: the copies milestone i is looked for from.
     let mut starts: Vec<Vec<Entry>> = vec![vec![first]];
     let mut stage = 0usize;
@@ -160,52 +299,34 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
         loop {
             let mut won: Vec<Entry> = Vec::new();
             let mut kept: Vec<(Entry, usize)> = Vec::new();
+            let mut jobs = Vec::with_capacity(copies);
             for c in 0..copies {
                 if tried >= most { gave_up = true; break; }
                 tried += 1;
                 tries_of[stage] += 1;
                 let parent = &pool[c % pool.len()];
-                let seed = crate::swarm::task_seed(base, tried);
-                let from = restore_from(vm, &parent.path, Some(seed))?;
-                let (outcome, to) = loop {
-                    let before = vm.session.des_ticks;
-                    vm.call_callable(step.clone(), Vec::new())?;
-                    let t = vm.session.des_ticks;
-                    if t <= before { return Err(err("R1266: guide: the step ran no tick (it calls `:tick()` once)")); }
-                    match vm.call_callable(m.reached.clone(), Vec::new())? {
-                        Value::Bool(true) => break ("reached", t),
-                        Value::Bool(false) => {}
-                        other => return Err(err(format!("R1266: guide: `reached` of milestone {} gave {}, not true or false", m.name, other.type_name()))),
-                    }
-                    if t >= m.by { break ("too late", t); }
-                    if t - from >= every { break ("kept", t); }
-                };
-                let mut row = Row { tried, milestone: m.name.clone(), from_try: parent.id, from, to, outcome, closeness: None };
-                match outcome {
-                    "reached" => {
-                        let path = format!("{dir}/{}_{}_{tried}.gcp", stage + 1, m.name);
-                        checkpoint_to(vm, &path)?;
+                jobs.push(Job { tried, parent: parent.path.clone(), seed: crate::swarm::task_seed(base, tried) });
+            }
+            let spec = Spec { stage, name: &m.name, by: m.by, every, dir: &dir, step: &p_step, reached: &p_ms[stage].0, closeness: p_ms[stage].1.as_ref(), logging };
+            let done = run_round(&image, &spec, &jobs, threads);
+            for (c, (job, res)) in jobs.iter().zip(done).enumerate() {
+                let parent = &pool[c % pool.len()];
+                let r = res.map_err(err)?;
+                if !r.output.is_empty() { vm.session.write_output(&r.output, false); }
+                let log = if logging { Some(Rc::new(LogNode { lines: r.events, parent: parent.log.clone() })) } else { None };
+                rows.push(Row { tried: job.tried, milestone: m.name.clone(), from_try: parent.id, from: r.from, to: r.to, outcome: r.outcome, closeness: r.score });
+                match (r.outcome, r.path) {
+                    ("reached", Some(path)) => {
                         made.push(path.clone());
                         let mut chain = parent.chain.clone();
-                        chain.push((m.name.clone(), to, path.clone(), tried));
-                        won.push(Entry { path, id: tried, score: 0.0, chain, stretch: false });
+                        chain.push((m.name.clone(), r.to, path.clone(), job.tried));
+                        won.push(Entry { path, id: job.tried, score: 0.0, chain, stretch: false, log });
                     }
-                    "kept" => {
-                        let score = match &m.closeness {
-                            None => 0.0,
-                            Some(f) => {
-                                let v = vm.call_callable(f.clone(), Vec::new())?;
-                                number(&v).ok_or_else(|| err(format!("R1266: guide: `closeness` of milestone {} gave {}, not a number", m.name, v.type_name())))?
-                            }
-                        };
-                        row.closeness = Some(score);
-                        let path = format!("{dir}/try_{tried}.gcp");
-                        checkpoint_to(vm, &path)?;
-                        kept.push((Entry { path, id: tried, score, chain: parent.chain.clone(), stretch: true }, rows.len()));
+                    ("kept", Some(path)) => {
+                        kept.push((Entry { path, id: job.tried, score: r.score.unwrap_or(0.0), chain: parent.chain.clone(), stretch: true, log }, rows.len() - 1));
                     }
                     _ => {}
                 }
-                rows.push(row);
             }
             // The copies this round went on from are done with.
             for e in &pool { drop_file(e); }
@@ -250,6 +371,15 @@ pub(crate) fn guide(vm: &mut Vm, args: &[Value]) -> Result<Value, GoblinError> {
     match &best {
         Some(e) => { restore_from(vm, &e.path, None)?; }
         None => { restore_from(vm, &start, None)?; }
+    }
+    // The event log tells the history found, from the start to where the
+    // world is now; the other tries' tellings are left out.
+    if let Some(node) = best.as_ref().and_then(|e| e.log.clone()) {
+        let mut parts: Vec<Rc<LogNode>> = Vec::new();
+        let mut at = Some(node);
+        while let Some(n) = at { at = n.parent.clone(); parts.push(n); }
+        for n in parts.iter().rev() { crate::events::put_lines(&mut vm.session, n.lines.clone())?; }
+        crate::events::flush(&mut vm.session)?;
     }
 
     let passed = chain.len();

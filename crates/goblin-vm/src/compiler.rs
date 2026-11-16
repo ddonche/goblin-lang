@@ -4107,8 +4107,10 @@ pub fn builtin_by_name(name: &str) -> Option<BuiltinId> {
         "write_text!"                    => BuiltinId::WriteText,
         "append_file!"                   => BuiltinId::AppendFile,
         "write_json!"                    => BuiltinId::WriteJson,
+        "write_png!"                     => BuiltinId::WritePng,
+        "read_png"                       => BuiltinId::ReadPng,
         // Non-bang I/O forms must error — these are intentionally separate.
-        "write_text" | "append_file" | "write_json" => BuiltinId::RequiresBang,
+        "write_text" | "append_file" | "write_json" | "write_png" => BuiltinId::RequiresBang,
         "is_type"                        => BuiltinId::IsType,
         "is_bound_name"                  => BuiltinId::IsBoundName,
         "invoke"                         => BuiltinId::Invoke,
@@ -4481,7 +4483,7 @@ pub fn is_goblin_builtin(name: &str) -> bool {
 
 fn bang_mutates_target(bare: &str) -> bool {
     const DESTRUCTIVE: &[&str] = &[
-        "write_text!", "write_json!", "append_file!",
+        "write_text!", "write_json!", "write_png!", "append_file!",
         "create_dir!", "copy_file!", "delete_path!", "zip_dir!",
         "delete_object!", "delete_overlays_on!", "swarm!", "move!",
         "overlay!", "detach!", "link!", "unlink!",

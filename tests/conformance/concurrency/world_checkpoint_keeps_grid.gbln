@@ -1,0 +1,43 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// A checkpoint of a world on regions holds the program's grid, every
+/// region's copy, and the writes on their way to the regions: after
+/// `:restore` the grid goes on exactly as it did.
+<>Land |
+    name: ..
+    x: 0
+xx
+:grid("map", 3, 1)
+act make(n, x)
+    l <> Land | name: n, x: x
+    return {"things": [l]}
+xx
+act day(st, msg)
+    repeat st{"things"} as l
+        was | :grid_get("map", 2, 0, "owner") ?? 0
+        :grid_set("map", 2, 0, "owner", was + l >> x + 1)
+        :grid_set("map", l >> x, 0, "owner", was)
+    xx
+    return st
+xx
+west | :actor(make("west", 0), day)
+east | :actor(make("east", 1), day)
+act row()
+    return "{:grid_get("map", 0, 0, "owner")} {:grid_get("map", 1, 0, "owner")} {:grid_get("map", 2, 0, "owner")}"
+xx
+:tick()
+:grid_set("map", 2, 0, "owner", 10)
+path | "{:env("GOBLIN_CONF_TMP")}/grid_world.gcp"
+:checkpoint(path)
+first | []
+repeat 3
+    :tick()
+    :put_last!(first, row())
+xx
+:restore(path)
+again | []
+repeat 3
+    :tick()
+    :put_last!(again, row())
+xx
+:say(first)
+:say(first == again)

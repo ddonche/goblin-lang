@@ -188,11 +188,25 @@ impl<'s> ToPortable<'s> {
     pub(crate) fn only_objects(mut self, handed: std::collections::HashSet<String>) -> Self { self.home = Some(handed); self }
 
     /// `v` converted once: the same collection again gives the same copy.
+    /// Outside an actor's hand-over the session keeps the copy too, so the
+    /// next conversion (next tick, another kind) reuses it.
     pub(crate) fn shared_value(&mut self, v: &Value) -> Result<Arc<PValue>, GoblinError> {
         let key = match v { Value::Collection(c) => Some(Rc::as_ptr(c) as *const () as usize), _ => None };
-        if let Some(k) = key { if let Some(p) = self.once.get(&k) { return Ok(p.clone()); } }
+        let kept = self.home.is_none();
+        if let Some(k) = key {
+            if let Some(p) = self.once.get(&k) { return Ok(p.clone()); }
+            if kept {
+                if let Some((_, p)) = self.session.portable_makers.borrow().get(&(k, self.by_id)) {
+                    self.once.insert(k, p.clone());
+                    return Ok(p.clone());
+                }
+            }
+        }
         let p = Arc::new(self.value(v)?);
-        if let Some(k) = key { self.once.insert(k, p.clone()); }
+        if let Some(k) = key {
+            self.once.insert(k, p.clone());
+            if kept { self.session.portable_makers.borrow_mut().insert((k, self.by_id), (v.clone(), p.clone())); }
+        }
         Ok(p)
     }
 
@@ -480,8 +494,14 @@ impl FromPortable {
     pub(crate) fn shared_value_of(&mut self, p: &Arc<PValue>, session: &mut Session) -> Value {
         let k = Arc::as_ptr(p);
         if let Some(v) = self.once.get(&k) { return v.clone(); }
+        if let Some((_, v)) = session.rebuilt_makers.get(&(k as usize)) {
+            let v = v.clone();
+            self.once.insert(k, v.clone());
+            return v;
+        }
         let v = self.value(p, session);
         self.once.insert(k, v.clone());
+        session.rebuilt_makers.insert(k as usize, (p.clone(), v.clone()));
         v
     }
 

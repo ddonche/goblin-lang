@@ -1,0 +1,9 @@
+3
+2
+[#ff0000, #00ff00, #0000ff, #ffffff, #00000000, #10203080]
+[#305b72, #dacfab]
+8 x 4, #305b72 ... #dacfab
+#1b3441
+runtime error: R1270: write_png: no option `zoom` (scale, smooth, border, border_width)
+short
+not a color
