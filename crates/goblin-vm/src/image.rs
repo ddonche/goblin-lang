@@ -43,7 +43,134 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&crc.sum().to_be_bytes());
 }
 
+/// Drawing options: `scale` (output pixels per input pixel, default 1),
+/// `smooth` (curved edges between colors; default on when scale > 1),
+/// `border` (a color for thin lines where colors meet; default none) and
+/// `border_width` (in output pixels, default 1.5).
+pub struct Look { pub scale: usize, pub smooth: bool, pub border: Option<[u8; 4]>, pub border_width: f64 }
+
+impl Look {
+    pub fn plain() -> Self { Look { scale: 1, smooth: false, border: None, border_width: 1.5 } }
+
+    pub fn from_options(v: &Value) -> Result<Self, GoblinError> {
+        let mut look = Look::plain();
+        let mut smooth = None;
+        let entries: Vec<(String, Value)> = match v {
+            Value::Map(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Value::MapOrd(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            Value::Collection(c) if c.is_map() => crate::collections::to_pairs(c).into_iter()
+                .filter_map(|(k, v)| if let Value::Str(s) = k { Some((s.to_string(), v)) } else { None }).collect(),
+            Value::Frozen(f) => return Look::from_options(&f.value),
+            other => return Err(err(format!("R1270: write_png: the options are {}, not a map", other.type_name()))),
+        };
+        for (k, v) in entries {
+            match (k.as_str(), &v) {
+                ("scale", Value::Int(n)) if (1..=64).contains(n) => look.scale = *n as usize,
+                ("scale", _) => return Err(err("R1270: write_png: `scale` is a whole number from 1 to 64".into())),
+                ("smooth", Value::Bool(b)) => smooth = Some(*b),
+                ("smooth", _) => return Err(err("R1270: write_png: `smooth` is true or false".into())),
+                ("border", Value::Nil) => look.border = None,
+                ("border", c) => look.border = Some(color_of(c, 0).map_err(|_| err("R1270: write_png: `border` is a color like \"#rrggbb\"".into()))?),
+                ("border_width", Value::Int(n)) if *n >= 0 => look.border_width = *n as f64,
+                ("border_width", Value::Float(f)) if *f >= 0.0 => look.border_width = *f,
+                ("border_width", _) => return Err(err("R1270: write_png: `border_width` is a number of pixels".into())),
+                (other, _) => return Err(err(format!("R1270: write_png: no option `{other}` (scale, smooth, border, border_width)"))),
+            }
+        }
+        look.smooth = smooth.unwrap_or(look.scale > 1);
+        Ok(look)
+    }
+}
+
+fn blend(a: [u8; 4], b: [u8; 4], t: f64) -> [u8; 4] {
+    let mut o = [0u8; 4];
+    for k in 0..4 { o[k] = (a[k] as f64 * (1.0 - t) + b[k] as f64 * t).round() as u8; }
+    o
+}
+
+/// The picture drawn larger. Each output pixel weighs the input pixels
+/// around it (a Gaussian bell, sigma 0.7 input pixels) by color; the color
+/// with the most weight fills it. Where two colors are near even, the edge
+/// is drawn smooth (blended over one output pixel) and, with a border color,
+/// a line of `border_width` pixels is laid along it.
+fn draw_large(colors: &[[u8; 4]], w: usize, h: usize, look: &Look) -> (Vec<[u8; 4]>, usize, usize) {
+    let s = look.scale;
+    let (ow, oh) = (w * s, h * s);
+    if !look.smooth && look.border.is_none() {
+        let mut out = Vec::with_capacity(ow * oh);
+        for oy in 0..oh { for ox in 0..ow { out.push(colors[(oy / s) * w + ox / s]); } }
+        return (out, ow, oh);
+    }
+    // Colors to small numbers, so weighing compares numbers.
+    let mut ids: std::collections::HashMap<[u8; 4], u16> = std::collections::HashMap::new();
+    let mut palette: Vec<[u8; 4]> = Vec::new();
+    let cell: Vec<u16> = colors.iter().map(|c| *ids.entry(*c).or_insert_with(|| { palette.push(*c); (palette.len() - 1) as u16 })).collect();
+    let sigma: f64 = if look.smooth { 0.7 } else { 0.35 };
+    let r = 2i64;
+    let mut first = vec![0u16; ow * oh];
+    let mut second = vec![0u16; ow * oh];
+    let mut margin = vec![1.0f32; ow * oh];
+    let mut wsum: Vec<f64> = vec![0.0; palette.len()];
+    let mut touched: Vec<u16> = Vec::new();
+    for oy in 0..oh {
+        let v = (oy as f64 + 0.5) / s as f64 - 0.5;
+        for ox in 0..ow {
+            let u = (ox as f64 + 0.5) / s as f64 - 0.5;
+            let (cx, cy) = (u.round() as i64, v.round() as i64);
+            for dy in -r..=r {
+                let y = cy + dy;
+                if y < 0 || y >= h as i64 { continue; }
+                for dx in -r..=r {
+                    let x = cx + dx;
+                    if x < 0 || x >= w as i64 { continue; }
+                    let (ddx, ddy) = (x as f64 - u, y as f64 - v);
+                    let wt = (-(ddx * ddx + ddy * ddy) / (2.0 * sigma * sigma)).exp();
+                    let id = cell[y as usize * w + x as usize];
+                    if wsum[id as usize] == 0.0 { touched.push(id); }
+                    wsum[id as usize] += wt;
+                }
+            }
+            let (mut a, mut wa, mut b, mut wb) = (0u16, -1.0f64, 0u16, -1.0f64);
+            for &id in &touched {
+                let wt = wsum[id as usize];
+                if wt > wa { b = a; wb = wa; a = id; wa = wt; } else if wt > wb { b = id; wb = wt; }
+            }
+            for &id in &touched { wsum[id as usize] = 0.0; }
+            touched.clear();
+            let i = oy * ow + ox;
+            first[i] = a;
+            if wb > 0.0 { second[i] = b; margin[i] = ((wa - wb) / (wa + wb)) as f32; } else { second[i] = a; }
+        }
+    }
+    // Distance to the edge in output pixels: margin over its slope.
+    let mut out = Vec::with_capacity(ow * oh);
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let i = oy * ow + ox;
+            let (a, b, m) = (first[i], second[i], margin[i] as f64);
+            if a == b { out.push(palette[a as usize]); continue; }
+            let at = |x: usize, y: usize| margin[y * ow + x] as f64;
+            let gx = if ox > 0 && ox + 1 < ow { (at(ox + 1, oy) - m).abs().max((m - at(ox - 1, oy)).abs()) } else { 0.0 };
+            let gy = if oy > 0 && oy + 1 < oh { (at(ox, oy + 1) - m).abs().max((m - at(ox, oy - 1)).abs()) } else { 0.0 };
+            let g = (gx * gx + gy * gy).sqrt();
+            let d = if g > 1e-9 { m / g } else { f64::INFINITY };
+            let mut c = palette[a as usize];
+            if look.smooth && d < 1.0 { c = blend(palette[b as usize], c, 0.5 + 0.5 * d); }
+            if let Some(line) = look.border {
+                let cover = (look.border_width / 2.0 + 0.5 - d).clamp(0.0, 1.0) * (line[3] as f64 / 255.0);
+                if cover > 0.0 { c = blend(c, [line[0], line[1], line[2], 255], cover); }
+            }
+            out.push(c);
+        }
+    }
+    (out, ow, oh)
+}
+
 pub fn write_png(path: &str, width: i64, height: i64, pixels: &Value) -> Result<Value, GoblinError> {
+    write_png_with(path, width, height, pixels, &Look::plain())
+}
+
+pub fn write_png_with(path: &str, width: i64, height: i64, pixels: &Value, look: &Look) -> Result<Value, GoblinError> {
     if width <= 0 || height <= 0 || width > 1 << 20 || height > 1 << 20 {
         return Err(err(format!("R1270: write_png: size {width} x {height} is not a picture size")));
     }
@@ -51,7 +178,7 @@ pub fn write_png(path: &str, width: i64, height: i64, pixels: &Value) -> Result<
     let list: &[Value] = match pixels {
         Value::Array(a) => a,
         Value::Collection(c) if !c.is_map() => { owned = crate::collections::to_vec(c); &owned }
-        Value::Frozen(f) => return write_png(path, width, height, &f.value),
+        Value::Frozen(f) => return write_png_with(path, width, height, &f.value, look),
         other => return Err(err(format!("R1270: write_png: pixels is {}, not a list of colors", other.type_name()))),
     };
     let (w, h) = (width as usize, height as usize);
@@ -60,12 +187,9 @@ pub fn write_png(path: &str, width: i64, height: i64, pixels: &Value) -> Result<
             "R1270: write_png: {w} x {h} needs {} pixels, got {}", w * h, list.len())));
     }
     let mut colors = Vec::with_capacity(list.len());
-    let mut clear = false;
-    for (i, v) in list.iter().enumerate() {
-        let c = color_of(v, i)?;
-        clear |= c[3] != 255;
-        colors.push(c);
-    }
+    for (i, v) in list.iter().enumerate() { colors.push(color_of(v, i)?); }
+    let (colors, w, h) = if look.scale > 1 || look.smooth || look.border.is_some() { draw_large(&colors, w, h, look) } else { (colors, w, h) };
+    let clear = colors.iter().any(|c| c[3] != 255);
     let per = if clear { 4 } else { 3 };
     let mut raw = Vec::with_capacity(h * (1 + w * per));
     for row in colors.chunks(w) {

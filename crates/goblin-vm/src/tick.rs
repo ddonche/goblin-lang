@@ -2041,6 +2041,7 @@ pub(crate) fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> R
         r?;
     }
     crate::world::note_erased(&mut vm.session, uuid);
+    crate::holdings::hand_over(&mut vm.session, uuid, None);
     vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     Ok(())

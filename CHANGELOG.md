@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.44 — 2026-11-16
+
+- The grid follows the DES: a cell that names an object (any layer, any grid) goes with it through its transitions. Absorb and merge hand the cells to the absorber or the merged object; a split divides them between its two successors and a fracture's fragment takes the far side of them, each part grown from a seed cell through the object's own cells, so each is one connected piece where the land allows it (each cell costs a random number of steps to cross, from the program's dice, so the new border wanders); an erase, or `:delete_object!`, leaves them unclaimed. Subjugate, mutate and spawn leave cells where they are. Every change is a grid write, so regions get it like any other (`holdings.rs`).
+- `:write_png!(path, width, height, pixels, options)`: `scale` (output pixels per pixel, 1 to 64), `smooth` (curved edges between colors, on when scaled), `border` (a color for lines where colors meet) and `border_width` (pixels, default 1.5). A 320 × 200 map draws at 1920 × 1200 with smooth borders.
+- `sims/maptest` runs on DES realms: border pressure each year, and transitions (big realms that lose unity split or lose a far province, strong realms absorb small neighbors they touch, a realm with no land is erased). 7 realms became 24 in 300 years (11 s).
+- Conformance: new case `des_grid_follows_transitions`; `image_png_round_trip` covers the options.
+
 ## 0.51.43 — 2026-11-15
 
 - Pictures: `:write_png!(path, width, height, pixels)` writes a PNG from a list of colors, row by row (cell i at x = i % width, y = i // width); a color is `"#rrggbb"`, `"#rrggbbaa"`, or nil for clear. `:read_png(path)` gives `{"width", "height", "pixels"}` in the same form (8-bit pictures). Errors are R1270 (write) and R1271 (read). The coder is built in; no image library is added.

@@ -179,6 +179,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             for (k, v) in overrides(vm, fields_of(t, "second"), me, target)? { fb.insert(k, v); }
             let first = make_object(vm, &ca, fa)?;
             let second = make_object(vm, &cb, fb)?;
+            crate::holdings::divide(&mut vm.session, me, &first, &second, false);
             move_contents(vm, me, &first)?;
             match t.overlay_rule {
                 OverlayContinuity::Split => { copy_overlays(vm, me, &first)?; copy_overlays(vm, me, &second)?; }
@@ -197,6 +198,7 @@ fn fire(vm: &mut Vm, me: &str, class: &str, t: &TransitionDef, target: Option<&s
             for (k, v) in overrides(vm, fields_of(t, "fragment"), me, target)? { ff.insert(k, v); }
             let carries = overrides(vm, fields_of(t, "carries"), me, target)?;
             let fragment = make_object(vm, &cf, ff)?;
+            crate::holdings::divide(&mut vm.session, me, me, &fragment, true);
             for (k, v) in carries { write_field(vm, me, &k, v)?; }
             match t.overlay_rule {
                 OverlayContinuity::Split => copy_overlays(vm, me, &fragment)?,
@@ -349,6 +351,7 @@ pub(crate) fn retire_claimed(vm: &mut Vm, uuid: &str, heir: &str, links: bool) -
     vm.session.link_offsets.retain(|(a, b, _), _| a != uuid && b != uuid);
     vm.session.object_link_defs.retain(|(a, _), _| a != uuid);
     vm.session.object_decisions.remove(uuid);
+    crate::holdings::hand_over(&mut vm.session, uuid, Some(heir));
     vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     out
@@ -568,6 +571,7 @@ fn remove_object(vm: &mut Vm, uuid: &str, heir: &str) -> Value {
     vm.session.object_link_defs.retain(|(a, _), _| a != uuid);
     vm.session.object_decisions.remove(uuid);
     crate::world::note_removed(&mut vm.session, uuid, Some(heir));
+    crate::holdings::hand_over(&mut vm.session, uuid, Some(heir));
     vm.session.object_store.move_contents_up(uuid);
     vm.session.object_store.shift_remove(uuid);
     old

@@ -1,27 +1,101 @@
 /// Map test: load a Map Spawner map (its "Export JSON state") into a grid,
-/// write a picture, let the realms push their borders for a while, and write
-/// a picture again. Cell i of the map is at x = i % width, y = i // width.
-<>Realm |
-    name: ..
-    color: ..
-    might: 0.5
-    land: 0
-xx
+/// draw it, let a few hundred years pass, and draw it again.
+/// Cell i of the map is at x = i % width, y = i // width; ocean is void.
+/// Each year realms press their borders cell by cell, and the DES runs
+/// their transitions: big realms that lose their unity split or lose a
+/// far province (fracture), strong realms absorb small neighbors, and a
+/// realm left with no land is erased. The grid follows the transitions.
 
-:rand_seed(7)
+:rand_seed(:int(:env("SEED") ?? "7"))
+years  | :int(:env("YEARS") ?? "300")
 m      | :read_json("start.json")
 w      | m{"width"}
 h      | m{"height"}
 valid  | m{"valid"}
 ids    | m{"layers"}{"regions"}
-sea    | "#305b72"
-wild   | "#dacfab"
+sea    | "#a9c4d6"
+wild   | "#e8e0c8"
+look   | {"scale": 6, "border": "#404040", "border_width": 1.5}
+colors | ["#d77b67", "#78ad8e", "#e0bd66", "#8b9dc7", "#b48db7", "#67a9ba", "#ce9b67",
+          "#c96f8f", "#9bb86b", "#6f8fc9", "#d9a05b", "#8fc9b8", "#b07a5a", "#a3a3d9",
+          "#e3c98f", "#7aa37a", "#c98fc4", "#5f9ea0", "#d4b26f", "#9c6fb0", "#e08c6f",
+          "#6fb08f", "#b0b06f", "#7f9fd0"]
+made   | 0
+
+act chance(p)
+    return (pick 1 from 0...9999) < p * 10000.0
+xx
+
+act past(v, at)
+    return :clamp((v - at) / (1.0 - at), 0.0, 1.0)
+xx
+
+act new_name()
+    made |= made + 1
+    return "Realm {made}"
+xx
+
+/// A color no realm has yet, while there is one.
+act new_color()
+    used | []
+    repeat :objects("Realm") as r
+        :put_last!(used, r >> color)
+    xx
+    free | []
+    repeat colors as c
+        if not :has(used, c)
+            :put_last!(free, c)
+        xx
+    xx
+    if :len(free) == 0
+        return pick 1 from colors
+    xx
+    return pick 1 from free
+xx
+
+<>Realm |
+    name: ..
+    color: ..
+    might: 0.5
+    unity: 0.8
+    land: 0
+    touching: []
+    /// Might wanders; unity wears down with size and slowly mends.
+    every 1 tick
+        @might |= :clamp(@might + ((pick 1 from 0...100) - 50) / 1000.0, 0.05, 1.0)
+        @unity |= :clamp(@unity + ((pick 1 from 0...100) - 50) / 1000.0 - @land / 400000.0 + (1.0 - @unity) * 0.01, 0.0, 1.0)
+    xx
+    transition split where @land > 600 and chance(.03 * past(1.0 - @unity, .5))
+        second:
+            name: new_name()
+            color: new_color()
+            unity: 0.8
+        xx
+    xx
+    transition fracture where @land > 300 and chance(.02 * past(1.0 - @unity, .4))
+        fragment:
+            name: new_name()
+            color: new_color()
+            unity: 0.9
+        xx
+        carries:
+            unity: :min(@unity + 0.1, 1.0)
+        xx
+    xx
+    transition absorb
+        targets: Realm where :has(@touching, target >> name) and (target >> land) * 3 < @land and chance(.03 * @might)
+        carries:
+            unity: :max(@unity - 0.1, 0.0)
+        xx
+    xx
+    transition erase where @land == 0
+xx
 
 :grid("world", w, h, 4)
-realms | []
+starts | []
 repeat m{"palette"} as p
-    r <> Realm | name: p{"label"}, color: p{"color"}, might: 0.2 + (pick 1 from 0...800) / 1000.0
-    :put_last!(realms, r)
+    r <> Realm | name: new_name(), color: p{"color"}, might: 0.2 + (pick 1 from 0...800) / 1000.0
+    :put_last!(starts, r)
 xx
 land | []
 repeat :range(0, w * h) as i
@@ -30,14 +104,17 @@ repeat :range(0, w * h) as i
     else
         :put_last!(land, i)
         if ids[i] >= 0
-            r | realms[ids[i]]
-            :grid_set("world", i % w, i // w, "owner", r)
-            r >> land |= r >> land + 1
+            :grid_set("world", i % w, i // w, "owner", starts[ids[i]])
         xx
     xx
 xx
 
-/// The map as a picture: sea, unclaimed land, and each realm's color.
+act recount()
+    repeat :objects("Realm") as r
+        r >> land |= :len(:grid_occupied_by("world", r))
+    xx
+xx
+
 act picture(path)
     px | []
     repeat :range(0, w * h) as i
@@ -52,7 +129,7 @@ act picture(path)
             xx
         xx
     xx
-    :write_png!(path, w, h, px)
+    :write_png!(path, w, h, px, look)
 xx
 
 /// How hard a realm pushes: its might, thinned by how much land it holds.
@@ -60,49 +137,51 @@ act push(r)
     return r >> might / (1.0 + r >> land / 4000.0)
 xx
 
-/// One tick: cells on a border change hands. A held cell is drawn at random;
-/// its holder presses a random neighbor, and takes it with the chance
-/// push / (push + the neighbor holder's push).
+/// A year of border pressure: a held cell is drawn at random; its holder
+/// presses a random neighbor and takes it with the chance
+/// push / (push + the neighbor holder's push). Realms that meet this way
+/// note each other (`touching`).
 act season()
+    repeat :objects("Realm") as r
+        r >> touching |= []
+    xx
     repeat 4000
         i | pick 1 from land
         a | :grid_get("world", i % w, i // w, "owner")
         if not a.nix?
-            ns | :grid_neighbors("world", i % w, i // w)
-            n  | pick 1 from ns
+            n  | pick 1 from :grid_neighbors("world", i % w, i // w)
             b  | :grid_get("world", n >> x, n >> y, "owner")
             if b != a
-                pa | push(a)
                 pb | 0.1
                 if not b.nix?
                     pb |= push(b)
+                    if not :has(a >> touching, b >> name)
+                        a >> touching |= :put_last(a >> touching, b >> name)
+                        b >> touching |= :put_last(b >> touching, a >> name)
+                    xx
                 xx
+                pa | push(a)
                 if (pick 1 from 0...999) / 1000.0 < pa / (pa + pb)
                     :grid_set("world", n >> x, n >> y, "owner", a)
-                    a >> land |= a >> land + 1
-                    if not b.nix?
-                        b >> land |= b >> land - 1
-                    xx
                 xx
             xx
         xx
     xx
-    repeat realms as r
-        r >> might |= :clamp(r >> might + ((pick 1 from 0...100) - 50) / 1000.0, 0.05, 1.0)
-    xx
 xx
 
 act report(when)
-    :say(when)
-    repeat realms as r
-        :say("  {r >> name}: {r >> land} cells, might {:round(r >> might, 2)}")
-    xx
+    rs | :objects("Realm")
+    :say("{when}: {:len(rs)} realms")
 xx
 
+recount()
 report("start")
 picture("before.png")
-repeat 1000
+repeat years
     season()
+    recount()
+    :tick()
+    recount()
 xx
-report("after 1000 ticks")
+report("after {years} years")
 picture("after.png")

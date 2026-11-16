@@ -2,7 +2,9 @@
 /// `:write_png!(path, width, height, pixels)` writes a picture from a list
 /// of colors, row by row; `:read_png(path)` reads it back in the same form.
 /// A nil pixel is clear (it reads back as "#00000000"), and a "#rrggbbaa"
-/// color keeps its alpha.
+/// color keeps its alpha. Options draw it larger: `scale` output pixels per
+/// pixel, `smooth` edges (on with a scale), and a `border` color laid
+/// where colors meet.
 path | "{:env("GOBLIN_CONF_TMP")}/pic.png"
 :write_png!(path, 3, 2, ["#ff0000", "#00ff00", "#0000ff", "#ffffff", nil, "#10203080"])
 p | :read_png(path)
@@ -12,6 +14,17 @@ p | :read_png(path)
 solid | "{:env("GOBLIN_CONF_TMP")}/solid.png"
 :write_png!(solid, 2, 1, ["#305b72", "#dacfab"])
 :say(:read_png(solid){"pixels"})
+big | "{:env("GOBLIN_CONF_TMP")}/big.png"
+:write_png!(big, 2, 1, ["#305b72", "#dacfab"], {"scale": 4})
+q | :read_png(big)
+:say("{q{"width"}} x {q{"height"}}, {q{"pixels"}[0]} ... {q{"pixels"}[7]}")
+:write_png!(big, 2, 1, ["#305b72", "#dacfab"], {"scale": 4, "smooth": false, "border": "#000000", "border_width": 2})
+:say(:read_png(big){"pixels"}[3])
+attempt
+    :write_png!(big, 2, 1, ["#305b72", "#dacfab"], {"zoom": 2})
+rescue e
+    :say(e)
+xx
 attempt
     :write_png!(path, 2, 2, ["#ff0000"])
 rescue e

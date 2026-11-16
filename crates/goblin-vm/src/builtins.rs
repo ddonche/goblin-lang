@@ -1030,12 +1030,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         }
 
         BuiltinId::WritePng => {
-            if args.len() != 4 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "write_png".into() }); }
+            if args.len() != 4 && args.len() != 5 { return Err(GoblinError::ArityMismatch { expected: 4, got: args.len(), name: "write_png".into() }); }
             let path = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "write_png path")) };
             let w = match read(1)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png width")) };
             let h = match read(2)? { Value::Int(i) => i, other => return Err(GoblinError::type_error("int", other.type_name(), "write_png height")) };
             let pixels = read(3)?;
-            crate::image::write_png(&path, w, h, &pixels)
+            let look = if args.len() == 5 { crate::image::Look::from_options(&read(4)?)? } else { crate::image::Look::plain() };
+            crate::image::write_png_with(&path, w, h, &pixels, &look)
         }
 
         BuiltinId::ReadPng => {
@@ -3931,6 +3932,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
+            crate::holdings::hand_over(session, &uuid, None);
             session.object_store.move_contents_up(uuid.as_str());
             session.object_store.shift_remove(&uuid);
             Ok(Value::Nil)
@@ -5523,6 +5525,7 @@ fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     crate::world::note_erased(session, uuid);
+    crate::holdings::hand_over(session, uuid, None);
     session.object_store.move_contents_up(uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
