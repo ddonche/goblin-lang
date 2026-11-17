@@ -1,18 +1,54 @@
-year 0: 20 kingdoms, 63 village communities, 65 tribes
-year 0: 148 polities, largest Dunquarar with 5 provinces, 0 wars
-year 100: 98 polities, largest Ulfalvarhal with 13 provinces, 1 wars
-year 200: 83 polities, largest Ulfalvarhal-Gordunhalortor with 23 provinces, 4 wars
-year 300: 67 polities, largest Mararisk with 43 provinces, 10 wars
-year 400: 70 polities, largest Mararisk with 25 provinces, 6 wars
-year 500: 55 polities, largest Lorpelmarwen with 31 provinces, 3 wars
-check: share of polity-years at war: 12%
-check: forms at the end: aristocratic_republic 3, chieftainship 9, citizen_republic 2, client_regime 4, elders_council 8, elective_monarchy 4, hereditary_monarchy 3, imperial_autocracy 1, merchant_oligarchy 7, military_junta 9, theocracy 2, tyranny 3
-check: families: deaths 1723, murders 247, executions 15, crowned 1439, regencies 28, usurped 75, interregnums 66, lines_ended 7, elections 1225, claims_won 32, new_houses 228, marriages 346, births 566, partitions 0, unlike 68
-check: succession laws at the end: eldest_child 3, eldest_son 2, elective 4, faith 2, force 12, none 1, term 12
-check: groups: formed 768, split 211, merged 24, ended 684, give_gold 3613, withhold 92, give_men 3538, coup 13, preach 3715, found 107, press 2304, rise 46, crush 120, concede 137, patronize 3082, coups_won 7, coups_failed 6, unlike 42
-check: overlays: tongue_new 18, tongue_merge 1, shifted 102, faith_new 7, schism 27, blend 18, converted 269, creed_split 7, creed_shift 0, plague 16, strain 22, famine 2772, flood 661, quake 91, drought 2314, fire 2614, dread 775, golden_age 51, elite_strife 37, dark_years 1, court_converted 88, reaction 5, holy_war 93, holy_conquest 11, rally 10, discredited 0, coalition 172, struck_first 1, submitted 215, refused 62, people_broke_away 32, nominal 2, unlike_realm 3
-check: ideas at the end: tongues 51 (largest holds 0.066 of all people), faiths 112 (largest 0.393), creeds 31; realms of more than one people 15
-check: faiths at the end: militant 13, mercantile 10; realms fighting for their faith 0 (0 ruled by priests), trading for it 1; realm-years fighting for their faith 38 (0 ruled by priests)
-check: empires: 37, years from becoming an empire until gone: median 106, longest 478; standing at the end 15
-check: bordering realms: 120 pairs, sharing a tongue (.5 or more) 36, a faith 35; wars under way between faiths 3 of 3
-check: groups at the end: 273, largest share of a realm 0.547; ideas 143, largest holds 0.393 of all people
+year 0: 20 kingdoms, 60 village communities, 70 tribes
+year 0: 150 polities, largest Dunquarar with 5 provinces, 0 wars
+  main tongues 37, main faiths 37; largest tongue holds 0.057 of all people, largest faith 0.042
+year 100: 104 polities, largest Beliskcorros with 14 provinces, 5 wars
+  held land with another holder than 100 years before: 39%
+  people who went over to another tongue: 1.8%, whose tongue drifted into a new one: 0%; converted to another faith: 4.3%, to a faith born of their own: 0.1%
+  main tongues 37, main faiths 38; largest tongue holds 0.06 of all people, largest faith 0.061
+year 200: 81 polities, largest Ulcorpelyr-Jorgorwen-Vargorwensarmar with 20 provinces, 3 wars
+  held land with another holder than 100 years before: 43.2%
+  people who went over to another tongue: 3.4%, whose tongue drifted into a new one: 0%; converted to another faith: 15.7%, to a faith born of their own: 0.2%
+  main tongues 35, main faiths 38; largest tongue holds 0.071 of all people, largest faith 0.087
+year 300: 85 polities, largest Pelgoror with 22 provinces, 2 wars
+  held land with another holder than 100 years before: 30.7%
+  people who went over to another tongue: 5.5%, whose tongue drifted into a new one: 0%; converted to another faith: 22%, to a faith born of their own: 0.2%
+  main tongues 34, main faiths 41; largest tongue holds 0.074 of all people, largest faith 0.138
+year 400: 82 polities, largest Oriskpelquar with 36 provinces, 8 wars
+  held land with another holder than 100 years before: 31.8%
+  people who went over to another tongue: 6.7%, whose tongue drifted into a new one: 0%; converted to another faith: 28.3%, to a faith born of their own: 0.2%
+  main tongues 33, main faiths 39; largest tongue holds 0.068 of all people, largest faith 0.162
+year 500: 66 polities, largest Oriskpelquar with 40 provinces, 3 wars
+  held land with another holder than 100 years before: 20.8%
+  people who went over to another tongue: 4.8%, whose tongue drifted into a new one: 0.2%; converted to another faith: 30%, to a faith born of their own: 0.1%
+  main tongues 31, main faiths 33; largest tongue holds 0.093 of all people, largest faith 0.204
+year 600: 58 polities, largest Pelgoror with 43 provinces, 4 wars
+  held land with another holder than 100 years before: 18.8%
+  people who went over to another tongue: 6.8%, whose tongue drifted into a new one: 0%; converted to another faith: 30.9%, to a faith born of their own: 0%
+  main tongues 30, main faiths 25; largest tongue holds 0.082 of all people, largest faith 0.412
+year 700: 46 polities, largest Pelgoror with 72 provinces, 6 wars
+  held land with another holder than 100 years before: 29.4%
+  people who went over to another tongue: 6.6%, whose tongue drifted into a new one: 3.3%; converted to another faith: 30.8%, to a faith born of their own: 0%
+  main tongues 31, main faiths 21; largest tongue holds 0.098 of all people, largest faith 0.599
+year 800: 48 polities, largest Pelgoror-Mardunros with 69 provinces, 6 wars
+  held land with another holder than 100 years before: 43%
+  people who went over to another tongue: 6.7%, whose tongue drifted into a new one: 5.4%; converted to another faith: 11.8%, to a faith born of their own: 0%
+  main tongues 33, main faiths 15; largest tongue holds 0.105 of all people, largest faith 0.685
+year 900: 36 polities, largest Pelgoror-Mardunros with 74 provinces, 0 wars
+  held land with another holder than 100 years before: 27.1%
+  people who went over to another tongue: 6%, whose tongue drifted into a new one: 7.5%; converted to another faith: 6.8%, to a faith born of their own: 0%
+  main tongues 36, main faiths 6; largest tongue holds 0.131 of all people, largest faith 0.636
+year 1000: 36 polities, largest Pelgoror-Mardunros with 82 provinces, 1 wars
+  held land with another holder than 100 years before: 19.5%
+  people who went over to another tongue: 4.9%, whose tongue drifted into a new one: 1.2%; converted to another faith: 7.9%, to a faith born of their own: 0.6%
+  main tongues 35, main faiths 3; largest tongue holds 0.118 of all people, largest faith 0.671
+check: share of polity-years at war: 11.1%
+check: forms at the end: chieftainship 5, client_regime 2, elders_council 2, elective_monarchy 2, hereditary_monarchy 1, imperial_autocracy 1, merchant_oligarchy 4, military_junta 13, theocracy 6
+check: families: deaths 2746, murders 347, executions 27, crowned 2180, regencies 45, usurped 115, interregnums 132, lines_ended 14, elections 1631, claims_won 54, new_houses 362, marriages 639, births 1098, partitions 4, unlike 78
+check: succession laws at the end: eldest_child 3, elective 2, faith 2, force 14, term 4
+check: groups: formed 1127, split 385, merged 103, ended 1149, give_gold 9501, withhold 209, give_men 10053, coup 53, preach 6807, found 172, press 4528, rise 78, crush 225, concede 263, patronize 5516, coups_won 24, coups_failed 29, unlike 50
+check: overlays: tongue_new 5, tongue_merge 2, shifted 192, faith_new 0, schism 1, blend 23, converted 687, creed_split 33, creed_shift 0, plague 41, strain 277, famine 2884, flood 1360, quake 202, drought 4994, fire 6211, dread 864, golden_age 74, elite_strife 35, dark_years 4, court_converted 158, reaction 7, holy_war 133, holy_conquest 20, rally 24, discredited 2, coalition 248, struck_first 1, submitted 355, refused 98, people_broke_away 23, nominal 7, unlike_realm 7
+check: ideas at the end: tongues 36 (largest holds 0.118 of all people), faiths 41 (largest 0.671), creeds 45; realms of more than one people 9
+check: faiths at the end: militant 12, mercantile 9; realms fighting for their faith 3 (0 ruled by priests), trading for it 9; realm-years fighting for their faith 2481 (153 ruled by priests)
+check: empires: 58, years from becoming an empire until gone: median 139, longest 934; standing at the end 10
+check: bordering realms: 72 pairs, sharing a tongue (.5 or more) 11, a faith 53; wars under way between faiths 0 of 1
+check: groups at the end: 260, largest share of a realm 0.511; ideas 86, largest holds 0.671 of all people

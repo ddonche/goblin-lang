@@ -159,3 +159,55 @@ fn sweep_with_idle_arms_is_linear() {
         "parts | []\ni | 0\nwhile i < N\n    :put_last!(parts, \"<h2>Heading {i}</h2> some text about it\")\n    i |= i + 1\nxx\npage | :join(parts, \"\\n\")\nn | 0\nsweep page\n    \"<h2>\" ... \"</h2>\" :\n        n += 1\n    \"<h9>\" ... \"</h9>\" :\n        n += 100\n    \"[[\" ... \"]]\" :\n        n += 1000\nxx\n:say(n)\n",
     );
 }
+
+/// An overlay kind keeps only the variables of the code that made it that
+/// its lines name. Before 0.51.53 it kept all of them: each kind made by an
+/// action holding the world's 2,000 objects carried a copy of every one to
+/// the regions, and 160 kinds took 1.6 GB (memory grew with the kinds, not
+/// with the objects). Now about 20 MB.
+#[test]
+fn overlay_kinds_do_not_copy_their_makers_variables() {
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_goblin"));
+    let dir = std::env::temp_dir().join(format!("goblin-perf-{}-kinds", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("kinds.gbln");
+    std::fs::write(&file, r#"<>Cell |
+    name: ""
+    hp: 0
+xx
+act make(n, m)
+    out | []
+    repeat :range(0, m) as i
+        c <> Cell | name: "{n}{i}", hp: i
+        :put_last!(out, c)
+    xx
+    return {"things": out}
+xx
+act day(st, msg)
+    return st
+xx
+act found(cells, k)
+    overlay creed
+        hosts: Cell
+        zeal: k
+    xx
+    n | :len(cells)
+    :overlay!(cells[k % n], creed, .5)
+xx
+r1 | :actor(make("a", 1000), day)
+r2 | :actor(make("b", 1000), day)
+:tick()
+before | :metrics(){"peak_rss_mb"}
+repeat :range(0, 160) as k
+    found(:objects(Cell), k)
+    :tick()
+xx
+:say(:metrics(){"peak_rss_mb"} - before)
+"#).unwrap();
+    let out = Command::new(&bin).arg("run").arg(&file).output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let grew: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+    eprintln!("160 overlay kinds over 2,000 objects: memory grew {grew:.1} MB");
+    assert!(grew < 150.0, "160 overlay kinds made memory grow {grew:.1} MB; a kind is copying its maker's variables");
+}

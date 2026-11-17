@@ -19,6 +19,8 @@
     leaving: 0.05
     owner: nil
     settlement: "none"
+    /// Whether it is a city or great city (set with the settlement).
+    city: false
     /// The holder's trade, 0 to 1 (set each year from its trade links).
     trade: 0.0
     granary: 0
@@ -42,6 +44,7 @@
         every 1 tick
             @people |= @people + @growth * @people * (1.0 - @people / @food)
             @settlement |= settlement_of(self)
+            @city |= @settlement == "city" or @settlement == "great city"
         xx
         decision settle
             targets: Land where :link_score(self, target, "border") and @people >= @crowded * @food
@@ -57,6 +60,14 @@
     phase: ideas
         every 1 tick
             :invoke("overlays::land_year", self)
+        xx
+        /// What the land feeds grows as its people press on it (more hands
+        /// clear and work it: Boserup), a tenth of a percent a year on full
+        /// land; plague, war and famine bring the people, and so the
+        /// growth, down. In history only (the ideas phase): prehistory
+        /// fills the land as the map gives it.
+        every 10 ticks
+            @food |= @food + :field(self, "food") * .01 * :min(@people / @food, 1.0)
         xx
     xx
     act move_people(to, gain)
@@ -150,6 +161,10 @@ xx
 <>Clock |
     year: 0
     cells: 1
+    /// How many cells of this map make one province of the 400-province
+    /// world the sim was first built on: the world is as big on any map,
+    /// so a war's prize, a breakaway and a day's march cover as much land.
+    scale: 1.0
     /// Years of dimmed sun left, this year's weather (the harvest lost in
     /// each sixth of the map, "x,y"), and last year's share of all the
     /// world's people holding each tongue and faith (`spread`) and how much
@@ -169,6 +184,14 @@ xx
 
 act set_year(y)
     clock >> year |= y
+xx
+
+act scale()
+    return clock >> scale
+xx
+
+act set_scale(s)
+    clock >> scale |= s
 xx
 
 act set_cells(n)

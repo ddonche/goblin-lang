@@ -162,7 +162,7 @@ kinds | [
     phase: inside
         decision give_gold
             targets: uses govern where target == @realm and @gold >= 1.0
-            score => @loyalty * (1.0 - @grievance) * :min(@gold / 50.0, 1.0) * (.2 + .8 * :max(:min(target >> wars, 1), under(target >> gold, (target >> people) * .02 + 1.0)))
+            score => @loyalty * (1.0 - @grievance) * :min(@gold / (50.0 * land::scale()), 1.0) * (.2 + .8 * :max(:min(target >> wars, 1), under(target >> gold, (target >> people) * .02 + 1.0)))
         xx
         decision withhold
             targets: uses govern where target == @realm and target >> gold > 0.0
@@ -170,11 +170,11 @@ kinds | [
         xx
         decision give_men
             targets: uses govern where target == @realm and @arms >= 1.0
-            score => @loyalty * (1.0 - @grievance) * :min(@arms / 50.0, 1.0) * (.3 + .7 * :min(target >> wars, 1))
+            score => @loyalty * (1.0 - @grievance) * :min(@arms / (50.0 * land::scale()), 1.0) * (.3 + .7 * :min(target >> wars, 1))
         xx
         decision coup
             targets: uses govern where target == @realm and target >> rank >= 3 and @arms >= 1.0
-            score => @ambition * @militancy * :min(@arms / 50.0, 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5) * (1.0 + 2.0 * :min(target >> coups, 1.0))
+            score => @ambition * @militancy * :min(@arms / (50.0 * land::scale()), 1.0) * @weak * (.2 + @grievance + .5 * :min(target >> lost_years, 1)) * (1.0 - @loyalty) * (1.0 - (target >> discipline) * .5) * (1.0 + 2.0 * :min(target >> coups, 1.0))
         xx
         decision preach
             targets: uses govern where target == @realm and @idea != ..
@@ -189,7 +189,7 @@ kinds | [
             score => @ambition * @unmet * @power
         xx
         decision rise
-            targets: uses govern where target == @realm and target >> lands >= 3
+            targets: uses govern where target == @realm and target >> lands >= 3.0 * land::scale()
             score => @militancy * :max(@zeal, @ambition) * (@grievance + .5 * @hard) * @power * (1.0 - @loyalty * .5)
         xx
         judge
@@ -280,7 +280,7 @@ xx
 act strength(k, p)
     v | p >> {k{"from"}}
     s | k{"scale"}
-    if k{"per_head"} => s |= s * (p >> people / 100.0 + 1.0)
+    if k{"per_head"} => s |= s * (p >> people / (100.0 * land::scale()) + 1.0)
     return :clamp(v / s, 0.0, 1.0)
 xx
 
@@ -422,7 +422,7 @@ act standing(g, p, hs, alike)
     else
         v | p >> {g >> from}
         sc | g >> scale
-        if g >> per_head => sc |= sc * (people / 100.0 + 1.0)
+        if g >> per_head => sc |= sc * (people / (100.0 * land::scale()) + 1.0)
         s |= :clamp(v / sc, 0.0, 1.0)
     xx
     want | people * s * (g >> size) / alike

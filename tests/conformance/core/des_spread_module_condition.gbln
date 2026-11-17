@@ -1,0 +1,36 @@
+/// known-gap: interp has no overlay classes (`<^>`); the interpreter is being retired
+/// A spread condition may call a module's actions (`sr::big(self)`), also
+/// with `target` (`sr::near(self, target)`): a part that names neither
+/// target is the same for every target, and a field test (`target >> port
+/// == true`) leaves only the objects whose field matches. The result is
+/// what trying every target gives.
+import _support/modules/spread_rules as sr
+<>Land |
+    n: 0
+    port: false
+xx
+<^>Rumor |
+    hosts: Land
+    spread: 1.0 where sr::big(self) and target >> port == true and sr::near(self, target)
+xx
+overlay rumor <^> Rumor
+xx
+lands | []
+repeat :range(0, 40) as i
+    l <> Land | n: i, port: i % 3 == 0
+    :put_last!(lands, l)
+xx
+:overlay!(lands[2], rumor)
+:overlay!(lands[9], rumor)
+:tick()
+caught | []
+repeat lands as l
+    if :overlay_strength("rumor", l) != nil => :put_last!(caught, l >> n)
+xx
+:say(caught)
+:tick()
+caught |= []
+repeat lands as l
+    if :overlay_strength("rumor", l) != nil => :put_last!(caught, l >> n)
+xx
+:say(caught)

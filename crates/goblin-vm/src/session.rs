@@ -11,29 +11,43 @@ pub use goblin_des::store::EntityStore;
 pub use goblin_des::index::{EntityIndex, LinkId, OverlayInstanceId};
 pub use goblin_des::tick::TickRunner;
 
+/// An overlay kind's lines as written, shared (`OverlayDef::code`).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct OverlayCode {
+    pub modifiers: Vec<(String, goblin_ast::Expr)>,
+    pub spread_rules: Vec<goblin_ast::SpreadRule>,
+    pub spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
+    pub transitions: Vec<goblin_ast::TransitionDef>,
+    /// `each tick:` changes, made every tick and never taken back.
+    pub each_tick: Vec<(String, goblin_ast::Expr)>,
+    /// `spread: chance where condition`.
+    pub spreads: Vec<goblin_ast::OverlaySpread>,
+    /// The blocks as written, so another session can compile them again.
+    pub actions: Vec<goblin_ast::ActionDecl>,
+    /// `phase: NAME` blocks: spreads, `every` blocks and transitions run
+    /// only in that phase of a `tick()` block.
+    pub phases: Vec<goblin_ast::OverlayPhase>,
+}
+
 // ── Overlay runtime types ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct OverlayDef {
+    /// Its lines as written (spreads, transitions, blocks...): shared by
+    /// the kinds made from one another, so a new kind costs no copy of
+    /// them and its formulas are the ones already compiled.
+    pub code: Rc<OverlayCode>,
     pub name: String,
     pub host_types: Vec<String>,
     pub decay_rate: f64,
     pub default_duration: Option<u32>,
     pub apply_behavior: OverlayApplyBehavior,
-    pub modifiers: Vec<(String, goblin_ast::Expr)>,
     pub conflict_rules: Vec<(String, f64)>,     // (opponent, suppress_rate)
-    pub spread_rules: Vec<goblin_ast::SpreadRule>,
-    pub spawn_rules: Vec<goblin_ast::OverlaySpawnRule>,
-    pub transitions: Vec<goblin_ast::TransitionDef>,
     pub extra_fields: indexmap::IndexMap<String, Value>,
     /// `on end: action`: called with the host when the overlay runs out.
     pub on_end: Option<String>,
-    /// `each tick:` changes, made every tick and never taken back.
-    pub each_tick: Vec<(String, goblin_ast::Expr)>,
     /// `~intensity: n`: what a new copy starts at.
     pub intensity: f64,
-    /// `spread: chance where condition`.
-    pub spreads: Vec<goblin_ast::OverlaySpread>,
     /// `conflicts: a, b`: can't share a host with this overlay.
     pub conflicts: Vec<String>,
     /// `overlay calm <^> Mood`: its overlay class, and the class's `dup:`
@@ -44,13 +58,8 @@ pub struct OverlayDef {
     /// compiled as methods taking the host, `intensity` and the overlay's
     /// own data fields.
     pub methods: HashMap<String, Rc<crate::value::FunctionObject>>,
-    /// The blocks as written, so another session can compile them again.
-    pub actions: Vec<goblin_ast::ActionDecl>,
     pub on_start: Option<String>,
     pub every: Vec<(u64, String)>,
-    /// `phase: NAME` blocks: spreads, `every` blocks and transitions run
-    /// only in that phase of a `tick()` block.
-    pub phases: Vec<goblin_ast::OverlayPhase>,
     /// What the kinds a transition makes from this one are named after:
     /// its overlay class in lower case, else its own declared name
     /// (`language_76`, `plague_3`).
@@ -84,11 +93,11 @@ impl OverlayDef {
     }
     /// Its phase's block, in a phase; None at the tick's end (its own lines).
     fn phase_of(&self, phase: Option<&str>) -> Option<Option<&goblin_ast::OverlayPhase>> {
-        phase.map(|p| self.phases.iter().find(|x| x.name == p))
+        phase.map(|p| self.code.phases.iter().find(|x| x.name == p))
     }
     /// The spreads that run now: in a phase, that phase's.
     pub fn spreads_in(&self, phase: Option<&str>) -> &[goblin_ast::OverlaySpread] {
-        match self.phase_of(phase) { None => &self.spreads, Some(p) => p.map(|p| &p.spreads[..]).unwrap_or(&[]) }
+        match self.phase_of(phase) { None => &self.code.spreads, Some(p) => p.map(|p| &p.spreads[..]).unwrap_or(&[]) }
     }
     /// The `every N ticks` blocks that run now.
     pub fn every_in(&self, phase: Option<&str>) -> &[(u64, String)] {
@@ -96,7 +105,7 @@ impl OverlayDef {
     }
     /// The transitions that run now.
     pub fn transitions_in(&self, phase: Option<&str>) -> &[goblin_ast::TransitionDef] {
-        match self.phase_of(phase) { None => &self.transitions, Some(p) => p.map(|p| &p.transitions[..]).unwrap_or(&[]) }
+        match self.phase_of(phase) { None => &self.code.transitions, Some(p) => p.map(|p| &p.transitions[..]).unwrap_or(&[]) }
     }
 }
 
@@ -393,6 +402,16 @@ pub struct Session {
     /// last round, sent to the other regions (`world::round`).
     pub(crate) grid_log: Option<Vec<crate::grid::GridWrite>>,
     pub(crate) portable_kinds: std::cell::RefCell<HashMap<String, std::sync::Arc<crate::des_image::POverlayDef>>>,
+    /// Overlay kinds' lines converted for other threads, by the address of
+    /// this session's copy (kept, so the address stays its own).
+    pub(crate) portable_code: std::cell::RefCell<HashMap<usize, (Rc<OverlayCode>, std::sync::Arc<OverlayCode>)>>,
+    /// Overlay kinds' lines from other threads, by the address of theirs
+    /// (kept, likewise): kinds that shared lines there share them here.
+    pub(crate) code_from_portable: HashMap<usize, (std::sync::Arc<OverlayCode>, Rc<OverlayCode>)>,
+    /// `globals_cell`'s list, with the names it was made from.
+    pub(crate) globals_cell: std::cell::RefCell<Option<((usize, usize), Rc<std::cell::OnceCell<Vec<String>>>)>>,
+    /// Their blocks compiled, by those lines and the kind's field names.
+    pub(crate) methods_from_portable: HashMap<(usize, Vec<String>), HashMap<String, Rc<crate::value::FunctionObject>>>,
     /// The overlay kinds' variables (`OverlayDef::maker`), converted once
     /// for as long as the session holds them: by the collection and whether
     /// objects went by id. Kinds a transition makes share their maker's.
@@ -449,6 +468,34 @@ pub struct Session {
 }
 
 impl Session {
+    /// The program's global names as a shared list for compiled formulas
+    /// (`Compiler::with_shared_globals`), made again when the names change.
+    pub(crate) fn globals_cell(&self) -> Rc<std::cell::OnceCell<Vec<String>>> {
+        let key = (Rc::as_ptr(&self.global_names) as usize, self.global_names.len());
+        if let Some((k, c)) = self.globals_cell.borrow().as_ref() { if *k == key { return c.clone(); } }
+        let c = Rc::new(std::cell::OnceCell::new());
+        let _ = c.set(self.global_names.to_vec());
+        *self.globals_cell.borrow_mut() = Some((key, c.clone()));
+        c
+    }
+
+    /// The next overlay copy's id. While a world runs, every region and
+    /// the program number copies apart (region k of n takes the ids
+    /// k, k + n + 1, ..., the program n, 2n + 1, ...), so a copy that
+    /// moves to another region, with its host or by spreading, never has
+    /// the id of one already there.
+    pub(crate) fn next_overlay_id(&mut self) -> OverlayInstanceId {
+        let (k, n) = match (&self.region, &self.world) {
+            (Some(c), _) => (c.regions.iter().position(|&r| r == c.me).unwrap_or(0) as u32, c.regions.len() as u32 + 1),
+            (None, Some(w)) => { let n = w.region_count() as u32; (n, n + 1) }
+            _ => (0, 1),
+        };
+        let mut c = self.des_overlay_id_counter;
+        c += (k + n - c % n) % n;
+        self.des_overlay_id_counter = c + 1;
+        OverlayInstanceId(c)
+    }
+
     /// Whether an object of `class` is one of `wanted`: that class, or,
     /// for `uses diplomacy`, any class that uses the interface.
     pub fn class_matches(&self, wanted: &str, class: &str) -> bool {
@@ -601,6 +648,10 @@ impl Session {
             overlay_lines_run: Default::default(),
             kind_order: Vec::new(),
             portable_kinds: Default::default(),
+            portable_code: Default::default(),
+            code_from_portable: Default::default(),
+            globals_cell: Default::default(),
+            methods_from_portable: Default::default(),
             grid_log: None,
             portable_makers: Default::default(),
             rebuilt_makers: Default::default(),

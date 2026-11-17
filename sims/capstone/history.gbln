@@ -10,6 +10,7 @@
 import map as map
 import land as land
 import polity as polity
+import picture as picture
 import government as government
 import family as family
 import factions as factions
@@ -50,6 +51,9 @@ xx
 
 cfg | {
     "seed": :int(:env("SEED") ?? "42"),
+    /// A map file (Map Spawner JSON) to play on instead of a generated
+    /// continent; each of its starting areas gets one kingdom.
+    "map_file": :env("MAP") ?? "",
     "provinces": 400,
     "kingdoms": 20,
     "prehistory": 1200,
@@ -92,6 +96,7 @@ repeat kinds as k
     :update!(at{:str(idx)}, p)
     :put_last!(lands, p)
 xx
+land::set_scale(:max(1.0, :len(lands) / 400.0))
 /// Every pair of bordering provinces, once.
 pairs | []
 repeat lands as p
@@ -103,30 +108,72 @@ repeat lands as p
     xx
 xx
 
-homes | []
+/// Homelands: the best-fed provinces, no two side by side; on a map with
+/// starting areas, the best-fed province of each area.
+areas  | m{"areas"} ?? []
+homes  | []
+used   | {}
+wanted | cfg{"kingdoms"}
+if :len(areas) > 0
+    repeat areas as a
+        if a >= 0 => :put!(used, :str(a), false)
+    xx
+    wanted |= :len(used)
+xx
 repeat :reverse(:sort_by(lands, "food_of")) as p
-    if :len(homes) >= cfg{"kingdoms"} => stop
+    if :len(homes) >= wanted => stop
     if beside_any(p, homes) => skip
+    if :len(areas) > 0
+        a | :str(areas[p >> no])
+        if !:has(used, a) or used{a} => skip
+        :put!(used, a, true)
+    xx
     :put_last!(homes, p)
     p >> people |= cfg{"homeland_fill"} * p >> food
 xx
+/// On a map with starting areas, each area is a kingdom's land from the
+/// start, and people live across all of it from the first year.
+if :len(areas) > 0
+    repeat lands as p
+        if areas[p >> no] >= 0 and p >> people == 0.0 => p >> people |= cfg{"homeland_fill"} * p >> food
+    xx
+xx
 
-/// Prehistory: only the land.
-repeat prehistory
-    :tick()
-        land
+/// Prehistory: only the land, and in its last century the weather, the
+/// floods, droughts, fires and sicknesses as well, so the people at year 0
+/// are as many as the land feeds with them (they always lived with them).
+repeat :range(0, prehistory) as y
+    if prehistory - y > 100
+        :tick()
+            land
+        xx
+    else
+        overlays::prepare(lands, [])
+        :tick()
+            land
+            ideas
+        xx
     xx
 xx
 t_pre | :epoch_ms() - t_start
 
-/// Year 0: the kingdoms at the homelands, then tribes and village
-/// communities on the settled land left, the most peopled first.
+/// Year 0: the kingdoms at the homelands (on a map with starting areas,
+/// each holding its whole area), then tribes and village communities on
+/// the settled land left, the most peopled first.
 made | 0
 repeat homes as h
     held | [h]
-    repeat free_beside(h, cfg{"settled"}) as q
-        if :len(held) > cfg{"kingdom_lands"} => stop
-        :put_last!(held, q)
+    if :len(areas) > 0
+        /// The kingdom holds its whole area.
+        a | areas[h >> no]
+        repeat lands as q
+            if q != h and areas[q >> no] == a => :put_last!(held, q)
+        xx
+    else
+        repeat free_beside(h, cfg{"settled"}) as q
+            if :len(held) > cfg{"kingdom_lands"} => stop
+            :put_last!(held, q)
+        xx
     xx
     polity::found("Kingdom", polity::name_of(land::name_no(h)), held, 0)
     made |= made + 1
@@ -243,10 +290,19 @@ t_run   | :epoch_ms()
     empire_to: {}
 xx
 annals <> Annals | lived: 0
+/// Who held each land at the last sample (the program's own record).
+owners_then | []
+tongues_then | []
+faiths_then  | []
 
 /// `CHECKPOINT=path` writes the world to path at the end of year
 /// `CHECKPOINT_AT`; `RESTORE=path` goes on from such a checkpoint.
 restore_from  | :env("RESTORE") ?? ""
+pictures      | :env("PICTURES") ?? ""
+picture_every | :int(:env("PICTURE_EVERY") ?? :str(cfg{"sample_every"}))
+/// `COASTLINE=mask.png` (the Map Spawner's full-size coastline mask for
+/// the map in `MAP`) draws the pictures at the mask's size on its coast.
+coastline     | :env("COASTLINE") ?? ""
 checkpoint_at | :int(:env("CHECKPOINT_AT") ?? "-1")
 start_year    | 0
 if restore_from != ""
@@ -312,6 +368,11 @@ repeat :range(start_year, years + 1) as year
         annals >> priest_years |= annals >> priest_years + priest
     xx
     if year == checkpoint_at => :checkpoint(:env("CHECKPOINT"))
+    /// `PICTURES=dir` writes the political map there every
+    /// `PICTURE_EVERY` years (default: `sample_every`) and at the end.
+    if pictures != "" and (year % picture_every == 0 or year == years)
+        picture::political("{pictures}/year_{year}.png", width, height, lands, :objects(uses govern), coastline)
+    xx
     if year % cfg{"sample_every"} != 0 => skip
     now  | :epoch_ms() - t_run
     rate | 0.0
@@ -351,6 +412,83 @@ repeat :range(start_year, years + 1) as year
     np  | :len(ps)
     now_at_war | :len(:objects(War))
     :say("year {year}: {np} polities, largest {big >> name} with {big >> lands} provinces, {now_at_war} wars")
+    /// How much of the held land has another holder than at the last
+    /// sample, by the holder's name: a conqueror, a new realm and a union
+/// (Castile and Aragon becoming Spain) all count.
+    owners_now | []
+    moved      | 0
+    held_then  | 0
+    repeat lands as l
+        o  | l >> owner
+        on | ""
+        if !o.nix? => on |= o >> name
+        :put_last!(owners_now, on)
+        if :len(owners_then) > 0 and owners_then[idx] != ""
+            held_then |= held_then + 1
+            if on != owners_then[idx] => moved |= moved + 1
+        xx
+    xx
+    if held_then > 0 => :say("  held land with another holder than {cfg{"sample_every"}} years before: {:round(moved * 100.0 / held_then, 1)}%")
+    owners_then |= owners_now
+    /// How many people live where the main tongue, or the main faith, is
+    /// another than at the last sample (a shift or a new kind born there).
+    tongues_now | []
+    faiths_now  | []
+    alive_t | {}
+    alive_f | {}
+    shifted_t | 0.0
+    shifted_f | 0.0
+    born_t    | 0.0
+    split_f   | 0.0
+    counted   | 0.0
+    repeat lands as l
+        t | overlays::top(l, "Tongue") ?? ""
+        f | overlays::top(l, "Faith") ?? ""
+        :put_last!(tongues_now, t)
+        :put_last!(faiths_now, f)
+        if t != "" => :update!(alive_t{t}, true)
+        if f != "" => :update!(alive_f{f}, true)
+        if :len(tongues_then) > 0 and l >> people > 0.0
+            counted |= counted + l >> people
+            was_t | tongues_then[idx]
+            if t != was_t
+                /// A tongue born of the one spoken before (drifted apart)
+                /// is not a shift.
+                kin | false
+                if t != ""
+                    repeat :overlays(l, t) as o
+                        if :has(o >> parents ?? [], was_t) => kin |= true
+                    xx
+                xx
+                if kin
+                    born_t |= born_t + l >> people
+                else
+                    shifted_t |= shifted_t + l >> people
+                xx
+            xx
+            was_f | faiths_then[idx]
+            if f != was_f
+                /// A faith born of the one held before (a schism, a
+                /// reform, rites drifted apart) is not a conversion.
+                kin | false
+                if f != ""
+                    repeat :overlays(l, f) as o
+                        if :has(o >> parents ?? [], was_f) => kin |= true
+                    xx
+                xx
+                if kin
+                    split_f |= split_f + l >> people
+                else
+                    shifted_f |= shifted_f + l >> people
+                xx
+            xx
+        xx
+    xx
+    if counted > 0.0 => :say("  people who went over to another tongue: {:round(shifted_t * 100.0 / counted, 1)}%, whose tongue drifted into a new one: {:round(born_t * 100.0 / counted, 1)}%; converted to another faith: {:round(shifted_f * 100.0 / counted, 1)}%, to a faith born of their own: {:round(split_f * 100.0 / counted, 1)}%")
+    sc | overlays::counts(lands, ps)
+    :say("  main tongues {:len(alive_t)}, main faiths {:len(alive_f)}; largest tongue holds {sc{"largest_tongue"}} of all people, largest faith {sc{"largest_faith"}}")
+    tongues_then |= tongues_now
+    faiths_then  |= faiths_now
 xx
 :event_log(nil)
 :say("time: prehistory {prehistory} years {t_pre} ms, history {years} years {:epoch_ms() - t_run} ms")

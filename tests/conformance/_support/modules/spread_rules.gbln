@@ -1,0 +1,7 @@
+/// Read-only actions a spread condition calls.
+act big(l)
+    return l >> n >= 8
+xx
+act near(a, b)
+    return :abs(a >> n - b >> n) <= 4
+xx

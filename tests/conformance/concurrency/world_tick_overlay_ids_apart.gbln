@@ -1,0 +1,50 @@
+/// known-gap: interp has no concurrency builtins (VM only, spec 2026-10-08)
+/// Each region numbers its overlay copies apart from the others, so a copy
+/// put on from another region never has the id of one already on its
+/// host: changing a field of one copy changes that copy only.
+<>Town |
+    name: ""
+    every 1 tick
+        repeat :overlays(self) as o
+            if o >> overlay_name == "rumor" and o >> told == 0 => o >> told |= 1
+        xx
+    end
+xx
+overlay fever
+    hosts: Town
+    kind: "mild"
+xx
+overlay rumor
+    hosts: Town
+    told: 0
+xx
+act make_town(n)
+    t <> Town | name: n
+    return {"name": n, "things": [t], "peer": nil}
+xx
+act day(st, msg)
+    if :has(msg, "peer")
+        :update!(st{"peer"}, msg{"peer"})
+    elif :has(msg, "tick") and msg{"tick"} == 1
+        repeat :objects(Town) as t
+            if t >> name == "east" and st{"name"} == "east" => :overlay!(t, fever, .5)
+            if t >> name == "east" and st{"name"} == "west" => :overlay!(t, rumor, .5)
+        xx
+    xx
+    return st
+xx
+west | :actor(make_town("west"), day)
+east | :actor(make_town("east"), day)
+:post(west, {"peer": east})
+:post(east, {"peer": west})
+repeat :range(1, 4) as d
+    :tick()
+    repeat :objects(Town, it >> name == "east") as t
+        out | []
+        repeat :overlays(t) as o
+            if o >> overlay_name == "fever" => :put_last!(out, "fever {o >> kind}")
+            if o >> overlay_name == "rumor" => :put_last!(out, "rumor told {o >> told}")
+        xx
+        :say("tick {d}: {:join(:sort(out), ", ")}")
+    xx
+xx

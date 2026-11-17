@@ -3,7 +3,8 @@
 # Step 1 (world.gbln) runs 3,000 years and checks: the output matches
 # expected.txt, two runs match, river valleys fill first, and the
 # population levels off. Step 2 (history.gbln) runs 1,200 years of
-# prehistory and 500 of history and checks: the output matches
+# prehistory and 1,000 of history (new tongues and faiths take five
+# centuries apart or more) and checks: the output matches
 # expected_history.txt, two runs match (output and event log), every
 # decision is taken, wars start and end, and every kind of transition
 # happens (step 3), ruling houses marry across realms (step 4), and
@@ -22,9 +23,9 @@ trap 'rm -rf "$T"' EXIT
 run() { f=$1; shift; (cd "$D" && env "$@" "$B" run "$f" 2>&1 | grep -v ' → exit ' | grep -v '^time:'); }
 run world.gbln YEARS=3000 > "$T/a"
 run world.gbln YEARS=3000 > "$T/b"
-run history.gbln YEARS=500 > "$T/h1"; cp "$D/history_events.txt" "$T/e1"
-run history.gbln YEARS=500 > "$T/h2"; cp "$D/history_events.txt" "$T/e2"
-run history.gbln YEARS=500 GOBLIN_ACTOR_THREADS=1 > "$T/h3"
+run history.gbln YEARS=1000 > "$T/h1"; cp "$D/history_events.txt" "$T/e1"
+run history.gbln YEARS=1000 > "$T/h2"; cp "$D/history_events.txt" "$T/e2"
+run history.gbln YEARS=1000 GOBLIN_ACTOR_THREADS=1 > "$T/h3"
 fail=0
 check() { if "$@" >/dev/null; then echo "ok   $LABEL"; else echo "FAIL $LABEL"; fail=1; fi; }
 LABEL="matches expected.txt";      check diff "$T/a" "$D/expected.txt"

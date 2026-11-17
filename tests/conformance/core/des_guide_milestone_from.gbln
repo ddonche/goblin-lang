@@ -1,0 +1,64 @@
+/// known-gap: interp has no guided runs (the interpreter is being retired)
+/// A milestone can say when guiding toward it starts (`from`) and how
+/// many ticks a stretch runs (`every`, in place of the option). Before
+/// `from`, one copy runs on unguided, straight to it; from there copies
+/// are chosen as usual, each stretch `every` ticks long. `from` must be
+/// before `by`.
+:rand_seed(7)
+<>Clock |
+    year: 0
+xx
+<>Village |
+    name: ..
+    people: 0
+xx
+clock <> Clock | year: 0
+ash <> Village | name: "Ash", people: 40
+act year()
+    :tick()
+    clock >> year |= clock >> year + 1
+    ash >> people |= :max(0, ash >> people + pick 1 from -6...6)
+xx
+act town()
+    return ash >> people >= 80
+xx
+act town_close()
+    return ash >> people
+xx
+act fall()
+    return ash >> people <= 20 and clock >> year >= 60
+xx
+act fall_close()
+    return 0 - ash >> people
+xx
+dir | "{:env("GOBLIN_CONF_TMP")}/guide_from"
+:checkpoint("{dir}/start.gcp")
+milestones | [
+    {"name": "town", "by": 40, "reached": "town", "closeness": "town_close"},
+    {"name": "fall", "from": 60, "every": 2, "by": 90, "reached": "fall", "closeness": "fall_close"}
+]
+found | :guide("{dir}/start.gcp", "year", milestones, {"copies": 8, "every": 5, "dir": dir})
+:say("reached {found{"reached"}}, passed {found{"passed"}}")
+town_at | found{"milestones"}[0]{"tick"}
+:say("fall at or after 60: {found{"milestones"}[1]{"tick"} >= 60}")
+falls | []
+repeat found{"log"} as r
+    if r{"milestone"} == "fall" => :put_last!(falls, r)
+xx
+lead | falls[0]
+:say("first fall stretch: from the town ({lead{"from"} == town_at}) to 60 ({lead{"to"} == 60}), alone ({falls[1]{"try"} == lead{"try"} + 1 and lead{"outcome"} == "kept"})")
+short | true
+repeat :slice(falls, 1, :len(falls)) as r
+    if r{"from"} < 60 or r{"to"} - r{"from"} > 2 => short |= false
+xx
+:say("later fall stretches start at 60 or after and run 2 ticks at most: {short}")
+town_ok | true
+repeat found{"log"} as r
+    if r{"milestone"} == "town" and r{"to"} - r{"from"} > 5 => town_ok |= false
+xx
+:say("town stretches run 5 ticks at most: {town_ok}")
+attempt
+    :guide("{dir}/start.gcp", "year", [{"name": "x", "from": 40, "by": 40, "reached": "town"}])
+rescue e
+    :say(e)
+xx
