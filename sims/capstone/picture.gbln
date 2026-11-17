@@ -75,4 +75,32 @@ act political(path, width, height, lands, realms)
     xx
     look | {"scale": :max(1, 1920 // width), "border": "#404040", "border_width": 1.5}
     :write_png!(path, width, height, px, look)
+    snapshot("{:before_last(path, ".")}.json", width, height, lands)
+xx
+
+/// Writes the same map as data, in the Map Spawner's shape (width, height,
+/// valid, layers.regions, palette), so the picture can be drawn again on
+/// the full-resolution coastline. Each realm is one region id.
+act snapshot(path, width, height, lands)
+    valid   | []
+    regions | []
+    repeat width * height
+        :put_last!(valid, 0)
+        :put_last!(regions, -1)
+    xx
+    ids     | {}
+    palette | []
+    repeat lands as l
+        :update!(valid[l >> no], 1)
+        o | l >> owner
+        if o.nix? => skip
+        n | o >> name
+        if !:has(ids, n)
+            :put!(ids, n, :len(palette))
+            :put_last!(palette, {"id": :len(palette), "label": n, "color": painted{n} ?? wild})
+        xx
+        :update!(regions[l >> no], ids{n})
+    xx
+    :write_json!(path, {"version": 6, "width": width, "height": height, "valid": valid,
+        "layers": {"regions": regions}, "palette": palette})
 xx

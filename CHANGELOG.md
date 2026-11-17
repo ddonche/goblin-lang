@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.56 — 2026-11-17
+
+- Capstone: each picture is also written as data beside it (`year_N.json`, the Map Spawner's shape: width, height, valid, layers.regions, palette; one region id per realm, in its picture color), so a picture can be drawn again on the map's full-resolution coastline (Map Spawner V7.3's `render-with-coastline.py`). Daniel's 20-area map exported by V7.3 (3,071 land cells, all 124 islands kept), 100 years: 20 kingdoms and 6 village communities to 43 realms, 4 wars, 114 s.
+
 ## 0.51.55 — 2026-11-17
 
 - Capstone: population growth is simulated. What a land feeds grows by up to a tenth of a percent a year as its people press on it (Boserup: more hands clear and work it), worked out every ten years, in history only (prehistory fills the land as the map gives it); plague, war and famine bring the people, and so the growth, down. Before, the land fed the same for ever and the people stayed flat or fell. Daniel's continent map, 1,000 years: 877k to 979k people, with dips (814k at year 100, 919k at year 900); the 400-province world about doubles in 1,000 years and does not run away over 2,500. expected_history.txt made again; check.sh 79/80 as before (faith_new 0).
