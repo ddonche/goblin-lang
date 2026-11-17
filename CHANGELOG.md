@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.55 — 2026-11-17
+
+- Capstone: population growth is simulated. What a land feeds grows by up to a tenth of a percent a year as its people press on it (Boserup: more hands clear and work it), worked out every ten years, in history only (prehistory fills the land as the map gives it); plague, war and famine bring the people, and so the growth, down. Before, the land fed the same for ever and the people stayed flat or fell. Daniel's continent map, 1,000 years: 877k to 979k people, with dips (814k at year 100, 919k at year 900); the 400-province world about doubles in 1,000 years and does not run away over 2,500. expected_history.txt made again; check.sh 79/80 as before (faith_new 0).
+
 ## 0.51.54 — 2026-11-16
 
 - Capstone: the amounts sized for a realm of the 400-province world scale with the map (`land::scale`), as its land thresholds do: a group's arms and gold when it weighs a coup or a gift of men or gold, the realm's people a group's size is measured against, and the treasury a realm counts as enough. On Daniel's continent map a realm has about eight times the people, so these were always full: coups were 35 times as many as on the 400-province world and 16 of 27 realms ended as military juntas. Now, 1,000 years: 242 coup attempts (about 0.7% a realm-year; Eisner finds about 1% a year for European kings murdered or deposed, 600-1800), juntas 11 of 41 at the end, a junta lasting about 10 years (Geddes: military regimes are the shortest-lived, about 9). The 400-province world is unchanged (check.sh as 0.51.53).

@@ -61,6 +61,14 @@
         every 1 tick
             :invoke("overlays::land_year", self)
         xx
+        /// What the land feeds grows as its people press on it (more hands
+        /// clear and work it: Boserup), a tenth of a percent a year on full
+        /// land; plague, war and famine bring the people, and so the
+        /// growth, down. In history only (the ideas phase): prehistory
+        /// fills the land as the map gives it.
+        every 10 ticks
+            @food |= @food + :field(self, "food") * .01 * :min(@people / @food, 1.0)
+        xx
     xx
     act move_people(to, gain)
         /// At most `leaving` of the people go in a year, however much
