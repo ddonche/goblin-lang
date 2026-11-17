@@ -3,10 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.58 — 2026-11-17
+
+- `:write_png!`'s picture-on-a-mask options are named for what they do, not for maps: `mask` and `outside` (they were `coastline` and `sea` in 0.51.57; that entry now uses the new names). The same pictures come out.
+
 ## 0.51.57 — 2026-11-17
 
-- `:write_png!` takes a `coastline` option: the path of a PNG, white where there is land and black where there is water (Map Spawner's coastline mask). The picture is drawn at the mask's size: each land pixel takes the color of the cells under it, with the same smooth edges and optional `border` lines between colors, and each water pixel takes the new `sea` option (default clear). Only the edges between colors are smoothed: the coastline, islands, lakes and straits are the mask's, pixel for pixel, and colors stay solid. Cells that are nil or the `sea` color are water in the small picture; where the mask has land over them they take the nearest land cell's color. A realm of one or two cells keeps a small round patch. The mask must have the picture's shape (same extent and orientation); `scale` is refused with it. Without `coastline` nothing changes.
-- Capstone: `COASTLINE=mask.png` draws the pictures on the mask. Daniel's 20-area map (V7.3 export, 3,071 cells) on its 1829 x 1312 coastline: 100 years with three pictures 114-125 s (100 years with none: 114 s); the history is the same.
+- `:write_png!` takes a `mask` option: the path of a PNG, white where the picture is drawn and black where it is not. The picture is drawn at the mask's size: each white pixel takes the color of the cells under it, with the same smooth edges and optional `border` lines between colors, and each black pixel takes the new `outside` option (default clear). Only the edges between colors are smoothed: the mask's edge is kept pixel for pixel, and colors stay solid. Cells that are nil or the `outside` color are outside in the small picture; where the mask is white over them they take the nearest inside cell's color. A patch of one or two cells keeps a small round spot. The mask must have the picture's shape (same extent and orientation); `scale` is refused with it. Without `mask` nothing changes.
+- Capstone: `COASTLINE=mask.png` (the Map Spawner's coastline mask for the map in `MAP`) draws the pictures on it. Daniel's 20-area map (V7.3 export, 3,071 cells) on its 1829 x 1312 coastline: 100 years with three pictures 114-125 s (with none: 114 s); the history is the same.
 
 ## 0.51.56 — 2026-11-17
 

@@ -1,6 +1,6 @@
 [package]
 name = "goblin-cli"
-version = "0.51.57"
+version = "0.51.58"
 edition = "2024"
 
 [dependencies]

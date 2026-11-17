@@ -4,10 +4,10 @@
 /// A nil pixel is clear (it reads back as "#00000000"), and a "#rrggbbaa"
 /// color keeps its alpha. Options draw it larger: `scale` output pixels per
 /// pixel, `smooth` edges (on with a scale), and a `border` color laid
-/// where colors meet. A `coastline` (a PNG, white land, black water) draws
-/// the picture at the coastline's size: its land takes the colors of the
-/// cells under it, its water the `sea` color (default clear), and a realm
-/// of one cell keeps a patch at its middle.
+/// where colors meet. A `mask` (a PNG, white: draw, black: outside) draws
+/// the picture at the mask's size: its white pixels take the colors of the
+/// cells under them, its black pixels the `outside` color (default clear),
+/// and a patch of one cell keeps a spot at its middle.
 path | "{:env("GOBLIN_CONF_TMP")}/pic.png"
 :write_png!(path, 3, 2, ["#ff0000", "#00ff00", "#0000ff", "#ffffff", nil, "#10203080"])
 p | :read_png(path)
@@ -23,7 +23,7 @@ q | :read_png(big)
 :say("{q{"width"}} x {q{"height"}}, {q{"pixels"}[0]} ... {q{"pixels"}[7]}")
 :write_png!(big, 2, 1, ["#305b72", "#dacfab"], {"scale": 4, "smooth": false, "border": "#000000", "border_width": 2})
 :say(:read_png(big){"pixels"}[3])
-coast | "{:env("GOBLIN_CONF_TMP")}/coast.png"
+mask_path | "{:env("GOBLIN_CONF_TMP")}/mask.png"
 mask  | []
 repeat 10
     repeat 10
@@ -33,11 +33,11 @@ repeat 10
         :put_last!(mask, "#000000")
     xx
 xx
-:write_png!(coast, 20, 10, mask)
-:write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"coastline": coast})
+:write_png!(mask_path, 20, 10, mask)
+:write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"mask": mask_path})
 c | :read_png(big)
-:say("{c{"width"}} x {c{"height"}}, land {c{"pixels"}[5 * 20 + 2]}, water {c{"pixels"}[5 * 20 + 15]}")
-:write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"coastline": coast, "sea": "#a9c4d6"})
+:say("{c{"width"}} x {c{"height"}}, inside {c{"pixels"}[5 * 20 + 2]}, outside {c{"pixels"}[5 * 20 + 15]}")
+:write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"mask": mask_path, "outside": "#a9c4d6"})
 :say(:read_png(big){"pixels"}[5 * 20 + 15])
 one | []
 repeat 25
@@ -48,11 +48,11 @@ white | []
 repeat 2500
     :put_last!(white, "#ffffff")
 xx
-:write_png!(coast, 50, 50, white)
-:write_png!(big, 5, 5, one, {"coastline": coast})
+:write_png!(mask_path, 50, 50, white)
+:write_png!(big, 5, 5, one, {"mask": mask_path})
 :say(:read_png(big){"pixels"}[25 * 50 + 25])
 attempt
-    :write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"coastline": coast, "scale": 2})
+    :write_png!(big, 2, 1, ["#ff0000", "#0000ff"], {"mask": mask_path, "scale": 2})
 rescue e
     :say(e)
 xx
