@@ -6,7 +6,7 @@ in parentheses are the pull requests that made each change.
 ## 0.51.57 — 2026-11-17
 
 - `:write_png!` takes a `coastline` option: the path of a PNG, white where there is land and black where there is water (Map Spawner's coastline mask). The picture is drawn at the mask's size: each land pixel takes the color of the cells under it, with the same smooth edges and optional `border` lines between colors, and each water pixel takes the new `sea` option (default clear). Only the edges between colors are smoothed: the coastline, islands, lakes and straits are the mask's, pixel for pixel, and colors stay solid. Cells that are nil or the `sea` color are water in the small picture; where the mask has land over them they take the nearest land cell's color. A realm of one or two cells keeps a small round patch. The mask must have the picture's shape (same extent and orientation); `scale` is refused with it. Without `coastline` nothing changes.
-- Capstone: `COASTLINE=mask.png` draws the pictures on the mask. Daniel's 20-area map (V7.3 export, 3,071 cells) on its 1829 x 1312 coastline: three pictures add about 10 s to a 100-year run (114 s to 125 s); the history is the same.
+- Capstone: `COASTLINE=mask.png` draws the pictures on the mask. Daniel's 20-area map (V7.3 export, 3,071 cells) on its 1829 x 1312 coastline: 100 years with three pictures 114-125 s (100 years with none: 114 s); the history is the same.
 
 ## 0.51.56 — 2026-11-17
 

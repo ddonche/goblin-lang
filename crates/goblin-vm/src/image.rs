@@ -234,7 +234,7 @@ fn draw_onto(colors: &[[u8; 4]], w: usize, h: usize, ow: usize, oh: usize, coast
                 let k = cy as usize * w + cx as usize;
                 let extra = lonely[k];
                 if extra > 0.0 {
-                    let edge = 1.0 - 2.0 * (u - cx as f64).abs().max((v - cy as f64).abs());
+                    let edge = 1.0 - 2.0 * ((u - cx as f64).powi(2) + (v - cy as f64).powi(2)).sqrt();
                     let id = cell[k];
                     if wsum[id as usize] == 0.0 { touched.push(id); }
                     wsum[id as usize] += extra * edge.max(0.0);
