@@ -47,14 +47,28 @@ fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 /// `smooth` (curved edges between colors; default on when scale > 1),
 /// `border` (a color for thin lines where colors meet; default none) and
 /// `border_width` (in output pixels, default 1.5).
-pub struct Look { pub scale: usize, pub smooth: bool, pub border: Option<[u8; 4]>, pub border_width: f64 }
+///
+/// `coastline` names a PNG drawn at full size, white where there is land
+/// and black where there is water (Map Spawner's coastline mask). The
+/// picture is then drawn at that size: each land pixel of the mask takes
+/// the color of the cells under it, with smooth edges and borders between
+/// colors, and each water pixel of the mask takes the `sea` color (default
+/// clear). The coastline is the mask's, pixel for pixel; cells that are
+/// nil or the `sea` color are water in the small picture and give no color.
+pub struct Look {
+    pub scale: usize, pub smooth: bool, pub border: Option<[u8; 4]>, pub border_width: f64,
+    pub coastline: Option<String>, pub sea: [u8; 4],
+}
 
 impl Look {
-    pub fn plain() -> Self { Look { scale: 1, smooth: false, border: None, border_width: 1.5 } }
+    pub fn plain() -> Self {
+        Look { scale: 1, smooth: false, border: None, border_width: 1.5, coastline: None, sea: [0, 0, 0, 0] }
+    }
 
     pub fn from_options(v: &Value) -> Result<Self, GoblinError> {
         let mut look = Look::plain();
         let mut smooth = None;
+        let mut scaled = false;
         let entries: Vec<(String, Value)> = match v {
             Value::Map(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             Value::MapOrd(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
@@ -65,7 +79,7 @@ impl Look {
         };
         for (k, v) in entries {
             match (k.as_str(), &v) {
-                ("scale", Value::Int(n)) if (1..=64).contains(n) => look.scale = *n as usize,
+                ("scale", Value::Int(n)) if (1..=64).contains(n) => { look.scale = *n as usize; scaled = true; }
                 ("scale", _) => return Err(err("R1270: write_png: `scale` is a whole number from 1 to 64".into())),
                 ("smooth", Value::Bool(b)) => smooth = Some(*b),
                 ("smooth", _) => return Err(err("R1270: write_png: `smooth` is true or false".into())),
@@ -74,10 +88,18 @@ impl Look {
                 ("border_width", Value::Int(n)) if *n >= 0 => look.border_width = *n as f64,
                 ("border_width", Value::Float(f)) if *f >= 0.0 => look.border_width = *f,
                 ("border_width", _) => return Err(err("R1270: write_png: `border_width` is a number of pixels".into())),
-                (other, _) => return Err(err(format!("R1270: write_png: no option `{other}` (scale, smooth, border, border_width)"))),
+                ("coastline", Value::Str(p)) => look.coastline = Some(p.to_string()),
+                ("coastline", Value::Nil) => look.coastline = None,
+                ("coastline", _) => return Err(err("R1270: write_png: `coastline` is the path of a PNG (white land, black water)".into())),
+                ("sea", Value::Nil) => look.sea = [0, 0, 0, 0],
+                ("sea", c) => look.sea = color_of(c, 0).map_err(|_| err("R1270: write_png: `sea` is a color like \"#rrggbb\"".into()))?,
+                (other, _) => return Err(err(format!("R1270: write_png: no option `{other}` (scale, smooth, border, border_width, coastline, sea)"))),
             }
         }
-        look.smooth = smooth.unwrap_or(look.scale > 1);
+        if scaled && look.coastline.is_some() {
+            return Err(err("R1270: write_png: with a `coastline` the picture is drawn at the coastline's size; leave out `scale`".into()));
+        }
+        look.smooth = smooth.unwrap_or(look.scale > 1 || look.coastline.is_some());
         Ok(look)
     }
 }
@@ -101,10 +123,78 @@ fn draw_large(colors: &[[u8; 4]], w: usize, h: usize, look: &Look) -> (Vec<[u8; 
         for oy in 0..oh { for ox in 0..ow { out.push(colors[(oy / s) * w + ox / s]); } }
         return (out, ow, oh);
     }
+    draw_onto(colors, w, h, ow, oh, None, look)
+}
+
+/// The land of a coastline mask: true where a pixel is light and not clear.
+fn read_mask(path: &str) -> Result<(Vec<bool>, usize, usize), GoblinError> {
+    let pic = read_png(path)?;
+    let Value::Map(m) = pic else { unreachable!() };
+    let (Some(Value::Int(w)), Some(Value::Int(h)), Some(Value::Array(px))) = (m.get("width"), m.get("height"), m.get("pixels")) else { unreachable!() };
+    let land = px.iter().enumerate().map(|(i, v)| {
+        let c = color_of(v, i).unwrap_or([0, 0, 0, 0]);
+        c[3] >= 128 && (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) >= 128_000
+    }).collect();
+    Ok((land, *w as usize, *h as usize))
+}
+
+/// The picture drawn on a coastline mask: land pixels colored from the
+/// cells under them (smooth edges, borders), water pixels the sea color.
+fn draw_on_coast(colors: &[[u8; 4]], w: usize, h: usize, look: &Look, path: &str) -> Result<(Vec<[u8; 4]>, usize, usize), GoblinError> {
+    let (land, ow, oh) = read_mask(path)?;
+    // Same extent, same orientation: the mask's shape must be the grid's.
+    let (ra, rb) = (ow as f64 / w as f64, oh as f64 / h as f64);
+    if (ra / rb - 1.0).abs() > 0.05 {
+        return Err(err(format!(
+            "R1270: write_png: coastline {path} is {ow} x {oh}, not the shape of the {w} x {h} picture")));
+    }
+    Ok(draw_onto(colors, w, h, ow, oh, Some((&land, look.sea)), look))
+}
+
+fn draw_onto(colors: &[[u8; 4]], w: usize, h: usize, ow: usize, oh: usize, coast: Option<(&[bool], [u8; 4])>, look: &Look) -> (Vec<[u8; 4]>, usize, usize) {
+    let (sx, sy) = (ow as f64 / w as f64, oh as f64 / h as f64);
     // Colors to small numbers, so weighing compares numbers.
     let mut ids: std::collections::HashMap<[u8; 4], u16> = std::collections::HashMap::new();
     let mut palette: Vec<[u8; 4]> = Vec::new();
-    let cell: Vec<u16> = colors.iter().map(|c| *ids.entry(*c).or_insert_with(|| { palette.push(*c); (palette.len() - 1) as u16 })).collect();
+    let mut cell: Vec<u16> = colors.iter().map(|c| *ids.entry(*c).or_insert_with(|| { palette.push(*c); (palette.len() - 1) as u16 })).collect();
+    // On a coastline, cells that are water give no color: the land pixels
+    // of the mask over them take the color of the nearest land cell.
+    let mut wet = vec![false; w * h];
+    if let Some((_, sea)) = coast {
+        let mut near: Vec<i64> = vec![-1; w * h];
+        let mut queue = std::collections::VecDeque::new();
+        for i in 0..w * h {
+            let c = colors[i];
+            wet[i] = c[3] == 0 || c == sea;
+            if !wet[i] { near[i] = i as i64; queue.push_back(i); }
+        }
+        while let Some(i) = queue.pop_front() {
+            let (x, y) = (i % w, i / w);
+            let mut go = |j: usize| if near[j] < 0 { near[j] = near[i]; queue.push_back(j); };
+            if x > 0 { go(i - 1); } if x + 1 < w { go(i + 1); }
+            if y > 0 { go(i - w); } if y + 1 < h { go(i + w); }
+        }
+        for i in 0..w * h { if wet[i] && near[i] >= 0 { cell[i] = cell[near[i] as usize]; } }
+    }
+    // How much more a land cell weighs at its middle: 2 alone, 4/3 with one
+    // cell of its color among its eight neighbours, 2/3 with two, else none.
+    let mut lonely = vec![0.0f64; w * h];
+    if coast.is_some() {
+        for y in 0..h {
+            for x in 0..w {
+                let k = y * w + x;
+                if wet[k] { continue; }
+                let mut same = 0;
+                for dy in -1i64..=1 { for dx in -1i64..=1 {
+                    let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                    if (dx, dy) == (0, 0) || nx < 0 || ny < 0 || nx >= w as i64 || ny >= h as i64 { continue; }
+                    let j = ny as usize * w + nx as usize;
+                    if !wet[j] && cell[j] == cell[k] { same += 1; }
+                } }
+                lonely[k] = (2.0 * (1.0 - same as f64 / 3.0)).max(0.0);
+            }
+        }
+    }
     let sigma: f64 = if look.smooth { 0.7 } else { 0.35 };
     let r = 2i64;
     let mut first = vec![0u16; ow * oh];
@@ -113,9 +203,10 @@ fn draw_large(colors: &[[u8; 4]], w: usize, h: usize, look: &Look) -> (Vec<[u8; 
     let mut wsum: Vec<f64> = vec![0.0; palette.len()];
     let mut touched: Vec<u16> = Vec::new();
     for oy in 0..oh {
-        let v = (oy as f64 + 0.5) / s as f64 - 0.5;
+        let v = (oy as f64 + 0.5) / sy - 0.5;
         for ox in 0..ow {
-            let u = (ox as f64 + 0.5) / s as f64 - 0.5;
+            let u = (ox as f64 + 0.5) / sx - 0.5;
+            if let Some((land, _)) = coast { if !land[oy * ow + ox] { continue; } }
             let (cx, cy) = (u.round() as i64, v.round() as i64);
             for dy in -r..=r {
                 let y = cy + dy;
@@ -125,9 +216,28 @@ fn draw_large(colors: &[[u8; 4]], w: usize, h: usize, look: &Look) -> (Vec<[u8; 
                     if x < 0 || x >= w as i64 { continue; }
                     let (ddx, ddy) = (x as f64 - u, y as f64 - v);
                     let wt = (-(ddx * ddx + ddy * ddy) / (2.0 * sigma * sigma)).exp();
-                    let id = cell[y as usize * w + x as usize];
+                    let k = y as usize * w + x as usize;
+                    // A water cell weighs in only by its nearest land's color
+                    // where the mask has land the grid lacks; by its own, never.
+                    let wt = if coast.is_some() && wet[k] { wt * 0.25 } else { wt };
+                    let id = cell[k];
                     if wsum[id as usize] == 0.0 { touched.push(id); }
                     wsum[id as usize] += wt;
+                }
+            }
+            // On a coastline a cell with few cells of its color around it (a
+            // realm of one or two cells, the tip of a strip) weighs more
+            // near its middle (nothing at its edge), so it keeps a small
+            // round patch instead of being outweighed by its neighbours.
+            // Cells inside larger realms get nothing, so their edges stay smooth.
+            if coast.is_some() && cx >= 0 && cy >= 0 && (cx as usize) < w && (cy as usize) < h {
+                let k = cy as usize * w + cx as usize;
+                let extra = lonely[k];
+                if extra > 0.0 {
+                    let edge = 1.0 - 2.0 * (u - cx as f64).abs().max((v - cy as f64).abs());
+                    let id = cell[k];
+                    if wsum[id as usize] == 0.0 { touched.push(id); }
+                    wsum[id as usize] += extra * edge.max(0.0);
                 }
             }
             let (mut a, mut wa, mut b, mut wb) = (0u16, -1.0f64, 0u16, -1.0f64);
@@ -147,9 +257,15 @@ fn draw_large(colors: &[[u8; 4]], w: usize, h: usize, look: &Look) -> (Vec<[u8; 
     for oy in 0..oh {
         for ox in 0..ow {
             let i = oy * ow + ox;
+            if let Some((land, sea)) = coast { if !land[i] { out.push(sea); continue; } }
             let (a, b, m) = (first[i], second[i], margin[i] as f64);
             if a == b { out.push(palette[a as usize]); continue; }
-            let at = |x: usize, y: usize| margin[y * ow + x] as f64;
+            // A water pixel of the coastline has no edge: it counts as this one.
+            let at = |x: usize, y: usize| {
+                let j = y * ow + x;
+                if let Some((land, _)) = coast { if !land[j] { return m; } }
+                margin[j] as f64
+            };
             let gx = if ox > 0 && ox + 1 < ow { (at(ox + 1, oy) - m).abs().max((m - at(ox - 1, oy)).abs()) } else { 0.0 };
             let gy = if oy > 0 && oy + 1 < oh { (at(ox, oy + 1) - m).abs().max((m - at(ox, oy - 1)).abs()) } else { 0.0 };
             let g = (gx * gx + gy * gy).sqrt();
@@ -188,7 +304,8 @@ pub fn write_png_with(path: &str, width: i64, height: i64, pixels: &Value, look:
     }
     let mut colors = Vec::with_capacity(list.len());
     for (i, v) in list.iter().enumerate() { colors.push(color_of(v, i)?); }
-    let (colors, w, h) = if look.scale > 1 || look.smooth || look.border.is_some() { draw_large(&colors, w, h, look) } else { (colors, w, h) };
+    let (colors, w, h) = if let Some(coast) = &look.coastline { draw_on_coast(&colors, w, h, look, coast)? }
+        else if look.scale > 1 || look.smooth || look.border.is_some() { draw_large(&colors, w, h, look) } else { (colors, w, h) };
     let clear = colors.iter().any(|c| c[3] != 255);
     let per = if clear { 4 } else { 3 };
     let mut raw = Vec::with_capacity(h * (1 + w * per));

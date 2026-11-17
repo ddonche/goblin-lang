@@ -4,6 +4,10 @@
 [#305b72, #dacfab]
 8 x 4, #305b72 ... #dacfab
 #1b3441
-runtime error: R1270: write_png: no option `zoom` (scale, smooth, border, border_width)
+20 x 10, land #ff0000, water #00000000
+#a9c4d6
+#0000ff
+runtime error: R1270: write_png: with a `coastline` the picture is drawn at the coastline's size; leave out `scale`
+runtime error: R1270: write_png: no option `zoom` (scale, smooth, border, border_width, coastline, sea)
 short
 not a color

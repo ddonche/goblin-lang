@@ -300,6 +300,9 @@ faiths_then  | []
 restore_from  | :env("RESTORE") ?? ""
 pictures      | :env("PICTURES") ?? ""
 picture_every | :int(:env("PICTURE_EVERY") ?? :str(cfg{"sample_every"}))
+/// `COASTLINE=mask.png` (the Map Spawner's full-size coastline mask for
+/// the map in `MAP`) draws the pictures at the mask's size on its coast.
+coastline     | :env("COASTLINE") ?? ""
 checkpoint_at | :int(:env("CHECKPOINT_AT") ?? "-1")
 start_year    | 0
 if restore_from != ""
@@ -368,7 +371,7 @@ repeat :range(start_year, years + 1) as year
     /// `PICTURES=dir` writes the political map there every
     /// `PICTURE_EVERY` years (default: `sample_every`) and at the end.
     if pictures != "" and (year % picture_every == 0 or year == years)
-        picture::political("{pictures}/year_{year}.png", width, height, lands, :objects(uses govern))
+        picture::political("{pictures}/year_{year}.png", width, height, lands, :objects(uses govern), coastline)
     xx
     if year % cfg{"sample_every"} != 0 => skip
     now  | :epoch_ms() - t_run

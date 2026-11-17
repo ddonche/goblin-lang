@@ -60,8 +60,10 @@ act paint(realms)
 xx
 
 /// Writes the political map to `path`: `width` x `height` cells, drawn
-/// smooth and about 1920 pixels wide with borders between colors.
-act political(path, width, height, lands, realms)
+/// smooth and about 1920 pixels wide with borders between colors; with a
+/// `coastline` mask (a path, or "" for none) drawn at the mask's size on
+/// its coast.
+act political(path, width, height, lands, realms, coastline)
     paint(realms)
     px | []
     repeat width * height
@@ -74,6 +76,7 @@ act political(path, width, height, lands, realms)
         :update!(px[l >> no], c)
     xx
     look | {"scale": :max(1, 1920 // width), "border": "#404040", "border_width": 1.5}
+    if coastline != "" => look |= {"coastline": coastline, "sea": sea, "border": "#404040", "border_width": 1.5}
     :write_png!(path, width, height, px, look)
     snapshot("{:before_last(path, ".")}.json", width, height, lands)
 xx
