@@ -1754,14 +1754,14 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
     }
 }
 
-/// The class declaration of A's link on `channel` (`link Nation trade 0...1`).
+/// The class declaration of A's link on `channel` (a `link trade` block that `hosts:` the class).
 fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
     let class = match vm.session.object_store.get(from) {
         Some(Value::Object(o)) => o.class_name[..].to_string(),
         _ => return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into())),
     };
     vm.session.link_defs.get(&(class.clone(), channel.to_string())).cloned().ok_or_else(|| GoblinError::Runtime(format!(
-        "R1228: link-undeclared: {class} has no `{channel}` link; declare it with its range first: `link {class} {channel} 0...1` or `link {class} {channel} bool`")))
+        "R1228: link-undeclared: {class} has no `{channel}` link; declare it with a block: `link {channel}`, `hosts: {class}`, `range: 0...1` (or `range: bool`), `xx`")))
 }
 
 /// The two ends of A's link range on `channel` (`bool` is 0 to 1).

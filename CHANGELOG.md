@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.59 — 2026-11-17
+
+- Reading or changing a link a class does not declare (R1228) now shows the `link` block to write, instead of a one-line form the parser no longer takes.
+
 ## 0.51.58 — 2026-11-17
 
 - `:write_png!`'s picture-on-a-mask options are named for what they do, not for maps: `mask` and `outside` (they were `coastline` and `sea` in 0.51.57; that entry now uses the new names). The same pictures come out.
