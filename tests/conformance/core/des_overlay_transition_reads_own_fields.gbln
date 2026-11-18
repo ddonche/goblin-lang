@@ -1,0 +1,26 @@
+/// known-gap: interp runs the old transitions (the interpreter is retired; the VM defines them)
+/// An overlay's transition lines (condition, field lists) read the copy's own
+/// fields by name, as its `every`, `modify` and `on` lines do; `@field` still
+/// reads them too.
+<>Hero |
+    name: ..
+    hp: 40
+xx
+overlay venom
+    hosts: Hero
+    damage: 1
+    every 1 tick => @hp |= @hp - damage
+    transition mutate where age >= 2 and damage < 2
+        carries:
+            damage: damage * 3
+        xx
+    xx
+    on mutate => :say("{@name}: {mutated >> overlay_name} does {mutated >> damage}")
+xx
+ana <> Hero | name: "Ana"
+:overlay!(ana, venom)
+repeat 4
+    :tick()
+xx
+:say(:overlays_of(ana))
+:say(ana >> hp)

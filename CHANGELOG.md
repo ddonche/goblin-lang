@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.60 — 2026-11-18
+
+- An overlay's transition lines (its condition, `targets:` and field lists) read the copy's own fields by name, as its `every`, `modify` and `on` lines do: `transition mutate where damage < 2` with `carries:` `damage: damage * 3`. `@damage` still works there.
+
 ## 0.51.59 — 2026-11-17
 
 - Reading or changing a link a class does not declare (R1228) now shows the `link` block to write, instead of a one-line form the parser no longer takes.

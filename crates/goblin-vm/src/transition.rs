@@ -663,8 +663,10 @@ fn self_record(inst: &OverlayInstance) -> Value {
 
 /// What an overlay's transition lines read: `self` is the copy (its kind,
 /// intensity, age and fields, also read as `@field`), `host` the object it
-/// is on, `target` the other copy a merge or absorb picked.
-fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>, maker: &'a [(String, Value)]) -> Vec<(&'a str, Value)> {
+/// is on, `target` the other copy a merge or absorb picked. The copy's own
+/// fields are also read by name, as its `every`, `modify` and `on` lines
+/// read them.
+fn overlay_locals<'a>(me: &Value, inst: &'a OverlayInstance, target: Option<&Value>, maker: &'a [(String, Value)]) -> Vec<(&'a str, Value)> {
     let mut l = vec![
         ("self", me.clone()),
         ("host", Value::Ref(inst.host_uuid.clone().into())),
@@ -672,6 +674,7 @@ fn overlay_locals<'a>(me: &Value, inst: &OverlayInstance, target: Option<&Value>
         ("intensity", Value::Float(inst.strength)),
         ("age", Value::Int(inst.age as i64)),
     ];
+    for (k, v) in &inst.extra_fields { l.push((k.as_str(), v.clone())); }
     if let Some(t) = target { l.push(("target", t.clone())); }
     for (n, v) in maker { l.push((n.as_str(), v.clone())); }
     l
