@@ -201,6 +201,7 @@ pub fn execute_source(source: &str) -> Result<Value, GoblinError> {
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                merged.destroy_contents |= existing.destroy_contents;
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
                 for f in merged.fields.iter_mut() {
@@ -262,6 +263,7 @@ pub fn execute_source_with_args(source: &str, extra_args: Vec<String>) -> Result
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                merged.destroy_contents |= existing.destroy_contents;
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
                 for f in merged.fields.iter_mut() {
@@ -351,6 +353,7 @@ pub(crate) fn install_classes(session: &mut Session, classes: Vec<goblin_ast::Cl
                 if merged.order_by.is_none() { merged.order_by = existing.order_by.clone(); }
                 if merged.decide.is_none() { merged.decide = existing.decide.clone(); }
                 if merged.capacity.is_none() { merged.capacity = existing.capacity.clone(); }
+                merged.destroy_contents |= existing.destroy_contents;
                 // A matrix row gives a field its values, not its kind: a
                 // field the class marks `~` stays a trait.
                 for f in merged.fields.iter_mut() {

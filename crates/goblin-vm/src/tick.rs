@@ -2073,6 +2073,7 @@ pub(crate) fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> R
         vm.session.des_erasing.retain(|u| u != uuid);
         r?;
     }
+    destroy_contents(vm, uuid)?;
     crate::world::note_erased(&mut vm.session, uuid);
     crate::holdings::hand_over(&mut vm.session, uuid, None);
     crate::world::move_contents_up(&mut vm.session, uuid);
@@ -2088,11 +2089,39 @@ pub(crate) fn run_on_erase(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
         Some(Value::Object(o)) => o.class_name[..].to_string(),
         _ => return Ok(()),
     };
-    let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) else { return Ok(()) };
-    vm.session.des_erasing.push(uuid.to_string());
-    let r = call_object_action(vm, uuid, &action, Vec::new());
-    vm.session.des_erasing.retain(|u| u != uuid);
-    r
+    if let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) {
+        vm.session.des_erasing.push(uuid.to_string());
+        let r = call_object_action(vm, uuid, &action, Vec::new());
+        vm.session.des_erasing.retain(|u| u != uuid);
+        r?;
+    }
+    destroy_contents(vm, uuid)
+}
+
+/// A container whose class says `contents: destroy`: what it still holds
+/// (after its `on erase` code) is erased with it, each thing as its own
+/// erase (its `on erase` code runs, and its own contents follow its own
+/// class's rule). Otherwise nothing: its contents move up.
+pub(crate) fn destroy_contents(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
+    let destroy = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => vm.session.classes.get(&*o.class_name).is_some_and(|c| c.destroy_contents),
+        _ => false,
+    };
+    if !destroy { return Ok(()); }
+    // Until it is empty: a bag erased inside it drops its things into it,
+    // and those go too.
+    loop {
+        let Some(k) = vm.session.object_store.contents_of(uuid).next().map(str::to_string) else { return Ok(()) };
+        let on_erase = match vm.session.object_store.get(k.as_str()) {
+            Some(Value::Object(o)) => vm.session.classes.get(&*o.class_name).and_then(|c| c.on_erase.clone()),
+            _ => None,
+        };
+        erase_object(vm, &k, on_erase.as_deref())?;
+        if vm.session.object_store.contains_key(k.as_str()) && vm.session.object_store.holder_of(k.as_str()).is_some_and(|h| h.as_str() == uuid) {
+            // Not erased (another region holds it): leave the rest to move up.
+            return Ok(());
+        }
+    }
 }
 
 /// The action a judge arm calls, and the arguments it writes (none for a

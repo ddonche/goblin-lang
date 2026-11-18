@@ -1,0 +1,5 @@
+tick 1 | Chest chest | erase
+tick 1 | Item scroll | erase
+tick 1 | Bag pouch | erase
+tick 1 | Item coin | erase
+tick 1 | Item axe | erase

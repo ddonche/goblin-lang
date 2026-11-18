@@ -111,6 +111,7 @@ enum PExpr {
         judge: Option<ast::JudgeStmt>,
         transitions: Vec<ast::TransitionDef>,
         capacity: Option<ast::CapacityDecl>,
+        destroy_contents: bool,
         every: Vec<(u64, String)>,
         named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>,
         on_erase: Option<String>,
@@ -306,7 +307,7 @@ struct PEnumVariant {
 enum PDecl {
     Expr(PExpr),
     Action(PAction),
-    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String>, phases: Vec<PClassPhase> },
+    Class { name: String, fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)>, actions: Vec<PAction>, decision: Option<Box<PDecisionDef>>, judge: Option<ast::JudgeStmt>, transitions: Vec<ast::TransitionDef>, capacity: Option<ast::CapacityDecl>, destroy_contents: bool, every: Vec<(u64, String)>, named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)>, on_erase: Option<String>, one_of: Vec<Vec<String>>, order_by: Option<(ast::Expr, bool)>, decide: Option<String>, phases: Vec<PClassPhase> },
     Enum(PEnumDecl),
     /// Expands into multiple object instantiations at lowering time.
     Matrix(PExpr),
@@ -4799,6 +4800,7 @@ impl<'t> Parser<'t> {
         // ── Fields (single-line OR multi-line). Commas and newlines are both allowed.
         let mut fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)> = Vec::new();
         let mut pre_capacity: Option<ast::CapacityDecl> = None;
+        let mut pre_destroy = false;
 
         loop {
             // Skip layout
@@ -4828,6 +4830,12 @@ impl<'t> Parser<'t> {
                 // `capacity: N` may come before, between or after the fields.
                 if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("capacity") {
                     pre_capacity = Some(self.parse_capacity_decl()?);
+                    continue;
+                }
+                // `contents: destroy` likewise.
+                if self.is_contents_decl_at(self.i) {
+                    self.i += 3;
+                    pre_destroy = true;
                     continue;
                 }
                 if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
@@ -4997,7 +5005,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: pre_capacity, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: pre_capacity, destroy_contents: pre_destroy, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -5010,6 +5018,7 @@ impl<'t> Parser<'t> {
             .filter_map(|f| match (&f.0, &f.1) { (k, PExpr::Str(n)) if k == "#uses" => Some(uses_marker(n, &here)), _ => None })
             .collect();
         let mut capacity: Option<ast::CapacityDecl> = pre_capacity;
+        let mut destroy_contents = pre_destroy;
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
         let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
@@ -5128,7 +5137,7 @@ impl<'t> Parser<'t> {
                     && matches!(tok.value.as_deref(), Some("end") | Some("xx"));
                 if is_inline_ident && tok.span.line_start == hdr_line {
                     self.i += 1; // consume 'end'/'xx'
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases });
                 }
             }
 
@@ -5152,7 +5161,7 @@ impl<'t> Parser<'t> {
 
             // In REPL, if we ever reach EoF here, also auto-close (for multi-line REPL entries)
             if is_repl && self.is_eof() {
-                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
+                return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases });
             }
 
             if self.is_eof() {
@@ -5599,6 +5608,11 @@ impl<'t> Parser<'t> {
             let is_capacity = matches!(act_tok.kind, TokenKind::Ident)
                 && act_tok.value.as_deref() == Some("capacity");
 
+            if self.is_contents_decl_at(self.i) {
+                self.i += 3;
+                destroy_contents = true;
+                continue;
+            }
             if is_capacity {
                 capacity = Some(self.parse_capacity_decl()?);
                 continue;
@@ -5608,7 +5622,7 @@ impl<'t> Parser<'t> {
                 // A new top-level declaration (<>Name) on its own line closes a single-line class.
                 if matches!(act_tok.kind, TokenKind::ClassIdent) {
                     // Don't consume — let parse_module handle it
-                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
+                    return Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases });
                 }
                 // `order: 1` then fields: `order` was meant as a field.
                 if order_by.is_some() && matches!(act_tok.kind, TokenKind::Ident)
@@ -5694,7 +5708,7 @@ impl<'t> Parser<'t> {
             });
         }
 
-        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases })
+        Ok(PExpr::ClassDecl { name, fields, actions, decision: decision.map(Box::new), judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases })
     }
 
     fn parse_enum_decl(&mut self) -> Result<PEnumDecl, String> {
@@ -5843,8 +5857,8 @@ impl<'t> Parser<'t> {
                     // not a matrix — backtrack and parse as class decl
                     self.i = start_i;
                     let class = self.parse_class_decl()?;
-                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } = class {
-                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases });
+                    if let PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases } = class {
+                        return Ok(PDecl::Class { name, fields, actions, decision, judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases });
                     }
                 }
 
@@ -8157,6 +8171,7 @@ impl<'t> Parser<'t> {
             judge: None,
             transitions: vec![],
             capacity: None,
+            destroy_contents: false,
             every: vec![],
             decisions: vec![],
             on_erase: None,
@@ -8305,7 +8320,7 @@ impl<'t> Parser<'t> {
         sp: goblin_diagnostics::Span,
     ) -> Result<ast::Stmt, String> {
         match pe {
-            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, every, named, on_erase, one_of, order_by, decide, phases } => {
+            PExpr::ClassDecl { name, fields, actions, decision, judge, transitions, capacity, destroy_contents, every, named, on_erase, one_of, order_by, decide, phases } => {
                 // Each name in `one of` must be a named decision of the class.
                 for n in one_of.iter().flatten() {
                     if !named.iter().any(|(d, _, _)| d == n) {
@@ -8427,6 +8442,7 @@ impl<'t> Parser<'t> {
                     judge,
                     transitions,
                     capacity,
+                    destroy_contents,
                     every: every.into_iter().map(|(ticks, action)| ast::EveryDecl { ticks, action, span: sp.clone() }).collect(),
                     decisions: decisions_ast,
                     on_erase,
@@ -10321,6 +10337,14 @@ impl<'t> Parser<'t> {
     }
 
     /// Parse a `transition KIND [(TargetClass)] when CONDITION ... end` inside a class body.
+    /// `contents: destroy` at token `i` (a class line, not a field).
+    fn is_contents_decl_at(&self, i: usize) -> bool {
+        let t = |k: usize| self.toks.get(i + k);
+        t(0).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("contents"))
+            && t(1).is_some_and(|t| matches!(&t.kind, TokenKind::Op(o) if o == ":"))
+            && t(2).is_some_and(|t| matches!(t.kind, TokenKind::Ident) && t.value.as_deref() == Some("destroy"))
+    }
+
     /// `capacity: N` or `capacity from field_name: N`, at `capacity`.
     fn parse_capacity_decl(&mut self) -> Result<ast::CapacityDecl, String> {
         let _ = self.eat_ident(); // consume 'capacity'
