@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.64 — 2026-11-18
+
+- `:delete_object!(x)` writes an `erase` line to the event log, as an erase transition does, so the object's timeline shows how it ended. Before, only what it destroyed through `contents: destroy` got a line.
+
 ## 0.51.63 — 2026-11-18
 
 - A container's class can say `contents: destroy`. When it is erased (by an erase transition or `:delete_object!`), whatever it still holds after its `on erase` code is erased with it. Each thing goes through its own erase: its `on erase` code runs, it gets its own `erase` line in the event log, and its own contents follow its own class's rule. A bag destroyed inside a burning chest drops its things into the chest, and they burn too. Without the line, contents move up as before. A class can no longer have a field named `contents` whose value is a variable named `destroy`.

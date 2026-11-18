@@ -2185,9 +2185,9 @@ impl Vm {
                         self.stack.push(Operand::Val(Value::Nil));
                         return Ok(());
                     }
-                    // `delete_object!(x)`: the class's `on erase:` action
-                    // runs first, as for an erase transition; then the
-                    // builtin erases it (its contents move up).
+                    // `delete_object!(x)`: as for an erase transition, the
+                    // log gets its `erase` line and the class's `on erase:`
+                    // action runs first; then the builtin erases it.
                     BuiltinId::DeleteObject if arg_vals.len() == 3 => {
                         let uuid = match &arg_vals[0] {
                             Value::Object(o) => Some(o.uuid.clone()),
@@ -2197,7 +2197,14 @@ impl Vm {
                         if let Some(u) = uuid {
                             let elsewhere = crate::world::in_view(&self.session, &u)
                                 || self.session.region.as_ref().is_some_and(|c| c.remote.contains(u.as_str()));
-                            if !elsewhere { crate::tick::run_on_erase(self, &u)?; }
+                            if !elsewhere && self.session.object_store.contains_key(u.as_str()) {
+                                // The log has its line, as for an erase transition.
+                                if crate::events::on(self) {
+                                    let who = crate::events::who(self, &u);
+                                    crate::events::log(self, who, "erase", &[])?;
+                                }
+                                crate::tick::run_on_erase(self, &u)?;
+                            }
                         }
                     }
                     BuiltinId::QueryByIdent => {

@@ -3,6 +3,8 @@
 /// delete_object!), what it holds is erased with it, each as its own erase, so a
 /// bag inside it drops its things into it and those go too. Without the line,
 /// contents move up. The line can come before or after the fields.
+/// `:delete_object!` writes an `erase` line to the event log, as an erase
+/// transition does.
 <>Place |
     name: ..
     owner: nil
