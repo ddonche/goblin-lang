@@ -1478,12 +1478,16 @@ pub(crate) fn is_remote(vm: &Vm, uuid: &(impl crate::value::IdKey + ?Sized)) -> 
 
 /// Before `owner` of `uuid` is set to `v`: ownership is a tree, so an
 /// object can't come to own itself.
-pub(crate) fn check_owner_write(s: &crate::session::Session, uuid: &str, v: &Value) -> Result<(), GoblinError> {
+/// `x >> owner |= v`: an object can't go inside something inside it
+/// (R1246). A full container passes it up to the first container above
+/// it with room (`settle_owner`); when none has room it is R1267 and
+/// nothing moves. Gives the owner to store.
+pub(crate) fn check_owner_write(s: &crate::session::Session, uuid: &str, v: &Value) -> Result<Value, GoblinError> {
     if s.object_store.would_loop(uuid, v) {
         return Err(err(format!("R1246: owner-loop: {} can't be owned by that object: it already owns it, at some depth, and ownership is a tree", object_label(s, uuid, None))));
     }
     let me = match s.object_store.get(uuid) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
-    check_capacity(s, uuid, me, v)
+    settle_owner(s, uuid, me, v, false)
 }
 
 /// `Class `name``, or `a Class`, for an error.
@@ -1497,23 +1501,22 @@ fn object_label(s: &crate::session::Session, uuid: &str, obj: Option<&Value>) ->
     }
 }
 
-/// Putting object `uuid` (`me`: its class and fields) inside the object `v`
-/// names: when that container's class declares a `capacity`, it must have
-/// room. `capacity: N` counts what it holds; `capacity from f: N` adds up
-/// field `f` (stored values; an object without a number there adds 0).
-/// A container in another region is checked there.
-pub(crate) fn check_capacity(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, v: &Value) -> Result<(), GoblinError> {
-    let Some(h) = crate::store::owner_in_value(v) else { return Ok(()) };
-    let Some(holder @ Value::Object(ho)) = s.object_store.get(h.as_str()) else { return Ok(()) };
-    let Some(cap) = s.classes.get(&*ho.class_name).and_then(|c| c.capacity.as_ref()) else { return Ok(()) };
+/// Why container `h` has no room for object `uuid` (`me`: its class and
+/// fields), or None when it has room. `capacity: N` counts what it holds;
+/// `capacity from f: N` adds up field `f` (stored values; an object
+/// without a number there adds 0). A container with no `capacity`, or in
+/// another region, has room.
+fn no_room(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, h: &str) -> Option<String> {
+    let Some(Value::Object(ho)) = s.object_store.get(h) else { return None };
+    let cap = s.classes.get(&*ho.class_name).and_then(|c| c.capacity.as_ref())?;
     let num = |f: Option<&Value>| match f {
         Some(Value::Int(n)) => *n as f64,
         Some(Value::Float(x)) => *x,
         Some(Value::Big(d)) => d.to_string().parse::<f64>().unwrap_or(0.0),
         _ => 0.0,
     };
-    let others = s.object_store.contents_of(h.as_str()).filter(|u| *u != uuid);
-    let full = match cap {
+    let others = s.object_store.contents_of(h).filter(|u| *u != uuid);
+    match cap {
         goblin_ast::CapacityDecl::Count(n) => {
             let held = others.count() as u64;
             (held + 1 > *n).then(|| format!("it holds {held} and its capacity is {n}"))
@@ -1526,19 +1529,59 @@ pub(crate) fn check_capacity(s: &crate::session::Session, uuid: &str, me: Option
             let adds = num(me.and_then(|(_, f)| f.get(field_name.as_str())));
             (held + adds > *limit).then(|| format!("it holds {held} {field_name}, this adds {adds}, and its capacity is {limit}"))
         }
-    };
-    match full {
-        None => Ok(()),
-        Some(why) => {
-            let what = match me {
-                Some((class, f)) => match f.get("name") {
-                    Some(Value::Str(n)) if !n.is_empty() => format!("{class} `{n}`"),
-                    _ => format!("a {class}"),
-                },
-                None => object_label(s, uuid, None),
-            };
-            Err(err(format!("R1267: container-full: {what} can't go inside {}: {why}", object_label(s, h.as_str(), Some(holder)))))
+    }
+}
+
+/// Where object `uuid` (`me`: its class and fields) ends up when it is
+/// put inside the container `v` names: that container when it has room,
+/// else the first container above it that has room. When none has room:
+/// R1267 for a move (`implicit` false: nothing moves), and the topmost
+/// container for contents moving up from a destroyed container
+/// (`implicit` true: nothing is ever lost).
+pub(crate) fn settle_owner(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, v: &Value, implicit: bool) -> Result<Value, GoblinError> {
+    let Some(h) = crate::store::owner_in_value(v) else { return Ok(v.clone()) };
+    let first = h.as_str();
+    let mut at = first;
+    let mut why = None;
+    for _ in 0..=s.object_store.len() {
+        match no_room(s, uuid, me, at) {
+            None => return Ok(if at == first { v.clone() } else { Value::Ref(at.into()) }),
+            Some(w) => { if why.is_none() { why = Some(w); } }
         }
+        match s.object_store.holder_of(at) { Some(up) => at = up.as_str(), None => break }
+    }
+    if implicit { return Ok(if at == first { v.clone() } else { Value::Ref(at.into()) }); }
+    let what = match me {
+        Some((class, f)) => match f.get("name") {
+            Some(Value::Str(n)) if !n.is_empty() => format!("{class} `{n}`"),
+            _ => format!("a {class}"),
+        },
+        None => object_label(s, uuid, None),
+    };
+    let tail = if at == first { String::new() } else { ", and nothing it is inside has room".to_string() };
+    Err(err(format!("R1267: container-full: {what} can't go inside {}: {}{tail}", object_label(s, first, None), why.unwrap_or_default())))
+}
+
+/// What the erased or retired object `uuid` still holds moves up to its
+/// own container, or past it to the first one above with room
+/// (`settle_owner`, implicit).
+pub(crate) fn move_contents_up(s: &mut crate::session::Session, uuid: &str) {
+    let kids: Vec<String> = s.object_store.contents_of(uuid).map(str::to_string).collect();
+    if kids.is_empty() { return; }
+    if !s.classes.values().any(|c| c.capacity.is_some()) { s.object_store.move_contents_up(uuid); return; }
+    let up = match s.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.fields.get(crate::store::OWNER_FIELD).cloned().unwrap_or(Value::Nil),
+        _ => Value::Nil,
+    };
+    let up = if crate::store::owner_in_value(&up).is_some_and(|o| o.as_str() == uuid) { Value::Nil } else { up };
+    // It is leaving: it no longer takes room in its container.
+    s.object_store.move_one(uuid, Value::Nil);
+    for k in kids {
+        let dest = {
+            let me = match s.object_store.get(k.as_str()) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
+            settle_owner(s, &k, me, &up, true).unwrap_or_else(|_| up.clone())
+        };
+        s.object_store.move_one(k.as_str(), dest);
     }
 }
 

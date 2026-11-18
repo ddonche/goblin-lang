@@ -436,14 +436,19 @@ impl ObjectStore {
             _ => Value::Nil,
         };
         let up = if owner_in_value(&up).is_some_and(|o| o == uuid) { Value::Nil } else { up };
-        for k in kids {
-            self.touched(&k);
-            if let Some(Value::Object(o)) = self.get_mut(&k) {
-                std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.to_string(), up.clone());
-            }
-            let owner = self.get(&k).and_then(owner_in).cloned();
-            self.set_owner(&k, owner.as_ref());
+        for k in kids { self.move_one(&k, up.clone()); }
+    }
+
+    /// Sets object `k`'s `owner` to `up` and refiles it.
+    pub fn move_one(&mut self, k: &(impl IdKey + ?Sized), up: Value) {
+        let Some(id) = k.id() else { return };
+        let k: &Id = &id;
+        self.touched(k);
+        if let Some(Value::Object(o)) = self.get_mut(k) {
+            std::rc::Rc::make_mut(&mut o.fields).insert(OWNER_FIELD.to_string(), up);
         }
+        let owner = self.get(k).and_then(owner_in).cloned();
+        self.set_owner(k, owner.as_ref());
     }
 
     /// Add an object, or replace the one with this id (keeping its place).

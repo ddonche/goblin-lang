@@ -1,0 +1,57 @@
+/// known-gap: interp parses capacity but never checks it
+/// A full container passes what is put in it up to the first container
+/// above it with room: a juice box put in a full lunchbox goes into the
+/// backpack holding it, or past a full backpack to the child. Made inside a
+/// full container, an object lands the same way. When a container is
+/// destroyed, each thing it held goes to the first container above with
+/// room (the destroyed one no longer takes room). A move with no room
+/// anywhere above is R1267 and nothing moves.
+<>Holder |
+    name: ..
+    owner: nil
+    capacity: 2
+xx
+<>Bus |
+    name: ..
+    owner: nil
+xx
+<>Kid |
+    name: ..
+    owner: nil
+xx
+<>Item |
+    name: ..
+    owner: nil
+xx
+bus <> Bus | name: "school bus"
+kid <> Kid | name: "Sam", owner: bus
+pack <> Holder | name: "backpack", owner: kid
+box <> Holder | name: "lunchbox", owner: pack
+cake <> Item | name: "cake", owner: box
+apple <> Item | name: "apple", owner: box
+book <> Item | name: "book", owner: pack
+juice <> Item | name: "juice box", owner: kid
+juice >> owner |= box
+:say(:owns_tree(bus))
+:say("--")
+pen <> Item | name: "pen", owner: box
+:say(:owns_tree(bus))
+:say("-- the lunchbox is lost")
+:delete_object!(box)
+:say(:owns_tree(bus))
+<>Shelf |
+    name: ..
+    owner: nil
+    capacity: 1
+xx
+top <> Shelf | name: "top shelf"
+low <> Shelf | name: "low shelf", owner: top
+jar <> Item | name: "jar", owner: low
+cup <> Item | name: "cup"
+attempt
+    cup >> owner |= low
+rescue e
+    :say(:has("{e}", "R1267"))
+    :say(:has("{e}", "nothing it is inside has room"))
+xx
+:say(cup >> owner == nil)

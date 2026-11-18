@@ -3938,7 +3938,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             crate::holdings::hand_over(session, &uuid, None);
-            session.object_store.move_contents_up(uuid.as_str());
+            crate::world::move_contents_up(session, uuid.as_str());
             session.object_store.shift_remove(&uuid);
             Ok(Value::Nil)
         }
@@ -5520,7 +5520,7 @@ pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     crate::world::note_erased(session, uuid);
     crate::holdings::hand_over(session, uuid, None);
-    session.object_store.move_contents_up(uuid);
+    crate::world::move_contents_up(session, uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
         if let Some(entity) = session.des_store.get(handle) {

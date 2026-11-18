@@ -352,7 +352,7 @@ pub(crate) fn retire_claimed(vm: &mut Vm, uuid: &str, heir: &str, links: bool) -
     vm.session.object_link_defs.retain(|(a, _), _| a != uuid);
     vm.session.object_decisions.remove(uuid);
     crate::holdings::hand_over(&mut vm.session, uuid, Some(heir));
-    vm.session.object_store.move_contents_up(uuid);
+    crate::world::move_contents_up(&mut vm.session, uuid);
     vm.session.object_store.shift_remove(uuid);
     out
 }
@@ -478,8 +478,19 @@ fn recast(vm: &mut Vm, me: &str, class: &str, mut fields: FieldMap) -> Result<()
 /// Writes one field as `x >> field |= v` does: a `~` field stays in 0..1,
 /// `owner` refiles the object, another region's object gets the change.
 fn write_field(vm: &mut Vm, uuid: &str, field: &str, v: Value) -> Result<(), GoblinError> {
+    write_field_as(vm, uuid, field, v, false)
+}
+
+/// `write_field`; `implicit`: an `owner` moving with its container's
+/// contents, which a full container never refuses (`settle_owner`).
+fn write_field_as(vm: &mut Vm, uuid: &str, field: &str, v: Value, implicit: bool) -> Result<(), GoblinError> {
     let v = entry(vm, v);
-    if field == crate::store::OWNER_FIELD { crate::world::check_owner_write(&vm.session, uuid, &v)?; }
+    let v = if field != crate::store::OWNER_FIELD { v }
+        else if !implicit { crate::world::check_owner_write(&vm.session, uuid, &v)? }
+        else {
+            let me = match vm.session.object_store.get(uuid) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
+            crate::world::settle_owner(&vm.session, uuid, me, &v, true)?
+        };
     vm.session.touch(uuid);
     let Some(Value::Object(o)) = vm.session.object_store.get_mut(uuid) else {
         return Err(err(format!("transition: object {uuid} is gone")));
@@ -501,7 +512,7 @@ fn move_contents(vm: &mut Vm, from: &str, to: &str) -> Result<(), GoblinError> {
     let held: Vec<String> = vm.session.object_store.contents_of(from).map(|s| s.to_string()).collect();
     for h in held {
         if h == to { continue; }
-        write_field(vm, &h, crate::store::OWNER_FIELD, Value::Ref(to.into()))?;
+        write_field_as(vm, &h, crate::store::OWNER_FIELD, Value::Ref(to.into()), true)?;
     }
     Ok(())
 }
@@ -570,7 +581,7 @@ fn remove_object(vm: &mut Vm, uuid: &str, heir: &str) -> Value {
     vm.session.object_decisions.remove(uuid);
     crate::world::note_removed(&mut vm.session, uuid, Some(heir));
     crate::holdings::hand_over(&mut vm.session, uuid, Some(heir));
-    vm.session.object_store.move_contents_up(uuid);
+    crate::world::move_contents_up(&mut vm.session, uuid);
     vm.session.object_store.shift_remove(uuid);
     old
 }

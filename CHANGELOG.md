@@ -3,6 +3,11 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.62 — 2026-11-18
+
+- A full container passes things up instead of refusing them. A juice box put in a full lunchbox goes into the backpack holding the lunchbox, or past a full backpack to whoever carries it: the first container above with room. An object made inside a full container lands the same way. Only when nothing above has room is it R1267, and nothing moves.
+- When a container is destroyed, each thing it held goes to the first container above with room, and the destroyed container no longer takes up room in its own container. When nothing above has room, things go to the topmost container anyway, so nothing is lost. The same goes for contents an absorb, merge or split hands on.
+
 ## 0.51.61 — 2026-11-18
 
 - A container's `capacity` is enforced. `capacity: N` counts what is directly inside; `capacity from f: N` adds up field `f` of what is inside. Putting an object into a full container, by setting its `owner` or by making it there, is R1267 (container-full) and changes nothing. A container's contents still move up to its own container when it is erased, whatever room that container has.

@@ -1608,9 +1608,10 @@ impl Vm {
                 let trait_fields = trait_fields_of(&mut fields, &class.fields);
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
-                // Made inside a container: it must have room.
+                // Made inside a container: it must have room (or one above it).
                 if let Some(o) = fields.get(crate::store::OWNER_FIELD) {
-                    crate::world::check_capacity(&self.session, &uuid, Some((class_name.as_str(), &fields)), o)?;
+                    let o = crate::world::settle_owner(&self.session, &uuid, Some((class_name.as_str(), &fields)), o, false)?;
+                    fields.insert(crate::store::OWNER_FIELD.to_string(), o);
                 }
 
                 let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: crate::value::class_rc(class_name.as_str()), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid: uuid.into() }));
@@ -5707,7 +5708,7 @@ impl Vm {
             return Ok(());
         }
         let new_val = entry_of(&self.session, new_val);
-        if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)?; }
+        let new_val = if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &new_val)? } else { new_val };
         // Mutate directly in object_store (shared reference semantics, like interpreter).
         self.session.touch(&uuid);
         if let Some(obj) = self.session.object_store.get_mut(&uuid) {
@@ -7592,7 +7593,7 @@ impl Vm {
                 };
                 self.session.touch(&uuid);
                 let replacement = entry_of(&self.session, replacement);
-                if AsRef::<str>::as_ref(field) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &replacement)?; }
+                let replacement = if AsRef::<str>::as_ref(field) == crate::store::OWNER_FIELD { crate::world::check_owner_write(&self.session, &uuid, &replacement)? } else { replacement };
                 match self.session.object_store.get_mut(&uuid) {
                     Some(obj @ Value::Object(_)) => {
                         check_field_write(obj, field)?;
