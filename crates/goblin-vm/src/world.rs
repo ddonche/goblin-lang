@@ -1479,15 +1479,67 @@ pub(crate) fn is_remote(vm: &Vm, uuid: &(impl crate::value::IdKey + ?Sized)) -> 
 /// Before `owner` of `uuid` is set to `v`: ownership is a tree, so an
 /// object can't come to own itself.
 pub(crate) fn check_owner_write(s: &crate::session::Session, uuid: &str, v: &Value) -> Result<(), GoblinError> {
-    if !s.object_store.would_loop(uuid, v) { return Ok(()); }
-    let name = |u: &str| match s.object_store.get(u) {
+    if s.object_store.would_loop(uuid, v) {
+        return Err(err(format!("R1246: owner-loop: {} can't be owned by that object: it already owns it, at some depth, and ownership is a tree", object_label(s, uuid, None))));
+    }
+    let me = match s.object_store.get(uuid) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
+    check_capacity(s, uuid, me, v)
+}
+
+/// `Class `name``, or `a Class`, for an error.
+fn object_label(s: &crate::session::Session, uuid: &str, obj: Option<&Value>) -> String {
+    match obj.or_else(|| s.object_store.get(uuid)) {
         Some(Value::Object(o)) => match o.fields.get("name") {
             Some(Value::Str(n)) if !n.is_empty() => format!("{} `{}`", o.class_name, n),
             _ => format!("a {}", o.class_name),
         },
         _ => "an object".to_string(),
+    }
+}
+
+/// Putting object `uuid` (`me`: its class and fields) inside the object `v`
+/// names: when that container's class declares a `capacity`, it must have
+/// room. `capacity: N` counts what it holds; `capacity from f: N` adds up
+/// field `f` (stored values; an object without a number there adds 0).
+/// A container in another region is checked there.
+pub(crate) fn check_capacity(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, v: &Value) -> Result<(), GoblinError> {
+    let Some(h) = crate::store::owner_in_value(v) else { return Ok(()) };
+    let Some(holder @ Value::Object(ho)) = s.object_store.get(h.as_str()) else { return Ok(()) };
+    let Some(cap) = s.classes.get(&*ho.class_name).and_then(|c| c.capacity.as_ref()) else { return Ok(()) };
+    let num = |f: Option<&Value>| match f {
+        Some(Value::Int(n)) => *n as f64,
+        Some(Value::Float(x)) => *x,
+        Some(Value::Big(d)) => d.to_string().parse::<f64>().unwrap_or(0.0),
+        _ => 0.0,
     };
-    Err(err(format!("R1246: owner-loop: {} can't be owned by that object: it already owns it, at some depth, and ownership is a tree", name(uuid))))
+    let others = s.object_store.contents_of(h.as_str()).filter(|u| *u != uuid);
+    let full = match cap {
+        goblin_ast::CapacityDecl::Count(n) => {
+            let held = others.count() as u64;
+            (held + 1 > *n).then(|| format!("it holds {held} and its capacity is {n}"))
+        }
+        goblin_ast::CapacityDecl::Field { field_name, limit } => {
+            let held: f64 = others.map(|u| match s.object_store.get(u) {
+                Some(Value::Object(o)) => num(o.fields.get(field_name.as_str())),
+                _ => 0.0,
+            }).sum();
+            let adds = num(me.and_then(|(_, f)| f.get(field_name.as_str())));
+            (held + adds > *limit).then(|| format!("it holds {held} {field_name}, this adds {adds}, and its capacity is {limit}"))
+        }
+    };
+    match full {
+        None => Ok(()),
+        Some(why) => {
+            let what = match me {
+                Some((class, f)) => match f.get("name") {
+                    Some(Value::Str(n)) if !n.is_empty() => format!("{class} `{n}`"),
+                    _ => format!("a {class}"),
+                },
+                None => object_label(s, uuid, None),
+            };
+            Err(err(format!("R1267: container-full: {what} can't go inside {}: {why}", object_label(s, h.as_str(), Some(holder)))))
+        }
+    }
 }
 
 /// Before an object is erased: every region hears of it (`Item::Erased`),

@@ -1608,6 +1608,10 @@ impl Vm {
                 let trait_fields = trait_fields_of(&mut fields, &class.fields);
                 // As in the interpreter, the object's uuid is also its `uuid` field.
                 fields.insert("uuid".to_string(), Value::Str(uuid.clone().into()));
+                // Made inside a container: it must have room.
+                if let Some(o) = fields.get(crate::store::OWNER_FIELD) {
+                    crate::world::check_capacity(&self.session, &uuid, Some((class_name.as_str(), &fields)), o)?;
+                }
 
                 let obj = Value::Object(Box::new(crate::value::ObjectVal { class_name: crate::value::class_rc(class_name.as_str()), fields: std::rc::Rc::new(fields), readonly_fields: std::rc::Rc::new(readonly_fields), trait_fields: std::rc::Rc::new(trait_fields), uuid: uuid.into() }));
                 self.stack.push(Operand::Val(obj));
@@ -6669,7 +6673,7 @@ impl Vm {
         let tree = p.tree.as_ref()?;
         // An object has the fields its class declares, and its id.
         let decl = self.session.classes.get(class)?;
-        let has_field = |n: &str| ["id", "uuid", "owner_id"].contains(&n) || decl.fields.iter().any(|f| f.name == n);
+        let has_field = |n: &str| ["id", "uuid"].contains(&n) || decl.fields.iter().any(|f| f.name == n);
         let (field, part) = tree.field_equal(0, &has_field)?;
         let env = self.predicate_env(func, cells)?;
         let mut at = vec![usize::MAX - 1; 1 + env.upvalues.len() + env.globals.len()];
@@ -6695,7 +6699,7 @@ impl Vm {
         if let [O::LoadItFieldOrJump(ci, 1), rest @ ..] = code {
             let Value::Str(name) = func.constants.get(*ci as usize)? else { return None };
             let decl = self.session.classes.get(class)?;
-            if ["id", "uuid", "owner_id"].contains(&name.as_str()) || decl.fields.iter().any(|f| f.name == name.as_str()) { return None; }
+            if ["id", "uuid"].contains(&name.as_str()) || decl.fields.iter().any(|f| f.name == name.as_str()) { return None; }
             code = rest;
         }
         let (load, name_i, tail) = match code {
@@ -7349,8 +7353,10 @@ impl Vm {
             Some(Value::Object(o)) => {
                 let crate::value::ObjectVal { class_name, fields, readonly_fields, trait_fields, .. } = *o;
                 let mut fields = (*fields).clone();
-                fields.insert("owner_id".to_string(), Value::Str(String::new().into()));
+                // The copy is inside nothing, and is its own object.
+                if fields.contains_key(crate::store::OWNER_FIELD) { fields.insert(crate::store::OWNER_FIELD.to_string(), Value::Nil); }
                 let new_uuid = uuid::Uuid::new_v4().to_string();
+                if fields.contains_key("id") { fields.insert("id".to_string(), Value::Str(new_uuid.clone().into())); }
                 fields.insert("uuid".to_string(), Value::Str(new_uuid.clone().into()));
                 let cloned = Value::Object(Box::new(crate::value::ObjectVal {
                     class_name, fields: std::rc::Rc::new(fields), readonly_fields, trait_fields, uuid: new_uuid.as_str().into(),

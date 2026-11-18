@@ -145,7 +145,7 @@ fn owner_in(v: &Value) -> Option<&Id> {
 }
 
 /// The id of the object a field value names, if it names one.
-fn owner_in_value(f: &Value) -> Option<&Id> {
+pub(crate) fn owner_in_value(f: &Value) -> Option<&Id> {
     match f {
         Value::Ref(u) if !u.starts_with(crate::vm::OVERLAY_RECORD) => Some(u),
         Value::Object(x) => Some(&x.uuid),

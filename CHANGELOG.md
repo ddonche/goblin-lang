@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.61 — 2026-11-18
+
+- A container's `capacity` is enforced. `capacity: N` counts what is directly inside; `capacity from f: N` adds up field `f` of what is inside. Putting an object into a full container, by setting its `owner` or by making it there, is R1267 (container-full) and changes nothing. A container's contents still move up to its own container when it is erased, whatever room that container has.
+- `capacity` can come before, between or after a class's fields (it was a parse error before the fields).
+- `:owned_by(x)` and `:owns_tree(x)` read `owner`, the field ownership uses everywhere else, instead of a fixed `owner_id` field. `:owns_tree` names each object (`Place the inn`: its `name`, else the variable that names it) in the order it came to its container, instead of printing ids.
+- `:clone_object(x)` gives a copy that is inside nothing (`owner` nil) with its own `id`, instead of adding an `owner_id` field.
+
 ## 0.51.60 — 2026-11-18
 
 - An overlay's transition lines (its condition, `targets:` and field lists) read the copy's own fields by name, as its `every`, `modify` and `on` lines do: `transition mutate where damage < 2` with `carries:` `damage: damage * 3`. `@damage` still works there.

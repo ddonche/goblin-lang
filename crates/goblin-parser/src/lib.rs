@@ -4798,6 +4798,7 @@ impl<'t> Parser<'t> {
 
         // ── Fields (single-line OR multi-line). Commas and newlines are both allowed.
         let mut fields: Vec<(String, PExpr, bool, bool, bool, Option<RelationDef>)> = Vec::new();
+        let mut pre_capacity: Option<ast::CapacityDecl> = None;
 
         loop {
             // Skip layout
@@ -4819,10 +4820,15 @@ impl<'t> Parser<'t> {
                     && matches!(
                         tok.value.as_deref(),
                         Some("act") | Some("action") | Some("end") | Some("xx")
-                        | Some("score") | Some("judge") | Some("transition") | Some("capacity")
+                        | Some("score") | Some("judge") | Some("transition")
                     )
                 {
                     break;
+                }
+                // `capacity: N` may come before, between or after the fields.
+                if matches!(tok.kind, TokenKind::Ident) && tok.value.as_deref() == Some("capacity") {
+                    pre_capacity = Some(self.parse_capacity_decl()?);
+                    continue;
                 }
                 if matches!(tok.kind, TokenKind::Act | TokenKind::Action) {
                     break;
@@ -4991,7 +4997,7 @@ impl<'t> Parser<'t> {
 
         // ── SINGLE-LINE / REPL AUTO-CLOSE:
         if is_repl && !fields.is_empty() && self.is_eof() {
-            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: None, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
+            return Ok(PExpr::ClassDecl { name, fields, actions: Vec::new(), decision: None, judge: None, transitions: Vec::new(), capacity: pre_capacity, every: Vec::new(), named: Vec::new(), on_erase: None, one_of: Vec::new(), order_by: None, decide: None, phases: Vec::new() });
         }
 
         // ── Actions / explicit closer (multi-line file mode continues)
@@ -5003,7 +5009,7 @@ impl<'t> Parser<'t> {
         let mut transitions: Vec<ast::TransitionDef> = fields.iter()
             .filter_map(|f| match (&f.0, &f.1) { (k, PExpr::Str(n)) if k == "#uses" => Some(uses_marker(n, &here)), _ => None })
             .collect();
-        let mut capacity: Option<ast::CapacityDecl> = None;
+        let mut capacity: Option<ast::CapacityDecl> = pre_capacity;
         let mut every: Vec<(u64, String)> = Vec::new();
         // Decisions by name, each with the judge that uses it.
         let mut named: Vec<(String, PDecisionDef, Option<ast::JudgeStmt>)> = Vec::new();
@@ -5594,58 +5600,7 @@ impl<'t> Parser<'t> {
                 && act_tok.value.as_deref() == Some("capacity");
 
             if is_capacity {
-                let _ = self.eat_ident(); // consume 'capacity'
-                self.skip_layout();
-                if self.peek_ident() == Some("from") {
-                    let _ = self.eat_ident(); // consume 'from'
-                    self.skip_layout();
-                    let Some(field_name) = self.eat_ident() else {
-                        return Err(s_help_site!(
-                            "P1550",
-                            "Expected field name after 'capacity from'",
-                            "Write: capacity from weight: 100",
-                        ));
-                    };
-                    self.skip_layout();
-                    if !self.eat_op(":") {
-                        return Err(s_help_site!(
-                            "P1551",
-                            "Expected ':' after field name in capacity declaration",
-                            "Write: capacity from weight: 100",
-                        ));
-                    }
-                    self.skip_layout();
-                    let limit_expr = self.parse_primary()?;
-                    let limit = match &limit_expr {
-                        PExpr::Float(n) | PExpr::Int(n) => n.parse::<f64>().unwrap_or(0.0),
-                        _ => return Err(s_help_site!(
-                            "P1552",
-                            "Expected a numeric limit in capacity declaration",
-                            "Write: capacity from weight: 100",
-                        )),
-                    };
-                    capacity = Some(ast::CapacityDecl::Field { field_name, limit });
-                } else {
-                    if !self.eat_op(":") {
-                        return Err(s_help_site!(
-                            "P1553",
-                            "Expected ':' after 'capacity'",
-                            "Write: capacity: 20",
-                        ));
-                    }
-                    self.skip_layout();
-                    let count_expr = self.parse_primary()?;
-                    let count = match &count_expr {
-                        PExpr::Int(n) => n.parse::<u64>().unwrap_or(0),
-                        PExpr::Float(n) => n.parse::<f64>().unwrap_or(0.0) as u64,
-                        _ => return Err(s_help_site!(
-                            "P1554",
-                            "Expected a numeric count in capacity declaration",
-                            "Write: capacity: 20",
-                        )),
-                    };
-                    capacity = Some(ast::CapacityDecl::Count(count));
-                }
+                capacity = Some(self.parse_capacity_decl()?);
                 continue;
             }
 
@@ -10366,6 +10321,62 @@ impl<'t> Parser<'t> {
     }
 
     /// Parse a `transition KIND [(TargetClass)] when CONDITION ... end` inside a class body.
+    /// `capacity: N` or `capacity from field_name: N`, at `capacity`.
+    fn parse_capacity_decl(&mut self) -> Result<ast::CapacityDecl, String> {
+        let _ = self.eat_ident(); // consume 'capacity'
+        self.skip_layout();
+        if self.peek_ident() == Some("from") {
+            let _ = self.eat_ident(); // consume 'from'
+            self.skip_layout();
+            let Some(field_name) = self.eat_ident() else {
+                return Err(s_help_site!(
+                    "P1550",
+                    "Expected field name after 'capacity from'",
+                    "Write: capacity from weight: 100",
+                ));
+            };
+            self.skip_layout();
+            if !self.eat_op(":") {
+                return Err(s_help_site!(
+                    "P1551",
+                    "Expected ':' after field name in capacity declaration",
+                    "Write: capacity from weight: 100",
+                ));
+            }
+            self.skip_layout();
+            let limit_expr = self.parse_primary()?;
+            let limit = match &limit_expr {
+                PExpr::Float(n) | PExpr::Int(n) => n.parse::<f64>().unwrap_or(0.0),
+                _ => return Err(s_help_site!(
+                    "P1552",
+                    "Expected a numeric limit in capacity declaration",
+                    "Write: capacity from weight: 100",
+                )),
+            };
+            Ok(ast::CapacityDecl::Field { field_name, limit })
+        } else {
+            if !self.eat_op(":") {
+                return Err(s_help_site!(
+                    "P1553",
+                    "Expected ':' after 'capacity'",
+                    "Write: capacity: 20",
+                ));
+            }
+            self.skip_layout();
+            let count_expr = self.parse_primary()?;
+            let count = match &count_expr {
+                PExpr::Int(n) => n.parse::<u64>().unwrap_or(0),
+                PExpr::Float(n) => n.parse::<f64>().unwrap_or(0.0) as u64,
+                _ => return Err(s_help_site!(
+                    "P1554",
+                    "Expected a numeric count in capacity declaration",
+                    "Write: capacity: 20",
+                )),
+            };
+            Ok(ast::CapacityDecl::Count(count))
+        }
+    }
+
     fn parse_transition_def(&mut self) -> Result<ast::TransitionDef, String> {
         use goblin_lexer::TokenKind;
 
