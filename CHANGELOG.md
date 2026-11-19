@@ -3,6 +3,17 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.66 — 2026-11-19
+
+- Faster DES, with the same results. The capstone, 100 years at seed 42, on 4 cores: without regions 53.5 s → 42.7 s; 4 regions on 4 threads 38.0 s → 33.5 s; 4 regions on one thread 94.3 s → 76.4 s. Every sim's output and event log is the same as before.
+  - Reading a link no longer builds text keys to look it up, and finds the link's declaration once per read instead of three times.
+  - The index of who has links to whom is kept up to date as links change, instead of being built again after every change. A query narrowed by a link (`where :link_score(self, target, ...)`) no longer copies the list of linked objects.
+  - A link's formula is run from its declaration instead of a copy of it.
+  - In regions: another region's overlays are found by their host instead of by looking through all of them, and its links are copied in without looking each one up first.
+  - The program running a world rebuilds a region's overlay once a tick when it reads it (`:overlays(x)`), instead of on every read.
+  - Starting several regions at once works out what their DES code can reach once instead of once per region.
+- The civilization, epidemic, feudal, predator-prey and town_des checks' expected outputs are recorded again: 0.51.65 gave each actor its own dice, which changed what these sims roll.
+
 ## 0.51.65 — 2026-11-19
 
 - Each new actor gets dice of its own. Before, an actor's dice were seeded with the program's next roll, so each actor rolled the same numbers as the actor started before it, one roll behind: two regions' herds rose and fell together. Results stay the same from run to run and on any number of threads, but programs that start actors or regions roll different numbers than before (the capstone's `expected_history.txt` and `world_guide_on_regions` were recorded again).

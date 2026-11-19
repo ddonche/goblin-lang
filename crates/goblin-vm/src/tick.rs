@@ -636,7 +636,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             let candidates = match def.host_types.as_slice() {
                 [class] => match narrow(vm, &rule.condition, false, class, &self_ref, self_at, &candidates) {
                     Some(fewer) => {
-                        let keep: std::collections::HashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
+                        let keep: rustc_hash::FxHashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
                         std::rc::Rc::new(candidates.iter().filter(|(_, i)| keep.contains(i)).cloned().collect())
                     }
                     None => candidates,
@@ -1756,32 +1756,48 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
 
 /// The class declaration of A's link on `channel` (a `link trade` block that `hosts:` the class).
 fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
-    let class = match vm.session.object_store.get(from) {
-        Some(Value::Object(o)) => o.class_name[..].to_string(),
-        _ => return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into())),
+    use crate::session::Key2;
+    let Some(Value::Object(o)) = vm.session.object_store.get(from) else {
+        return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into()));
     };
-    vm.session.link_defs.get(&(class.clone(), channel.to_string())).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+    let class: &str = &o.class_name;
+    vm.session.link_defs.get(&(class, channel) as &dyn Key2).cloned().ok_or_else(|| GoblinError::Runtime(format!(
         "R1228: link-undeclared: {class} has no `{channel}` link; declare it with a block: `link {channel}`, `hosts: {class}`, `range: 0...1` (or `range: bool`), `xx`")))
+}
+
+/// The two ends of a link range (`bool` is 0 to 1).
+fn decl_bounds(decl: &crate::session::LinkDef) -> (f64, f64) {
+    match decl.range {
+        Some(goblin_ast::LinkRange::Between(lo, hi)) => (lo, hi),
+        _ => (0.0, 1.0),
+    }
 }
 
 /// The two ends of A's link range on `channel` (`bool` is 0 to 1).
 pub(crate) fn link_bounds(vm: &Vm, from: &str, channel: &str) -> Result<(f64, f64), GoblinError> {
-    Ok(match link_decl(vm, from, channel)?.range {
-        Some(goblin_ast::LinkRange::Between(lo, hi)) => (lo, hi),
-        _ => (0.0, 1.0),
-    })
+    Ok(decl_bounds(&*link_decl(vm, from, channel)?))
 }
 
 /// Where A's link to B starts before any change: its formula (the
 /// object's own, else its class's), else 0 (kept inside the range).
 pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
     let decl = link_decl(vm, from, channel)?;
-    let formula = vm.session.object_link_defs.get(&(from.to_string(), channel.to_string())).map(|d| d.formula.clone())
-        .or_else(|| decl.has_formula.then(|| decl.formula.clone()));
-    // No formula: 0, or the nearer end of the range when 0 is outside it,
-    // so a first `offset` gives the number written.
-    let Some(formula) = formula else { let (lo, hi) = link_bounds(vm, from, channel)?; return Ok(0f64.clamp(lo, hi)) };
-    match vm.eval_tick_expr(&formula, vec![("self", Value::Ref(from.into())), ("target", Value::Ref(to.into()))]) {
+    base_with(vm, &decl, from, to, channel)
+}
+
+fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
+    use crate::session::Key2;
+    // The formula's own definition is held (not a copy of the formula), so
+    // its compiled form is found by its place.
+    let own = vm.session.object_link_defs.get(&(from, channel) as &dyn Key2).cloned();
+    let formula = match &own {
+        Some(d) => &d.formula,
+        None if decl.has_formula => &decl.formula,
+        // No formula: 0, or the nearer end of the range when 0 is outside
+        // it, so a first `offset` gives the number written.
+        None => { let (lo, hi) = decl_bounds(decl); return Ok(0f64.clamp(lo, hi)) }
+    };
+    match vm.eval_tick_expr(formula, vec![("self", Value::Ref(from.into())), ("target", Value::Ref(to.into()))]) {
         Ok(Value::Int(i)) => Ok(i as f64),
         Ok(Value::Float(f)) => Ok(f),
         Ok(Value::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
@@ -1795,10 +1811,11 @@ pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Res
 /// the pair, kept inside the declared range. A `bool` link gives true or
 /// false. Links go one way: B's link to A is its own.
 pub(crate) fn link_value(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<Value, GoblinError> {
+    use crate::session::Key3;
     let decl = link_decl(vm, from, channel)?;
-    let (lo, hi) = link_bounds(vm, from, channel)?;
-    let base = link_base(vm, from, to, channel)?;
-    let changes: f64 = vm.session.link_offsets.get(&(from.to_string(), to.to_string(), channel.to_string()))
+    let (lo, hi) = decl_bounds(&decl);
+    let base = base_with(vm, &decl, from, to, channel)?;
+    let changes: f64 = vm.session.link_offsets.get(&(from, to, channel) as &dyn Key3)
         .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
     let v = (base + changes).clamp(lo, hi);
     Ok(match decl.range {
@@ -1935,12 +1952,11 @@ fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, args: Vec<Value>) -
 /// `call_object_action`, giving what the action returned (nil when the
 /// object is gone).
 fn action_result(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<Value, GoblinError> {
-    let class_name = match vm.session.object_store.get(uuid) {
-        Some(Value::Object(o)) => o.class_name[..].to_string(),
-        Some(_) => String::new(),
+    let method = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => vm.session.compiled_methods.get(&(&*o.class_name, action) as &dyn crate::session::Key2).cloned(),
+        Some(_) => vm.session.compiled_methods.get(&("", action) as &dyn crate::session::Key2).cloned(),
         None => return Ok(Value::Nil),
     };
-    let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
     args.insert(0, Value::Ref(uuid.to_string().into()));
     let mut out = Value::Nil;
     with_erase_check(vm, |vm| {

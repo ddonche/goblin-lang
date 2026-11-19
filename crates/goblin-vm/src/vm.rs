@@ -1642,7 +1642,7 @@ impl Vm {
                 };
 
                 let func_rc = if let Some(ref cn) = class_name {
-                    self.session.compiled_methods.get(&(cn.clone(), method_name.to_string())).cloned()
+                    self.session.compiled_methods.get(&(cn.as_str(), method_name.as_str()) as &dyn crate::session::Key2).cloned()
                 } else {
                     None
                 };
@@ -6742,9 +6742,9 @@ impl Vm {
     /// when `test` is None, else `link op value`. False when that can't be
     /// told (a link starting from a formula, a test on something else).
     pub(crate) fn unset_link_fails(&mut self, from: &str, name: &str, test: Option<(&str, &Value)>) -> bool {
-        if self.session.object_link_defs.contains_key(&(from.to_string(), name.to_string())) { return false; }
+        if self.session.object_link_defs.contains_key(&(from, name) as &dyn crate::session::Key2) { return false; }
         let Some(Value::Object(o)) = self.session.object_store.get(from) else { return false };
-        let Some(def) = self.session.link_defs.get(&(o.class_name.to_string(), name.to_string())).cloned() else { return false };
+        let Some(def) = self.session.link_defs.get(&(&*o.class_name, name) as &dyn crate::session::Key2).cloned() else { return false };
         // The start a link block gives without `score` is its range's low end.
         if def.has_formula && !matches!(def.formula, goblin_ast::Expr::Number(..)) { return false; }
         let Ok(unset) = crate::tick::link_value(self, from, "", name) else { return false };
@@ -6765,10 +6765,11 @@ impl Vm {
     /// link change to sit, in store order.
     pub(crate) fn link_targets_in(&self, from: &str, name: &str, class: &str) -> Vec<usize> {
         let store = &self.session.object_store;
-        let mut at: Vec<usize> = self.session.link_offsets.targets(from, name).iter()
-            .filter(|u| matches!(store.get(u.as_str()), Some(Value::Object(o)) if self.session.class_matches(class, &o.class_name)))
-            .filter_map(|u| store.get_index_of(u.as_str()))
-            .collect();
+        let mut at: Vec<usize> = Vec::new();
+        self.session.link_offsets.each_target(from, name, |u| {
+            let Some(i) = store.get_index_of(u) else { return };
+            if matches!(store.get_index(i), Some((_, Value::Object(o))) if self.session.class_matches(class, &o.class_name)) { at.push(i); }
+        });
         at.sort_unstable();
         at
     }

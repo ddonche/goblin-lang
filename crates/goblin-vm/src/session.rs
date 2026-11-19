@@ -162,6 +162,25 @@ pub struct LinkOffset {
 
 type LinkMap = HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>;
 
+/// A key of two or three texts, looked up without making `String`s: a
+/// `(String, String)` key borrows as `dyn Key2`, so `(&str, &str)` finds it.
+/// It hashes as the tuple of strings does.
+pub trait Key2 { fn k0(&self) -> &str; fn k1(&self) -> &str; }
+impl Key2 for (String, String) { fn k0(&self) -> &str { &self.0 } fn k1(&self) -> &str { &self.1 } }
+impl Key2 for (&str, &str) { fn k0(&self) -> &str { self.0 } fn k1(&self) -> &str { self.1 } }
+impl<'a> std::borrow::Borrow<dyn Key2 + 'a> for (String, String) { fn borrow(&self) -> &(dyn Key2 + 'a) { self } }
+impl std::hash::Hash for dyn Key2 + '_ { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.k0().hash(h); self.k1().hash(h); } }
+impl PartialEq for dyn Key2 + '_ { fn eq(&self, o: &Self) -> bool { self.k0() == o.k0() && self.k1() == o.k1() } }
+impl Eq for dyn Key2 + '_ {}
+
+pub trait Key3 { fn k0(&self) -> &str; fn k1(&self) -> &str; fn k2(&self) -> &str; }
+impl Key3 for (String, String, String) { fn k0(&self) -> &str { &self.0 } fn k1(&self) -> &str { &self.1 } fn k2(&self) -> &str { &self.2 } }
+impl Key3 for (&str, &str, &str) { fn k0(&self) -> &str { self.0 } fn k1(&self) -> &str { self.1 } fn k2(&self) -> &str { self.2 } }
+impl<'a> std::borrow::Borrow<dyn Key3 + 'a> for (String, String, String) { fn borrow(&self) -> &(dyn Key3 + 'a) { self } }
+impl std::hash::Hash for dyn Key3 + '_ { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.k0().hash(h); self.k1().hash(h); self.k2().hash(h); } }
+impl PartialEq for dyn Key3 + '_ { fn eq(&self, o: &Self) -> bool { self.k0() == o.k0() && self.k1() == o.k1() && self.k2() == o.k2() } }
+impl Eq for dyn Key3 + '_ {}
+
 /// Every change made to a link, by (from, to, name). Reads go straight to
 /// the map. It also answers "which objects does this one have a link to"
 /// from an index built when first asked and dropped on any change.
@@ -174,13 +193,88 @@ pub struct LinkTable {
 impl LinkTable {
     /// The objects `from` has a `name` link change to, in no set order.
     pub fn targets(&self, from: &str, name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        self.each_target(from, name, |b| out.push(b.to_string()));
+        out
+    }
+
+    /// Calls `f` with each object `from` has a `name` link change to, in no
+    /// set order.
+    pub fn each_target(&self, from: &str, name: &str, mut f: impl FnMut(&str)) {
         let mut idx = self.from.borrow_mut();
         let idx = idx.get_or_insert_with(|| {
             let mut m: HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher> = Default::default();
-            for (a, b, n) in self.map.keys() { m.entry(a.clone()).or_default().push((b.clone(), n.clone())); }
+            for (a, b, n) in self.map.keys() {
+                match m.get_mut(a.as_str()) {
+                    Some(v) => v.push((b.clone(), n.clone())),
+                    None => { m.insert(a.clone(), vec![(b.clone(), n.clone())]); }
+                }
+            }
             m
         });
-        idx.get(from).map(|v| v.iter().filter(|(_, n)| n == name).map(|(b, _)| b.clone()).collect()).unwrap_or_default()
+        if let Some(v) = idx.get(from) {
+            for (b, n) in v { if n == name { f(b); } }
+        }
+    }
+}
+
+/// `link_offsets.entry(key).or_default()`, keeping the index.
+pub struct LinkEntry<'a> { t: &'a mut LinkTable, k: (String, String, String) }
+impl<'a> LinkEntry<'a> {
+    pub fn or_default(self) -> &'a mut Vec<LinkOffset> {
+        let LinkEntry { t, k } = self;
+        if !t.map.contains_key(&k) { t.indexed_add(&k); }
+        t.map.entry(k).or_default()
+    }
+}
+
+// Changes that keep the index (`targets`) up to date instead of dropping
+// it: the index is rebuilt only after a change made through the map itself.
+impl LinkTable {
+    fn indexed_add(&mut self, k: &(String, String, String)) {
+        if let Some(idx) = self.from.get_mut() {
+            match idx.get_mut(k.0.as_str()) {
+                Some(v) => v.push((k.1.clone(), k.2.clone())),
+                None => { idx.insert(k.0.clone(), vec![(k.1.clone(), k.2.clone())]); }
+            }
+        }
+    }
+    fn indexed_remove(&mut self, k: &(String, String, String)) {
+        if let Some(idx) = self.from.get_mut() {
+            if let Some(v) = idx.get_mut(k.0.as_str()) {
+                if let Some(p) = v.iter().position(|(b, n)| *b == k.1 && *n == k.2) { v.swap_remove(p); }
+                if v.is_empty() { idx.remove(k.0.as_str()); }
+            }
+        }
+    }
+    pub fn entry(&mut self, k: (String, String, String)) -> LinkEntry<'_> { LinkEntry { t: self, k } }
+    pub fn insert(&mut self, k: (String, String, String), v: Vec<LinkOffset>) -> Option<Vec<LinkOffset>> {
+        if !self.map.contains_key(&k) { self.indexed_add(&k); }
+        self.map.insert(k, v)
+    }
+    pub fn remove(&mut self, k: &(String, String, String)) -> Option<Vec<LinkOffset>> {
+        let old = self.map.remove(k);
+        if old.is_some() { self.indexed_remove(k); }
+        old
+    }
+    /// Every change, to change in place (the keys stay).
+    pub fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, (String, String, String), Vec<LinkOffset>> { self.map.iter_mut() }
+    pub fn retain(&mut self, mut keep: impl FnMut(&(String, String, String), &mut Vec<LinkOffset>) -> bool) {
+        let mut gone: Vec<(String, String, String)> = Vec::new();
+        let indexed = self.from.get_mut().is_some();
+        let before = self.map.len();
+        // Past a quarter of the changes gone, the index is made again when
+        // next asked for instead.
+        let mut many = false;
+        self.map.retain(|k, v| {
+            let y = keep(k, v);
+            if !y && indexed && !many {
+                if gone.len() * 4 >= before { many = true; gone.clear(); } else { gone.push(k.clone()); }
+            }
+            y
+        });
+        if many { *self.from.get_mut() = None; return; }
+        for k in &gone { self.indexed_remove(k); }
     }
 }
 
