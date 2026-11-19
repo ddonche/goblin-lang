@@ -33,7 +33,7 @@ fn fields_of<'a>(t: &'a TransitionDef, label: &str) -> &'a [(String, goblin_ast:
 /// A value as a field stores it: an object in the store by reference.
 fn entry(vm: &Vm, v: Value) -> Value {
     match &v {
-        Value::Object(o) if !o.uuid.starts_with(crate::vm::OVERLAY_RECORD) && vm.session.object_store.contains_key(&*o.uuid) =>
+        Value::Object(o) if !o.uuid.starts_with(crate::vm::OVERLAY_RECORD) && vm.session.object_store.contains_key(&o.uuid) =>
             Value::Ref(o.uuid.clone()),
         _ => v,
     }

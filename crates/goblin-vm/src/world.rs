@@ -326,6 +326,8 @@ pub struct World {
     /// The overlays of `snaps` the program has read since the last tick,
     /// rebuilt in its session, by (snapshot, place).
     converted: HashMap<(usize, usize), crate::session::OverlayInstance>,
+    /// Snapshots replaced last tick, freed while the regions work next round.
+    dropping: Vec<Arc<Snapshot>>,
     /// Which of `snaps` holds each object, built when first needed after a
     /// tick.
     home_of: Option<HashMap<String, usize>>,
@@ -447,7 +449,7 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
         }
         in_flight_overlays = old.in_flight_overlays;
     }
-    vm.session.world = Some(World { grid_pending: Vec::new(), actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), converted: HashMap::default(), home_of: None });
+    vm.session.world = Some(World { grid_pending: Vec::new(), actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), converted: HashMap::default(), dropping: Vec::new(), home_of: None });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
     let outs = round(vm, &actors, &ids, true, None)?;
@@ -550,7 +552,9 @@ fn tick_regions(vm: &mut Vm, phase: Option<Arc<str>>) -> Result<Value, GoblinErr
     w.in_flight_overlays = in_flight_overlays;
     w.flying = flying.into_iter().map(Arc::new).collect();
     w.counts = outs.iter().map(|o| o.counts.clone()).collect();
-    w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
+    // The last tick's snapshots are freed next round, while the regions work.
+    let old = std::mem::replace(&mut w.snaps, outs.into_iter().map(|o| o.snapshot).collect());
+    w.dropping.extend(old);
     // A retired target is out of the world from now: no region sees it
     // next tick, nor does the program.
     for (ti, uuid) in &retired {
@@ -558,7 +562,8 @@ fn tick_regions(vm: &mut Vm, phase: Option<Arc<str>>) -> Result<Value, GoblinErr
         let objects = s.objects.iter().filter(|(u, _)| u != uuid).cloned().collect();
         let overlays = s.overlays.iter().filter(|x| x.host() != uuid).cloned().collect();
         let links = s.links.iter().filter(|(k, _)| k.0 != *uuid).cloned().collect();
-        w.snaps[*ti] = Arc::new(Snapshot::new(objects, overlays, links));
+        let old = std::mem::replace(&mut w.snaps[*ti], Arc::new(Snapshot::new(objects, overlays, links)));
+        w.dropping.push(old);
     }
     w.pending_overlays.clear();
     w.dropped_overlays.clear();
@@ -726,6 +731,8 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
+    // While they work, free what the last tick left behind.
+    drop(std::mem::take(&mut w.dropping));
     // Every region finishes before anything else happens (the barrier).
     let mut outs = Vec::with_capacity(sent.len());
     let mut failed: Option<GoblinError> = None;
@@ -802,6 +809,26 @@ pub(crate) fn view_overlays_of(s: &mut crate::session::Session, host: Option<&st
 /// `view_overlays_of` for one host: through the snapshots' indexes. An
 /// overlay as it was at the end of the tick, with plain fields, is rebuilt
 /// once a tick and then copied.
+/// A rebuilt overlay field that can be handed out again as a copy: plain
+/// data all the way down, nothing with an object id or session state in it.
+fn cacheable(v: &Value) -> bool {
+    match v {
+        Value::Nil | Value::Unit | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Big(_)
+        | Value::Pct(_) | Value::Char(_) | Value::Str(_) | Value::DateTime(_) | Value::Duration(_) => true,
+        Value::Formatted(v, _) => cacheable(v),
+        Value::Array(a) => a.iter().all(cacheable),
+        Value::Map(m) => m.values().all(cacheable),
+        Value::MapOrd(m) => m.values().all(cacheable),
+        Value::Pair(a, b) => cacheable(a) && cacheable(b),
+        Value::Collection(c) => match &c.layout {
+            crate::value::CollectionLayout::FlatArray(a) => a.iter().all(cacheable),
+            crate::value::CollectionLayout::SmallMap(m) => m.iter().all(|(k, v)| cacheable(k) && cacheable(v)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn view_overlays_on_host(s: &mut crate::session::Session, h: &str, name: Option<&str>) -> Vec<crate::session::OverlayInstance> {
     let wanted = |o: &POverlay| h == o.host() && name.is_none_or(|n| n == o.name());
     let gone = |w: &World, o: &POverlay| !w.view.contains(o.host())
@@ -825,7 +852,7 @@ fn view_overlays_on_host(s: &mut crate::session::Session, h: &str, name: Option<
             }
             if let Some(i) = w.converted.get(&(si, oi)) { out.push(i.clone()); continue; }
             let inst = overlay_from_p(o, &mut fp, s);
-            let plain = inst.extra_fields.values().all(|v| matches!(v, Value::Nil | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)));
+            let plain = inst.extra_fields.values().all(cacheable);
             if plain { s.world.as_mut().unwrap().converted.insert((si, oi), inst.clone()); }
             out.push(inst);
         }
@@ -2185,7 +2212,7 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
         flying: ws.flying.into_iter().map(Arc::new).collect(),
         pending_overlays: ws.pending_overlays, dropped_overlays: ws.dropped_overlays,
         moving: ws.moving, counts: ws.counts, rewritten: ws.rewritten,
-        converted: HashMap::default(), home_of: None,
+        converted: HashMap::default(), dropping: Vec::new(), home_of: None,
     });
     // The program's grid writes from now on go to the regions too.
     vm.session.grid_log = Some(Vec::new());

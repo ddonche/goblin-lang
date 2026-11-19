@@ -876,7 +876,7 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
                 let first = out.insert(o.uuid.to_string());
-                if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
+                if let Some(Value::Object(stored)) = session.object_store.get(&o.uuid) {
                     if first { stack.extend(not_owner(&stored.fields)); }
                 }
                 stack.extend(not_owner(&o.fields));

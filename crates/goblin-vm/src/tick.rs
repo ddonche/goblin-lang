@@ -1755,7 +1755,7 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
 }
 
 /// The class declaration of A's link on `channel` (a `link trade` block that `hosts:` the class).
-fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
+fn link_decl(vm: &Vm, from: &(impl crate::value::IdKey + ?Sized), channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
     use crate::session::Key2;
     let Some(Value::Object(o)) = vm.session.object_store.get(from) else {
         return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into()));
@@ -1782,11 +1782,13 @@ pub(crate) fn link_bounds(vm: &Vm, from: &str, channel: &str) -> Result<(f64, f6
 /// object's own, else its class's), else 0 (kept inside the range).
 pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
     let decl = link_decl(vm, from, channel)?;
-    base_with(vm, &decl, from, to, channel)
+    base_with(vm, &decl, &from.into(), &to.into(), channel)
 }
 
-fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
+fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &crate::value::ObjId, to: &crate::value::ObjId, channel: &str) -> Result<f64, GoblinError> {
     use crate::session::Key2;
+    let (from_id, to_id) = (from, to);
+    let (from, to): (&str, &str) = (from, to);
     // The formula's own definition is held (not a copy of the formula), so
     // its compiled form is found by its place.
     let own = vm.session.object_link_defs.get(&(from, channel) as &dyn Key2).cloned();
@@ -1797,7 +1799,7 @@ fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &str, to: &str, 
         // it, so a first `offset` gives the number written.
         None => { let (lo, hi) = decl_bounds(decl); return Ok(0f64.clamp(lo, hi)) }
     };
-    match vm.eval_tick_expr(formula, vec![("self", Value::Ref(from.into())), ("target", Value::Ref(to.into()))]) {
+    match vm.eval_tick_expr(formula, vec![("self", Value::Ref(from_id.clone())), ("target", Value::Ref(to_id.clone()))]) {
         Ok(Value::Int(i)) => Ok(i as f64),
         Ok(Value::Float(f)) => Ok(f),
         Ok(Value::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
@@ -1811,10 +1813,16 @@ fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &str, to: &str, 
 /// the pair, kept inside the declared range. A `bool` link gives true or
 /// false. Links go one way: B's link to A is its own.
 pub(crate) fn link_value(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<Value, GoblinError> {
+    link_value_of(vm, &from.into(), &to.into(), channel)
+}
+
+/// `link_value`, with both ends given by id.
+pub(crate) fn link_value_of(vm: &mut Vm, from_id: &crate::value::ObjId, to_id: &crate::value::ObjId, channel: &str) -> Result<Value, GoblinError> {
     use crate::session::Key3;
-    let decl = link_decl(vm, from, channel)?;
+    let (from, to): (&str, &str) = (from_id, to_id);
+    let decl = link_decl(vm, from_id, channel)?;
     let (lo, hi) = decl_bounds(&decl);
-    let base = base_with(vm, &decl, from, to, channel)?;
+    let base = base_with(vm, &decl, from_id, to_id, channel)?;
     let changes: f64 = vm.session.link_offsets.get(&(from, to, channel) as &dyn Key3)
         .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
     let v = (base + changes).clamp(lo, hi);

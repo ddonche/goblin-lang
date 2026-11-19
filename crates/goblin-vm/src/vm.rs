@@ -3682,7 +3682,7 @@ impl Vm {
     fn keep_entries(&self, vals: &mut [Value]) {
         for v in vals.iter_mut() {
             if let Value::Object(o) = v {
-                if !o.uuid.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(&*o.uuid) {
+                if !o.uuid.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(&o.uuid) {
                     *v = Value::Ref(o.uuid.clone());
                 }
             }
@@ -3734,13 +3734,13 @@ impl Vm {
         for a in args.iter_mut() {
             if let Value::Ref(u) = a {
                 if !u.starts_with(OVERLAY_RECORD) {
-                    *a = self.session.object_store.get(&**u).cloned().unwrap_or(Value::Nil);
+                    *a = self.session.object_store.get(&*u).cloned().unwrap_or(Value::Nil);
                 }
                 continue;
             }
             if let Value::Object(o) = a {
                 if o.uuid.starts_with(OVERLAY_RECORD) { continue; }
-                if let Some(Value::Object(now)) = self.session.object_store.get(&*o.uuid) {
+                if let Some(Value::Object(now)) = self.session.object_store.get(&o.uuid) {
                     if !Rc::ptr_eq(&now.fields, &o.fields) { *a = Value::Object(now.clone()); }
                 }
             }
@@ -6452,7 +6452,7 @@ impl Vm {
                 Value::Ref(u) => if let Some(Value::Object(_)) = store.get(u) {
                     return Ok(Value::Ref(u.clone()));
                 },
-                Value::Object(o) => if let Some(Value::Object(stored)) = store.get(&*o.uuid) {
+                Value::Object(o) => if let Some(Value::Object(stored)) = store.get(&o.uuid) {
                     if stored.class_name == o.class_name { return Ok(Value::Ref(o.uuid.clone())); }
                 },
                 _ => {}
@@ -6465,7 +6465,7 @@ impl Vm {
         match v {
             // Same class as the stored object: an overlay record carries its
             // host's uuid but is not the host.
-            Value::Object(o) if matches!(self.session.object_store.get(&*o.uuid),
+            Value::Object(o) if matches!(self.session.object_store.get(&o.uuid),
                 Some(Value::Object(stored)) if stored.class_name == o.class_name) => Value::Ref(o.uuid.clone()),
             other => other,
         }
@@ -7246,9 +7246,9 @@ impl Vm {
             let Value::Str(ch) = &args[2] else {
                 return Err(GoblinError::type_error("str", args[2].type_name(), "link_score"));
             };
-            let from = self.link_end(&args[0], "the first object")?;
-            let to = self.link_end(&args[1], "the second object")?;
-            return crate::tick::link_value(self, &from, &to, ch.as_ref());
+            let from = self.link_end_id(&args[0], "the first object")?;
+            let to = self.link_end_id(&args[1], "the second object")?;
+            return crate::tick::link_value_of(self, &from, &to, ch.as_ref());
         }
         if args.len() < 3 {
             return Err(GoblinError::Runtime("R1225: link-not-object: write :link_score(a, b, \"trade\") with the two objects and the link's name".into()));
@@ -7267,9 +7267,19 @@ impl Vm {
         let (Some(a), Some(b)) = (self.lookup_var_ref(a_var, direct), self.lookup_var_ref(b_var, direct)) else {
             return Ok(Value::Nil);
         };
-        let from = self.link_end(&a, a_var)?;
-        let to = self.link_end(&b, b_var)?;
-        crate::tick::link_value(self, &from, &to, channel)
+        let from = self.link_end_id(&a, a_var)?;
+        let to = self.link_end_id(&b, b_var)?;
+        crate::tick::link_value_of(self, &from, &to, channel)
+    }
+
+    /// `link_end`, as the id itself.
+    fn link_end_id(&self, v: &Value, name: &str) -> Result<crate::value::ObjId, GoblinError> {
+        match v {
+            Value::Ref(u) => Ok(u.clone()),
+            Value::Object(o) => Ok(o.uuid.clone()),
+            other => Err(GoblinError::Runtime(format!(
+                "R1225: link-not-object: `{name}` in a link holds {}, not an object", other.type_name()))),
+        }
     }
 
     /// The object at one end of a link, by id.
@@ -7715,7 +7725,7 @@ pub(crate) fn set_overlay_field(session: &crate::session::Session, inst: &mut cr
 
 fn entry_of(session: &crate::session::Session, v: Value) -> Value {
     match &v {
-        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) && session.object_store.contains_key(&*o.uuid) =>
+        Value::Object(o) if !o.uuid.starts_with(OVERLAY_RECORD) && session.object_store.contains_key(&o.uuid) =>
             Value::Ref(o.uuid.clone()),
         _ => v,
     }

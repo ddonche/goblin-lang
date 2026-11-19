@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "goblin-cli"
-version = "0.51.66"
+version = "0.51.67"
 dependencies = [
  "anyhow",
  "clap",

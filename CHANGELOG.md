@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.67 — 2026-11-19
+
+- Faster DES on regions, with the same results. The capstone, 100 years at seed 42 (0.51.66 → 0.51.67, run one after the other on the same machine; peak memory is the most the process held): 4 regions on 4 threads 48.4 s → 43.5 s (472 → 468 MB); 4 regions on 8 threads 45.5 s → 42.1 s (495 → 476 MB); 4 regions on one thread 100.0 s → 92.2 s (411 → 410 MB); without regions 50.1 s → 51.6 s (136 → 133 MB), the same within this machine's noise. Every sim's output and event log is the same as before.
+  - Reading a link and passing an object to a formula's action look the object up by its id, not by its text, which went through the thread's table of ids on every read.
+  - Copying values between regions and the program uses a faster hash for the strings and shared values it remembers.
+  - The program running a world keeps a region's overlay it rebuilt for the rest of the tick when its fields hold lists or maps too, not only plain values.
+  - The snapshots a tick replaces are freed while the regions run the next round, instead of while every region waits.
+
 ## 0.51.66 — 2026-11-19
 
 - Faster DES, with the same results. The capstone, 100 years at seed 42, on 4 cores: without regions 53.5 s → 42.7 s; 4 regions on 4 threads 38.0 s → 33.5 s; 4 regions on one thread 94.3 s → 76.4 s. Every sim's output and event log is the same as before.
