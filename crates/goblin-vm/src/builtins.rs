@@ -129,6 +129,36 @@ pub(crate) fn is_math(id: BuiltinId) -> bool {
         | BuiltinId::Clamp | BuiltinId::Pow)
 }
 
+/// `:min`, `:max`, `:abs` and `:clamp` on whole and decimal numbers, worked
+/// out as their arms in `dispatch` do, without building their argument list
+/// again. None for anything else (dispatch then gives the answer or error).
+pub(crate) fn quick_math(id: BuiltinId, args: &[Value]) -> Option<Value> {
+    let f = |v: &Value| match v { Value::Int(n) => Some(*n as f64), Value::Float(x) => Some(*x), _ => None };
+    let all_int = || args.iter().all(|v| matches!(v, Value::Int(_)));
+    match id {
+        BuiltinId::Min | BuiltinId::Max if args.len() >= 2 => {
+            let mut m = f(&args[0])?;
+            for v in &args[1..] {
+                let x = f(v)?;
+                if (id == BuiltinId::Min && x < m) || (id == BuiltinId::Max && x > m) { m = x; }
+            }
+            Some(if all_int() { Value::Int(m as i64) } else { Value::Float(m) })
+        }
+        BuiltinId::Abs if args.len() == 1 => match &args[0] {
+            Value::Int(n) => Some(Value::Int(n.abs())),
+            Value::Float(x) => Some(Value::Float(x.abs())),
+            _ => None,
+        },
+        BuiltinId::Clamp if args.len() == 3 => {
+            let (x, lo, hi) = (f(&args[0])?, f(&args[1])?, f(&args[2])?);
+            if lo > hi { return None; }
+            let y = if x < lo { lo } else if x > hi { hi } else { x };
+            Some(if all_int() { Value::Int(y as i64) } else { Value::Float(y) })
+        }
+        _ => None,
+    }
+}
+
 /// Builtins whose arms are written against the legacy `Value::Map` /
 /// `Value::Array` shapes and only read their arguments (config / option maps,
 /// small source arrays). Their collection arguments are rewritten to legacy

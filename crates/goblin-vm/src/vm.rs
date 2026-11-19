@@ -6028,8 +6028,25 @@ impl Vm {
                 }
                 Opcode::GetMember(idx) => {
                     let top = st.pop()?;
-                    // `formula_runs_direct` ruled out names of member builtins.
+                    // `formula_runs_direct` ruled out names of member builtins,
+                    // except `x.nix?` (`is_nix`), worked out as `:is_nix` does.
                     let Value::Str(name) = f.constants.get(idx as usize)? else { return None };
+                    if AsRef::<str>::as_ref(name) == "is_nix" {
+                        let nix = match &top {
+                            Fv::Val(Value::Nil) => true,
+                            Fv::Val(Value::Bool(_) | Value::Int(_) | Value::Float(_)) => false,
+                            Fv::Val(Value::Str(s)) => s.is_empty() || s.chars().all(|c| c.is_whitespace()),
+                            Fv::Val(Value::Ref(u)) if self.session.object_store.contains_key(u) => false,
+                            Fv::Arg(slot, _) => match value_at(*slot)? {
+                                Value::Ref(u) if self.session.object_store.contains_key(u) => false,
+                                Value::Object(_) => false,
+                                _ => return None,
+                            },
+                            _ => return None,
+                        };
+                        st.push(Fv::Val(Value::Bool(nix)));
+                        continue;
+                    }
                     let obj = match &top {
                         Fv::Arg(slot, pos) => match value_at(*slot)? {
                             Value::Object(o) => &**o,
@@ -6207,7 +6224,10 @@ impl Vm {
                     for v in st.drain(start..) {
                         match v { Fv::Val(v @ (Value::Int(_) | Value::Float(_))) => nums.push(v), _ => return None }
                     }
-                    let r = crate::builtins::call_builtin(id, nums, &mut self.session).ok()?;
+                    let r = match crate::builtins::quick_math(id, &nums) {
+                        Some(r) => r,
+                        None => crate::builtins::call_builtin(id, nums, &mut self.session).ok()?,
+                    };
                     if !matches!(r, Value::Int(_) | Value::Float(_)) { return None; }
                     st.push(Fv::Val(r));
                 }
@@ -6808,6 +6828,8 @@ impl Vm {
                 let t = self.session.get_global(*g as usize)?.clone();
                 match &self.session.get_stash(&t).ok()?.value {
                     Value::Frozen(_) => return None,
+                    // An action is called where it lives (`run_formula_in`).
+                    Value::Function(_) | Value::Closure(_) => {}
                     v => env.globals.push((*g, v.clone_fast())),
                 }
             }
@@ -7814,7 +7836,7 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
     // `obj >> name` where name is also a member builtin (`size`, ...) is
     // left to the VM, which knows which one wins.
     let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
-        Some(Value::Str(n)) if member_builtin(n).is_none());
+        Some(Value::Str(n)) if member_builtin(n).is_none() || AsRef::<str>::as_ref(n) == "is_nix");
     f.locals == f.params && f.upvalue_descriptors.is_empty() && f.bytecode.iter().all(|op| match op {
         Opcode::GetMember(idx) => plain_member(idx),
         op => matches!(op,
@@ -7835,7 +7857,7 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
 /// formula's operations, plus reading captured variables and globals.
 fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
     let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
-        Some(Value::Str(n)) if member_builtin(n).is_none());
+        Some(Value::Str(n)) if member_builtin(n).is_none() || AsRef::<str>::as_ref(n) == "is_nix");
     f.locals == f.params && f.bytecode.iter().all(|op| match op {
         Opcode::GetMember(idx) => plain_member(idx),
         op => matches!(op,
@@ -7844,13 +7866,34 @@ fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
         | Opcode::Pop | Opcode::Dup
         | Opcode::Add | Opcode::Sub | Opcode::Mul | Opcode::Div | Opcode::Neg
         | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne | Opcode::Not
-        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return),
+        | Opcode::Jump(_) | Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) | Opcode::Return
+        // As in a DES formula: a link read, a math builtin, an action that
+        // only reads (checked when it is loaded; any other hands this object
+        // to the VM).
+        | Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, _) | Opcode::Call(_))
+        || matches!(op, Opcode::CallBuiltin(id, _) if crate::builtins::is_math(*id)),
     })
 }
 
 /// The builtin a `x >> name` member access calls, if `name` is one; those
 /// names win over an object's fields of the same name.
 pub(crate) fn member_builtin(name: &str) -> Option<crate::value::BuiltinId> {
+    // Asked on every field read: each name's answer is kept, so a read
+    // costs one hash lookup instead of comparing the name with every
+    // member below in turn.
+    thread_local! {
+        static KNOWN: std::cell::RefCell<rustc_hash::FxHashMap<Box<str>, Option<crate::value::BuiltinId>>> = std::cell::RefCell::new(Default::default());
+    }
+    KNOWN.with(|k| {
+        if let Some(id) = k.borrow().get(name) { return *id; }
+        let id = member_builtin_by_name(name);
+        let mut k = k.borrow_mut();
+        if k.len() < 4096 { k.insert(name.into(), id); }
+        id
+    })
+}
+
+fn member_builtin_by_name(name: &str) -> Option<crate::value::BuiltinId> {
     use crate::value::BuiltinId;
     match name {
         "str" | "string"   => Some(BuiltinId::ToStr),

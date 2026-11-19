@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.68 — 2026-11-19
+
+- Faster `:objects` conditions and DES formulas, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.67 on the same machine (time; peak memory): without regions 50.8 s → 43.9 s (138 → 141 MB); 4 regions on one thread 91.4 s → 84.1 s (398 → 393 MB); 4 regions on 4 threads 41.8 s → 40.1 s (466 → 475 MB); 4 regions on 8 threads 40.9 s → 39.2 s (471 → 474 MB). Every sim's output and event log is the same as before.
+  - An `:objects(Class, ...)` condition that reads a link (`:link_score`), uses `:min`, `:max`, `:abs`, `:clamp` or another math builtin, calls an action that only reads, or asks `x.nix?` is now worked out on each object directly, as a plain one already was, instead of through a full call per object. A condition such as `:min(it >> x, 5) >= 3 and it >> owner == p` takes half as long.
+  - `x.nix?` in a DES formula or condition no longer hands the formula to the full VM.
+  - `:min`, `:max`, `:abs` and `:clamp` on numbers in a formula are worked out without building their argument list again.
+  - Whether a name after `>>` or `.` is a builtin member (`len`, `nix?`, ...) is looked up once per name, not checked against every member name on each read.
+
 ## 0.51.67 — 2026-11-19
 
 - Faster DES on regions, with the same results. The capstone, 100 years at seed 42 (0.51.66 → 0.51.67, run one after the other on the same machine; peak memory is the most the process held): 4 regions on 4 threads 48.4 s → 43.5 s (472 → 468 MB); 4 regions on 8 threads 45.5 s → 42.1 s (495 → 476 MB); 4 regions on one thread 100.0 s → 92.2 s (411 → 410 MB); without regions 50.1 s → 51.6 s (136 → 133 MB), the same within this machine's noise. Every sim's output and event log is the same as before.
