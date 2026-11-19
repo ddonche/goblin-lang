@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.65 — 2026-11-19
+
+- Each new actor gets dice of its own. Before, an actor's dice were seeded with the program's next roll, so each actor rolled the same numbers as the actor started before it, one roll behind: two regions' herds rose and fell together. Results stay the same from run to run and on any number of threads, but programs that start actors or regions roll different numbers than before (the capstone's `expected_history.txt` and `world_guide_on_regions` were recorded again).
+
 ## 0.51.64 — 2026-11-18
 
 - `:delete_object!(x)` writes an `erase` line to the event log, as an erase transition does, so the object's timeline shows how it ended. Before, only what it destroyed through `contents: destroy` got a line.

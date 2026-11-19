@@ -1032,7 +1032,9 @@ impl Vm {
             handler: p_handler,
             stop_when: p_stop,
             idle: policy.idle,
-            seed: self.session.next_u128(),
+            // Mixed, so one actor's dice never repeat another's a draw
+            // later (the next actor's seed is this program's next draw).
+            seed: crate::swarm::task_seed(self.session.next_u128(), 0),
             worker_id: self.session.worker_id,
             restart: policy.restart,
         })));
