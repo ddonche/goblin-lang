@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.69 — 2026-11-19
+
+- The conformance case `des_unrelated_class_mutation` is marked a known interpreter gap: the interpreter has no mutation into an unrelated class, and it is being retired. The conformance suite passes on both engines.
+
 ## 0.51.68 — 2026-11-19
 
 - Faster `:objects` conditions and DES formulas, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.67 on the same machine (time; peak memory): without regions 50.8 s → 43.9 s (138 → 141 MB); 4 regions on one thread 91.4 s → 84.1 s (398 → 393 MB); 4 regions on 4 threads 41.8 s → 40.1 s (466 → 475 MB); 4 regions on 8 threads 40.9 s → 39.2 s (471 → 474 MB). Every sim's output and event log is the same as before.
