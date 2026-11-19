@@ -36,6 +36,7 @@ type Classes = std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDe
 pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
     let view = phase_view(vm, name)?;
     let base = std::mem::replace(&mut vm.session.classes, view);
+    let outer = vm.session.phase_base.replace(base.clone());
     let own = std::mem::take(&mut vm.session.object_decisions);
     vm.session.des_ticks += 1;
     vm.session.phase = Some(name.into());
@@ -43,6 +44,7 @@ pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
     vm.session.phase = None;
     vm.session.des_ticks -= 1;
     vm.session.classes = base;
+    vm.session.phase_base = outer;
     vm.session.object_decisions = own;
     des_flush_pending(vm);
     r
@@ -96,8 +98,30 @@ fn phase_view(vm: &mut Vm, name: &str) -> Result<Classes, GoblinError> {
         if std::rc::Rc::ptr_eq(from, &base) { return Ok(view.clone()); }
     }
     let view: std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher> = base.iter().map(|(k, c)| {
-        let mut v = c.clone();
-        v.judge = None;
+        // Its phase blocks and actions stay out: the view holds the phase it
+        // runs (below), and copying every class's code into every phase's
+        // view kept it in each session once per phase. The actions (compiled
+        // when the class was made) are read from the classes themselves
+        // (`Session::phase_base`).
+        let mut v = goblin_ast::ClassDecl {
+            name: c.name.clone(),
+            fields: c.fields.clone(),
+            actions: Vec::new(),
+            decision: None,
+            judge: None,
+            transitions: Vec::new(),
+            capacity: c.capacity.clone(),
+            destroy_contents: c.destroy_contents,
+            every: Vec::new(),
+            decisions: Vec::new(),
+            on_erase: c.on_erase.clone(),
+            one_of: Vec::new(),
+            order_by: c.order_by.clone(),
+            decide: None,
+            phases: Vec::new(),
+            uses: c.uses.clone(),
+            span: c.span.clone(),
+        };
         match c.phases.iter().find(|p| p.name == name) {
             Some(p) => {
                 v.transitions = p.transitions.clone();
@@ -1424,6 +1448,10 @@ fn judge_reads_only(vm: &mut Vm, class: &goblin_ast::ClassDecl, action: &str) ->
     let calls = match vm.judge_calls.get(&key) {
         Some(c) => c.clone(),
         None => {
+            // During a phase the class table is the phase's view, which has
+            // no actions: they are in the classes it was made from.
+            let base = vm.session.phase_base.clone();
+            let class = base.as_deref().and_then(|b| b.get(&class.name)).unwrap_or(class);
             let Some(a) = class.actions.iter().find(|a| a.name == action) else { return false };
             let mut calls = Some(Vec::new());
             let body: &[goblin_ast::Stmt] = match &a.body { goblin_ast::ActionBody::Block(b) => b, _ => &[] };

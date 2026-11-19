@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.70 — 2026-11-19
+
+- Less memory for DES phases, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.69 on the same machine (time; peak memory): without regions 41.2 s → 40.4 s (131 → 116 MB); 4 regions on one thread 75.2 s → 77.4 s (400 → 310 MB); 4 regions on 4 threads 36.4 s → 35.3 s (471 → 372 MB); 4 regions on 8 threads 35.5 s → 36.0 s (462 → 374 MB). The times are the same within this machine's noise. Every sim's output and event log is the same as before.
+  - Each phase of a `:tick()` block no longer keeps its own copy of every class's code. A phase's view of the classes held all of every class's actions and phase blocks, once per phase, in the program and in every region.
+  - `==` and `!=` on two objects, or on nil, true/false and numbers, and `+`, `-`, `*`, `/`, `<`, `<=`, `>`, `>=` on decimals, are done in the VM's fast loop instead of its general step.
+
 ## 0.51.69 — 2026-11-19
 
 - The conformance case `des_unrelated_class_mutation` is marked a known interpreter gap: the interpreter has no mutation into an unrelated class, and it is being retired. The conformance suite passes on both engines.

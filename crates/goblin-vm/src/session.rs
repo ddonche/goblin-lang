@@ -447,6 +447,9 @@ pub struct Session {
     /// Each phase's view of the classes (`crate::tick::run_phase`), with
     /// the classes it was made from.
     pub phase_views: HashMap<String, (Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>, Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>)>,
+    /// While a phase runs: the classes its view (now `classes`) was made
+    /// from, which hold what the view leaves out (their actions).
+    pub phase_base: Option<Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// What `:metrics()` reports: objects and overlays made, tick time.
     pub des_metrics: crate::metrics::DesMetrics,
     /// In a region: its objects that transitioned this tick (see
@@ -719,6 +722,7 @@ impl Session {
             compiled_methods: Default::default(),
             des_ticks: 0,
             phase_views: Default::default(),
+            phase_base: None,
             phase: None,
             event_log: None,
             des_metrics: Default::default(),

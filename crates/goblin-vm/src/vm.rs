@@ -500,7 +500,23 @@ impl Vm {
             }
             Opcode::GetMember(idx) => return self.get_plain_field(idx),
             Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
-                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let Some((a, b)) = self.top2_ints() else {
+                    if matches!(op, Opcode::Eq | Opcode::Ne) { return self.fast_eq(matches!(op, Opcode::Eq)); }
+                    let Some((x, y)) = self.top2_floats() else { return Step::Slow };
+                    // As `op_add`, `arith_op` and `compare_values` do it (NaN compares equal).
+                    let c = || x.partial_cmp(&y).map_or(0, |o| o as i32);
+                    let r = match op {
+                        Opcode::Add => Value::Float(x + y),
+                        Opcode::Sub => Value::Float(x - y),
+                        Opcode::Lt => Value::Bool(c() < 0),
+                        Opcode::Le => Value::Bool(c() <= 0),
+                        Opcode::Gt => Value::Bool(c() > 0),
+                        _ => Value::Bool(c() >= 0),
+                    };
+                    self.stack.pop();
+                    *self.stack.last_mut().unwrap() = Operand::Val(r);
+                    return Step::Done;
+                };
                 let r = match op {
                     Opcode::Add => Value::Int(a.wrapping_add(b)),
                     Opcode::Sub => match a.checked_sub(b) { Some(r) => Value::Int(r), None => return Step::Slow },
@@ -515,7 +531,15 @@ impl Vm {
                 self.set_top_plain(r);
             }
             Opcode::Mul | Opcode::MulInt | Opcode::Rem | Opcode::Div => {
-                let Some((a, b)) = self.top2_ints() else { return Step::Slow };
+                let Some((a, b)) = self.top2_ints() else {
+                    // A decimal `*` or `/`, as `arith_op` and `num_div` do it.
+                    if !matches!(op, Opcode::Mul | Opcode::Div) { return Step::Slow; }
+                    let Some((x, y)) = self.top2_floats() else { return Step::Slow };
+                    let r = if matches!(op, Opcode::Mul) { x * y } else if y == 0.0 { return Step::Slow } else { x / y };
+                    self.stack.pop();
+                    *self.stack.last_mut().unwrap() = Operand::Val(Value::Float(r));
+                    return Step::Done;
+                };
                 let r = match op {
                     Opcode::Mul => match a.checked_mul(b) { Some(r) => Value::Int(r), None => return Step::Slow },
                     Opcode::MulInt => Value::Int(a.wrapping_mul(b)),
@@ -3626,6 +3650,57 @@ impl Vm {
                 Ok(stash) => if let Value::Int(n) = stash.value { Some(n) } else { None },
                 Err(_) => None,
             },
+            _ => None,
+        }
+    }
+
+    /// `==` / `!=` as `Opcode::Eq` / `Ne` in `execute_op` work them out, for
+    /// two objects (the same one or not) and for two plain values (nil,
+    /// bool, number); anything else is Slow.
+    #[inline]
+    fn fast_eq(&mut self, eq: bool) -> Step {
+        let same = match self.same_object_top2() {
+            Some(same) => same,
+            None => {
+                let n = self.stack.len();
+                if n < 2 { return Step::Slow; }
+                let plain = |op: &Operand| -> Option<Value> {
+                    let v = match op {
+                        Operand::Val(v) => v,
+                        Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
+                    };
+                    match v {
+                        Value::Nil | Value::Bool(_) | Value::Int(_) | Value::Float(_) => Some(v.clone()),
+                        _ => None,
+                    }
+                };
+                let (Some(a), Some(b)) = (plain(&self.stack[n - 2]), plain(&self.stack[n - 1])) else { return Step::Slow };
+                values_equal(&a, &b)
+            }
+        };
+        self.stack.pop();
+        *self.stack.last_mut().unwrap() = Operand::Val(Value::Bool(if eq { same } else { !same }));
+        Step::Done
+    }
+
+    /// Both top operands as numbers when at least one is a decimal (two
+    /// whole numbers take `top2_ints`), read as `arith_op`, `op_add`,
+    /// `num_div` and `compare_values` read them.
+    #[inline]
+    fn top2_floats(&self) -> Option<(f64, f64)> {
+        let n = self.stack.len();
+        if n < 2 { return None; }
+        let num = |op: &Operand| -> Option<Value> {
+            let v = match op {
+                Operand::Val(v) => v,
+                Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
+            };
+            match v { Value::Int(_) | Value::Float(_) => Some(v.clone()), _ => None }
+        };
+        match (num(&self.stack[n - 2])?, num(&self.stack[n - 1])?) {
+            (Value::Float(a), Value::Float(b)) => Some((a, b)),
+            (Value::Int(a), Value::Float(b)) => Some((a as f64, b)),
+            (Value::Float(a), Value::Int(b)) => Some((a, b as f64)),
             _ => None,
         }
     }
