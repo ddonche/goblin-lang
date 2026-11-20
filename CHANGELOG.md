@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.71 — 2026-11-20
+
+- Faster and smaller, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.70 on the same machine (time; peak memory): without regions 36.7 s → 32.8 s (115 → 100 MB); 4 regions on one thread 67.7 s → 64.2 s (317 → 271 MB); 4 regions on 4 threads 30.7 s → 29.5 s (377 → 347 MB); 4 regions on 8 threads 31.0 s → 29.7 s (382 → 347 MB). Every sim's output and event log is the same as before.
+  - When an action returns, its own variables are freed at once, unless a closure captured one. Before, they stayed until the next collection.
+  - Collections start once 8,192 variables are held instead of 65,536 (or at twice what was still in use after the last one), so dead values are let go sooner. With the variables of finished calls already gone, collecting this often costs no time.
+
 ## 0.51.70 — 2026-11-19
 
 - Less memory for DES phases, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.69 on the same machine (time; peak memory): without regions 41.2 s → 40.4 s (131 → 116 MB); 4 regions on one thread 75.2 s → 77.4 s (400 → 310 MB); 4 regions on 4 threads 36.4 s → 35.3 s (471 → 372 MB); 4 regions on 8 threads 35.5 s → 36.0 s (462 → 374 MB). The times are the same within this machine's noise. Every sim's output and event log is the same as before.

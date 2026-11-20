@@ -1898,6 +1898,10 @@ impl Vm {
                 let mut frame = self.call_stack.pop().unwrap();
                 let _ = frame.self_tether;
                 if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
+                // The call's own variables that nothing else holds (no
+                // closure captured them) are gone with it: free their slots
+                // now instead of leaving them for the next collection.
+                self.session.free_sole(&frame.locals);
                 if self.spare_locals.len() < 64 {
                     let mut l = std::mem::take(&mut frame.locals);
                     l.clear();
