@@ -468,8 +468,14 @@ impl Vm {
                 let t = t.clone();
                 self.stack.push(Operand::Ref(t));
             }
-            Opcode::StoreLocal(slot) => return done!(self.store_local_op(slot, true)),
-            Opcode::BindLocal(slot) => return done!(self.store_local_op(slot, false)),
+            Opcode::StoreLocal(slot) | Opcode::BindLocal(slot) => {
+                // A number, bool or nil (or a variable holding one) into a
+                // variable only this call holds: overwritten in place, as
+                // `store_local_op` does it, without its other checks.
+                let stored = match self.plain_top() { Some(v) => self.store_plain_local(slot, v), None => false };
+                if stored { self.pop_plain(); }
+                else { return done!(self.store_local_op(slot, matches!(op, Opcode::StoreLocal(_)))); }
+            }
             Opcode::Pop => {
                 // A reference that can't be read (handed to an actor) errors the slow way.
                 match self.stack.last() {
@@ -571,6 +577,23 @@ impl Vm {
                 let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
                 if matches!(stash.value, Value::Object(_) | Value::Ref(_) | Value::Frozen(_)) { return Step::Slow; }
                 if self.stack.is_empty() { return Step::Slow; }
+                // The store into the same variable that always follows: done
+                // here when it is a plain overwrite (see `StoreLocal`).
+                let frame = self.call_stack.last().unwrap();
+                if matches!(frame.func.bytecode.get(frame.ip), Some(Opcode::StoreLocal(s)) if *s == slot) {
+                    if let Some(v) = self.plain_top() {
+                        if self.store_plain_local(slot, v) {
+                            self.pop_plain();
+                            self.call_stack.last_mut().unwrap().ip += 1;
+                        }
+                    }
+                }
+            }
+            Opcode::RepeatIdx(idx) => {
+                let frame = self.call_stack.last().unwrap();
+                let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { return Step::Slow };
+                let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
+                if !self.store_plain_local(slot, Value::Int(n)) { return Step::Slow; }
             }
             Opcode::AppendLocal(slot) => {
                 // `x += n` on ints: the sum `op_add` would push.
@@ -1313,6 +1336,7 @@ impl Vm {
                 let frame = self.call_stack.last().unwrap();
                 let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { unreachable!("RepeatIdx without its data") };
                 let (slot, n) = (r.idx, frame.loops[r.id as usize].counter);
+                if self.store_plain_local(slot, Value::Int(n)) { return Ok(()); }
                 self.stack.push(Operand::Val(Value::Int(n)));
                 return self.store_local_op(slot, false);
             }
@@ -3912,6 +3936,46 @@ impl Vm {
 
     /// `StoreLocal` (`assign`: an update of the variable) and `BindLocal`
     /// (a new binding: a declaration or a loop's name for this pass).
+    /// Writes the plain value `v` (a number, bool or nil) into local `slot`
+    /// when `store_local_op` would only overwrite the variable's value: it
+    /// exists, has no type lock, only this call holds it (no closure, no
+    /// pending read on the stack, which includes the value being stored).
+    /// False (nothing changed) otherwise.
+    /// The top operand's value when it is a number, bool or nil (or a
+    /// variable holding one), copied; None otherwise.
+    #[inline(always)]
+    fn plain_top(&self) -> Option<Value> {
+        match self.stack.last()? {
+            Operand::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => Some(v.clone_fast()),
+            Operand::Ref(u) => match self.session.arena.get(u.addr.slot as usize) {
+                Some(st) if st.generation == u.addr.generation => match st.value {
+                    Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => Some(st.value.clone_fast()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    fn store_plain_local(&mut self, slot: u16, v: Value) -> bool {
+        let frame = self.call_stack.last().unwrap();
+        if frame.locks.is_some() { return false; }
+        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let addr = t.addr;
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
+        match self.session.arena.get_mut(addr.slot as usize) {
+            Some(st) if st.generation == addr.generation && st.tether_count == 1 => {
+                let old = std::mem::replace(&mut st.value, v);
+                // Plain values own nothing: skip their drop call.
+                if matches!(old, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) { std::mem::forget(old) } else { drop(old) }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn store_local_op(&mut self, slot: u16, assign: bool) -> Result<(), GoblinError> {
                 // Storing a variable's own stash back into it (after an
                 // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
@@ -4083,8 +4147,10 @@ impl Vm {
             }
             _ => {}
         }
-        self.stack.push(Operand::Val(Value::Int(counter)));
-        self.store_local_op(idx_slot, false)?;
+        if !self.store_plain_local(idx_slot, Value::Int(counter)) {
+            self.stack.push(Operand::Val(Value::Int(counter)));
+            self.store_local_op(idx_slot, false)?;
+        }
         self.call_stack.last_mut().unwrap().ip += cond_len;
         Ok(())
     }

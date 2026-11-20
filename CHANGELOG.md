@@ -3,6 +3,16 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.73 — 2026-11-20
+
+- Storing a value in a variable and running a loop take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.72 → 0.51.73: empty loop 1,097 → 878; arithmetic 1,870 → 1,605; local copies 2,347 → 1,665; decimals 1,942 → 1,670; field write 3,285 → 2,902; field read 1,691 → 1,419; call 2,890 → 2,623. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.72 (time; peak memory): without regions 33.6 s → 34.0 s (97 → 101 MB); 4 regions on one thread 64.4 s → 63.6 s (270 → 271 MB); 4 regions on 4 threads 30.6 s → 30.7 s (344 → 353 MB); 4 regions on 8 threads 30.0 s → 31.3 s (345 → 346 MB), within this machine's noise. Histories are identical.
+  - A number, bool or nil stored in a variable nothing else refers to replaces the old value in place, without the general store's checks.
+  - The check before `x |= ...` and the store after it run as one step.
+  - A loop's pass counter is stored the same way.
+  - `and` / `or` between two comparisons no longer turns its result into a bool a second time.
+  - An `if` (or `judge`) used as a statement no longer makes a value and throws it away.
+  - `x |= ...` and `p >> field |= ...` used as statements no longer copy the stored value and throw the copy away.
+
 ## 0.51.72 — 2026-11-20
 
 - Calls and DES formulas do less work per step, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.71 on the same machine (time; peak memory): without regions 33.3 s → 33.4 s (97 → 100 MB); 4 regions on one thread 66.6 s → 64.5 s (273 → 270 MB); 4 regions on 4 threads 29.9 s → 29.5 s (357 → 347 MB); 4 regions on 8 threads 30.4 s → 29.5 s (351 → 356 MB). The gains are small, 1 to 3%, and within this machine's noise without regions. Every sim's output and event log is the same as before.

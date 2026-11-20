@@ -36,6 +36,10 @@ struct FunctionScope {
     /// Position of a `LoadNil` that only gives a statement-like call its
     /// value; a statement that discards it drops the pair instead.
     unused_nil: Option<usize>,
+    /// Position of the `Dup` in a `Dup` + store that gives an assignment
+    /// its value; a statement that discards the value drops the `Dup`
+    /// instead of popping after the store.
+    dup_store: Option<usize>,
     /// Data for opcodes that carry strings or AST.
     op_data: Vec<crate::opcode::OpData>,
     /// Constant pool.
@@ -79,6 +83,7 @@ impl FunctionScope {
             upvalues: Vec::new(),
             bytecode: Vec::new(),
             unused_nil: None,
+            dup_store: None,
             op_data: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u16,
@@ -190,6 +195,7 @@ impl FunctionScope {
     fn patch_jump(&mut self, jump_idx: usize) {
         // A jump now lands after the trailing `LoadNil`, so it can't be dropped.
         self.unused_nil = None;
+        self.dup_store = None;
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
@@ -202,6 +208,7 @@ impl FunctionScope {
     /// Patch a previously emitted jump to a specific target IP.
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
         self.unused_nil = None;
+        self.dup_store = None;
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
@@ -824,6 +831,12 @@ impl Compiler {
                 self.emit(Opcode::LoadConst(idx as u16));
                 self.emit(Opcode::CallBuiltin(BuiltinId::TickPhase, 1));
                 self.emit(Opcode::Pop);
+            }
+            // A judge whose value nobody uses: each arm's value is worked
+            // out and dropped where it is made, so no nil is pushed for the
+            // no-match case and popped again.
+            Stmt::Expr(Expr::Judge { header, arms, all: false, .. }) => {
+                self.compile_judge_discard(header.as_deref(), arms)?;
             }
             Stmt::Expr(e) => {
                 self.compile_expr(e)?;
@@ -2306,8 +2319,7 @@ impl Compiler {
                     };
                     let store_op = self.resolve_store(&var_name)
                         .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-                    self.emit(Opcode::Dup);
-                    self.emit(store_op);
+                    self.emit_dup_store(store_op);
                     return Ok(());
                 }
             }
@@ -2325,8 +2337,7 @@ impl Compiler {
                 };
                 let store_op = self.resolve_store(&var_name)
                     .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-                self.emit(Opcode::Dup);
-                self.emit(store_op);
+                self.emit_dup_store(store_op);
                 return Ok(());
             }
 
@@ -2339,8 +2350,7 @@ impl Compiler {
             self.emit_obj_rebind_guard(&var_name)?;
             let store_op = self.resolve_store(&var_name)
                 .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-            self.emit(Opcode::Dup);
-            self.emit(store_op);
+            self.emit_dup_store(store_op);
             return Ok(());
         }
 
@@ -2352,9 +2362,12 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
-            // D8: `and` / `or` give a bool, whatever the operands.
-            self.emit(Opcode::Not);
-            self.emit(Opcode::Not);
+            // D8: `and` / `or` give a bool, whatever the operands. When
+            // both sides already give a bool there is nothing to coerce.
+            if !(gives_bool(lhs) && gives_bool(rhs)) {
+                self.emit(Opcode::Not);
+                self.emit(Opcode::Not);
+            }
             return Ok(());
         }
         if op == "||" || op == "or" {
@@ -2364,9 +2377,12 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
-            // D8: `and` / `or` give a bool, whatever the operands.
-            self.emit(Opcode::Not);
-            self.emit(Opcode::Not);
+            // D8: `and` / `or` give a bool, whatever the operands. When
+            // both sides already give a bool there is nothing to coerce.
+            if !(gives_bool(lhs) && gives_bool(rhs)) {
+                self.emit(Opcode::Not);
+                self.emit(Opcode::Not);
+            }
             return Ok(());
         }
 
@@ -2470,6 +2486,31 @@ impl Compiler {
         match arms.iter().find(|a| a.condition.is_none()) {
             Some(else_arm) => self.compile_judge_arm_value(else_arm, header)?,
             None => { self.emit(Opcode::LoadNil); }
+        }
+        for j in end_jumps { self.scope_mut().patch_jump(j); }
+        Ok(())
+    }
+
+    /// `compile_judge_expr` for a judge used as a statement: the same arms
+    /// in the same order (`else` only when none matched), with each arm's
+    /// value dropped and nothing left on the stack.
+    fn compile_judge_discard(&mut self, header: Option<&Expr>, arms: &[JudgeArm]) -> Result<(), GoblinError> {
+        let else_arm = arms.iter().find(|a| a.condition.is_none());
+        let conds: Vec<&JudgeArm> = arms.iter().filter(|a| a.condition.is_some()).collect();
+        let mut end_jumps: Vec<usize> = Vec::new();
+        for (i, arm) in conds.iter().enumerate() {
+            self.compile_expr(arm.condition.as_ref().unwrap())?;
+            let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            self.compile_judge_arm_value(arm, header)?;
+            self.emit_discard();
+            if i + 1 < conds.len() || else_arm.is_some() {
+                end_jumps.push(self.scope_mut().emit_jump(Opcode::Jump));
+            }
+            self.scope_mut().patch_jump(skip);
+        }
+        if let Some(else_arm) = else_arm {
+            self.compile_judge_arm_value(else_arm, header)?;
+            self.emit_discard();
         }
         for j in end_jumps { self.scope_mut().patch_jump(j); }
         Ok(())
@@ -2858,12 +2899,25 @@ impl Compiler {
 
     /// Throw away the value just computed: `Pop`, or, when that value is
     /// a `LoadNil` nothing jumps past (see `unused_nil`), leave both out.
+    /// `Dup` then `store_op`: an assignment that also gives the stored value.
+    fn emit_dup_store(&mut self, store_op: Opcode) {
+        let at = self.emit(Opcode::Dup);
+        self.emit(store_op);
+        self.scope_mut().dup_store = Some(at);
+    }
+
     fn emit_discard(&mut self) {
         let sc = self.scope_mut();
         if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
             sc.bytecode.pop();
             sc.line_numbers.pop();
             sc.unused_nil = None;
+        } else if sc.dup_store.is_some() && sc.dup_store == sc.bytecode.len().checked_sub(2) {
+            // Nothing jumps between the `Dup` and the store (a patch clears
+            // `dup_store`), so the store can take the value itself.
+            let at = sc.dup_store.take().unwrap();
+            sc.bytecode.remove(at);
+            sc.line_numbers.remove(at);
         } else {
             self.emit(Opcode::Pop);
         }
@@ -3817,6 +3871,19 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// Whether a query predicate only reads: names, literals, fields,
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
+/// True when `e` always gives a bool on the VM: a bool literal, `not`, a
+/// comparison, or `and` / `or` (D8). Used to skip the double `Not` that
+/// turns an `and` / `or` result into a bool when it already is one.
+fn gives_bool(e: &Expr) -> bool {
+    match e {
+        Expr::Bool(..) => true,
+        Expr::Prefix(op, _, _) => op == "!" || op == "not",
+        Expr::Binary(_, op, _, _) => matches!(op.as_str(),
+            "==" | "!=" | "/=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "&&" | "and" | "||" | "or"),
+        _ => false,
+    }
+}
+
 pub(crate) fn only_reads(e: &Expr) -> bool {
     only_reads_with(e, &mut |_| false)
 }
