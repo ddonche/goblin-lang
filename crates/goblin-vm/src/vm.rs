@@ -1703,7 +1703,7 @@ impl Vm {
                 }
 
                 let stack_base = recv_idx;
-                let mut new_frame = CallFrame::new(func_rc, vec![], stack_base);
+                let mut new_frame = self.fresh_frame(func_rc, Vec::new(), stack_base);
 
                 // Move args from stack into frame locals: slot 0 = self (recv), slot 1..n = args.
                 for i in (0..=arg_count).rev() {
@@ -1786,7 +1786,10 @@ impl Vm {
                 // Stack: [..., func, arg0, ..., arg_{argc-1}]
                 let func_idx = self.stack.len() - arg_count - 1;
                 // Resolve the function operand (may be a Ref to a Closure stored in a local).
-                let func_val = self.resolve_op(self.stack[func_idx].clone())?;
+                let func_val = match &self.stack[func_idx] {
+                    Operand::Val(v @ (Value::Function(_) | Value::Closure(_))) => v.clone(),
+                    op => self.resolve_op(op.clone())?,
+                };
 
                 // If it's a Builtin value, dispatch directly without a call frame.
                 if let Value::Builtin(bid) = &func_val {
@@ -1847,11 +1850,7 @@ impl Vm {
                 } else { None };
 
                 let stack_base = func_idx; // caller cleans up from here
-                let locals = match self.spare_locals.pop() {
-                    Some(mut l) => { l.resize(func_rc.locals, None); l }
-                    None => vec![None; func_rc.locals],
-                };
-                let mut new_frame = CallFrame::new_with(func_rc, upvalues, stack_base, locals);
+                let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
                 new_frame.memo = mark;
 
                 // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
@@ -3694,19 +3693,18 @@ impl Vm {
     fn top2_floats(&self) -> Option<(f64, f64)> {
         let n = self.stack.len();
         if n < 2 { return None; }
-        let num = |op: &Operand| -> Option<Value> {
+        // Each operand as (number, whether it is a float), read in place.
+        let num = |op: &Operand| -> Option<(f64, bool)> {
             let v = match op {
                 Operand::Val(v) => v,
                 Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
             };
-            match v { Value::Int(_) | Value::Float(_) => Some(v.clone()), _ => None }
+            match v { Value::Int(n) => Some((*n as f64, false)), Value::Float(x) => Some((*x, true)), _ => None }
         };
-        match (num(&self.stack[n - 2])?, num(&self.stack[n - 1])?) {
-            (Value::Float(a), Value::Float(b)) => Some((a, b)),
-            (Value::Int(a), Value::Float(b)) => Some((a as f64, b)),
-            (Value::Float(a), Value::Int(b)) => Some((a, b as f64)),
-            _ => None,
-        }
+        let (a, fa) = num(&self.stack[n - 2])?;
+        let (b, fb) = num(&self.stack[n - 1])?;
+        // Two ints are the int path's.
+        if fa || fb { Some((a, b)) } else { None }
     }
 
     /// Both top operands as integers (second from top, top), if they are:
@@ -5137,6 +5135,16 @@ impl Vm {
     }
 
     /// Low-level function call: set up a frame for (func_rc, upvalues) with args and run it.
+    /// A frame for a call, with its variable slots taken from a returned
+    /// call's when one is kept (see `Opcode::Return`).
+    fn fresh_frame(&mut self, func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> CallFrame {
+        let locals = match self.spare_locals.pop() {
+            Some(mut l) => { l.resize(func.locals, None); l }
+            None => vec![None; func.locals],
+        };
+        CallFrame::new_with(func, upvalues, stack_base, locals)
+    }
+
     fn call_func_core(
         &mut self,
         func_rc: Rc<FunctionObject>,
@@ -5157,7 +5165,7 @@ impl Vm {
         }
         let stack_base = self.stack.len();
         self.stack.push(Operand::Val(Value::Nil));
-        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
             new_frame.locals[i] = Some(t);
@@ -5901,6 +5909,27 @@ impl Vm {
     }
 
     /// Evaluate a tick expression with the given locals, returning the result.
+    /// `eval_tick_expr` with borrowed arguments: they are copied only when
+    /// the formula needs a call frame.
+    pub(crate) fn eval_tick_expr_ref(
+        &mut self,
+        expr: &goblin_ast::Expr,
+        locals: &[(&str, &Value)],
+    ) -> Result<Value, GoblinError> {
+        let names: smallvec::SmallVec<[&str; 4]> = locals.iter().map(|(n, _)| *n).collect();
+        let formula = self.compile_tick_expr(expr, &names)?;
+        if locals.len() != formula.func.params {
+            return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
+            match self.run_formula_in(&formula.func, locals, &[], &formula.hints, &formula.env, formula.tree.as_ref()) {
+                Some(v) => { formula.misses.set(0); return Ok(v); }
+                None => formula.misses.set(formula.misses.get() + 1),
+            }
+        }
+        self.run_tick_formula_vm(formula.func.clone(), locals.iter().map(|(n, v)| (*n, (*v).clone())).collect())
+    }
+
     pub(crate) fn eval_tick_expr(
         &mut self,
         expr: &goblin_ast::Expr,
@@ -5935,7 +5964,7 @@ impl Vm {
         }
         let stack_base = self.stack.len();
         self.stack.push(Operand::Val(Value::Nil));
-        let mut new_frame = CallFrame::new(func_rc, Vec::new(), stack_base);
+        let mut new_frame = self.fresh_frame(func_rc, Vec::new(), stack_base);
         for (i, (_, a)) in locals.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
             new_frame.locals[i] = Some(t);
@@ -6253,17 +6282,18 @@ impl Vm {
                         st.push(Fv::Val(Value::Bool(if matches!(op, Opcode::Eq) { eq } else { !eq })));
                         continue;
                     }
-                    let id = |v: &Fv| -> Option<Option<String>> {
+                    // The id (shared, not copied) of an object operand.
+                    let id = |v: &Fv| -> Option<Option<crate::value::ObjId>> {
                         let x: &Value = match v { Fv::Arg(s, _) => value_at(*s)?, Fv::Val(x) => x, Fv::Act(_) => return None };
                         match x {
-                            Value::Object(o) => Some(Some(o.uuid.to_string())),
-                            Value::Ref(u) => Some(if self.session.object_store.contains_key(u) { Some(u.to_string()) } else { None }),
+                            Value::Object(o) => Some(Some(o.uuid.clone())),
+                            Value::Ref(u) => Some(if self.session.object_store.contains_key(u) { Some(u.clone()) } else { None }),
                             _ => None,
                         }
                     };
                     let eq = match (id(&a), id(&b)) {
                         (None, None) => values_equal(&plain_or_str(a)?, &plain_or_str(b)?),
-                        (Some(Some(x)), Some(Some(y))) => x == y,
+                        (Some(Some(x)), Some(Some(y))) => x.same(&y) || x.as_str() == y.as_str(),
                         (Some(Some(_)), None) => { if !matches!(b, Fv::Val(Value::Nil)) { return None; } false }
                         (None, Some(Some(_))) => { if !matches!(a, Fv::Val(Value::Nil)) { return None; } false }
                         _ => return None,
@@ -6281,7 +6311,7 @@ impl Vm {
                 }
                 Opcode::CallBuiltin(crate::value::BuiltinId::LinkScore, argc) => {
                     let start = st.len().checked_sub(argc as usize)?;
-                    let mut largs = Vec::with_capacity(argc as usize);
+                    let mut largs: smallvec::SmallVec<[Value; 4]> = smallvec::SmallVec::new();
                     for v in st.drain(start..) {
                         match v {
                             Fv::Val(v) if !matches!(v, Value::Frozen(_)) => largs.push(v),
@@ -6299,13 +6329,13 @@ impl Vm {
                 // plain numbers, through the same code the VM calls.
                 Opcode::CallBuiltin(id, argc) if crate::builtins::is_math(id) => {
                     let start = st.len().checked_sub(argc as usize)?;
-                    let mut nums = Vec::with_capacity(argc as usize);
+                    let mut nums: smallvec::SmallVec<[Value; 4]> = smallvec::SmallVec::new();
                     for v in st.drain(start..) {
                         match v { Fv::Val(v @ (Value::Int(_) | Value::Float(_))) => nums.push(v), _ => return None }
                     }
                     let r = match crate::builtins::quick_math(id, &nums) {
                         Some(r) => r,
-                        None => crate::builtins::call_builtin(id, nums, &mut self.session).ok()?,
+                        None => crate::builtins::call_builtin(id, nums.into_vec(), &mut self.session).ok()?,
                     };
                     if !matches!(r, Value::Int(_) | Value::Float(_)) { return None; }
                     st.push(Fv::Val(r));
@@ -6317,7 +6347,8 @@ impl Vm {
                 // to the VM, running it again there gives the same answer.
                 Opcode::Call(argc) => {
                     let start = st.len().checked_sub(argc as usize + 1)?;
-                    let mut vals: Vec<Value> = Vec::with_capacity(argc as usize);
+                    // Copied into a list only for a call that is made.
+                    let mut vals: smallvec::SmallVec<[Value; 4]> = smallvec::SmallVec::new();
                     for v in st.drain(start + 1..) {
                         vals.push(match v {
                             Fv::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil | Value::Str(_))) => v,
@@ -6346,7 +6377,7 @@ impl Vm {
                         }
                         _ => None,
                     };
-                    let r = self.call_func_core(func, Vec::new(), vals).ok()?;
+                    let r = self.call_func_core(func, Vec::new(), vals.into_vec()).ok()?;
                     if let (Some((key, epoch)), Some(m)) = (key, self.memo.as_mut()) {
                         if m.epoch == epoch && m.changing == 0 { m.answers.insert(key, r.clone()); }
                     }
@@ -6474,7 +6505,7 @@ impl Vm {
         }
         let stack_base = self.stack.len();
         self.stack.push(Operand::Val(Value::Nil));
-        let mut new_frame = CallFrame::new(func_rc, upvalues, stack_base);
+        let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
             let t = self.session.alloc_value(a);
             new_frame.locals[i] = Some(t);
@@ -6554,7 +6585,10 @@ impl Vm {
                 Value::Object(o) => if let Some(Value::Object(stored)) = store.get(&o.uuid) {
                     if stored.class_name == o.class_name { return Ok(Value::Ref(o.uuid.clone())); }
                 },
-                _ => {}
+                // Anything else is passed as it is held (a frozen snapshot
+                // stays frozen), read with one lookup.
+                Value::Frozen(_) => {}
+                other => return Ok(other.clone_fast()),
             }
         }
         Ok(self.arg_ref(self.resolve_op_raw(op)?))

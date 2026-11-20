@@ -3,6 +3,15 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.72 — 2026-11-20
+
+- Calls and DES formulas do less work per step, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.71 on the same machine (time; peak memory): without regions 33.3 s → 33.4 s (97 → 100 MB); 4 regions on one thread 66.6 s → 64.5 s (273 → 270 MB); 4 regions on 4 threads 29.9 s → 29.5 s (357 → 347 MB); 4 regions on 8 threads 30.4 s → 29.5 s (351 → 356 MB). The gains are small, 1 to 3%, and within this machine's noise without regions. Every sim's output and event log is the same as before.
+  - An action called from a builtin, a DES formula or a method call reuses the variable slots of a call that has returned, as a plain call already did.
+  - A plain argument (a number, text, a list) is read once when a call is set up, not three times.
+  - Decimal arithmetic and comparisons in the fast loop read their numbers in place instead of copying them.
+  - A link's formula gets `self` and `target` without a new list on every read.
+  - `==` and `!=` on two objects in a DES formula or `:objects` condition compare their ids without copying them.
+
 ## 0.51.71 — 2026-11-20
 
 - Faster and smaller, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.70 on the same machine (time; peak memory): without regions 36.7 s → 32.8 s (115 → 100 MB); 4 regions on one thread 67.7 s → 64.2 s (317 → 271 MB); 4 regions on 4 threads 30.7 s → 29.5 s (377 → 347 MB); 4 regions on 8 threads 31.0 s → 29.7 s (382 → 347 MB). Every sim's output and event log is the same as before.

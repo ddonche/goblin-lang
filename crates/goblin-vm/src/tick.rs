@@ -1827,7 +1827,8 @@ fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &crate::value::O
         // it, so a first `offset` gives the number written.
         None => { let (lo, hi) = decl_bounds(decl); return Ok(0f64.clamp(lo, hi)) }
     };
-    match vm.eval_tick_expr(formula, vec![("self", Value::Ref(from_id.clone())), ("target", Value::Ref(to_id.clone()))]) {
+    let (me, them) = (Value::Ref(from_id.clone()), Value::Ref(to_id.clone()));
+    match vm.eval_tick_expr_ref(formula, &[("self", &me), ("target", &them)]) {
         Ok(Value::Int(i)) => Ok(i as f64),
         Ok(Value::Float(f)) => Ok(f),
         Ok(Value::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
