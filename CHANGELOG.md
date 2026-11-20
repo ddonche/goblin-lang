@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.74 — 2026-11-20
+
+- Each VM step is found faster, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.73 → 0.51.74: empty loop 878 → 769; arithmetic 1,605 → 1,444; local copies 1,665 → 1,508; decimals 1,670 → 1,519; field write 2,902 → 2,827; field read 1,419 → 1,296; call 2,623 → 2,552. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.73 (time; peak memory): without regions 34.7 s → 36.0 s (95 → 98 MB); 4 regions on one thread 67.0 s → 67.0 s (273 → 276 MB); 4 regions on 4 threads 32.1 s → 31.9 s (340 → 347 MB); 4 regions on 8 threads 29.9 s → 30.1 s (347 → 346 MB), within this machine's noise. Histories are identical.
+  - The run loop keeps the current function's code and position at hand instead of finding them through the call stack for every step.
+  - Reading a variable looks it up once instead of twice.
+  - A `repeat` with a condition counts its passes without leaving the run loop.
+
 ## 0.51.73 — 2026-11-20
 
 - Storing a value in a variable and running a loop take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.72 → 0.51.73: empty loop 1,097 → 878; arithmetic 1,870 → 1,605; local copies 2,347 → 1,665; decimals 1,942 → 1,670; field write 3,285 → 2,902; field read 1,691 → 1,419; call 2,890 → 2,623. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.72 (time; peak memory): without regions 33.6 s → 34.0 s (97 → 101 MB); 4 regions on one thread 64.4 s → 63.6 s (270 → 271 MB); 4 regions on 4 threads 30.6 s → 30.7 s (344 → 353 MB); 4 regions on 8 threads 30.0 s → 31.3 s (345 → 346 MB), within this machine's noise. Histories are identical.

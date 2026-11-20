@@ -857,11 +857,12 @@ impl Session {
     // ── Address validation ──────────────────────────────────────────────────
 
     /// Resolve a live stash reference, returning an error if stale.
+    #[inline]
     pub fn resolve(&self, addr: Address) -> Result<&Stash, GoblinError> {
-        if !self.arena.contains(addr.slot as usize) {
+        // One slab lookup (`get`), not a `contains` and then an index.
+        let Some(stash) = self.arena.get(addr.slot as usize) else {
             return Err(GoblinError::EmptySlot { slot: addr.slot });
-        }
-        let stash = &self.arena[addr.slot as usize];
+        };
         if stash.generation != addr.generation {
             return Err(GoblinError::StaleAddress {
                 slot: addr.slot,
@@ -873,11 +874,12 @@ impl Session {
     }
 
     /// Mutable version of resolve.
+    #[inline]
     pub fn resolve_mut(&mut self, addr: Address) -> Result<&mut Stash, GoblinError> {
-        if !self.arena.contains(addr.slot as usize) {
+        // One slab lookup (`get_mut`), not a `contains` and then an index.
+        let Some(stash) = self.arena.get_mut(addr.slot as usize) else {
             return Err(GoblinError::EmptySlot { slot: addr.slot });
-        }
-        let stash = &mut self.arena[addr.slot as usize];
+        };
         if stash.generation != addr.generation {
             return Err(GoblinError::StaleAddress {
                 slot: addr.slot,
@@ -888,10 +890,12 @@ impl Session {
         Ok(stash)
     }
 
+    #[inline]
     pub fn get_stash(&self, t: &Tether) -> Result<&Stash, GoblinError> {
         self.resolve(t.addr)
     }
 
+    #[inline]
     pub fn get_stash_mut(&mut self, t: &Tether) -> Result<&mut Stash, GoblinError> {
         self.resolve_mut(t.addr)
     }

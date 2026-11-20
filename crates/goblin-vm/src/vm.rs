@@ -416,14 +416,31 @@ impl Vm {
     /// loop still collects garbage and yields on time.
     #[inline(always)]
     fn run_fast(&mut self, left: &mut u32) -> Option<(Step, Opcode)> {
+        // The frame's code and ip are kept here while the fast steps run
+        // (none of them enters or leaves a call), instead of being found
+        // through the call stack for every step. `fast_step` moves `ip`;
+        // the frame's own `ip` is set from it whenever anything else could
+        // read it (a step that calls a helper, and on the way out).
+        let frame = self.call_stack.last().unwrap();
+        let func = frame.func.clone();
+        let code: &[Opcode] = &func.bytecode;
+        let mut ip = frame.ip;
         loop {
-            let frame = self.call_stack.last_mut().unwrap();
-            let Some(&op) = frame.func.bytecode.get(frame.ip) else { return None };
-            frame.ip += 1;
+            let Some(&op) = code.get(ip) else {
+                self.call_stack.last_mut().unwrap().ip = ip;
+                return None;
+            };
+            ip += 1;
             *left = left.wrapping_sub(1);
-            match self.fast_step(op) {
-                Step::Done => if *left % 64 == 0 { return None },
-                step => return Some((step, op)),
+            match self.fast_step(op, &mut ip, code) {
+                Step::Done => if *left % 64 == 0 {
+                    self.call_stack.last_mut().unwrap().ip = ip;
+                    return None;
+                },
+                step => {
+                    self.call_stack.last_mut().unwrap().ip = ip;
+                    return Some((step, op));
+                }
             }
         }
     }
@@ -448,8 +465,15 @@ impl Vm {
     /// Keeps these steps out of `execute_op`, whose size makes every call
     /// to it cost more than most of these steps themselves.
     #[inline(always)]
-    fn fast_step(&mut self, op: Opcode) -> Step {
-        macro_rules! done { ($r:expr) => { match $r { Ok(_) => Step::Done, Err(e) => { self.step_err = Some(e); Step::Failed } } } }
+    fn fast_step(&mut self, op: Opcode, ip: &mut usize, code: &[Opcode]) -> Step {
+        // A helper may read or move the frame's ip: hand it over and back.
+        macro_rules! sync { ($r:expr) => {{
+            self.call_stack.last_mut().unwrap().ip = *ip;
+            let r = $r;
+            *ip = self.call_stack.last().unwrap().ip;
+            r
+        }} }
+        macro_rules! done { ($r:expr) => { match sync!($r) { Ok(_) => Step::Done, Err(e) => { self.step_err = Some(e); Step::Failed } } } }
         match op {
             Opcode::LoadConst(idx) => {
                 let v = self.call_stack.last().unwrap().func.constants[idx as usize].clone_fast();
@@ -487,27 +511,21 @@ impl Vm {
                     },
                 }
             }
-            Opcode::Jump(offset) => {
-                let frame = self.call_stack.last_mut().unwrap();
-                frame.ip = (frame.ip as isize + offset as isize) as usize;
-            }
+            Opcode::Jump(offset) => *ip = (*ip as isize + offset as isize) as usize,
             Opcode::JumpIfFalse(offset) | Opcode::JumpIfTrue(offset) => {
                 let Some(Operand::Val(Value::Bool(c))) = self.stack.last() else { return Step::Slow };
                 let jump = *c == matches!(op, Opcode::JumpIfTrue(_));
                 self.pop_plain();
-                if jump {
-                    let frame = self.call_stack.last_mut().unwrap();
-                    frame.ip = (frame.ip as isize + offset as isize) as usize;
-                }
+                if jump { *ip = (*ip as isize + offset as isize) as usize; }
             }
             Opcode::Not => {
                 let Some(Operand::Val(Value::Bool(c))) = self.stack.last_mut() else { return Step::Slow };
                 *c = !*c;
             }
-            Opcode::GetMember(idx) => return self.get_plain_field(idx),
+            Opcode::GetMember(idx) => return sync!(self.get_plain_field(idx)),
             Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
                 let Some((a, b)) = self.top2_ints() else {
-                    if matches!(op, Opcode::Eq | Opcode::Ne) { return self.fast_eq(matches!(op, Opcode::Eq)); }
+                    if matches!(op, Opcode::Eq | Opcode::Ne) { return sync!(self.fast_eq(matches!(op, Opcode::Eq))); }
                     let Some((x, y)) = self.top2_floats() else { return Step::Slow };
                     // As `op_add`, `arith_op` and `compare_values` do it (NaN compares equal).
                     let c = || x.partial_cmp(&y).map_or(0, |o| o as i32);
@@ -579,12 +597,11 @@ impl Vm {
                 if self.stack.is_empty() { return Step::Slow; }
                 // The store into the same variable that always follows: done
                 // here when it is a plain overwrite (see `StoreLocal`).
-                let frame = self.call_stack.last().unwrap();
-                if matches!(frame.func.bytecode.get(frame.ip), Some(Opcode::StoreLocal(s)) if *s == slot) {
+                if matches!(code.get(*ip), Some(Opcode::StoreLocal(s)) if *s == slot) {
                     if let Some(v) = self.plain_top() {
                         if self.store_plain_local(slot, v) {
                             self.pop_plain();
-                            self.call_stack.last_mut().unwrap().ip += 1;
+                            *ip += 1;
                         }
                     }
                 }
@@ -604,13 +621,22 @@ impl Vm {
                 let Some(b) = self.operand_int(top) else { return Step::Slow };
                 self.set_top_plain(Value::Int(a.wrapping_add(b)));
             }
-            Opcode::RepeatNext(idx) => return done!(self.repeat_next(idx)),
-            Opcode::QuickSet(idx) => match self.quick_set(idx) {
-                Ok(Some(skip)) => self.call_stack.last_mut().unwrap().ip += skip as usize,
+            Opcode::RepeatNext(idx) => {
+                // A condition loop (`repeat i < n`) only counts the pass
+                // here, as `repeat_next` does for it; the rest go there.
+                let frame = self.call_stack.last_mut().unwrap();
+                let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { return Step::Slow };
+                let st = &mut frame.loops[r.id as usize];
+                if st.mode != 4 { return done!(self.repeat_next(idx)); }
+                st.counter += 1;
+                if st.counter >= st.limit { *ip += r.exit as usize; }
+            }
+            Opcode::QuickSet(idx) => match sync!(self.quick_set(idx)) {
+                Ok(Some(skip)) => *ip += skip as usize,
                 Ok(None) => {}
                 Err(e) => { self.step_err = Some(e); return Step::Failed; }
             },
-            Opcode::Fused(idx) => return match self.fused_quick(idx) {
+            Opcode::Fused(idx) => return match sync!(self.fused_quick(idx)) {
                 Ok(true) => Step::Done,
                 Ok(false) => done!(self.fused_steps(idx)),
                 Err(e) => { self.step_err = Some(e); Step::Failed }
