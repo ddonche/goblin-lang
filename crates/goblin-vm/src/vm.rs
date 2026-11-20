@@ -50,6 +50,15 @@ pub struct CallFrame {
     pub(crate) made_overlays: Option<Box<Vec<(String, String)>>>,
 }
 
+/// A plain number read in place, without a `Value` (nothing to drop).
+#[derive(Clone, Copy)]
+enum Num { I(i64), F(f64) }
+
+impl Num {
+    #[inline(always)]
+    fn f(self) -> f64 { match self { Num::I(n) => n as f64, Num::F(x) => x } }
+}
+
 /// One running `repeat`: its kind (see builtins::repeat_plan), what it
 /// runs over, where it stops and the pass it is on.
 #[derive(Clone)]
@@ -487,6 +496,18 @@ impl Vm {
                 let t = t.clone();
                 self.stack.push(Operand::Ref(t));
             }
+            Opcode::CmpJump(slot) | Opcode::BinLocal(slot) => {
+                let done = if matches!(op, Opcode::CmpJump(_)) {
+                    self.cmp_jump(slot, *ip, code).map(|next| *ip = next)
+                } else {
+                    self.bin_local(slot, *ip, code).map(|v| { self.stack.push(Operand::Val(v)); *ip += 2; })
+                };
+                if done.is_some() { return Step::Done; }
+                // Not two plain numbers: just the `LoadLocal` it stands for.
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
             Opcode::LoadGlobal(idx) => {
                 let Some(t) = self.session.get_global(idx as usize) else { return Step::Slow };
                 let t = t.clone();
@@ -590,6 +611,13 @@ impl Vm {
                 self.stack.push(top);
             }
             Opcode::GuardRebindLocal(slot, _) => {
+                // `x |= v` with a number, bool or nil in `x` and in `v`: the
+                // guard passes and the store that follows is done here.
+                if matches!(code.get(*ip), Some(Opcode::StoreLocal(s)) if *s == slot) && self.guard_store_plain(slot) {
+                    self.pop_plain();
+                    *ip += 1;
+                    return Step::Done;
+                }
                 // Only an object can't be rebound; a plain local passes.
                 let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
                 let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
@@ -684,7 +712,7 @@ impl Vm {
             }
 
             // ── Locals ──────────────────────────────────────────────────────
-            Opcode::LoadLocal(slot) => {
+            Opcode::LoadLocal(slot) | Opcode::CmpJump(slot) | Opcode::BinLocal(slot) => {
                 // Push a lazy Ref — deferred read, no clone until the value is used.
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 self.stack.push(Operand::Ref(t));
@@ -3984,8 +4012,127 @@ impl Vm {
         }
     }
 
+    /// `Opcode::CmpJump`: the comparison of local `slot` with the next
+    /// step's local or constant, and the jump after it, when both are plain
+    /// numbers, worked out as `Lt`/`Eq`/... and `JumpIfFalse`/`JumpIfTrue`
+    /// would. Gives the ip to go on at; None to run the steps one by one.
+    #[inline(always)]
+    fn cmp_jump(&self, slot: u16, ip: usize, code: &[Opcode]) -> Option<usize> {
+        let (a, b) = self.local_and_next(slot, ip, code)?;
+        let cmp = *code.get(ip + 1)?;
+        let c = match (a, b) {
+            (Num::I(x), Num::I(y)) => match cmp {
+                Opcode::Lt => x < y, Opcode::Le => x <= y, Opcode::Gt => x > y, Opcode::Ge => x >= y,
+                Opcode::Eq => x == y, Opcode::Ne => x != y, _ => return None,
+            },
+            // As the fast loop's decimal comparisons (NaN compares equal);
+            // `==` / `!=` with a decimal go the usual way.
+            (a, b) => {
+                let o = a.f().partial_cmp(&b.f()).map_or(0, |o| o as i32);
+                match cmp {
+                    Opcode::Lt => o < 0, Opcode::Le => o <= 0, Opcode::Gt => o > 0, Opcode::Ge => o >= 0,
+                    _ => return None,
+                }
+            }
+        };
+        let after = ip + 3;
+        match *code.get(ip + 2)? {
+            Opcode::JumpIfFalse(o) if !c => Some((after as isize + o as isize) as usize),
+            Opcode::JumpIfTrue(o) if c => Some((after as isize + o as isize) as usize),
+            Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_) => Some(after),
+            _ => None,
+        }
+    }
+
+    /// `Opcode::BinLocal`: local `slot` and the next step's local or
+    /// constant, combined by the step after, when both are plain numbers,
+    /// as the fast loop's `Add`/`Sub`/`Mul`/comparisons would. None to run
+    /// the steps one by one.
+    #[inline(always)]
+    fn bin_local(&self, slot: u16, ip: usize, code: &[Opcode]) -> Option<Value> {
+        let (a, b) = self.local_and_next(slot, ip, code)?;
+        let op = *code.get(ip + 1)?;
+        Some(match (a, b) {
+            (Num::I(x), Num::I(y)) => match op {
+                Opcode::Add => Value::Int(x.wrapping_add(y)),
+                Opcode::Sub => Value::Int(x.checked_sub(y)?),
+                Opcode::Mul => Value::Int(x.checked_mul(y)?),
+                Opcode::Lt => Value::Bool(x < y), Opcode::Le => Value::Bool(x <= y),
+                Opcode::Gt => Value::Bool(x > y), Opcode::Ge => Value::Bool(x >= y),
+                Opcode::Eq => Value::Bool(x == y), Opcode::Ne => Value::Bool(x != y),
+                _ => return None,
+            },
+            (a, b) => {
+                let (x, y) = (a.f(), b.f());
+                let c = || x.partial_cmp(&y).map_or(0, |o| o as i32);
+                match op {
+                    Opcode::Add => Value::Float(x + y),
+                    Opcode::Sub => Value::Float(x - y),
+                    Opcode::Mul => Value::Float(x * y),
+                    Opcode::Lt => Value::Bool(c() < 0), Opcode::Le => Value::Bool(c() <= 0),
+                    Opcode::Gt => Value::Bool(c() > 0), Opcode::Ge => Value::Bool(c() >= 0),
+                    _ => return None,
+                }
+            }
+        })
+    }
+
+    /// Local `slot` and the operand the step at `ip` loads (a local or a
+    /// constant), when both are plain numbers.
+    #[inline(always)]
+    fn local_and_next(&self, slot: u16, ip: usize, code: &[Opcode]) -> Option<(Num, Num)> {
+        let frame = self.call_stack.last().unwrap();
+        let num = |t: &Option<Tether>| -> Option<Num> {
+            let t = t.as_ref()?;
+            match self.session.arena.get(t.addr.slot as usize) {
+                Some(st) if st.generation == t.addr.generation => match st.value {
+                    Value::Int(n) => Some(Num::I(n)),
+                    Value::Float(x) => Some(Num::F(x)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let a = num(frame.locals.get(slot as usize)?)?;
+        let b = match *code.get(ip)? {
+            Opcode::LoadLocal(s) => num(frame.locals.get(s as usize)?)?,
+            Opcode::LoadConst(c) => match frame.func.constants.get(c as usize)? {
+                Value::Int(n) => Num::I(*n),
+                Value::Float(x) => Num::F(*x),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        Some((a, b))
+    }
+
+    /// `GuardRebindLocal(slot)` then `StoreLocal(slot)` when the variable
+    /// holds a number, bool or nil and the top operand is one: the old
+    /// value is overwritten in place (as `store_plain_local`, with one
+    /// lookup of the variable). False (nothing changed) otherwise.
+    #[inline(always)]
+    fn guard_store_plain(&mut self, slot: u16) -> bool {
+        let Some(v) = self.plain_top() else { return false };
+        let v = std::mem::ManuallyDrop::new(v);
+        let frame = self.call_stack.last().unwrap();
+        if frame.locks.is_some() { return false; }
+        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let addr = t.addr;
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
+        match self.session.arena.get_mut(addr.slot as usize) {
+            Some(st) if st.generation == addr.generation && st.tether_count == 1
+                && matches!(st.value, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) => {
+                std::mem::forget(std::mem::replace(&mut st.value, std::mem::ManuallyDrop::into_inner(v)));
+                true
+            }
+            _ => false,
+        }
+    }
+
     #[inline(always)]
     fn store_plain_local(&mut self, slot: u16, v: Value) -> bool {
+        // `v` is a number, bool or nil: nothing to drop when it isn't stored.
+        let v = std::mem::ManuallyDrop::new(v);
         let frame = self.call_stack.last().unwrap();
         if frame.locks.is_some() { return false; }
         let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
@@ -3993,7 +4140,7 @@ impl Vm {
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
         match self.session.arena.get_mut(addr.slot as usize) {
             Some(st) if st.generation == addr.generation && st.tether_count == 1 => {
-                let old = std::mem::replace(&mut st.value, v);
+                let old = std::mem::replace(&mut st.value, std::mem::ManuallyDrop::into_inner(v));
                 // Plain values own nothing: skip their drop call.
                 if matches!(old, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) { std::mem::forget(old) } else { drop(old) }
                 true
@@ -6175,7 +6322,7 @@ impl Vm {
         loop {
             if budget == 0 { return None; }
             budget -= 1;
-            let op = *code.get(ip)?;
+            let op = code.get(ip)?.plain();
             ip += 1;
             match op {
                 Opcode::LoadConst(i) => st.push(Fv::Val(f.constants.get(i as usize)?.clone_fast())),
@@ -8042,7 +8189,7 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
     // left to the VM, which knows which one wins.
     let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
         Some(Value::Str(n)) if member_builtin(n).is_none() || AsRef::<str>::as_ref(n) == "is_nix");
-    f.locals == f.params && f.upvalue_descriptors.is_empty() && f.bytecode.iter().all(|op| match op {
+    f.locals == f.params && f.upvalue_descriptors.is_empty() && f.bytecode.iter().map(|op| op.plain()).all(|op| match &op {
         Opcode::GetMember(idx) => plain_member(idx),
         op => matches!(op,
         Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)
@@ -8063,7 +8210,7 @@ fn formula_runs_direct(f: &crate::value::FunctionObject) -> bool {
 fn predicate_runs_direct(f: &crate::value::FunctionObject) -> bool {
     let plain_member = |idx: &u16| matches!(f.constants.get(*idx as usize),
         Some(Value::Str(n)) if member_builtin(n).is_none() || AsRef::<str>::as_ref(n) == "is_nix");
-    f.locals == f.params && f.bytecode.iter().all(|op| match op {
+    f.locals == f.params && f.bytecode.iter().map(|op| op.plain()).all(|op| match &op {
         Opcode::GetMember(idx) => plain_member(idx),
         op => matches!(op,
         Opcode::LoadConst(_) | Opcode::LoadTrue | Opcode::LoadFalse | Opcode::LoadNil | Opcode::LoadLocal(_)

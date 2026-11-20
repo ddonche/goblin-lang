@@ -227,8 +227,10 @@ impl FunctionScope {
                 local_names[*slot as usize] = name.clone();
             }
         }
+        let mut bytecode = self.bytecode;
+        mark_cmp_jumps(&mut bytecode);
         FunctionObject {
-            bytecode: self.bytecode,
+            bytecode,
             op_data: self.op_data,
             constants: self.constants,
             locals: total_slots,
@@ -243,6 +245,29 @@ impl FunctionScope {
             source_file,
             global_names,
             calls_values: self.calls_values, field_hints: Default::default(),
+        }
+    }
+}
+
+/// Marks each `LoadLocal`, `LoadLocal | LoadConst`, comparison,
+/// `JumpIfFalse | JumpIfTrue` run as a `CmpJump`, and each `LoadLocal`,
+/// `LoadLocal | LoadConst`, `+ - *` or comparison as a `BinLocal` (see the
+/// opcodes). Nothing moves: the first step is replaced, the others stay.
+fn mark_cmp_jumps(code: &mut [Opcode]) {
+    let mut i = 0;
+    while i + 3 < code.len() {
+        if let [Opcode::LoadLocal(a), Opcode::LoadLocal(_) | Opcode::LoadConst(_),
+                Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne,
+                Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_)] = code[i..i + 4] {
+            code[i] = Opcode::CmpJump(a);
+            i += 4;
+        } else if let [Opcode::LoadLocal(a), Opcode::LoadLocal(_) | Opcode::LoadConst(_),
+                Opcode::Add | Opcode::Sub | Opcode::Mul
+                | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne] = code[i..i + 3] {
+            code[i] = Opcode::BinLocal(a);
+            i += 3;
+        } else {
+            i += 1;
         }
     }
 }

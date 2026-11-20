@@ -128,7 +128,7 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
         Some((Box::new(a), Box::new(b)))
     };
     while i < end {
-        let op = code[i];
+        let op = code[i].plain();
         match op {
             Opcode::LoadConst(c) => st.push(Node::Const(f.constants.get(c as usize)?.clone_fast())),
             Opcode::LoadTrue => st.push(Node::Const(Value::Bool(true))),

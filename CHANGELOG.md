@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.75 — 2026-11-20
+
+- Comparisons, arithmetic and `x |= ...` on plain numbers take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.74 → 0.51.75: empty loop 769 → 613; arithmetic 1,444 → 1,171; local copies 1,508 → 1,258; decimals 1,519 → 1,157; field write 2,827 → 2,665; field read 1,296 → 1,107; call 2,552 → 2,260. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.74 (time; peak memory): without regions 34.6 s → 35.2 s (96 → 98 MB); 4 regions on one thread 65.6 s → 64.6 s (274 → 275 MB); 4 regions on 4 threads 30.5 s → 31.2 s (345 → 344 MB); 4 regions on 8 threads 29.3 s → 30.4 s (345 → 350 MB), within this machine's noise. Histories are identical.
+  - A comparison of a variable with another variable or a number, followed by the jump it decides, is one step when both are plain numbers.
+  - `+`, `-`, `*` or a comparison of a variable with another variable or a number is one step when both are plain numbers.
+  - `x |= v` with plain values on both sides looks the variable up once.
+  - Storing a plain number no longer checks whether it needs freeing.
+
 ## 0.51.74 — 2026-11-20
 
 - Each VM step is found faster, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.73 → 0.51.74: empty loop 878 → 769; arithmetic 1,605 → 1,444; local copies 1,665 → 1,508; decimals 1,670 → 1,519; field write 2,902 → 2,827; field read 1,419 → 1,296; call 2,623 → 2,552. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.73 (time; peak memory): without regions 34.7 s → 36.0 s (95 → 98 MB); 4 regions on one thread 67.0 s → 67.0 s (273 → 276 MB); 4 regions on 4 threads 32.1 s → 31.9 s (340 → 347 MB); 4 regions on 8 threads 29.9 s → 30.1 s (347 → 346 MB), within this machine's noise. Histories are identical.

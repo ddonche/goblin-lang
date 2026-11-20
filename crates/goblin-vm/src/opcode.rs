@@ -367,9 +367,27 @@ pub enum Opcode {
     RepeatStart(u16),
     /// In a condition `repeat`, after its test passed: idx = the counter.
     RepeatIdx(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst`, a
+    /// comparison, `JumpIfFalse | JumpIfTrue` (put in by the compiler when a
+    /// function is finished; the three steps after it stay as they were).
+    /// When both sides are plain numbers the VM does all four at once;
+    /// otherwise, and for everything that reads code, it is `LoadLocal(slot)`
+    /// (see `Opcode::plain`).
+    CmpJump(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst` and `+`,
+    /// `-`, `*` or a comparison (put in like `CmpJump`, the two steps after
+    /// it kept): with two plain numbers the VM pushes the result at once;
+    /// otherwise it is `LoadLocal(slot)` (see `Opcode::plain`).
+    BinLocal(u16),
 }
 
 impl Opcode {
+    /// The step as written: `CmpJump(s)` is `LoadLocal(s)`.
+    #[inline(always)]
+    pub fn plain(self) -> Opcode {
+        match self { Opcode::CmpJump(s) | Opcode::BinLocal(s) => Opcode::LoadLocal(s), op => op }
+    }
+
     /// Returns the opcode name as a static string (for the disassembler).
     pub fn name(&self) -> &'static str {
         match self {
@@ -439,6 +457,8 @@ impl Opcode {
             Opcode::RepeatNext(_) => "RepeatNext",
             Opcode::RepeatStart(_) => "RepeatStart",
             Opcode::RepeatIdx(_) => "RepeatIdx",
+            Opcode::CmpJump(_) => "CmpJump",
+            Opcode::BinLocal(_) => "BinLocal",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",

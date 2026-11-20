@@ -103,7 +103,7 @@ pub(crate) fn reads_only(f: &Rc<FunctionObject>, globals: &dyn Fn(u16) -> Option
     seen.push(me);
     if f.calls_values { return false; }
     for op in &f.bytecode {
-        let ok = match *op {
+        let ok = match op.plain() {
             Opcode::LoadConst(_) | Opcode::LoadNil | Opcode::LoadUnit | Opcode::LoadTrue | Opcode::LoadFalse
             | Opcode::LoadLocal(_) | Opcode::TakeLocal(_) | Opcode::StoreLocal(_) | Opcode::BindLocal(_)
             | Opcode::LoadUpvalue(_) | Opcode::Pop | Opcode::Dup
