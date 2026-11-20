@@ -343,6 +343,153 @@ impl Vm {
         Step::Done
     }
 
+    /// `Opcode::Call(argc)`. Out of `execute_op` so the run loops can call
+    /// it straight (see `run_fast`).
+    #[inline(never)]
+    fn op_call(&mut self, argc: u8) -> Result<(), GoblinError> {
+        let arg_count = argc as usize;
+        if self.stack.len() < arg_count + 1 {
+            return Err(GoblinError::Runtime("stack underflow on Call".into()));
+        }
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+
+        // Stack: [..., func, arg0, ..., arg_{argc-1}]
+        let func_idx = self.stack.len() - arg_count - 1;
+        // Resolve the function operand (may be a Ref to a Closure stored in a local).
+        let func_val = match &self.stack[func_idx] {
+            Operand::Val(v @ (Value::Function(_) | Value::Closure(_))) => v.clone(),
+            // An action held by a variable: taken from its stash as it is.
+            Operand::Ref(t) if matches!(self.session.get_stash(t).map(|s| &s.value), Ok(Value::Function(_) | Value::Closure(_))) =>
+                self.session.get_stash(t)?.value.clone(),
+            op => self.resolve_op(op.clone())?,
+        };
+
+        // If it's a Builtin value, dispatch directly without a call frame.
+        if let Value::Builtin(bid) = &func_val {
+            let bid = *bid;
+            let mut arg_vals = self.drain_operands(func_idx + 1)?;
+            self.stack.pop(); // pop the func operand
+            // A builtin gets objects, not ids (a field read kept as
+            // an id for an action call, `render | str` then
+            // `render(x >> owner)`).
+            for a in arg_vals.iter_mut() {
+                if let Value::Ref(u) = a {
+                    if !u.starts_with(OVERLAY_RECORD) {
+                        if let Some(o) = self.session.object_store.get(u) { *a = o.clone(); }
+                    }
+                }
+            }
+            self.live_args(&mut arg_vals);
+            if let Some(m) = self.memo.as_mut() {
+                if !crate::memo::builtin_reads(bid) { m.changed(); }
+            }
+            if crate::host::is_host_call(bid) && crate::actor::on_worker() {
+                return self.host_call_on_worker(bid, arg_vals);
+            }
+            let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
+            let result = self.entries_out(result);
+            self.stack.push(Operand::Val(result));
+        } else {
+
+        let (func_rc, upvalues) = match func_val {
+            Value::Function(f) => (f, Vec::new()),
+            Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
+            other => return Err(GoblinError::NotCallable { got: other.type_name() }),
+        };
+
+        if arg_count < func_rc.required_params || arg_count > func_rc.params {
+            return Err(GoblinError::ArityMismatch {
+                expected: func_rc.params,
+                got: arg_count,
+                name: func_rc.name.clone(),
+            });
+        }
+        if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
+            let what = func_rc.name.clone();
+            self.log_deed(&what, func_idx + 1)?;
+        }
+
+        // While a decision is worked out, an action that only reads
+        // gives the answer it gave for these arguments before.
+        let mark = if self.memo.is_some() {
+            match self.memo_call(&func_rc, !upvalues.is_empty(), func_idx)? {
+                Ok(mark) => mark,
+                Err(answer) => {
+                    self.stack.truncate(func_idx);
+                    self.stack.push(Operand::Val(answer));
+                    return Ok(());
+                }
+            }
+        } else { None };
+
+        let stack_base = func_idx; // caller cleans up from here
+        let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
+        new_frame.memo = mark;
+
+        // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
+        for i in (0..arg_count).rev() {
+            let op = self.stack.pop().unwrap();
+            // A frozen argument stays frozen inside the callee.
+            let v = self.arg_of(op)?;
+            let t = self.session.alloc_value(v);
+            new_frame.locals[i] = Some(t);
+        }
+        // Pop function operand.
+        self.stack.pop();
+
+        self.call_stack.push(new_frame);
+        } // end else (not a Builtin)
+        Ok(())
+    }
+
+    /// `Opcode::Return`, out of `execute_op` as `op_call`.
+    #[inline(never)]
+    fn op_return(&mut self) -> Result<(), GoblinError> {
+        let ret_op = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
+            self.stack.pop().unwrap()
+        } else {
+            Operand::Val(Value::Nil)
+        };
+        // Resolve to Value now — callee's frame is about to be popped, after
+        // which its locals are removed from the GC live set. Resolving here
+        // ensures we own the Value before the stash could theoretically be swept.
+        // A local of this call that only it holds is moved out, not
+        // copied: nothing can read it once the frame is gone, and a
+        // copy left behind would make the caller's next in-place
+        // change copy the whole value.
+        let ret_val = match ret_op {
+            Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
+                && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
+                let stash = self.session.resolve_mut(t.addr)?;
+                if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
+                    std::mem::replace(&mut stash.value, Value::Nil)
+                } else {
+                    self.resolve_op(Operand::Ref(t))?
+                }
+            }
+            other => self.resolve_op(other)?,
+        };
+
+        let mut frame = self.call_stack.pop().unwrap();
+        let _ = frame.self_tether;
+        if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
+        // The call's own variables that nothing else holds (no
+        // closure captured them) are gone with it: free their slots
+        // now instead of leaving them for the next collection.
+        self.session.free_sole(&frame.locals);
+        if self.spare_locals.len() < 64 {
+            let mut l = std::mem::take(&mut frame.locals);
+            l.clear();
+            self.spare_locals.push(l);
+        }
+
+        self.stack.truncate(frame.stack_base);
+        self.stack.push(Operand::Val(ret_val));
+        Ok(())
+    }
+
     /// `Opcode::SetField` for a number, bool or nil written to an existing
     /// field of a stored object, named by its id: what `set_field_named`
     /// does, finding the field where this step found it last time (as
@@ -498,6 +645,17 @@ impl Vm {
             };
             ip += 1;
             *left = left.wrapping_sub(1);
+            // A call or a return changes the frame: done here (without the
+            // way through `execute_op`), then the caller picks the new
+            // frame up. A return from the last frame goes the usual way.
+            if matches!(op, Opcode::Call(_)) || (matches!(op, Opcode::Return) && self.call_stack.len() >= 2) {
+                self.call_stack.last_mut().unwrap().ip = ip;
+                let r = match op { Opcode::Call(n) => self.op_call(n), _ => self.op_return() };
+                return match r {
+                    Ok(()) => None,
+                    Err(e) => { self.step_err = Some(e); Some((Step::Failed, op)) }
+                };
+            }
             match self.fast_step(op, &mut ip, code) {
                 Step::Done => if *left % 64 == 0 {
                     self.call_stack.last_mut().unwrap().ip = ip;
@@ -1912,142 +2070,9 @@ impl Vm {
             }
 
             // ── Function calls ────────────────────────────────────────────────
-            Opcode::Call(argc) => {
-                let arg_count = argc as usize;
-                if self.stack.len() < arg_count + 1 {
-                    return Err(GoblinError::Runtime("stack underflow on Call".into()));
-                }
-                if self.call_stack.len() >= MAX_CALL_DEPTH {
-                    return Err(GoblinError::StackOverflow);
-                }
+            Opcode::Call(argc) => return self.op_call(argc),
 
-                // Stack: [..., func, arg0, ..., arg_{argc-1}]
-                let func_idx = self.stack.len() - arg_count - 1;
-                // Resolve the function operand (may be a Ref to a Closure stored in a local).
-                let func_val = match &self.stack[func_idx] {
-                    Operand::Val(v @ (Value::Function(_) | Value::Closure(_))) => v.clone(),
-                    op => self.resolve_op(op.clone())?,
-                };
-
-                // If it's a Builtin value, dispatch directly without a call frame.
-                if let Value::Builtin(bid) = &func_val {
-                    let bid = *bid;
-                    let mut arg_vals = self.drain_operands(func_idx + 1)?;
-                    self.stack.pop(); // pop the func operand
-                    // A builtin gets objects, not ids (a field read kept as
-                    // an id for an action call, `render | str` then
-                    // `render(x >> owner)`).
-                    for a in arg_vals.iter_mut() {
-                        if let Value::Ref(u) = a {
-                            if !u.starts_with(OVERLAY_RECORD) {
-                                if let Some(o) = self.session.object_store.get(u) { *a = o.clone(); }
-                            }
-                        }
-                    }
-                    self.live_args(&mut arg_vals);
-                    if let Some(m) = self.memo.as_mut() {
-                        if !crate::memo::builtin_reads(bid) { m.changed(); }
-                    }
-                    if crate::host::is_host_call(bid) && crate::actor::on_worker() {
-                        return self.host_call_on_worker(bid, arg_vals);
-                    }
-                    let result = crate::builtins::call_builtin(bid, arg_vals, &mut self.session)?;
-                    let result = self.entries_out(result);
-                    self.stack.push(Operand::Val(result));
-                } else {
-
-                let (func_rc, upvalues) = match func_val {
-                    Value::Function(f) => (f, Vec::new()),
-                    Value::Closure(c) => (c.func.clone(), c.upvalues.clone()),
-                    other => return Err(GoblinError::NotCallable { got: other.type_name() }),
-                };
-
-                if arg_count < func_rc.required_params || arg_count > func_rc.params {
-                    return Err(GoblinError::ArityMismatch {
-                        expected: func_rc.params,
-                        got: arg_count,
-                        name: func_rc.name.clone(),
-                    });
-                }
-                if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) {
-                    let what = func_rc.name.clone();
-                    self.log_deed(&what, func_idx + 1)?;
-                }
-
-                // While a decision is worked out, an action that only reads
-                // gives the answer it gave for these arguments before.
-                let mark = if self.memo.is_some() {
-                    match self.memo_call(&func_rc, !upvalues.is_empty(), func_idx)? {
-                        Ok(mark) => mark,
-                        Err(answer) => {
-                            self.stack.truncate(func_idx);
-                            self.stack.push(Operand::Val(answer));
-                            return Ok(());
-                        }
-                    }
-                } else { None };
-
-                let stack_base = func_idx; // caller cleans up from here
-                let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
-                new_frame.memo = mark;
-
-                // Move args from stack into frame locals (resolve operand + alloc_value for Tether).
-                for i in (0..arg_count).rev() {
-                    let op = self.stack.pop().unwrap();
-                    // A frozen argument stays frozen inside the callee.
-                    let v = self.arg_of(op)?;
-                    let t = self.session.alloc_value(v);
-                    new_frame.locals[i] = Some(t);
-                }
-                // Pop function operand.
-                self.stack.pop();
-
-                self.call_stack.push(new_frame);
-                } // end else (not a Builtin)
-            }
-
-            Opcode::Return => {
-                let ret_op = if self.stack.len() > self.call_stack.last().unwrap().stack_base {
-                    self.stack.pop().unwrap()
-                } else {
-                    Operand::Val(Value::Nil)
-                };
-                // Resolve to Value now — callee's frame is about to be popped, after
-                // which its locals are removed from the GC live set. Resolving here
-                // ensures we own the Value before the stash could theoretically be swept.
-                // A local of this call that only it holds is moved out, not
-                // copied: nothing can read it once the frame is gone, and a
-                // copy left behind would make the caller's next in-place
-                // change copy the whole value.
-                let ret_val = match ret_op {
-                    Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
-                        && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
-                        let stash = self.session.resolve_mut(t.addr)?;
-                        if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
-                            std::mem::replace(&mut stash.value, Value::Nil)
-                        } else {
-                            self.resolve_op(Operand::Ref(t))?
-                        }
-                    }
-                    other => self.resolve_op(other)?,
-                };
-
-                let mut frame = self.call_stack.pop().unwrap();
-                let _ = frame.self_tether;
-                if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
-                // The call's own variables that nothing else holds (no
-                // closure captured them) are gone with it: free their slots
-                // now instead of leaving them for the next collection.
-                self.session.free_sole(&frame.locals);
-                if self.spare_locals.len() < 64 {
-                    let mut l = std::mem::take(&mut frame.locals);
-                    l.clear();
-                    self.spare_locals.push(l);
-                }
-
-                self.stack.truncate(frame.stack_base);
-                self.stack.push(Operand::Val(ret_val));
-            }
+            Opcode::Return => return self.op_return(),
 
             // ── Builtins ──────────────────────────────────────────────────────
             Opcode::CallBuiltinMut(id, argc) => {
@@ -4839,6 +4864,11 @@ impl Vm {
                     return Ok(Slice::Waiting(self.suspended.take().unwrap()));
                 }
             } else {
+                // A call `run_fast` made itself may have stopped the handler
+                // (a host call on an actor's worker).
+                if self.suspended.is_some() {
+                    return Ok(Slice::Waiting(self.suspended.take().unwrap()));
+                }
                 let frame = self.call_stack.last_mut().unwrap();
                 if frame.ip >= frame.func.bytecode.len() {
                     let stack_base = frame.stack_base;

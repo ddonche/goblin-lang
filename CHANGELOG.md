@@ -3,6 +3,12 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.77 — 2026-11-20
+
+- Calls and returns take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.7 billion machine instructions on 0.51.76 and 60.3 billion on 0.51.77. 100 years, median of three runs alternating with 0.51.76 (time; peak memory): without regions 34.2 s → 33.2 s (95 → 96 MB); 4 regions on one thread 67.0 s → 67.3 s (271 → 277 MB); 4 regions on 4 threads 31.0 s → 32.3 s (349 → 346 MB); 4 regions on 8 threads 31.4 s → 30.2 s (348 → 355 MB), within this machine's noise. Histories are identical. Call micro-benchmark: 2,297 → 2,101 machine instructions per pass.
+  - A call to an action and its return run straight from the run loop instead of going through the general step.
+  - An action held in a variable is called without first copying it out.
+
 ## 0.51.76 — 2026-11-20
 
 - Field writes take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 62.2 billion machine instructions on 0.51.75 and 60.7 billion on 0.51.76 (2.5% fewer). 100 years, median of three runs alternating with 0.51.75 (time; peak memory): without regions 34.9 s → 34.4 s (96 → 95 MB); 4 regions on one thread 65.1 s → 65.4 s (275 → 277 MB); 4 regions on 4 threads 30.5 s → 30.7 s (355 → 360 MB); 4 regions on 8 threads 29.7 s → 29.4 s (352 → 356 MB), within this machine's noise. Histories are identical. Field write micro-benchmark: 2,665 → 1,687 machine instructions per pass.
