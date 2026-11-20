@@ -3,6 +3,15 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.76 — 2026-11-20
+
+- Field writes take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 62.2 billion machine instructions on 0.51.75 and 60.7 billion on 0.51.76 (2.5% fewer). 100 years, median of three runs alternating with 0.51.75 (time; peak memory): without regions 34.9 s → 34.4 s (96 → 95 MB); 4 regions on one thread 65.1 s → 65.4 s (275 → 277 MB); 4 regions on 4 threads 30.5 s → 30.7 s (355 → 360 MB); 4 regions on 8 threads 29.7 s → 29.4 s (352 → 356 MB), within this machine's noise. Histories are identical. Field write micro-benchmark: 2,665 → 1,687 machine instructions per pass.
+  - `p >> field |= v` with a number, bool or nil runs in the fast loop, finding the field where that line found it last time.
+  - Any other field write finds the field once instead of three times and no longer copies its name.
+  - Storing an object's id back into the variable that already holds it (what a field write does next) is skipped.
+  - A `repeat` over a list no longer goes through a builtin call to start.
+  - A DES formula is found among the compiled ones without hashing the name of its file.
+
 ## 0.51.75 — 2026-11-20
 
 - Comparisons, arithmetic and `x |= ...` on plain numbers take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.74 → 0.51.75: empty loop 769 → 613; arithmetic 1,444 → 1,171; local copies 1,508 → 1,258; decimals 1,519 → 1,157; field write 2,827 → 2,665; field read 1,296 → 1,107; call 2,552 → 2,260. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.74 (time; peak memory): without regions 34.6 s → 35.2 s (96 → 98 MB); 4 regions on one thread 65.6 s → 64.6 s (274 → 275 MB); 4 regions on 4 threads 30.5 s → 31.2 s (345 → 344 MB); 4 regions on 8 threads 29.3 s → 30.4 s (345 → 350 MB), within this machine's noise. Histories are identical.

@@ -343,6 +343,63 @@ impl Vm {
         Step::Done
     }
 
+    /// `Opcode::SetField` for a number, bool or nil written to an existing
+    /// field of a stored object, named by its id: what `set_field_named`
+    /// does, finding the field where this step found it last time (as
+    /// `get_plain_field` reads). Slow for anything else: an overlay's
+    /// record, the owner field, a write the world's regions must hear of,
+    /// a readonly or missing field.
+    #[inline(never)]
+    fn set_plain_field(&mut self, idx: u16) -> Step {
+        let n = self.stack.len();
+        if n < 2 { return Step::Slow; }
+        let Some(v) = self.plain_top() else { return Step::Slow };
+        let v = std::mem::ManuallyDrop::new(v);
+        // In the program that runs a world, its objects' writes go to their regions.
+        if self.session.region.is_none() && self.session.world.is_some() { return Step::Slow; }
+        let frame = self.call_stack.last().unwrap();
+        let func = &frame.func;
+        let Some(Value::Str(name)) = func.constants.get(idx as usize) else { return Step::Slow };
+        if AsRef::<str>::as_ref(name) == crate::store::OWNER_FIELD { return Step::Slow; }
+        let uuid = match &self.stack[n - 2] {
+            Operand::Ref(t) => match self.session.get_stash(t) { Ok(st) => match &st.value { Value::Ref(u) => u.clone(), _ => return Step::Slow }, Err(_) => return Step::Slow },
+            Operand::Val(Value::Ref(u)) => u.clone(),
+            _ => return Step::Slow,
+        };
+        if uuid.starts_with(OVERLAY_RECORD) { return Step::Slow; }
+        let hints = func.field_hints.get_or_init(|| (0..func.bytecode.len()).map(|_| std::cell::Cell::new((0, 0))).collect());
+        let hint = &hints[frame.ip - 1];
+        let Some(Value::Object(o)) = self.session.object_store.get_mut(&uuid) else { return Step::Slow };
+        if !o.readonly_fields.is_empty() && o.readonly_fields.contains(name.as_str()) { return Step::Slow; }
+        let layout = o.fields.layout_id();
+        let at = match hint.get() {
+            (l, at) if l == layout => at as usize,
+            _ => {
+                let Some(at) = o.fields.get_index_of(name.as_str()) else { return Step::Slow };
+                hint.set((layout, at as u32));
+                at
+            }
+        };
+        let v = std::mem::ManuallyDrop::into_inner(v);
+        // A trait field (a 0..1 number at creation) stays in 0..1.
+        let v = if !o.trait_fields.is_empty() && o.trait_fields.contains(name.as_str()) {
+            match v {
+                Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
+                Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
+                other => other,
+            }
+        } else { v };
+        match std::rc::Rc::make_mut(&mut o.fields).get_index_mut(at) {
+            Some((_, slot)) => *slot = v,
+            None => return Step::Slow,
+        }
+        self.session.touch(&uuid);
+        // As `set_field_named`: the value goes, the object's id stays.
+        self.pop_plain();
+        *self.stack.last_mut().unwrap() = Operand::Val(Value::Ref(uuid));
+        Step::Done
+    }
+
     /// After a field read: whether the next step only needs an object's id
     /// (a store into a variable, another field read, a comparison, a call).
     fn keeps_ref(&self) -> bool {
@@ -517,9 +574,11 @@ impl Vm {
                 // A number, bool or nil (or a variable holding one) into a
                 // variable only this call holds: overwritten in place, as
                 // `store_local_op` does it, without its other checks.
-                let stored = match self.plain_top() { Some(v) => self.store_plain_local(slot, v), None => false };
-                if stored { self.pop_plain(); }
-                else { return done!(self.store_local_op(slot, matches!(op, Opcode::StoreLocal(_)))); }
+                let stored = match self.plain_top() {
+                    Some(v) => { let ok = self.store_plain_local(slot, v); if ok { self.pop_plain(); } ok }
+                    None => { let ok = self.same_id_store(slot); if ok { self.stack.pop(); } ok }
+                };
+                if !stored { return done!(self.store_local_op(slot, matches!(op, Opcode::StoreLocal(_)))); }
             }
             Opcode::Pop => {
                 // A reference that can't be read (handed to an actor) errors the slow way.
@@ -544,6 +603,7 @@ impl Vm {
                 *c = !*c;
             }
             Opcode::GetMember(idx) => return sync!(self.get_plain_field(idx)),
+            Opcode::SetField(idx) => return sync!(self.set_plain_field(idx)),
             Opcode::Add | Opcode::Sub | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
                 let Some((a, b)) = self.top2_ints() else {
                     if matches!(op, Opcode::Eq | Opcode::Ne) { return sync!(self.fast_eq(matches!(op, Opcode::Eq))); }
@@ -4106,6 +4166,23 @@ impl Vm {
         Some((a, b))
     }
 
+    /// A store of an object's id into the variable that already holds that
+    /// very id (`p >> gold |= ...` hands `p` back): nothing would change.
+    /// The variable was named for the object when it first got it (see
+    /// `note_object_name`), so there is nothing to note either. True when
+    /// that is the case (the caller then pops the operand).
+    #[inline(always)]
+    fn same_id_store(&mut self, slot: u16) -> bool {
+        let Some(Operand::Val(Value::Ref(u))) = self.stack.last() else { return false };
+        let frame = self.call_stack.last().unwrap();
+        if frame.locks.is_some() { return false; }
+        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        match self.session.arena.get(t.addr.slot as usize) {
+            Some(st) if st.generation == t.addr.generation => matches!(&st.value, Value::Ref(held) if held.same(u)),
+            _ => false,
+        }
+    }
+
     /// `GuardRebindLocal(slot)` then `StoreLocal(slot)` when the variable
     /// holds a number, bool or nil and the top operand is one: the old
     /// value is overwritten in place (as `store_plain_local`, with one
@@ -6045,17 +6122,30 @@ impl Vm {
         // Mutate directly in object_store (shared reference semantics, like interpreter).
         self.session.touch(&uuid);
         if let Some(obj) = self.session.object_store.get_mut(&uuid) {
-            check_field_write(obj, &field_name)?;
             if let Value::Object(ref mut o) = obj {
+                // As `check_field_write`, finding the field's place once.
+                let name = field_name.as_str();
+                if !o.readonly_fields.is_empty() && o.readonly_fields.contains(name) {
+                    return Err(GoblinError::Runtime(format!(
+                        "P9001: readonly-field: cannot modify readonly field '{name}'")));
+                }
+                let Some(at) = o.fields.get_index_of(name) else {
+                    return Err(GoblinError::Runtime(format!(
+                        "R0403: no-such-field: no field '{name}'; check the field name or add it to the class")));
+                };
                 // A trait field (a 0..1 number at creation) stays in 0..1.
-                let new_val = if o.trait_fields.contains(field_name.as_str()) {
+                let new_val = if !o.trait_fields.is_empty() && o.trait_fields.contains(name) {
                     match new_val {
                         Value::Float(f) => Value::Float(f.clamp(0.0, 1.0)),
                         Value::Int(i) => Value::Float((i as f64).clamp(0.0, 1.0)),
                         other => other,
                     }
                 } else { new_val };
-                std::rc::Rc::make_mut(&mut o.fields).insert(field_name.to_string(), new_val);
+                // The field is there: its value is replaced in its place
+                // (no copy of its name, as `insert` would make).
+                if let Some((_, slot)) = std::rc::Rc::make_mut(&mut o.fields).get_index_mut(at) { *slot = new_val; }
+            } else {
+                check_field_write(obj, &field_name)?;
             }
             if AsRef::<str>::as_ref(&field_name) == crate::store::OWNER_FIELD { self.session.object_store.refile_owner(&uuid); }
             // A region's object, written by the program that runs
@@ -8960,7 +9050,11 @@ fn tick_expr_key(expr: &goblin_ast::Expr, params: &[&str]) -> (usize, usize, usi
     std::mem::discriminant(expr).hash(&mut h);
     params.len().hash(&mut h);
     for n in params { n.hash(&mut h); }
-    sp.file.hash(&mut h);
+    // The file by where its name is kept and its length, not its text:
+    // the name belongs to this very expression (as its address does), and
+    // hashing the whole path was most of the cost of a lookup.
+    (sp.file.as_ptr() as usize).hash(&mut h);
+    sp.file.len().hash(&mut h);
     (expr as *const goblin_ast::Expr as usize, sp.start, sp.end, sp.line_start, sp.col_start, h.finish())
 }
 

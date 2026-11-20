@@ -6418,7 +6418,12 @@ pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64),
             let n = xs.len() as i64;
             Ok((1, Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(xs))), n))
         }
-        Value::Array(_) | Value::Collection(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
+        // A list collection is its own iterable (`ToForIter` hands it back).
+        Value::Collection(c) => {
+            let n = collections::count(&c) as i64;
+            Ok((1, Value::Collection(c), n))
+        }
+        Value::Array(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
         other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
     }
 }
