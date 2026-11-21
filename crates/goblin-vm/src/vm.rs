@@ -5630,8 +5630,9 @@ impl Vm {
         &mut self,
         func_rc: Rc<FunctionObject>,
         upvalues: Vec<UpvalueCell>,
-        args: Vec<Value>,
+        args: impl IntoIterator<Item = Value, IntoIter: ExactSizeIterator>,
     ) -> Result<Value, GoblinError> {
+        let args = args.into_iter();
         // Trailing parameters with defaults may be left out, as in a call
         // from Goblin code; the callee fills them in.
         if args.len() < func_rc.required_params || args.len() > func_rc.params {
@@ -6921,7 +6922,7 @@ impl Vm {
                         }
                         _ => None,
                     };
-                    let r = self.call_func_core(func, Vec::new(), vals.into_vec()).ok()?;
+                    let r = self.call_func_core(func, Vec::new(), vals).ok()?;
                     if let (Some((key, epoch)), Some(m)) = (key, self.memo.as_mut()) {
                         if m.epoch == epoch && m.changing == 0 { m.answers.insert(key, r.clone()); }
                     }
