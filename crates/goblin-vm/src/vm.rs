@@ -717,11 +717,31 @@ impl Vm {
                 let t = t.clone();
                 self.stack.push(Operand::Ref(t));
             }
+            Opcode::IncLocal(c) => {
+                // `x |= x + k` on whole numbers: the steps after it at once.
+                if let Some(next) = self.inc_local(c, *ip, code) { *ip = next; return Step::Done; }
+                let v = self.call_stack.last().unwrap().func.constants[c as usize].clone_fast();
+                self.stack.push(Operand::Val(v));
+            }
+            Opcode::MoveLocal(src) => {
+                // `a |= b` with plain values: copied at once.
+                if let Some(next) = self.move_local(src, *ip, code) { *ip = next; return Step::Done; }
+                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(src as usize) else { return Step::Slow };
+                let t = t.clone();
+                self.stack.push(Operand::Ref(t));
+            }
             Opcode::CmpJump(slot) | Opcode::BinLocal(slot) => {
                 let done = if matches!(op, Opcode::CmpJump(_)) {
                     self.cmp_jump(slot, *ip, code).map(|next| *ip = next)
                 } else {
-                    self.bin_local(slot, *ip, code).map(|v| { self.stack.push(Operand::Val(v)); *ip += 2; })
+                    self.bin_local(slot, *ip, code).map(|v| {
+                        // `x |= a + b`: the store after it too, when it is a
+                        // plain overwrite (as `GuardRebindLocal` then `StoreLocal`).
+                        if let (Some(Opcode::GuardRebindLocal(d, _)), Some(Opcode::StoreLocal(t))) = (code.get(*ip + 2), code.get(*ip + 3)) {
+                            if d == t && self.write_plain_local(*d, &v) { *ip += 4; return; }
+                        }
+                        self.stack.push(Operand::Val(v)); *ip += 2;
+                    })
                 };
                 if done.is_some() { return Step::Done; }
                 // Not two plain numbers: just the `LoadLocal` it stands for.
@@ -756,6 +776,10 @@ impl Vm {
                 }
             }
             Opcode::Jump(offset) => *ip = (*ip as isize + offset as isize) as usize,
+            Opcode::LoopJump(offset) => {
+                *ip = (*ip as isize + offset as isize) as usize;
+                self.loop_back(ip, code);
+            }
             Opcode::JumpIfFalse(offset) | Opcode::JumpIfTrue(offset) => {
                 let Some(Operand::Val(Value::Bool(c))) = self.stack.last() else { return Step::Slow };
                 let jump = *c == matches!(op, Opcode::JumpIfTrue(_));
@@ -915,7 +939,7 @@ impl Vm {
     fn execute_op(&mut self, op: Opcode) -> Result<(), GoblinError> {
         match op {
             // ── Literals ────────────────────────────────────────────────────
-            Opcode::LoadConst(idx) => {
+            Opcode::LoadConst(idx) | Opcode::IncLocal(idx) => {
                 let val = {
                     let frame = self.call_stack.last().unwrap();
                     frame.func.constants[idx as usize].clone_fast()
@@ -936,7 +960,7 @@ impl Vm {
             }
 
             // ── Locals ──────────────────────────────────────────────────────
-            Opcode::LoadLocal(slot) | Opcode::CmpJump(slot) | Opcode::BinLocal(slot) => {
+            Opcode::LoadLocal(slot) | Opcode::CmpJump(slot) | Opcode::BinLocal(slot) | Opcode::MoveLocal(slot) => {
                 // Push a lazy Ref — deferred read, no clone until the value is used.
                 let t = self.call_stack.last().unwrap().load_local(slot)?;
                 self.stack.push(Operand::Ref(t));
@@ -1534,7 +1558,7 @@ impl Vm {
             }
 
             // ── Control flow ─────────────────────────────────────────────────
-            Opcode::Jump(offset) => {
+            Opcode::Jump(offset) | Opcode::LoopJump(offset) => {
                 let frame = self.call_stack.last_mut().unwrap();
                 frame.ip = (frame.ip as isize + offset as isize) as usize;
             }
@@ -4255,6 +4279,91 @@ impl Vm {
             }
             _ => false,
         }
+    }
+
+    /// `GuardRebindLocal(slot)` then `StoreLocal(slot)` of the plain value
+    /// `v` (a number, bool or nil) that was never pushed: written when the
+    /// variable holds a plain value and only this call holds it (as
+    /// `guard_store_plain`). False (nothing changed) otherwise.
+    #[inline(always)]
+    fn write_plain_local(&mut self, slot: u16, v: &Value) -> bool {
+        let frame = self.call_stack.last().unwrap();
+        if frame.locks.is_some() { return false; }
+        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let addr = t.addr;
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
+        match self.session.arena.get_mut(addr.slot as usize) {
+            Some(st) if st.generation == addr.generation && st.tether_count == 1
+                && matches!(st.value, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) => {
+                std::mem::forget(std::mem::replace(&mut st.value, v.clone_fast()));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// After `LoopJump` (ip at the loop's `RepeatNext`): that `RepeatNext`
+    /// when it only counts the pass, then for a condition loop its test
+    /// (`CmpJump`) and `RepeatIdx`, each done as its own step does it, as
+    /// far as they take the fast way. `ip` is left at the first step not
+    /// done, which then runs as usual.
+    #[inline(always)]
+    fn loop_back(&mut self, ip: &mut usize, code: &[Opcode]) {
+        let Some(Opcode::RepeatNext(idx)) = code.get(*ip).copied() else { return };
+        let frame = self.call_stack.last_mut().unwrap();
+        let crate::opcode::OpData::Repeat(r) = &frame.func.op_data[idx as usize] else { return };
+        let st = &mut frame.loops[r.id as usize];
+        if st.mode != 4 { return; }
+        st.counter += 1;
+        if st.counter >= st.limit { *ip += 1 + r.exit as usize; return; }
+        let (slot, n) = (r.idx, st.counter);
+        *ip += 1;
+        let Some(Opcode::CmpJump(s)) = code.get(*ip).copied() else { return };
+        let Some(next) = self.cmp_jump(s, *ip + 1, code) else { return };
+        *ip = next;
+        // The test passed when it went on to the `RepeatIdx` after it.
+        if matches!(code.get(next), Some(Opcode::RepeatIdx(i)) if *i == idx) && self.store_plain_local(slot, Value::Int(n)) { *ip += 1; }
+    }
+
+    /// `Opcode::IncLocal(c)`: `LoadConst(c)`, `AppendLocal(s)`,
+    /// `GuardRebindLocal(s)`, `StoreLocal(s)` at once when `s` and the
+    /// constant are whole numbers (the sum `AppendLocal` makes, stored as
+    /// `GuardRebindLocal` and `StoreLocal` would). The ip to go on at; None
+    /// to run the steps one by one.
+    #[inline(always)]
+    fn inc_local(&mut self, c: u16, ip: usize, code: &[Opcode]) -> Option<usize> {
+        let Opcode::AppendLocal(s) = *code.get(ip)? else { return None };
+        let frame = self.call_stack.last().unwrap();
+        let Value::Int(k) = *frame.func.constants.get(c as usize)? else { return None };
+        if frame.locks.is_some() { return None; }
+        let addr = frame.locals.get(s as usize)?.as_ref()?.addr;
+        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return None; }
+        match self.session.arena.get_mut(addr.slot as usize) {
+            Some(st) if st.generation == addr.generation && st.tether_count == 1 => {
+                let Value::Int(a) = st.value else { return None };
+                st.value = Value::Int(a.wrapping_add(k));
+                Some(ip + 3)
+            }
+            _ => None,
+        }
+    }
+
+    /// `Opcode::MoveLocal(src)`: `LoadLocal(src)`, `GuardRebindLocal(d)`,
+    /// `StoreLocal(d)` at once when both variables hold a number, bool or
+    /// nil (stored as `GuardRebindLocal` and `StoreLocal` would).
+    #[inline(always)]
+    fn move_local(&mut self, src: u16, ip: usize, code: &[Opcode]) -> Option<usize> {
+        let Opcode::GuardRebindLocal(d, _) = *code.get(ip)? else { return None };
+        let frame = self.call_stack.last().unwrap();
+        let from = frame.locals.get(src as usize)?.as_ref()?.addr;
+        let v = match self.session.arena.get(from.slot as usize) {
+            Some(st) if st.generation == from.generation => match st.value {
+                Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.value.clone_fast(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if self.write_plain_local(d, &v) { Some(ip + 2) } else { None }
     }
 
     #[inline(always)]

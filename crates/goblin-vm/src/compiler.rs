@@ -254,6 +254,12 @@ impl FunctionScope {
 /// `LoadLocal | LoadConst`, `+ - *` or comparison as a `BinLocal` (see the
 /// opcodes). Nothing moves: the first step is replaced, the others stay.
 fn mark_cmp_jumps(code: &mut [Opcode]) {
+    for i in 0..code.len() {
+        if let Opcode::Jump(o) = code[i] {
+            let t = i as isize + 1 + o as isize;
+            if t >= 0 && matches!(code.get(t as usize), Some(Opcode::RepeatNext(_))) { code[i] = Opcode::LoopJump(o); }
+        }
+    }
     let mut i = 0;
     while i + 3 < code.len() {
         if let [Opcode::LoadLocal(a), Opcode::LoadLocal(_) | Opcode::LoadConst(_),
@@ -266,6 +272,10 @@ fn mark_cmp_jumps(code: &mut [Opcode]) {
                 | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne] = code[i..i + 3] {
             code[i] = Opcode::BinLocal(a);
             i += 3;
+        } else if let [Opcode::LoadConst(c), Opcode::AppendLocal(s), Opcode::GuardRebindLocal(g, _), Opcode::StoreLocal(t)] = code[i..i + 4] {
+            if s == g && g == t { code[i] = Opcode::IncLocal(c); i += 4; } else { i += 1; }
+        } else if let [Opcode::LoadLocal(src), Opcode::GuardRebindLocal(g, _), Opcode::StoreLocal(t), _] = code[i..i + 4] {
+            if g == t && src != t { code[i] = Opcode::MoveLocal(src); i += 3; } else { i += 1; }
         } else {
             i += 1;
         }
@@ -860,13 +870,7 @@ impl Compiler {
             // A judge whose value nobody uses: each arm's value is worked
             // out and dropped where it is made, so no nil is pushed for the
             // no-match case and popped again.
-            Stmt::Expr(Expr::Judge { header, arms, all: false, .. }) => {
-                self.compile_judge_discard(header.as_deref(), arms)?;
-            }
-            Stmt::Expr(e) => {
-                self.compile_expr(e)?;
-                self.emit_discard();
-            }
+            Stmt::Expr(e) => self.compile_discarded(e)?,
 
             // `tick()` and its block: the phases it names, then the end of
             // the tick (what no phase holds, ageing, the count).
@@ -2519,19 +2523,76 @@ impl Compiler {
     /// `compile_judge_expr` for a judge used as a statement: the same arms
     /// in the same order (`else` only when none matched), with each arm's
     /// value dropped and nothing left on the stack.
+    /// Code that jumps when `e` is truthy (`when` true) or falsy (`when`
+    /// false) and goes on otherwise; gives the jumps to patch. `and` / `or`
+    /// jump on each side as it is worked out, instead of making their bool
+    /// and testing it again: a jump tests the same truthiness the bool was
+    /// made from, so the same branch is taken.
+    fn compile_cond_jump(&mut self, e: &Expr, when: bool) -> Result<Vec<usize>, GoblinError> {
+        // `!x` jumps the other way on `x` (`Not` makes its bool from the same truthiness).
+        if let Expr::Prefix(op, x, _) = e {
+            if op == "!" || op == "not" { return self.compile_cond_jump(x, !when); }
+        }
+        if let Expr::Binary(l, op, r, _) = e {
+            let and = op == "&&" || op == "and";
+            if and || op == "||" || op == "or" {
+                // `and` falsy / `or` truthy: either side settles it.
+                if and != when {
+                    let mut j = self.compile_cond_jump(l, when)?;
+                    j.extend(self.compile_cond_jump(r, when)?);
+                    return Ok(j);
+                }
+                // Otherwise the left side can only rule it out.
+                let skip = self.compile_cond_jump(l, !when)?;
+                let j = self.compile_cond_jump(r, when)?;
+                for k in skip { self.scope_mut().patch_jump(k); }
+                return Ok(j);
+            }
+        }
+        self.compile_expr(e)?;
+        Ok(vec![self.scope_mut().emit_jump(if when { Opcode::JumpIfTrue } else { Opcode::JumpIfFalse })])
+    }
+
+    /// An expression whose value nobody uses. A judge, or an `if` /
+    /// `unless`, has each branch's value worked out and dropped where it is
+    /// made, so no nil is pushed for the branch not written and popped again.
+    fn compile_discarded(&mut self, e: &Expr) -> Result<(), GoblinError> {
+        match e {
+            Expr::Judge { header, arms, all: false, .. } => self.compile_judge_discard(header.as_deref(), arms),
+            Expr::FreeCall(name, args, _) if matches!(name.trim_start_matches(':'), "if" | "unless") && !args.is_empty() => {
+                let else_jumps = self.compile_cond_jump(&args[0], name.trim_start_matches(':') == "unless")?;
+                if let Some(then) = args.get(1) { self.compile_discarded(then)?; }
+                match args.get(2) {
+                    Some(other) => {
+                        let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
+                        for j in else_jumps { self.scope_mut().patch_jump(j); }
+                        self.compile_discarded(other)?;
+                        self.scope_mut().patch_jump(end_jump);
+                    }
+                    None => for j in else_jumps { self.scope_mut().patch_jump(j); },
+                }
+                Ok(())
+            }
+            e => {
+                self.compile_expr(e)?;
+                self.emit_discard();
+                Ok(())
+            }
+        }
+    }
+
     fn compile_judge_discard(&mut self, header: Option<&Expr>, arms: &[JudgeArm]) -> Result<(), GoblinError> {
         let else_arm = arms.iter().find(|a| a.condition.is_none());
         let conds: Vec<&JudgeArm> = arms.iter().filter(|a| a.condition.is_some()).collect();
         let mut end_jumps: Vec<usize> = Vec::new();
         for (i, arm) in conds.iter().enumerate() {
-            self.compile_expr(arm.condition.as_ref().unwrap())?;
-            let skip = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+            let skips = self.compile_cond_jump(arm.condition.as_ref().unwrap(), false)?;
             self.compile_judge_arm_value(arm, header)?;
             self.emit_discard();
             if i + 1 < conds.len() || else_arm.is_some() {
                 end_jumps.push(self.scope_mut().emit_jump(Opcode::Jump));
             }
-            self.scope_mut().patch_jump(skip);
+            for k in skips { self.scope_mut().patch_jump(k); }
         }
         if let Some(else_arm) = else_arm {
             self.compile_judge_arm_value(else_arm, header)?;
@@ -3109,9 +3170,7 @@ impl Compiler {
                         span_debug: String::new(),
                     });
                 }
-                self.compile_expr(&args[0])?;
-                if invert { self.emit(Opcode::Not); }
-                let else_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                let else_jumps = self.compile_cond_jump(&args[0], invert)?;
                 // then branch
                 if args.len() > 1 {
                     self.compile_expr(&args[1])?;
@@ -3119,7 +3178,7 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                 }
                 let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
-                self.scope_mut().patch_jump(else_jump);
+                for j in else_jumps { self.scope_mut().patch_jump(j); }
                 // else branch
                 if args.len() > 2 {
                     self.compile_expr(&args[2])?;

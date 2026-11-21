@@ -3,6 +3,14 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.79 — 2026-11-21
+
+- Plain statements take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.78 → 0.51.79: empty loop 609 → 379; arithmetic 1,163 → 975; local copies 1,253 → 852; decimals 1,149 → 957; field write 1,665 → 1,444; field read 1,106 → 878; call 2,101 → 1,897. The capstone over 10 years (no regions, seed 42) runs 57.22 billion machine instructions on 0.51.78 and 57.15 billion on 0.51.79; its history is identical.
+  - `x |= x + 1` with a whole number, `a |= b` with plain values, and `x |= a + b` with plain numbers are each one step.
+  - The end of a `repeat` pass, the pass count and the loop's test (`repeat i < n`) are one step when they take the fast way.
+  - An `if` or `unless` whose value nobody uses no longer makes a nil for the branch not written and drops it again.
+  - `and`, `or` and `!` in the condition of an `if`, `unless` or judge jump on each side as it is worked out, instead of making a bool and testing it again.
+
 ## 0.51.78 — 2026-11-21
 
 - Link reads, DES formula lookups and program variables read inside a method take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.3 billion machine instructions on 0.51.77 and 57.2 billion on 0.51.78 (5.1% fewer). 100 years, median of three runs alternating with 0.51.77 (time; peak memory): without regions 31.5 s → 30.1 s (95 → 97 MB); 4 regions on one thread 58.0 s → 54.5 s (274 → 272 MB); 4 regions on 4 threads 24.9 s → 25.2 s (351 → 351 MB); 4 regions on 8 threads 23.3 s → 23.1 s (347 → 352 MB). Histories are identical.
