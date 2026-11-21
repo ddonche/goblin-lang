@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.80 — 2026-11-21
+
+- The capstone finds the war between two realms with one query instead of walking every open war (`war_between` in sims/capstone/polity.gbln). Over 10 years (no regions, seed 42) it runs 57.15 billion machine instructions on 0.51.79 and 54.94 billion on 0.51.80. 100 years, median of three runs alternating with 0.51.79 (time; peak memory): without regions 35.5 s → 32.9 s (103 → 97 MB); 4 regions on one thread 68.4 s → 66.6 s (296 → 269 MB); 4 regions on 4 threads 32.3 s → 31.9 s (382 → 346 MB); 4 regions on 8 threads 33.0 s → 31.7 s (372 → 338 MB). Histories are identical.
+
 ## 0.51.79 — 2026-11-21
 
 - Plain statements take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.78 → 0.51.79: empty loop 609 → 379; arithmetic 1,163 → 975; local copies 1,253 → 852; decimals 1,149 → 957; field write 1,665 → 1,444; field read 1,106 → 878; call 2,101 → 1,897. The capstone over 10 years (no regions, seed 42) runs 57.22 billion machine instructions on 0.51.78 and 57.15 billion on 0.51.79; its history is identical.

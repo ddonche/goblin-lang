@@ -1082,10 +1082,8 @@ xx
 
 /// The War between `p` and `t`, either way round, or nil.
 act war_between(p, t)
-    repeat :objects(War, !(it >> over)) as w
-        a | w >> attacker
-        d | w >> defender
-        if (a == p and d == t) or (a == t and d == p) => send w
+    repeat :objects(War, !(it >> over) and ((it >> attacker == p and it >> defender == t) or (it >> attacker == t and it >> defender == p))) as w
+        send w
     xx
     return nil
 xx
