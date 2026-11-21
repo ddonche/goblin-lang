@@ -1821,7 +1821,10 @@ fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &crate::value::O
     // its compiled form is found by its place.
     let own = vm.session.object_link_defs.get(&(from, channel) as &dyn Key2).cloned();
     let formula = match &own {
+        // A plain number is the start as it is.
+        Some(d) if d.constant.is_some() => return Ok(d.constant.unwrap_or_default()),
         Some(d) => &d.formula,
+        None if decl.has_formula && decl.constant.is_some() => return Ok(decl.constant.unwrap_or_default()),
         None if decl.has_formula => &decl.formula,
         // No formula: 0, or the nearer end of the range when 0 is outside
         // it, so a first `offset` gives the number written.

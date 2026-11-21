@@ -176,6 +176,12 @@ pub struct Vm {
     /// a formula evaluated every tick is compiled once.
     /// Compiled DES formulas, with whether `run_formula_in` can run each one.
     tick_exprs: std::collections::HashMap<(usize, usize, usize, u32, u32, u64), std::rc::Rc<TickFormula>, rustc_hash::FxBuildHasher>,
+    /// The formulas looked up last, by the expression's address: a hit
+    /// skips hashing the key (`tick_expr_front`). Emptied with `tick_exprs`.
+    tick_front: Option<Box<[Option<TickFront>; TICK_FRONT]>>,
+    /// `ProgramVar` reads: the global slot each (function, name constant)
+    /// found, with the program's names it was found among (`program_var_slot`).
+    program_vars: rustc_hash::FxHashMap<(usize, u16), ((usize, usize), crate::value::GStr, Option<String>, Option<usize>)>,
     /// On while a DES decision is worked out: answers of actions that only
     /// read, by arguments (memo.rs).
     pub(crate) memo: Option<Box<crate::memo::Memo>>,
@@ -247,7 +253,7 @@ pub enum Slice {
 
 impl Vm {
     pub fn new(session: Session) -> Self {
-        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), overlay_words: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
+        Vm { session, stack: Vec::new(), call_stack: Vec::new(), catch_stack: Vec::new(), interp_overrides: Vec::new(), resumable: false, suspended: None, scratch: Vec::new(), key_buf: Vec::new(), num_buf: Vec::new(), step_err: None, tick_exprs: Default::default(), tick_front: None, program_vars: Default::default(), memo: None, memo_kept: None, judge_calls: Default::default(), judge_classes: None, deciding: None, reads_only: Default::default(), formula_stack: Vec::new(), predicates: Default::default(), erase_conds: Default::default(), overlay_words: Default::default(), erase_classes: None, decide_plans: Default::default(), decide_classes: None, spare_locals: Vec::new(), owned_usable: Default::default(), owned_classes: None, inject_frames: Vec::new(), import_stack: Vec::new(), glam_files: std::collections::HashMap::new() }
     }
 
     /// Run a top-level function. Returns the final return value.
@@ -3070,7 +3076,7 @@ impl Vm {
                     made.retain(|(n, _)| *n != def.name);
                     made.push((def.name.clone(), kind));
                 }
-                self.tick_exprs.clear();
+                self.clear_tick_exprs();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
                 if !self.session.overlay_defs.contains_key(&vm_def.name) { self.session.kind_order.push(vm_def.name.clone()); }
@@ -3176,8 +3182,9 @@ impl Vm {
                     formula: def.formula.clone(),
                     has_formula: def.has_formula,
                     range: Some(range),
+                    constant: LinkDef::constant_of(&def.formula),
                 };
-                self.tick_exprs.clear();
+                self.clear_tick_exprs();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
                 self.session.link_defs.insert((def.class_name[..].to_string(), channel), std::rc::Rc::new(link_def));
@@ -3198,8 +3205,9 @@ impl Vm {
                     formula: def.formula.clone(),
                     has_formula: true,
                     range: None,
+                    constant: LinkDef::constant_of(&def.formula),
                 };
-                self.tick_exprs.clear();
+                self.clear_tick_exprs();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
                 self.session.object_link_defs.insert((uuid, channel), std::rc::Rc::new(link_def));
@@ -3250,7 +3258,7 @@ impl Vm {
                 let (min, max) = crate::tick::derive_link_formula_range(&d.formula);
                 d.formula_min = min;
                 d.formula_max = max;
-                self.tick_exprs.clear();
+                self.clear_tick_exprs();
                 self.erase_conds.clear();
                 self.decide_plans.clear();
                 self.session.object_decisions.insert(key.to_string(), std::rc::Rc::new(d));
@@ -3372,15 +3380,9 @@ impl Vm {
                 // A name in a method that is not a local is the program's
                 // variable of that name (as the interpreter reads it), else
                 // nil. An object's field is `@name`, never a bare name.
-                let found = {
-                        let qualified = self.call_stack.last()
-                            .and_then(|f| f.func.global_prefix.as_ref().map(|p| format!("{p}{field_name}")));
-                        let names = &self.session.global_names;
-                        qualified.and_then(|q| names.iter().position(|n| *n == q))
-                            .or_else(|| names.iter().position(|n| n.as_str() == field_name.as_str()))
-                            .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
-                            .and_then(|t| self.session.read_value(&t).ok())
-                };
+                let found = self.program_var_slot(idx, &field_name)
+                    .and_then(|slot| self.session.globals.get(slot).cloned().flatten())
+                    .and_then(|t| self.session.read_value(&t).ok());
                 let result = match found {
                     Some(v) => v,
                     None if self.self_has_field(&field_name) => return Err(Self::not_a_variable(&field_name)),
@@ -3390,6 +3392,30 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// The global slot a bare name in a method reads (`ProgramVar`): the
+    /// name with the code's module prefix, else the name itself, else
+    /// None. Kept per function and name while the program's names stay the
+    /// same, so the names are not searched (and the prefixed name not made)
+    /// on every read.
+    fn program_var_slot(&mut self, idx: u16, field_name: &crate::value::GStr) -> Option<usize> {
+        let func = &self.call_stack.last()?.func;
+        let names = &self.session.global_names;
+        let names_key = (Rc::as_ptr(names) as usize, names.len());
+        let key = (Rc::as_ptr(func) as usize, idx);
+        // The name and prefix are checked too: a freed function's address
+        // can be another's later.
+        if let Some((k, f, p, slot)) = self.program_vars.get(&key) {
+            if *k == names_key && f.as_str() == field_name.as_str() && *p == func.global_prefix { return *slot; }
+        }
+        let slot = func.global_prefix.as_ref()
+            .and_then(|p| names.iter().position(|n| n.len() == p.len() + field_name.len()
+                && n.starts_with(p.as_str()) && n.ends_with(field_name.as_str())))
+            .or_else(|| names.iter().position(|n| n.as_str() == field_name.as_str()));
+        if self.program_vars.len() >= 4096 { self.program_vars.clear(); }
+        self.program_vars.insert(key, (names_key, field_name.clone(), func.global_prefix.clone(), slot));
+        slot
     }
 
     fn render_string_interp(&mut self, s: &str) -> Result<String, GoblinError> {
@@ -5183,7 +5209,7 @@ impl Vm {
 
         // Pre-register classes/enums from the imported module
         // (with their methods compiled, as for the entry script)
-        self.tick_exprs.clear();
+        self.clear_tick_exprs();
         self.erase_conds.clear();
                 self.decide_plans.clear();
         crate::exec::install_classes(&mut self.session, compiled.classes, compiled.enums, Some(&module_prefix));
@@ -6102,8 +6128,13 @@ impl Vm {
         // DES formulas live in shared (Rc) definitions, so a formula keeps
         // its address; the key is that address, checked against the
         // formula's span and kind, and the names it is called with.
+        if let Some(f) = self.tick_expr_front(expr, param_names) { return Ok(f); }
         let key = tick_expr_key(expr, param_names);
-        if let Some(f) = self.tick_exprs.get(&key) { return Ok(f.clone()); }
+        if let Some(f) = self.tick_exprs.get(&key) {
+            let f = f.clone();
+            self.keep_tick_front(expr, param_names, &f);
+            return Ok(f);
+        }
         // Compiled against the program's globals, so a formula can read a
         // variable and call an action (`where [ kingdom(target) == 2 ]`); a
         // formula written in an imported module sees that module's names,
@@ -6124,9 +6155,54 @@ impl Vm {
         let f = std::rc::Rc::new(TickFormula { direct: formula_runs_direct(&f), misses: std::cell::Cell::new(0), hints, func: f, env: FormulaEnv::default(), tree });
         // A formula at a passing address (a copy) is compiled each time; keep
         // the table from growing without end.
-        if self.tick_exprs.len() >= 4096 { self.tick_exprs.clear(); }
+        if self.tick_exprs.len() >= 4096 { self.clear_tick_exprs(); }
         self.tick_exprs.insert(key, f.clone());
+        self.keep_tick_front(expr, param_names, &f);
         Ok(f)
+    }
+
+    /// Empties the compiled formulas (definitions changed, or the table
+    /// grew too large), the front table included.
+    fn clear_tick_exprs(&mut self) {
+        self.tick_exprs.clear();
+        self.tick_front = None;
+    }
+
+    /// The formula kept for this very expression and these parameter
+    /// names, if it was looked up last at its slot. An entry is the same
+    /// expression when its address, span, kind and file name all match (a
+    /// freed address reused is caught by the span and kind, and the table
+    /// is emptied with `tick_exprs` whenever definitions change); names
+    /// match when each is the same text.
+    #[inline]
+    fn tick_expr_front(&self, expr: &goblin_ast::Expr, params: &[&str]) -> Option<std::rc::Rc<TickFormula>> {
+        let front = self.tick_front.as_ref()?;
+        let e = front[tick_front_slot(expr)].as_ref()?;
+        let sp = expr.span();
+        if e.addr != expr as *const goblin_ast::Expr as usize || e.start != sp.start || e.end != sp.end
+            || e.file != (sp.file.as_ptr() as usize, sp.file.len())
+            || e.kind != std::mem::discriminant(expr) || e.nparams as usize != params.len() {
+            return None;
+        }
+        for (k, n) in e.params.iter().zip(params) {
+            if *k != (n.as_ptr() as usize, n.len()) { return None; }
+        }
+        Some(e.formula.clone())
+    }
+
+    /// Keeps a formula at its expression's slot (up to four names, kept by
+    /// where their text is; another copy of the same text just misses).
+    fn keep_tick_front(&mut self, expr: &goblin_ast::Expr, params: &[&str], f: &std::rc::Rc<TickFormula>) {
+        if params.len() > 4 { return; }
+        let front = self.tick_front.get_or_insert_with(|| Box::new(std::array::from_fn(|_| None)));
+        let sp = expr.span();
+        let mut ps = [(0usize, 0usize); 4];
+        for (k, n) in ps.iter_mut().zip(params) { *k = (n.as_ptr() as usize, n.len()); }
+        front[tick_front_slot(expr)] = Some(TickFront {
+            addr: expr as *const goblin_ast::Expr as usize, start: sp.start, end: sp.end,
+            file: (sp.file.as_ptr() as usize, sp.file.len()), kind: std::mem::discriminant(expr),
+            nparams: params.len() as u8, params: ps, formula: f.clone(),
+        });
     }
 
     /// `obj >> name |= v` (stack: [obj, v]): writes the field and leaves
@@ -9067,6 +9143,26 @@ fn concat_text(a: &str, b: &str) -> String {
     s.push_str(a);
     s.push_str(b);
     s
+}
+
+/// Slots in the front table of compiled formulas.
+const TICK_FRONT: usize = 256;
+
+/// One formula in the front table (see `Vm::tick_expr_front`).
+struct TickFront {
+    addr: usize,
+    start: usize,
+    end: usize,
+    file: (usize, usize),
+    kind: std::mem::Discriminant<goblin_ast::Expr>,
+    nparams: u8,
+    params: [(usize, usize); 4],
+    formula: std::rc::Rc<TickFormula>,
+}
+
+#[inline]
+fn tick_front_slot(expr: &goblin_ast::Expr) -> usize {
+    ((expr as *const goblin_ast::Expr as usize as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as usize
 }
 
 /// The tick-expr cache key: the formula's address, its span and kind, and

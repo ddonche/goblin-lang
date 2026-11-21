@@ -144,6 +144,25 @@ pub struct LinkDef {
     /// The values the link can take (None only for an object's own
     /// formula, which takes its class's range).
     pub range: Option<goblin_ast::LinkRange>,
+    /// The number the formula gives when it is a plain number (`score =>
+    /// .3`, or a block's start without `score`): read without running it.
+    #[serde(default)]
+    pub constant: Option<f64>,
+}
+
+impl LinkDef {
+    /// The number a formula that is a plain number gives, as the compiler
+    /// makes it (a whole number up to 2^53 is an Int, else it is a float).
+    /// None for anything else, which is run as a formula.
+    pub fn constant_of(formula: &goblin_ast::Expr) -> Option<f64> {
+        let goblin_ast::Expr::Number(raw, _) = formula else { return None };
+        let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+        if !raw.contains('.') && !raw.contains('e') && !raw.contains('E') {
+            let i = cleaned.parse::<i64>().ok()?;
+            return (i.unsigned_abs() <= 9_007_199_254_740_992).then_some(i as f64);
+        }
+        cleaned.parse::<f64>().ok()
+    }
 }
 
 /// The smallest arena size that triggers a collection.

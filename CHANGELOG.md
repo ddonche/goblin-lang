@@ -3,6 +3,13 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.78 — 2026-11-21
+
+- Link reads, DES formula lookups and program variables read inside a method take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.3 billion machine instructions on 0.51.77 and 57.2 billion on 0.51.78 (5.1% fewer). 100 years, median of three runs alternating with 0.51.77 (time; peak memory): without regions 31.5 s → 30.1 s (95 → 97 MB); 4 regions on one thread 58.0 s → 54.5 s (274 → 272 MB); 4 regions on 4 threads 24.9 s → 25.2 s (351 → 351 MB); 4 regions on 8 threads 23.3 s → 23.1 s (347 → 352 MB). Histories are identical.
+  - A link whose start is a plain number (`score => .3`, or a link block without `score`) gives that number without running it as a formula.
+  - A DES formula looked up again is found in a small table by where it is, before the table of every compiled formula.
+  - A bare name in a method that reads a program variable keeps the variable's place instead of building its full name and searching all of the program's names on every read.
+
 ## 0.51.77 — 2026-11-20
 
 - Calls and returns take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.7 billion machine instructions on 0.51.76 and 60.3 billion on 0.51.77. 100 years, median of three runs alternating with 0.51.76 (time; peak memory): without regions 34.2 s → 33.2 s (95 → 96 MB); 4 regions on one thread 67.0 s → 67.3 s (271 → 277 MB); 4 regions on 4 threads 31.0 s → 32.3 s (349 → 346 MB); 4 regions on 8 threads 31.4 s → 30.2 s (348 → 355 MB), within this machine's noise. Histories are identical. Call micro-benchmark: 2,297 → 2,101 machine instructions per pass.
