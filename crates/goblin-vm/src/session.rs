@@ -1061,7 +1061,7 @@ impl Session {
                 let new_items: Vec<Value> = items.iter()
                     .map(|v| self.clone_value_shallow(v))
                     .collect();
-                self.alloc_value(Value::Array(new_items))
+                self.alloc_value(Value::Array(Into::into(new_items)))
             }
 
             // Map: deep clone values
@@ -1069,7 +1069,7 @@ impl Session {
                 let new_m: std::collections::BTreeMap<String, Value> = m.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
-                self.alloc_value(Value::Map(new_m))
+                self.alloc_value(Value::Map(Into::into(new_m)))
             }
 
             // MapOrd: deep clone values
@@ -1077,7 +1077,7 @@ impl Session {
                 let new_m: indexmap::IndexMap<String, Value> = m.iter()
                     .map(|(k, v)| (k.clone(), self.clone_value_shallow(v)))
                     .collect();
-                self.alloc_value(Value::MapOrd(Box::new(new_m)))
+                self.alloc_value(Value::MapOrd(Into::into(Box::new(new_m))))
             }
 
             // Pair: deep clone both

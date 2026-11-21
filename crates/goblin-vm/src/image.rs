@@ -403,6 +403,6 @@ pub fn read_png(path: &str) -> Result<Value, GoblinError> {
     let mut m = std::collections::BTreeMap::new();
     m.insert("width".to_string(), Value::Int(w as i64));
     m.insert("height".to_string(), Value::Int(h as i64));
-    m.insert("pixels".to_string(), Value::Array(pixels));
-    Ok(Value::Map(m))
+    m.insert("pixels".to_string(), Value::Array(Into::into(pixels)));
+    Ok(Value::Map(Into::into(m)))
 }

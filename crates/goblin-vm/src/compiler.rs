@@ -1318,9 +1318,9 @@ impl Compiler {
                 })],
                 SweepArmKind::AllBody => vec![s("all"), s(""), s(""), s("all")],
             };
-            Value::Array(fields)
+            Value::Array(Into::into(fields))
         }).collect();
-        let spec_idx = self.add_constant(Value::Array(spec));
+        let spec_idx = self.add_constant(Value::Array(Into::into(spec)));
         self.emit(Opcode::LoadConst(spec_idx));
         self.emit(if matches!(sweep.mode, SweepMode::All) { Opcode::LoadTrue } else { Opcode::LoadFalse });
         for t in &sweep.targets { self.compile_expr(t)?; }
@@ -1518,7 +1518,7 @@ impl Compiler {
                     } else {
                         let mut parts = vec![Value::Str(s.clone().into())];
                         parts.extend(names.iter().cloned().map(|s: String| Value::Str(s.into())));
-                        let tidx = self.add_constant(Value::Array(parts));
+                        let tidx = self.add_constant(Value::Array(Into::into(parts)));
                         self.emit(Opcode::StringInterpVals(tidx, names.len() as u8));
                     }
                 } else {
@@ -2815,7 +2815,7 @@ impl Compiler {
         if info.is_empty() { return Ok(()); }
         info.reverse();
         let n = info.len() as u8;
-        let idx = self.add_constant(Value::Array(info));
+        let idx = self.add_constant(Value::Array(Into::into(info)));
         self.emit(Opcode::CheckPath(n, idx));
         Ok(())
     }

@@ -31,7 +31,7 @@ fn err(msg: String) -> GoblinError { GoblinError::Runtime(msg) }
 /// A list value's items, or None when the value is not a list.
 pub fn as_list(v: &Value) -> Option<Vec<Value>> {
     match v {
-        Value::Array(a) => Some(a.clone()),
+        Value::Array(a) => Some((a.clone()).into_vec()),
         Value::Collection(c) if !crate::collections::is_map_collection(c) => Some(crate::collections::to_vec(c)),
         _ => None,
     }
@@ -79,7 +79,7 @@ pub fn load(arg: &Value) -> Result<Value, GoblinError> {
             "load: every source must be a path string, got {}", p.type_name())))?;
         out.push(load_one(&path)?);
     }
-    Ok(Value::Array(out))
+    Ok(Value::Array(Into::into(out)))
 }
 
 fn load_one(path: &str) -> Result<Value, GoblinError> {
@@ -106,7 +106,7 @@ fn load_one(path: &str) -> Result<Value, GoblinError> {
             m.insert("data".to_string(), data);
         }
     }
-    Ok(Value::MapOrd(Box::new(m)))
+    Ok(Value::MapOrd(Into::into(Box::new(m))))
 }
 
 /// One source of a bundle, ready to evaluate.
@@ -170,7 +170,7 @@ pub fn merge_data(data: Vec<(String, Value)>) -> Result<Option<Value>, GoblinErr
             merged.insert(k, v);
         }
     }
-    Ok(Some(Value::MapOrd(Box::new(merged))))
+    Ok(Some(Value::MapOrd(Into::into(Box::new(merged)))))
 }
 
 /// The changes aimed at one target in one section.
@@ -255,9 +255,9 @@ pub fn apply(data: &Value, injections: &[Injection]) -> Result<Value, GoblinErro
                 out.extend(a.after.iter().map(|s| Value::Str(s.as_str().into())));
             }
         }
-        map.insert(sec.clone(), Value::Array(out));
+        map.insert(sec.clone(), Value::Array(Into::into(out)));
     }
-    Ok(Value::MapOrd(Box::new(map)))
+    Ok(Value::MapOrd(Into::into(Box::new(map))))
 }
 
 /// Read `:inject`'s arguments into a record.

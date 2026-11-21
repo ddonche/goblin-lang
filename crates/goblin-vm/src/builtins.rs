@@ -67,7 +67,7 @@ pub(crate) fn show_entries(v: Value, session: &Session) -> Value {
             }
             Value::Array(a) => Value::Array(a.into_iter().map(|x| walk(x, s, seen)).collect()),
             Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect()),
-            Value::MapOrd(m) => Value::MapOrd(Box::new(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect())),
+            Value::MapOrd(m) => Value::MapOrd(Into::into(Box::new(m.into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect()))),
             Value::Collection(c) if holds_entry_fields(&Value::Collection(c.clone())) => {
                 if c.is_map() {
                     let pairs = collections::to_pairs(&c).into_iter().map(|(k, x)| (k, walk(x, s, seen))).collect();
@@ -567,7 +567,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             match (read(0)?, read(1)?) {
                 (Value::Str(s), Value::Str(sub)) => {
                     if sub.is_empty() {
-                        return Ok(collections::into_collection(Value::Array(vec![])));
+                        return Ok(collections::into_collection(Value::Array(Into::into(vec![]))));
                     }
                     let mut out = Vec::new();
                     let mut start = 0usize;
@@ -576,7 +576,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         out.push(Value::Int(idx as i64));
                         start = idx + sub.len();
                     }
-                    Ok(collections::into_collection(Value::Array(out)))
+                    Ok(collections::into_collection(Value::Array(Into::into(out))))
                 }
                 (other, _) => Err(GoblinError::type_error("str", other.type_name(), "find_all")),
             }
@@ -636,7 +636,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             } else {
                 s.split(sep.as_str()).map(|p| Value::Str(p.to_string().into())).collect()
             };
-            Ok(collections::into_collection(Value::Array(parts)))
+            Ok(collections::into_collection(Value::Array(Into::into(parts))))
         }
         BuiltinId::Join => {
             if args.len() != 2 {
@@ -1016,7 +1016,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Pick => {
             expect_n(1)?;
             let cfg: std::collections::BTreeMap<String, Value> = match read(0)? {
-                Value::Map(m) => m,
+                Value::Map(m) => (m).into_inner(),
                 Value::MapOrd(m) => m.into_iter().collect(),
                 Value::Collection(c) if c.is_map() => crate::collections::to_pairs(&c).into_iter().filter_map(|(k, v)| if let Value::Str(s) = k { Some((s.into_string(), v)) } else { None }).collect(),
                 other => return Err(GoblinError::type_error("map (pick config)", other.type_name(), "pick")),
@@ -1125,7 +1125,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let pairs: Vec<Value> = entries.into_iter()
                         .map(|(k, v)| Value::Pair(Box::new(Value::Str(k.into())), Box::new(v)))
                         .collect();
-                    Ok(collections::into_collection(Value::Array(pairs)))
+                    Ok(collections::into_collection(Value::Array(Into::into(pairs))))
                 }
                 None => Err(GoblinError::type_error("map", read(0)?.type_name(), "items")),
             }
@@ -1233,7 +1233,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 }
                 Value::Array(mut items) => {
                     fisher_yates_shuffle(&mut items, session);
-                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat((items).into_vec()))))
                 }
                 Value::Collection(c) => {
                     let mut items = collections::to_vec(&c);
@@ -1277,7 +1277,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 }
                 Value::Array(mut items) => {
                     items.sort_by(collections::compare_for_sort);
-                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items))))
+                    Ok(Value::Collection(Rc::new(CollectionValue::from_flat((items).into_vec()))))
                 }
                 Value::Collection(c) => Ok(collections::sort_values(&c)),
                 other => Err(GoblinError::type_error("str, int, or array", other.type_name(), "sort")),
@@ -1291,14 +1291,14 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for c in s.chars() { *cnt.entry(c).or_insert(0) += 1; }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     for (c, n) in cnt { m.insert(c.to_string(), Value::Int(n)); }
-                    Ok(collections::into_collection(Value::Map(m)))
+                    Ok(collections::into_collection(Value::Map(Into::into(m))))
                 }
                 Value::Array(items) => {
                     let mut tally = std::collections::BTreeMap::<String, i64>::new();
                     for item in &items { *tally.entry(fmt_value_raw(item)).or_insert(0) += 1; }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     for (k, n) in tally { m.insert(k, Value::Int(n)); }
-                    Ok(collections::into_collection(Value::Map(m)))
+                    Ok(collections::into_collection(Value::Map(Into::into(m))))
                 }
                 Value::Collection(c) => {
                     let items = crate::collections::to_vec(&c);
@@ -1306,7 +1306,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for item in &items { *tally.entry(fmt_value_raw(item)).or_insert(0) += 1; }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     for (k, n) in tally { m.insert(k, Value::Int(n)); }
-                    Ok(collections::into_collection(Value::Map(m)))
+                    Ok(collections::into_collection(Value::Map(Into::into(m))))
                 }
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "freq")),
             }
@@ -1325,7 +1325,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for (k, n) in &counts { if *n > best_n { best_n = *n; best_k = k.clone(); } }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     m.insert(best_k, Value::Int(best_n));
-                    Ok(collections::into_collection(Value::Map(m)))
+                    Ok(collections::into_collection(Value::Map(Into::into(m))))
                 }
                 Value::Collection(c) => {
                     let items = crate::collections::to_vec(&c);
@@ -1337,7 +1337,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     for (k, n) in &counts { if *n > best_n { best_n = *n; best_k = k.clone(); } }
                     let mut m = std::collections::BTreeMap::<String, Value>::new();
                     m.insert(best_k, Value::Int(best_n));
-                    Ok(collections::into_collection(Value::Map(m)))
+                    Ok(collections::into_collection(Value::Map(Into::into(m))))
                 }
                 other => Err(GoblinError::type_error("array", other.type_name(), "mode")),
             }
@@ -1350,13 +1350,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let src_val = cfg.get("src").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'src'".into()))?;
             let xs: Vec<Value> = match src_val {
-                Value::Array(a) => a,
+                Value::Array(a) => (a).into_vec(),
                 Value::Collection(c) => crate::collections::to_vec(&c),
                 other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted src")),
             };
             let wt_val = cfg.get("weights").cloned().ok_or_else(|| GoblinError::Runtime("sample_weighted: missing 'weights'".into()))?;
             let ws: Vec<Value> = match wt_val {
-                Value::Array(a) => a,
+                Value::Array(a) => (a).into_vec(),
                 Value::Collection(c) => crate::collections::to_vec(&c),
                 other => return Err(GoblinError::type_error("array", other.type_name(), "sample_weighted weights")),
             };
@@ -1392,7 +1392,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 }
                 out.push(xs[lo].clone());
             }
-            Ok(collections::into_collection(Value::Array(out)))
+            Ok(collections::into_collection(Value::Array(Into::into(out))))
         }
         BuiltinId::Map => {
             if args.len() != 2 { return Err(GoblinError::ArityMismatch { expected: 2, got: args.len(), name: "map".into() }); }
@@ -1413,7 +1413,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         for r in results { match r { Value::Char(c) => out.push(c), Value::Str(ts) => out.push_str(&ts), _ => {} } }
                         Ok(Value::Str(out.into()))
                     } else {
-                        Ok(Value::Array(results))
+                        Ok(Value::Array(Into::into(results)))
                     }
                 }
                 Value::Array(xs) => {
@@ -1422,7 +1422,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         let result = call_builtin(bid, vec![v], session)?;
                         out.push(result);
                     }
-                    Ok(Value::Array(out))
+                    Ok(Value::Array(Into::into(out)))
                 }
                 Value::Collection(c) => {
                     let xs = crate::collections::to_vec(&c);
@@ -1431,7 +1431,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         let result = call_builtin(bid, vec![v], session)?;
                         out.push(result);
                     }
-                    Ok(Value::Array(out))
+                    Ok(Value::Array(Into::into(out)))
                 }
                 other => Err(GoblinError::type_error("str or array", other.type_name(), "map")),
             }
@@ -1448,7 +1448,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 Value::Array(items) => {
                     let mut seen = std::collections::BTreeSet::new();
                     let result: Vec<Value> = items.into_iter().filter(|item| seen.insert(fmt_value_raw(item))).collect();
-                    Ok(collections::into_collection(Value::Array(result)))
+                    Ok(collections::into_collection(Value::Array(Into::into(result))))
                 }
                 Value::Collection(c) => Ok(collections::unique(&c)),
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "unique")),
@@ -1472,7 +1472,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }
                     let mut out = Vec::new();
                     for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
-                    Ok(collections::into_collection(Value::Array(out)))
+                    Ok(collections::into_collection(Value::Array(Into::into(out))))
                 }
                 Value::Collection(c) => {
                     let items = crate::collections::to_vec(&c);
@@ -1483,7 +1483,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }
                     let mut out = Vec::new();
                     for (_, (n, exemplar)) in cnt { if n >= 2 { out.push(exemplar); } }
-                    Ok(collections::into_collection(Value::Array(out)))
+                    Ok(collections::into_collection(Value::Array(Into::into(out))))
                 }
                 other => Err(GoblinError::type_error("string or array", other.type_name(), "dups")),
             }
@@ -1629,7 +1629,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let mut idxs: Vec<usize> = (0..arr.len()).collect();
                     let mut items = Vec::with_capacity(n_out);
                     for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); items.push(arr[idxs[i]].clone()); }
-                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(Into::into(items))) }
                 }
                 Some(Value::Collection(c)) => {
                     let arr = crate::collections::to_vec(&c);
@@ -1638,7 +1638,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let mut idxs: Vec<usize> = (0..arr.len()).collect();
                     let mut items = Vec::with_capacity(n_out);
                     for i in 0..n_out { let j = i + rng_bounded(session, (arr.len() - i) as u64) as usize; idxs.swap(i, j); items.push(arr[idxs[i]].clone()); }
-                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(Into::into(items))) }
                 }
                 Some(Value::Map(map)) => {
                     let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -1646,8 +1646,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     if n_out > entries.len() { return Err(GoblinError::Runtime(format!("reap: requested {} but only {} available", n_out, entries.len()))); }
                     let mut idxs: Vec<usize> = (0..entries.len()).collect();
                     let mut items = Vec::with_capacity(n_out);
-                    for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); items.push(Value::Map(m)); }
-                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(items)) }
+                    for i in 0..n_out { let j = i + rng_bounded(session, (entries.len() - i) as u64) as usize; idxs.swap(i, j); let (k, v) = &entries[idxs[i]]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); items.push(Value::Map(Into::into(m))); }
+                    if n_out == 1 { Ok(items.pop().unwrap()) } else { Ok(Value::Array(Into::into(items))) }
                 }
                 _ => Err(GoblinError::Runtime("reap: src must be an array or map".into())),
             }
@@ -1689,8 +1689,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let chosen: std::collections::HashSet<usize> = indices[..count].iter().copied().collect();
                     let reaped: Vec<Value> = indices[..count].iter().map(|&i| xs[i].clone()).collect();
                     let remaining: Vec<Value> = xs.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, v)| v.clone()).collect();
-                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(reaped) };
-                    Ok(Value::Array(vec![Value::Array(remaining), reaped_val]))
+                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(Into::into(reaped)) };
+                    Ok(Value::Array(Into::into(vec![Value::Array(Into::into(remaining)), reaped_val])))
                 }
                 Value::Collection(c) => {
                     let xs = crate::collections::to_vec(&c);
@@ -1704,8 +1704,8 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let chosen: std::collections::HashSet<usize> = indices[..count].iter().copied().collect();
                     let reaped: Vec<Value> = indices[..count].iter().map(|&i| xs[i].clone()).collect();
                     let remaining: Vec<Value> = xs.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, v)| v.clone()).collect();
-                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(reaped) };
-                    Ok(Value::Array(vec![Value::Array(remaining), reaped_val]))
+                    let reaped_val = if count == 1 { reaped.into_iter().next().unwrap() } else { Value::Array(Into::into(reaped)) };
+                    Ok(Value::Array(Into::into(vec![Value::Array(Into::into(remaining)), reaped_val])))
                 }
                 Value::Str(s) => {
                     let chars: Vec<char> = s.chars().collect();
@@ -1720,7 +1720,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let reaped: Vec<char> = indices[..count].iter().map(|&i| chars[i]).collect();
                     let remaining: String = chars.iter().enumerate().filter(|(i, _)| !chosen.contains(i)).map(|(_, &c)| c).collect();
                     let reaped_val = if count == 1 { Value::Char(reaped[0]) } else { Value::Str(reaped.into_iter().collect()) };
-                    Ok(Value::Array(vec![Value::Str(remaining.into()), reaped_val]))
+                    Ok(Value::Array(Into::into(vec![Value::Str(remaining.into()), reaped_val])))
                 }
                 other => Err(GoblinError::type_error("array or string", other.type_name(), "reap!")),
             }
@@ -1912,7 +1912,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         BuiltinId::Reverse => {
             expect_n(1)?;
             match read(0)? {
-                Value::Array(mut items) => { items.reverse(); Ok(Value::Collection(Rc::new(CollectionValue::from_flat(items)))) }
+                Value::Array(mut items) => { items.reverse(); Ok(Value::Collection(Rc::new(CollectionValue::from_flat((items).into_vec())))) }
                 other => { let c = require_collection(other, "reverse")?; Ok(collections::reverse(&*c)) }
             }
         }
@@ -2329,9 +2329,9 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 out.insert("count".into(), Value::Int(1));
                 out.insert("sides".into(), Value::Int(sides));
                 out.insert("modifier".into(), Value::Int(modifier));
-                out.insert("values".into(), Value::Array(vec![Value::Int(a), Value::Int(b)]));
-                out.insert("kept".into(), Value::Array(vec![Value::Int(chosen)]));
-                out.insert("dropped".into(), Value::Array(vec![Value::Int(dropped_val)]));
+                out.insert("values".into(), Value::Array(Into::into(vec![Value::Int(a), Value::Int(b)])));
+                out.insert("kept".into(), Value::Array(Into::into(vec![Value::Int(chosen)])));
+                out.insert("dropped".into(), Value::Array(Into::into(vec![Value::Int(dropped_val)])));
                 out.insert("sum".into(), Value::Int(chosen));
                 out.insert("total".into(), Value::Int(total));
                 out.insert("adv".into(), Value::Bool(adv));
@@ -2340,7 +2340,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
                 if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
                 if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
-                Value::Map(out)
+                Value::Map(Into::into(out))
             } else {
                 let vals: Vec<i64> = (0..count).map(|_| roll_one(sides)).collect();
                 let mut keep_mask = vec![true; vals.len()];
@@ -2378,7 +2378,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 if explode { out.insert("explode".into(), Value::Bool(true)); }
                 if let Some(lo) = clamp_lo { out.insert("clamp_min".into(), Value::Int(lo)); }
                 if let Some(hi) = clamp_hi { out.insert("clamp_max".into(), Value::Int(hi)); }
-                Value::Map(out)
+                Value::Map(Into::into(out))
             };
             Ok(detail)
         }
@@ -2530,13 +2530,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let v = args[0].clone();
             Ok(match v {
                 Value::Int(n) if n < 0 => Value::Nil,
-                Value::Int(0) => Value::Array(vec![Value::Int(0)]),
+                Value::Int(0) => Value::Array(Into::into(vec![Value::Int(0)])),
                 Value::Int(n) => {
                     let mut val = n as i128;
                     let mut out = Vec::new();
                     while val > 0 { out.push(Value::Int((val % 10) as i64)); val /= 10; }
                     out.reverse();
-                    Value::Array(out)
+                    Value::Array(Into::into(out))
                 }
                 Value::Str(s) => Value::Array(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
                 _ => Value::Nil,
@@ -2557,21 +2557,21 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 return Err(GoblinError::Runtime("secure_pick: 'count' must be a non-negative integer".into()));
             }
             let n_out = count_f as usize;
-            if n_out == 0 { return Ok(Value::Array(vec![])); }
+            if n_out == 0 { return Ok(Value::Array(Into::into(vec![]))); }
             let finish = |mut items: Vec<Value>| -> Value {
-                if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(items) }
+                if n_out == 1 { items.pop().unwrap_or(Value::Nil) } else { Value::Array(Into::into(items)) }
             };
             // src collection (Array or Str-as-char-array)
             let allow_dups_default = !m.contains_key("src"); // dups default true for ranges
             let allow_dups = map_get_bool(&m, "allow_dups").unwrap_or(allow_dups_default);
             if let Some(src) = m.get("src") {
                 let items: Vec<Value> = match src {
-                    Value::Array(a) => a.clone(),
+                    Value::Array(a) => (a.clone()).into_vec(),
                     Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string().into())).collect(),
                     Value::Map(sm) => sm.iter().map(|(k, v)| {
                         let mut pair = std::collections::BTreeMap::new();
                         pair.insert(k.clone(), v.clone());
-                        Value::Map(pair)
+                        Value::Map(Into::into(pair))
                     }).collect(),
                     _ => return Err(GoblinError::Runtime("secure_pick: unsupported src type".into())),
                 };
@@ -2761,7 +2761,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
         // ── for-loop coercion: converts any iterable to a sequentially-indexable array ──
         BuiltinId::RepeatPrep => {
             let (mode, iter, limit) = repeat_plan(read(0)?, session)?;
-            Ok(Value::Array(vec![Value::Int(mode), iter, Value::Int(limit)]))
+            Ok(Value::Array(Into::into(vec![Value::Int(mode), iter, Value::Int(limit)])))
         }
         BuiltinId::ToForIter => {
             // The loop reads `iter[i]` each pass, so the iterable must be cheap to
@@ -2770,22 +2770,22 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let v = read(0)?;
             let seq = |items: Vec<Value>| Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(items)));
             let arr = match v {
-                Value::Array(xs) => seq(xs),
+                Value::Array(xs) => seq((xs).into_vec()),
                 Value::Seq(s) => seq(s.items),
                 Value::Collection(c) => {
                     if crate::collections::is_map_collection(&c) {
                         seq(crate::collections::to_pairs(&c).into_iter()
-                            .map(|(k, v)| Value::Array(vec![k, v]))
+                            .map(|(k, v)| Value::Array(Into::into(vec![k, v])))
                             .collect())
                     } else {
                         Value::Collection(c)
                     }
                 }
                 Value::Map(m) => seq(m.into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::Str(k.into()), v]))
+                    .map(|(k, v)| Value::Array(Into::into(vec![Value::Str(k.into()), v])))
                     .collect()),
                 Value::MapOrd(m) => seq(m.into_iter()
-                    .map(|(k, v)| Value::Array(vec![Value::Str(k.into()), v]))
+                    .map(|(k, v)| Value::Array(Into::into(vec![Value::Str(k.into()), v])))
                     .collect()),
                 Value::Str(s) => seq(s.chars().map(Value::Char).collect()),
                 Value::Nil => seq(Vec::new()),
@@ -2985,7 +2985,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     map.insert(k.trim().to_string(), Value::Str(vv.trim().to_string().into()));
                 }
             }
-            Ok(Value::Map(map))
+            Ok(Value::Map(Into::into(map)))
         }
 
 
@@ -3145,7 +3145,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let comps: Vec<Value> = std::path::Path::new(&path).components()
                 .map(|c| Value::Str(c.as_os_str().to_string_lossy().into_owned().into()))
                 .collect();
-            Ok(Value::Array(comps))
+            Ok(Value::Array(Into::into(comps)))
         }
         BuiltinId::PathFixSeparators => {
             expect_n(1)?;
@@ -3196,13 +3196,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                 }
             }
             walk_dir(std::path::Path::new(&root), &pattern, &mut results);
-            Ok(Value::Array(results))
+            Ok(Value::Array(Into::into(results)))
         }
         BuiltinId::ListDirs => {
             expect_n(1)?;
             let root = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "list_dirs")) };
             let root_path = std::path::Path::new(&root);
-            if !root_path.exists() || !root_path.is_dir() { return Ok(Value::Array(vec![])); }
+            if !root_path.exists() || !root_path.is_dir() { return Ok(Value::Array(Into::into(vec![]))); }
             let mut out = Vec::new();
             if let Ok(entries) = std::fs::read_dir(root_path) {
                 for entry in entries.flatten() {
@@ -3214,7 +3214,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     }
                 }
             }
-            Ok(Value::Array(out))
+            Ok(Value::Array(Into::into(out)))
         }
         BuiltinId::EscapeHtml => {
             expect_n(1)?;
@@ -3374,13 +3374,13 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             expect_n(1)?;
             let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_str")) };
             let cfg = parse_dice_string_to_map(&dice_str)?;
-            dispatch(BuiltinId::Roll, vec![Value::Map(cfg)], session)
+            dispatch(BuiltinId::Roll, vec![Value::Map(Into::into(cfg))], session)
         }
         BuiltinId::RollDetailStr => {
             expect_n(1)?;
             let dice_str = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "roll_detail_str")) };
             let cfg = parse_dice_string_to_map(&dice_str)?;
-            dispatch(BuiltinId::RollDetail, vec![Value::Map(cfg)], session)
+            dispatch(BuiltinId::RollDetail, vec![Value::Map(Into::into(cfg))], session)
         }
 
         // ── Type / format builtins ─────────────────────────────────────────────
@@ -3406,7 +3406,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                         None => Value::Str("none".into()),
                     });
                     map.insert("decmark".into(), Value::Str(spec.sep_decimal.to_string().into()));
-                    Ok(Value::Map(map))
+                    Ok(Value::Map(Into::into(map)))
                 }
                 _ => Ok(Value::Nil),
             }
@@ -3439,17 +3439,17 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     map.insert("front_hits".into(), Value::Int(c.meta.front_hits as i64));
                     map.insert("back_hits".into(), Value::Int(c.meta.back_hits as i64));
                     map.insert("mid_hits".into(), Value::Int(c.meta.mid_hits as i64));
-                    Ok(Value::Map(map))
+                    Ok(Value::Map(Into::into(map)))
                 }
                 Value::Array(a) => {
                     let mut map = std::collections::BTreeMap::new();
                     map.insert("len".into(), Value::Int(a.len() as i64));
-                    Ok(Value::Map(map))
+                    Ok(Value::Map(Into::into(map)))
                 }
                 Value::Seq(s) => {
                     let mut map = std::collections::BTreeMap::new();
                     map.insert("len".into(), Value::Int(s.len() as i64));
-                    Ok(Value::Map(map))
+                    Ok(Value::Map(Into::into(map)))
                 }
                 other => Err(GoblinError::type_error("collection", other.type_name(), "metrics")),
             }
@@ -3912,7 +3912,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let owned: Vec<Value> = at.into_iter()
                 .filter_map(|i| session.object_store.get_index(i).map(|(_, v)| v.clone()))
                 .collect();
-            Ok(Value::Array(owned))
+            Ok(Value::Array(Into::into(owned)))
         }
         BuiltinId::OwnsTree => {
             // owns_tree(x): one line per object inside x at every depth,
@@ -4038,7 +4038,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             for oi in elsewhere_overlays(session, &host) {
                 overlays.push(Value::Str(oi.overlay_name.clone().into()));
             }
-            Ok(Value::Array(overlays))
+            Ok(Value::Array(Into::into(overlays)))
         }
         BuiltinId::OverlayStrength => {
             if args.len() != 2 {
@@ -4262,7 +4262,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let refs: Vec<Value> = world.neighbors(x, y).into_iter()
                 .map(|(nx, ny)| Value::GridRef { grid_id: Rc::from(grid_id.as_str()), x: nx, y: ny })
                 .collect();
-            Ok(Value::Array(refs))
+            Ok(Value::Array(Into::into(refs)))
         }
         BuiltinId::GridOccupied | BuiltinId::GridUnoccupied | BuiltinId::GridOccupiedCount | BuiltinId::GridUnoccupiedCount => {
             let name = match id { BuiltinId::GridOccupied => "grid_occupied", BuiltinId::GridUnoccupied => "grid_unoccupied",
@@ -4325,7 +4325,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             } else {
                 map.insert("has_hierarchy".into(), Value::Bool(false));
             }
-            Ok(Value::Map(map))
+            Ok(Value::Map(Into::into(map)))
         }
         BuiltinId::GridTileInfo => {
             if args.len() != 3 {
@@ -4346,7 +4346,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             map.insert("region_x".into(), Value::Int(rx as i64));
             map.insert("region_y".into(), Value::Int(ry as i64));
             map.insert("layers".into(),   Value::Array(tile.layer_names().into_iter().map(|s: String| Value::Str(s.into())).collect()));
-            Ok(Value::Map(map))
+            Ok(Value::Map(Into::into(map)))
         }
         BuiltinId::GridRegionInfo => {
             if args.len() != 3 {
@@ -4369,7 +4369,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             map.insert("tile_y".into(),         Value::Int(tile_y as i64));
             map.insert("tiles_per_edge".into(), Value::Int(h.tiles_per_region_edge as i64));
             map.insert("layers".into(),         Value::Array(region.layer_names().into_iter().map(|s: String| Value::Str(s.into())).collect()));
-            Ok(Value::Map(map))
+            Ok(Value::Map(Into::into(map)))
         }
 
         // ── Compiler-synthesized builtins ─────────────────────────────────────
@@ -4509,7 +4509,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             };
             let fields = match read(2)? {
                 Value::Nil => None,
-                Value::MapOrd(m) => Some(*m),
+                Value::MapOrd(m) => Some(m.into_inner()),
                 Value::Map(m) => {
                     let mut out = indexmap::IndexMap::new();
                     for (k, v) in m { out.insert(k, v); }
@@ -4663,7 +4663,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
                     let tokens: Vec<Value> = re.find_iter(&text)
                         .map(|m| Value::Str(m.as_str().to_string().into()))
                         .collect();
-                    Ok(Value::Array(tokens))
+                    Ok(Value::Array(Into::into(tokens)))
                 }
                 Err(_) => Err(GoblinError::Runtime("tokenize: invalid delimiter pattern".to_string())),
             }
@@ -4677,12 +4677,12 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             match read(0)? {
                 Value::Array(v) => Ok(Value::Array(v)),
                 Value::Str(s) => Ok(Value::Array(s.chars().map(|c| Value::Char(c)).collect())),
-                Value::Map(m) => Ok(Value::Array(m.into_values().collect())),
-                Value::MapOrd(m) => Ok(Value::Array(m.into_values().collect())),
-                Value::Collection(c) if c.is_map() => Ok(Value::Array(collections::values(&c))),
+                Value::Map(m) => Ok(Value::Array(m.into_inner().into_values().collect())),
+                Value::MapOrd(m) => Ok(Value::Array(m.into_inner().into_values().collect())),
+                Value::Collection(c) if c.is_map() => Ok(Value::Array(Into::into(collections::values(&c)))),
                 v @ Value::Collection(_) => Ok(v),
-                Value::Seq(s) => Ok(Value::Array(s.items)),
-                Value::Nil => Ok(Value::Array(vec![])),
+                Value::Seq(s) => Ok(Value::Array(Into::into(s.items))),
+                Value::Nil => Ok(Value::Array(Into::into(vec![]))),
                 other => Err(GoblinError::type_error("collection", other.type_name(), "get")),
             }
         }
@@ -4779,22 +4779,22 @@ fn slice_expr_impl(recv: Value, start_v: Value, end_v: Value, step: usize) -> Re
     let end_raw   = want_idx(end_v,   "slice end")?;
 
     let recv = match recv {
-        Value::Collection(c) if !collections::is_map_collection(&c) => Value::Array(collections::to_vec(&c)),
-        Value::Seq(sq) => Value::Array(sq.items),
+        Value::Collection(c) if !collections::is_map_collection(&c) => Value::Array(Into::into(collections::to_vec(&c))),
+        Value::Seq(sq) => Value::Array(Into::into(sq.items)),
         other => other,
     };
     match recv {
         Value::Array(xs) => {
             let len = xs.len();
             let (s, e) = clamp(start_raw, end_raw, len);
-            if s >= e { return Ok(Value::Array(vec![])); }
+            if s >= e { return Ok(Value::Array(Into::into(vec![]))); }
             if step == 1 {
-                Ok(Value::Array(xs[s..e].to_vec()))
+                Ok(Value::Array(Into::into(xs[s..e].to_vec())))
             } else {
                 let mut out = Vec::new();
                 let mut i = s;
                 while i < e { out.push(xs[i].clone()); i = i.saturating_add(step); }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
         }
         Value::Str(ref s) => {
@@ -4918,21 +4918,21 @@ pub(crate) fn cast_value_to_lock(v: Value, lock: &str) -> Result<Value, GoblinEr
             for elem in elems {
                 results.push(cast_value_to_lock(elem, lock)?);
             }
-            return Ok(Value::Array(results));
+            return Ok(Value::Array(Into::into(results)));
         }
         Value::Map(map) => {
             let mut results = std::collections::BTreeMap::new();
             for (k, val) in map {
                 results.insert(k, cast_value_to_lock(val, lock)?);
             }
-            return Ok(Value::Map(results));
+            return Ok(Value::Map(Into::into(results)));
         }
         Value::MapOrd(map) => {
             let mut results = indexmap::IndexMap::new();
-            for (k, val) in *map {
+            for (k, val) in map.into_inner() {
                 results.insert(k, cast_value_to_lock(val, lock)?);
             }
-            return Ok(Value::MapOrd(Box::new(results)));
+            return Ok(Value::MapOrd(Into::into(Box::new(results))));
         }
         Value::Collection(coll) => {
             use crate::value::CollectionLayout;
@@ -5241,7 +5241,7 @@ fn parse_dice_string_to_map(s: &str) -> Result<std::collections::BTreeMap<String
 fn require_collection(v: Value, op: &'static str) -> Result<std::rc::Rc<CollectionValue>, GoblinError> {
     match v {
         Value::Collection(c) => Ok(c),
-        Value::Array(xs) => Ok(std::rc::Rc::new(CollectionValue::from_flat(xs))),
+        Value::Array(xs) => Ok(std::rc::Rc::new(CollectionValue::from_flat((xs).into_vec()))),
         Value::Map(m) => {
             let pairs = m.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect();
             Ok(std::rc::Rc::new(CollectionValue::from_map(pairs)))
@@ -5257,7 +5257,7 @@ fn require_collection(v: Value, op: &'static str) -> Result<std::rc::Rc<Collecti
 /// Extract a Vec<Value> from either Value::Array or Value::Collection.
 pub(crate) fn value_to_items(v: Value, op: &'static str) -> Result<Vec<Value>, GoblinError> {
     match v {
-        Value::Array(xs) => Ok(xs),
+        Value::Array(xs) => Ok((xs).into_vec()),
         Value::Collection(c) => {
             use crate::value::CollectionLayout;
             Ok(match &c.layout {
@@ -5268,13 +5268,13 @@ pub(crate) fn value_to_items(v: Value, op: &'static str) -> Result<Vec<Value>, G
                     let mut m = std::collections::BTreeMap::new();
                     m.insert("key".to_string(), k.clone());
                     m.insert("value".to_string(), v.clone());
-                    Value::Map(m)
+                    Value::Map(Into::into(m))
                 }).collect(),
                 CollectionLayout::HashMapBackend(hm) => hm.iter().map(|(k, v)| {
                     let mut m = std::collections::BTreeMap::new();
                     m.insert("key".to_string(), k.clone());
                     m.insert("value".to_string(), v.clone());
-                    Value::Map(m)
+                    Value::Map(Into::into(m))
                 }).collect(),
             })
         }
@@ -5430,7 +5430,7 @@ fn map_str_1(v: &Value, f: &dyn Fn(&str) -> String) -> Result<Value, GoblinError
             for it in xs {
                 out.push(map_str_1(it, f)?);
             }
-            Ok(Value::Array(out))
+            Ok(Value::Array(Into::into(out)))
         }
         other => Err(GoblinError::type_error("string/char", other.type_name(), "string builtin")),
     }
@@ -5486,7 +5486,7 @@ fn mixed_case(v: &Value, seed: u128) -> Result<Value, GoblinError> {
                     other => return Err(GoblinError::type_error("string/char", other.type_name(), "mixed")),
                 });
             }
-            Ok(Value::Array(out))
+            Ok(Value::Array(Into::into(out)))
         }
         other => Err(GoblinError::type_error("string/char", other.type_name(), "mixed")),
     }
@@ -5790,7 +5790,7 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
                 for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                 result
             };
-            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(Into::into(out))) }
         }
         // A list: draw by position, without copying the list out first.
         Some(whole @ Value::Collection(c)) if !c.is_map() => {
@@ -5804,7 +5804,7 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
             };
             let mut out = Vec::with_capacity(n_out);
             for k in ks { out.push(crate::collections::get_index(whole, &Value::Int(k as i64))?); }
-            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(Into::into(out))) }
         }
         Some(Value::Collection(c)) => {
             let arr = crate::collections::to_vec(&c);
@@ -5817,20 +5817,20 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
                 for k in pick_indices(session, arr.len(), n_out) { result.push(arr[k].clone()); }
                 result
             };
-            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(Into::into(out))) }
         }
         Some(Value::Map(map)) => {
             let entries: Vec<(String, Value)> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             if entries.is_empty() { return Err(GoblinError::Runtime("pick: empty src map".into())); }
             if !allow_dups && n_out > entries.len() { return Err(GoblinError::Runtime(format!("pick: requested {} but only {} available", n_out, entries.len()))); }
             let out: Vec<Value> = if allow_dups {
-                (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(m) }).collect()
+                (0..n_out).map(|_| { let (k, v) = &entries[rng_bounded(session, entries.len() as u64) as usize]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); Value::Map(Into::into(m)) }).collect()
             } else {
                 let mut result = Vec::with_capacity(n_out);
-                for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(m)); }
+                for k in pick_indices(session, entries.len(), n_out) { let (k, v) = &entries[k]; let mut m = std::collections::BTreeMap::new(); m.insert(k.clone(), v.clone()); result.push(Value::Map(Into::into(m))); }
                 result
             };
-            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(Into::into(out))) }
         }
         // numeric or char range
         _ => {
@@ -5871,7 +5871,7 @@ fn pick_with<'c>(session: &mut Session, get: &dyn Fn(&str) -> Option<&'c Value>)
                 for k in pick_indices(session, len, n_out) { result.push(Value::Int(range_start + k as i64)); }
                 result
             };
-            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(out)) }
+            if n_out == 1 { Ok(out.into_iter().next().unwrap_or(Value::Nil)) } else { Ok(Value::Array(Into::into(out))) }
         }
     }
 }
@@ -5922,7 +5922,7 @@ fn json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Array(xs)   => Value::Array(xs.iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => {
             let m: std::collections::BTreeMap<String, Value> = obj.iter().map(|(k, v)| (k.clone(), json_to_value(v))).collect();
-            Value::Map(m)
+            Value::Map(Into::into(m))
         }
     }
 }
@@ -6120,7 +6120,7 @@ pub(crate) fn yall_to_value(v: &goblin_yall::YallValue) -> Value {
         goblin_yall::YallValue::Map(map) => {
             let mut out = indexmap::IndexMap::new();
             for (k, v2) in map.iter() { out.insert(k.clone(), yall_to_value(v2)); }
-            Value::MapOrd(Box::new(out))
+            Value::MapOrd(Into::into(Box::new(out)))
         }
     }
 }
@@ -6328,7 +6328,7 @@ pub(crate) fn json_parse_ordered(text: &str) -> Result<Value, serde_json::Error>
                 let v = map.next_value_seed(Seed)?;
                 m.insert(k, v);
             }
-            Ok(collections::into_collection(Value::MapOrd(Box::new(m))))
+            Ok(collections::into_collection(Value::MapOrd(Into::into(Box::new(m)))))
         }
     }
     let mut de = serde_json::Deserializer::from_str(text);
@@ -6368,7 +6368,7 @@ impl serde::Serialize for JsonOut<'_> {
             return m.end();
         }
         let items: Option<Vec<Value>> = match v {
-            Value::Array(xs) => Some(xs.clone()),
+            Value::Array(xs) => Some((xs.clone()).into_vec()),
             Value::Collection(c) => Some(collections::to_vec(c)),
             Value::Pair(a, b) => Some(vec![(**a).clone(), (**b).clone()]),
             _ => None,
@@ -6416,7 +6416,7 @@ pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64),
         // What `ToForIter` makes of a list, without the call.
         Value::Array(xs) => {
             let n = xs.len() as i64;
-            Ok((1, Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(xs))), n))
+            Ok((1, Value::Collection(std::rc::Rc::new(CollectionValue::from_flat((xs).into_vec()))), n))
         }
         // A list collection is its own iterable (`ToForIter` hands it back).
         Value::Collection(c) => {

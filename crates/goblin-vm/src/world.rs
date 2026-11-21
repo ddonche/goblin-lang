@@ -1196,7 +1196,7 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
         // them.
         let mut m = IndexMap::new();
         m.insert("tick".to_string(), Value::Int(job.tick));
-        call_handler(vm, state, handler, Value::MapOrd(Box::new(m)))?;
+        call_handler(vm, state, handler, Value::MapOrd(Into::into(Box::new(m))))?;
         vm.stack[root] = crate::vm::Operand::Val(state.clone());
     }
     // 4. What this tick did to other regions' objects goes to their owners.
@@ -2162,7 +2162,7 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
     for r in &ws.regions {
         // The state comes with the region's part (below); the handler is
         // the same action again.
-        let mut args = vec![Value::MapOrd(Box::new(IndexMap::new()))];
+        let mut args = vec![Value::MapOrd(Into::into(Box::new(IndexMap::new())))];
         if let Some(h) = &r.handler { args.push(Value::Str(h.as_str().into())); }
         let h = vm.actor_create(args, false)?;
         let a = crate::actor::actor_of(&h).ok_or_else(|| err("R1264: restore: a region could not start"))?;

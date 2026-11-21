@@ -1896,7 +1896,7 @@ impl Vm {
 
                 let provided: indexmap::IndexMap<String, Value> = match rhs {
                     Value::Map(m) => m.into_iter().collect(),
-                    Value::MapOrd(m) => *m,
+                    Value::MapOrd(m) => m.into_inner(),
                     Value::Collection(c) => {
                         crate::collections::to_pairs(&c)
                             .into_iter()
@@ -2488,7 +2488,7 @@ impl Vm {
                         map.insert("total".to_string(),     Value::Int(total     as i64));
                         map.insert("live".to_string(),      Value::Int(live      as i64));
                         map.insert("abandoned".to_string(), Value::Int(abandoned as i64));
-                        self.stack.push(Operand::Val(Value::MapOrd(Box::new(map))));
+                        self.stack.push(Operand::Val(Value::MapOrd(Into::into(Box::new(map)))));
                         return Ok(());
                     }
                     BuiltinId::TetherCount => {
@@ -2784,7 +2784,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "..")),
                 };
-                self.stack.push(Operand::Val(Value::Array(v)));
+                self.stack.push(Operand::Val(Value::Array(Into::into(v))));
             }
 
             Opcode::MakeRangeInclusive => {
@@ -2798,7 +2798,7 @@ impl Vm {
                     }
                     _ => return Err(GoblinError::type_error("int or char", end.type_name(), "...")),
                 };
-                self.stack.push(Operand::Val(Value::Array(v)));
+                self.stack.push(Operand::Val(Value::Array(Into::into(v))));
             }
 
             Opcode::Quick(_) => {
@@ -5850,21 +5850,21 @@ impl Vm {
                 for v in xs {
                     if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             Value::Map(m) => {
                 let mut out = std::collections::BTreeMap::new();
                 for (k, v) in &m {
                     if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
                 }
-                Ok(Value::Map(out))
+                Ok(Value::Map(Into::into(out)))
             }
             Value::MapOrd(m) => {
                 let mut out = indexmap::IndexMap::new();
                 for (k, v) in m.iter() {
                     if self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
                 }
-                Ok(Value::MapOrd(Box::new(out)))
+                Ok(Value::MapOrd(Into::into(Box::new(out))))
             }
             Value::Str(_) => Err(GoblinError::Runtime(
                 "get/reap/put with 'where' is not supported for strings; use update_where!/delete_where! instead".into()
@@ -5877,7 +5877,7 @@ impl Vm {
                 for v in xs {
                     if self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             other => Err(GoblinError::type_error("collection", other.type_name(), "get_where")),
         }
@@ -5891,21 +5891,21 @@ impl Vm {
                 for v in xs {
                     if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             Value::Map(m) => {
                 let mut out = std::collections::BTreeMap::new();
                 for (k, v) in &m {
                     if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
                 }
-                Ok(Value::Map(out))
+                Ok(Value::Map(Into::into(out)))
             }
             Value::MapOrd(m) => {
                 let mut out = indexmap::IndexMap::new();
                 for (k, v) in m.iter() {
                     if !self.vm_where_match(pred, is_literal, v)? { out.insert(k.clone(), v.clone()); }
                 }
-                Ok(Value::MapOrd(Box::new(out)))
+                Ok(Value::MapOrd(Into::into(Box::new(out))))
             }
             Value::Str(s) => {
                 // delete_where on a string: always literal substring removal, pred is the needle
@@ -5919,7 +5919,7 @@ impl Vm {
                 for v in xs {
                     if !self.vm_where_match(pred, is_literal, &v)? { out.push(v); }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             other => Err(GoblinError::type_error("collection", other.type_name(), "delete_where")),
         }
@@ -5937,7 +5937,7 @@ impl Vm {
                         out.push(v);
                     }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             Value::Map(m) => {
                 let mut out = m.clone();
@@ -5974,7 +5974,7 @@ impl Vm {
                         out.push(v);
                     }
                 }
-                Ok(Value::Array(out))
+                Ok(Value::Array(Into::into(out)))
             }
             other => Err(GoblinError::type_error("collection", other.type_name(), "update_where")),
         }
@@ -5987,7 +5987,7 @@ impl Vm {
         let is_str = matches!(coll, Value::Str(_));
         let elems: Vec<Value> = match coll {
             Value::Str(s) => s.chars().map(Value::Char).collect(),
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("str or array", other.type_name(), "map")),
         };
@@ -6005,13 +6005,13 @@ impl Vm {
             }
             Ok(Value::Str(s.into()))
         } else {
-            Ok(Value::Array(results))
+            Ok(Value::Array(Into::into(results)))
         }
     }
 
     fn vm_filter_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Str(s) => s.chars().map(Value::Char).collect(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array or str", other.type_name(), "filter")),
@@ -6022,12 +6022,12 @@ impl Vm {
                 out.push(v);
             }
         }
-        Ok(Value::Array(out))
+        Ok(Value::Array(Into::into(out)))
     }
 
     fn vm_reduce_inner(&mut self, coll: Value, init: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array", other.type_name(), "reduce")),
         };
@@ -6040,7 +6040,7 @@ impl Vm {
 
     fn vm_any_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Str(s) => s.chars().map(Value::Char).collect(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array or str", other.type_name(), "any")),
@@ -6055,7 +6055,7 @@ impl Vm {
 
     fn vm_all_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Str(s) => s.chars().map(Value::Char).collect(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array or str", other.type_name(), "all")),
@@ -6071,7 +6071,7 @@ impl Vm {
 
     fn vm_sort_by_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array", other.type_name(), "sort_by")),
         };
@@ -6087,7 +6087,7 @@ impl Vm {
 
     fn vm_for_each_inner(&mut self, coll: Value, func: Value) -> Result<Value, GoblinError> {
         let elems: Vec<Value> = match coll {
-            Value::Array(xs) => xs,
+            Value::Array(xs) => (xs).into_vec(),
             Value::Str(s) => s.chars().map(Value::Char).collect(),
             Value::Collection(col) => crate::collections::to_vec(&col),
             other => return Err(GoblinError::type_error("array or str", other.type_name(), "for_each_fn")),
@@ -6111,7 +6111,7 @@ impl Vm {
         }
         let forwarded: Vec<Value> = if args.len() == 2 {
             match args[1].clone() {
-                Value::Array(arr) => arr,
+                Value::Array(arr) => (arr).into_vec(),
                 Value::Collection(c) => crate::collections::to_vec(&c),
                 other => vec![other],
             }
@@ -6143,7 +6143,7 @@ impl Vm {
         }
         let mut acc = args[0].clone();
         let events: Vec<Value> = match &args[1] {
-            Value::Array(a) => a.clone(),
+            Value::Array(a) => (a.clone()).into_vec(),
             Value::Collection(c) => crate::collections::to_vec(c),
             other => return Err(GoblinError::type_error("array", other.type_name(), "summon events")),
         };
@@ -7100,7 +7100,7 @@ impl Vm {
             }
         }
         // Not a class/overlay — return empty array (or could error, but interpreter silently returns empty)
-        Ok(Value::Array(vec![]))
+        Ok(Value::Array(Into::into(vec![])))
     }
 
     /// Whether a `:objects` / `:overlays` predicate holds for `obj`. As in the
@@ -7323,7 +7323,7 @@ impl Vm {
                         for k in kinds {
                             if pred.as_ref().is_none_or(|p| self.query_predicate_holds(p, &k)) { out.push(k); }
                         }
-                        return Ok(Value::Array(out));
+                        return Ok(Value::Array(Into::into(out)));
                     }
                     return Err(GoblinError::Runtime(format!(
                         "R1230: unknown-class: no class named '{c}'; :objects(\"Name\") takes a class declared with <>Name, or an overlay class (<^>Name) that has overlays")));
@@ -7498,7 +7498,7 @@ impl Vm {
     /// The objects at `ids` (every object when None) that `pred` holds for.
     fn objects_among(&mut self, ids: Option<Vec<usize>>, pred: Option<Value>) -> Result<Value, GoblinError> {
         if let Some(found) = pred.as_ref().and_then(|p| self.objects_query_direct(p, ids.as_deref())) {
-            return Ok(Value::Array(found));
+            return Ok(Value::Array(Into::into(found)));
         }
         let all_values: Vec<Value> = match &ids {
             None => self.session.object_store.values().cloned().collect(),
@@ -7513,7 +7513,7 @@ impl Vm {
             };
             if include { results.push(obj); }
         }
-        Ok(Value::Array(results))
+        Ok(Value::Array(Into::into(results)))
     }
 
     /// `:objects(pred)` for a predicate that only reads (fields, numbers,
@@ -7685,7 +7685,7 @@ impl Vm {
         for inst in crate::world::remote_overlays(&mut self.session, Some(host)) {
             if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
         }
-        Ok(Value::Array(records))
+        Ok(Value::Array(Into::into(records)))
     }
 
     fn vm_overlays_query(&mut self, name: Option<&str>, pred: Option<Value>) -> Result<Value, GoblinError> {
@@ -7708,12 +7708,12 @@ impl Vm {
         for inst in crate::world::remote_overlays(&mut self.session, None) {
             if name.is_none_or(|n| n == inst.overlay_name) { records.push(self.overlay_record(&inst)); }
         }
-        let Some(pred_fn) = pred else { return Ok(Value::Array(records)) };
+        let Some(pred_fn) = pred else { return Ok(Value::Array(Into::into(records))) };
         let mut results = Vec::new();
         for r in records {
             if self.query_predicate_holds(&pred_fn, &r) { results.push(r); }
         }
-        Ok(Value::Array(results))
+        Ok(Value::Array(Into::into(results)))
     }
 
     /// A variable's value by name (objects dereferenced), as the interpreter's

@@ -264,7 +264,7 @@ pub fn event(args: Vec<Value>, session: &mut crate::session::Session) -> Result<
             tellings = Some(m.into_iter().map(|(k, v)| (k, v)).collect());
             Value::Nil
         }
-        Value::Collection(c) => Value::Array(crate::collections::to_vec(&c)),
+        Value::Collection(c) => Value::Array(Into::into(crate::collections::to_vec(&c))),
         a => a,
     }).collect();
     let who = named_in(session, &args[0])
@@ -361,5 +361,5 @@ pub fn timeline(args: Vec<Value>, session: &mut crate::session::Session) -> Resu
         r.read_line(&mut line).map_err(|e| bad(format!("can't read the event log: {e}")))?;
         out.push(Value::Str(line.trim_end_matches('\n').to_string().into()));
     }
-    Ok(Value::Array(out))
+    Ok(Value::Array(Into::into(out)))
 }

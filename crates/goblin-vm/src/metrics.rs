@@ -215,9 +215,9 @@ pub fn report(s: &crate::session::Session) -> Value {
     m.insert("overlays_gone".to_string(), int(c.metrics.overlays_made.saturating_sub(c.overlays)));
     let mut passes = indexmap::IndexMap::new();
     for (name, ns) in PASSES.iter().zip(c.metrics.pass_ns.iter()) { passes.insert(name.to_string(), ms(*ns)); }
-    m.insert("tick_ms".to_string(), Value::MapOrd(Box::new(passes)));
+    m.insert("tick_ms".to_string(), Value::MapOrd(Into::into(Box::new(passes))));
     let mut layers = indexmap::IndexMap::new();
     for (name, ns) in &c.metrics.layer_ns { layers.insert(name.clone(), ms(*ns)); }
-    m.insert("layer_ms".to_string(), Value::MapOrd(Box::new(layers)));
-    Value::MapOrd(Box::new(m))
+    m.insert("layer_ms".to_string(), Value::MapOrd(Into::into(Box::new(layers))));
+    Value::MapOrd(Into::into(Box::new(m)))
 }

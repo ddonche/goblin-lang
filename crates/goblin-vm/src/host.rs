@@ -184,7 +184,7 @@ mod native {
                 let mut m = indexmap::IndexMap::new();
                 m.insert("ok".to_string(), Value::Bool(true));
                 m.insert("rows_affected".to_string(), Value::Int(n as i64));
-                Ok(collections::into_collection(Value::MapOrd(Box::new(m))))
+                Ok(collections::into_collection(Value::MapOrd(Into::into(Box::new(m)))))
             }
         }
     }
@@ -196,7 +196,7 @@ mod native {
                 m.insert("status".to_string(), Value::Int(resp.status as i64));
                 m.insert("body".to_string(), Value::Str(resp.body.into()));
                 m.insert("ok".to_string(), Value::Bool(resp.status < 400));
-                Ok(Value::Map(m))
+                Ok(Value::Map(Into::into(m)))
             }
             Err(e) => Err(GoblinError::Runtime(format!("http error: {e}"))),
         }
