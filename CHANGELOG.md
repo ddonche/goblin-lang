@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.85 — 2026-11-21
+
+- A call's variables live on the VM's stack, as in Lua: the arguments a caller pushes already are the callee's first variables, so a call copies nothing into a separate list. A line of number arithmetic and comparisons (`x |= x + i * 2 - 1`, `if a * b < c`) runs as register code in one step, with the same results; anything that isn't a plain number takes the usual steps. This is step 3 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.84 → 0.51.85: empty loop 353 → 352; arithmetic 962 → 780; local copies 796 → 798; decimals 931 → 718; field write 1,508 → 1,502; field read 873 → 857; call 1,700 → 1,559. The capstone over 10 years (no regions, seed 42) runs 55.43 billion machine instructions on 0.51.84 and 54.46 billion on 0.51.85 (54.29 billion on 0.51.83). Histories are identical (seed 42 with and without regions, seed 7, seed 99 with regions).
+
 ## 0.51.84 — 2026-11-21
 
 - A variable holds its value in its call's frame instead of in a separate slot of the session's store, with the same results. A variable gets a slot of its own only when something needs one: a closure that captures it, `:mem_id` / `:mem_addr`, or a collection that a bang write changes in place. Arguments passed to an action go straight into its variables. This is step 2 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.83 → 0.51.84: empty loop 396 → 353; arithmetic 984 → 962; local copies 861 → 796; decimals 970 → 931; field write 1,445 → 1,508; field read 887 → 873; call 1,777 → 1,700. The capstone over 10 years (no regions, seed 42) runs 54.29 billion machine instructions on 0.51.83 and 55.43 billion on 0.51.84 (2.1% more: the run loop handles both kinds of variable until step 3 replaces it); its history is identical.

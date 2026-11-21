@@ -228,10 +228,12 @@ impl FunctionScope {
             }
         }
         let mut bytecode = self.bytecode;
+        let mut op_data = self.op_data;
+        mark_calcs(&mut bytecode, &self.constants, &mut op_data);
         mark_cmp_jumps(&mut bytecode);
         FunctionObject {
             bytecode,
-            op_data: self.op_data,
+            op_data,
             constants: self.constants,
             locals: total_slots,
             params: self.params,
@@ -246,6 +248,68 @@ impl FunctionScope {
             global_names,
             calls_values: self.calls_values, field_hints: Default::default(),
         }
+    }
+}
+
+/// Marks each run of number steps with two or more operations as a
+/// `CalcL` / `CalcK` (see the opcodes). Nothing moves: the run's first step
+/// is replaced, the others stay, so a jump into the run still finds them.
+fn mark_calcs(code: &mut [Opcode], constants: &[Value], op_data: &mut Vec<crate::opcode::OpData>) {
+    use crate::opcode::{Calc, CalcTail, COp, OpData, CALC_REGS};
+    let mut i = 0;
+    while i < code.len() {
+        let load = |op: Opcode| -> Option<COp> {
+            match op {
+                Opcode::LoadLocal(s) => Some(COp::Local(s)),
+                Opcode::LoadConst(c) => match constants.get(c as usize)? {
+                    Value::Int(n) => Some(COp::Int(*n)),
+                    Value::Float(x) => Some(COp::Float(*x)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        if load(code[i]).is_none() { i += 1; continue; }
+        // The longest run from i that leaves exactly one value.
+        let (mut depth, mut ops, mut best, mut bins) = (0usize, Vec::new(), None, 0);
+        let mut j = i;
+        while j < code.len() {
+            let op = match code[j] {
+                op @ (Opcode::LoadLocal(_) | Opcode::LoadConst(_)) => match load(op) { Some(c) => c, None => break },
+                Opcode::Add => COp::Add, Opcode::Sub => COp::Sub, Opcode::Mul => COp::Mul, Opcode::Div => COp::Div,
+                Opcode::Lt => COp::Lt, Opcode::Le => COp::Le, Opcode::Gt => COp::Gt, Opcode::Ge => COp::Ge,
+                Opcode::Eq => COp::Eq, Opcode::Ne => COp::Ne,
+                _ => break,
+            };
+            if matches!(op, COp::Local(_) | COp::Int(_) | COp::Float(_)) {
+                depth += 1;
+                if depth > CALC_REGS { break; }
+            } else {
+                if depth < 2 { break; }
+                depth -= 1;
+                bins += 1;
+            }
+            ops.push(op);
+            j += 1;
+            if depth == 1 && bins >= 2 { best = Some((j, ops.len())); }
+        }
+        let Some((end, n)) = best else { i += 1; continue };
+        if op_data.len() >= u16::MAX as usize { return; }
+        ops.truncate(n);
+        let tail = match (code.get(end), code.get(end + 1)) {
+            (Some(Opcode::GuardRebindLocal(d, _)), Some(Opcode::StoreLocal(t))) if d == t => CalcTail::Store(*d),
+            (Some(Opcode::JumpIfFalse(o)), _) => CalcTail::Jump(false, *o),
+            (Some(Opcode::JumpIfTrue(o)), _) => CalcTail::Jump(true, *o),
+            _ => CalcTail::Push,
+        };
+        let idx = op_data.len() as u16;
+        op_data.push(OpData::Calc(Box::new(Calc { ops, len: (end - i) as u16, tail })));
+        code[i] = match code[i] {
+            Opcode::LoadLocal(s) => Opcode::CalcL(s, idx),
+            Opcode::LoadConst(c) => Opcode::CalcK(c, idx),
+            _ => unreachable!(),
+        };
+        i = end;
     }
 }
 
