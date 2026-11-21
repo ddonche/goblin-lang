@@ -38,9 +38,6 @@ pub struct CallFrame {
     /// Index into Vm::stack where this frame's operands begin.
     /// On return, stack is truncated to this base.
     pub stack_base: usize,
-    /// If this is a method call, the tether for `self` in the caller's frame.
-    /// On return, if the result is an Object with same uuid, overwrite this tether.
-    pub self_tether: Option<Tether>,
     /// State of this call's `repeat` loops, by loop number (grown on use).
     pub loops: Vec<LoopState>,
     /// What this call does with the decision memo (see memo.rs), if one is on.
@@ -80,7 +77,7 @@ impl CallFrame {
         CallFrame {
             locals,
             locks: None,
-            upvalues, ip: 0, func, stack_base, self_tether: None, loops: Vec::new(), memo: None, made_overlays: None,
+            upvalues, ip: 0, func, stack_base, loops: Vec::new(), memo: None, made_overlays: None,
         }
     }
 
@@ -438,7 +435,10 @@ impl Vm {
         for i in (0..arg_count).rev() {
             let op = self.stack.pop().unwrap();
             // A frozen argument stays frozen inside the callee.
-            let v = self.arg_of(op)?;
+            let v = match op {
+                Operand::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => v,
+                op => self.arg_of(op)?,
+            };
             let t = self.session.alloc_value(v);
             new_frame.locals[i] = Some(t);
         }
@@ -466,8 +466,10 @@ impl Vm {
         // copy left behind would make the caller's next in-place
         // change copy the whole value.
         let ret_val = match ret_op {
+            // Only this call's own operands can refer to its variables:
+            // they were made after everything below its base.
             Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
-                && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
+                && !self.stack[self.call_stack.last().unwrap().stack_base..].iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
                 let stash = self.session.resolve_mut(t.addr)?;
                 if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
                     std::mem::replace(&mut stash.value, Value::Nil)
@@ -479,7 +481,6 @@ impl Vm {
         };
 
         let mut frame = self.call_stack.pop().unwrap();
-        let _ = frame.self_tether;
         if let Some(mark) = frame.memo.take() { self.memo_return(mark, &ret_val); }
         // The call's own variables that nothing else holds (no
         // closure captured them) are gone with it: free their slots
@@ -3741,7 +3742,6 @@ impl Vm {
         };
         for frame in &self.call_stack {
             for t in frame.locals.iter().flatten() { m.slot(t.addr.slot); }
-            if let Some(t) = &frame.self_tether { m.slot(t.addr.slot); }
             for cell in &frame.upvalues { m.slot(cell.0.borrow().addr.slot); }
             // What a running repeat walks over can be held nowhere else.
             for st in &frame.loops { m.value(&st.iter); }
