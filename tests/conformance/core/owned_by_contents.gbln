@@ -1,0 +1,16 @@
+/// known-gap: interp reads owned_by from a hard-coded owner_id field
+/// owned_by(x) lists the objects whose `owner` is x (directly inside it), in the order they came to it.
+<>Unit |
+    name: ""
+    owner: nil
+xx
+king <> Unit | name: "king"
+knight <> Unit | name: "knight", owner: king
+squire <> Unit | name: "squire", owner: knight
+page <> Unit | name: "page", owner: king
+o | :owned_by(king)
+:say(:len(o))
+:say(o[0] >> name)
+:say(o[1] >> name)
+:say(:owned_by(knight)[0] >> name)
+:say(:len(:owned_by(squire)))

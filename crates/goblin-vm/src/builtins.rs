@@ -129,6 +129,36 @@ pub(crate) fn is_math(id: BuiltinId) -> bool {
         | BuiltinId::Clamp | BuiltinId::Pow)
 }
 
+/// `:min`, `:max`, `:abs` and `:clamp` on whole and decimal numbers, worked
+/// out as their arms in `dispatch` do, without building their argument list
+/// again. None for anything else (dispatch then gives the answer or error).
+pub(crate) fn quick_math(id: BuiltinId, args: &[Value]) -> Option<Value> {
+    let f = |v: &Value| match v { Value::Int(n) => Some(*n as f64), Value::Float(x) => Some(*x), _ => None };
+    let all_int = || args.iter().all(|v| matches!(v, Value::Int(_)));
+    match id {
+        BuiltinId::Min | BuiltinId::Max if args.len() >= 2 => {
+            let mut m = f(&args[0])?;
+            for v in &args[1..] {
+                let x = f(v)?;
+                if (id == BuiltinId::Min && x < m) || (id == BuiltinId::Max && x > m) { m = x; }
+            }
+            Some(if all_int() { Value::Int(m as i64) } else { Value::Float(m) })
+        }
+        BuiltinId::Abs if args.len() == 1 => match &args[0] {
+            Value::Int(n) => Some(Value::Int(n.abs())),
+            Value::Float(x) => Some(Value::Float(x.abs())),
+            _ => None,
+        },
+        BuiltinId::Clamp if args.len() == 3 => {
+            let (x, lo, hi) = (f(&args[0])?, f(&args[1])?, f(&args[2])?);
+            if lo > hi { return None; }
+            let y = if x < lo { lo } else if x > hi { hi } else { x };
+            Some(if all_int() { Value::Int(y as i64) } else { Value::Float(y) })
+        }
+        _ => None,
+    }
+}
+
 /// Builtins whose arms are written against the legacy `Value::Map` /
 /// `Value::Array` shapes and only read their arguments (config / option maps,
 /// small source arrays). Their collection arguments are rewritten to legacy
@@ -3870,10 +3900,11 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
 
         // ── DES / Overlay builtins ─────────────────────────────────────────────
         BuiltinId::OwnedBy => {
-            // owned_by(owner): the objects whose owner_id is owner's uuid
-            // (direct children only), as the interpreter's object_store scan.
+            // owned_by(x): the objects whose `owner` is x (directly inside
+            // it), in the order they came to it.
             let owner_uuid = match args.first() {
                 Some(Value::Object(o)) => o.uuid.clone(),
+                Some(Value::Ref(u)) => u.clone(),
                 Some(Value::Str(s)) => s.to_string().into(),
                 _ => return Err(GoblinError::Runtime("A0412: owned-by-bad-arg: owned_by() argument must be an object".into())),
             };
@@ -3884,31 +3915,34 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             Ok(Value::Array(owned))
         }
         BuiltinId::OwnsTree => {
-            // owns_tree(root): one "{Class: id}" line per object, children
-            // (sorted) indented two spaces per level.
-            fn build_tree(owner_uuid: &str, object_store: &crate::store::ObjectStore, depth: usize) -> String {
-                let indent = "  ".repeat(depth);
-                let label = if let Some(Value::Object(o)) = object_store.get(owner_uuid) {
-                    let id = o.fields.get("id")
-                        .map(fmt_value_raw)
-                        .unwrap_or_else(|| owner_uuid.to_string());
-                    format!("{}{{{}: {}}}", indent, o.class_name, id)
-                } else {
-                    format!("{}{}", indent, owner_uuid)
+            // owns_tree(x): one line per object inside x at every depth,
+            // `Class name` (its `name` field, else the variable that names
+            // it), indented two spaces per level.
+            fn build_tree(uuid: &str, session: &Session, depth: usize, out: &mut Vec<String>) {
+                let store = &session.object_store;
+                let label = match store.get(uuid) {
+                    Some(Value::Object(o)) => {
+                        let name = match o.fields.get("name") {
+                            Some(Value::Str(n)) if !n.is_empty() => n.to_string(),
+                            _ => session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_else(|| uuid.to_string()),
+                        };
+                        format!("{} {}", o.class_name, name)
+                    }
+                    _ => uuid.to_string(),
                 };
-                let mut children: Vec<String> = owned_places(object_store, owner_uuid).into_iter()
-                    .filter_map(|i| object_store.get_index(i).map(|(u, _)| u.clone()))
-                    .map(|child_uuid| build_tree(&child_uuid, object_store, depth + 1))
-                    .collect();
-                children.sort();
-                if children.is_empty() { label } else { format!("{}\n{}", label, children.join("\n")) }
+                out.push(format!("{}{}", "  ".repeat(depth), label));
+                let kids: Vec<String> = store.contents_of(uuid).map(str::to_string).collect();
+                for k in kids { build_tree(&k, session, depth + 1, out); }
             }
             let root_uuid = match args.first() {
                 Some(Value::Object(o)) => o.uuid.clone(),
+                Some(Value::Ref(u)) => u.clone(),
                 Some(Value::Str(s)) => s.to_string().into(),
                 _ => return Err(GoblinError::Runtime("A0413: owns-tree-bad-arg: owns_tree() argument must be an object".into())),
             };
-            Ok(Value::Str(build_tree(&root_uuid, &session.object_store, 0).into()))
+            let mut out = Vec::new();
+            build_tree(&root_uuid, session, 0, &mut out);
+            Ok(Value::Str(out.join("\n").into()))
         }
         // clone_object resolves a variable name, so the VM handles it.
         BuiltinId::CloneObject => {
@@ -3934,7 +3968,7 @@ fn dispatch(id: BuiltinId, args: Vec<Value>, session: &mut Session) -> Result<Va
             let uuid = match read(0)? { Value::Str(s) => s, other => return Err(GoblinError::type_error("str", other.type_name(), "delete_object")) };
             if crate::world::erase_in_region(session, &uuid) { return Ok(Value::Nil); }
             crate::holdings::hand_over(session, &uuid, None);
-            session.object_store.move_contents_up(uuid.as_str());
+            crate::world::move_contents_up(session, uuid.as_str());
             session.object_store.shift_remove(&uuid);
             Ok(Value::Nil)
         }
@@ -5503,30 +5537,20 @@ pub(crate) fn drop_overlays_for(session: &mut Session, host_var: &str, host_uuid
     crate::tick::settle_films(session);
 }
 
+/// Where the objects directly inside `owner` (whose `owner` field names
+/// it) sit in the store, in the order they came to it.
+fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
+    store.contents_of(owner).filter_map(|u| store.get_index_of(u)).collect()
+}
+
 /// Erase an object and the runtime state attached to it (the interpreter's
 /// `erase_var`). The variable keeps a dangling reference, so reading it
 /// afterwards is an error.
-/// Where the objects `owner` holds sit in the store, in store order: those
-/// whose `owner` field names it (its contents list) and those whose
-/// `owner_id` text is its id.
-fn owned_places(store: &crate::store::ObjectStore, owner: &str) -> Vec<usize> {
-    let mut at: Vec<usize> = store.contents_of(owner).filter_map(|u| store.get_index_of(u)).collect();
-    for i in store.places() {
-        let Some((_, v)) = store.get_index(i) else { continue };
-        if matches!(v, Value::Object(o) if matches!(o.fields.get("owner_id"), Some(Value::Str(oid)) if oid == owner)) {
-            at.push(i);
-        }
-    }
-    at.sort_unstable();
-    at.dedup();
-    at
-}
-
 pub(crate) fn erase_object(session: &mut Session, var_name: &str, uuid: &str) {
     drop_overlays_for(session, var_name, uuid);
     crate::world::note_erased(session, uuid);
     crate::holdings::hand_over(session, uuid, None);
-    session.object_store.move_contents_up(uuid);
+    crate::world::move_contents_up(session, uuid);
     session.object_store.shift_remove(uuid);
     if let Some(handle) = session.des_store.handle_for_name(var_name) {
         if let Some(entity) = session.des_store.get(handle) {
@@ -6394,7 +6418,12 @@ pub fn repeat_plan(v: Value, session: &mut Session) -> Result<(i64, Value, i64),
             let n = xs.len() as i64;
             Ok((1, Value::Collection(std::rc::Rc::new(CollectionValue::from_flat(xs))), n))
         }
-        Value::Array(_) | Value::Collection(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
+        // A list collection is its own iterable (`ToForIter` hands it back).
+        Value::Collection(c) => {
+            let n = collections::count(&c) as i64;
+            Ok((1, Value::Collection(c), n))
+        }
+        Value::Array(_) | Value::Seq(_) => { let (it, n) = iter_of(v, session)?; Ok((1, it, n)) }
         other => Err(GoblinError::type_error("int, array, map, bool or nil", other.type_name(), "repeat")),
     }
 }

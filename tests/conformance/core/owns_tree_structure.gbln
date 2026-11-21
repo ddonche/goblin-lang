@@ -1,17 +1,16 @@
-/// owns_tree(root) renders the ownership tree, one "{Class: id}" line per object, children indented two spaces.
-<>Unit |
+/// known-gap: interp reads owns_tree from a hard-coded owner_id field and prints ids
+/// owns_tree(x) is one line per object inside x at every depth, "Class name" (its name field, else the variable that names it), indented two spaces per level, in the order they came to it.
+<>Place |
     name: ""
-    owner_id: ""
+    owner: nil
 xx
-king <> Unit | name: "king"
-knight <> Unit | name: "knight"
-squire <> Unit | name: "squire"
-knight >> owner_id |= king >> uuid
-squire >> owner_id |= knight >> uuid
-t | :owns_tree(king)
-rows | :split(t, "\n")
-:say(:len(rows))
-:say(:starts_with(rows[0], "\{Unit: "))
-:say(:starts_with(rows[1], "  \{Unit: "))
-:say(:starts_with(rows[2], "    \{Unit: "))
-:say(:len(:split(:owns_tree(squire), "\n")))
+<>Item |
+    owner: nil
+xx
+inn <> Place | name: "the inn"
+ana <> Place | name: "Ana", owner: inn
+pack <> Place | name: "backpack", owner: ana
+rope <> Item | owner: pack
+bram <> Place | name: "Bram", owner: inn
+:say(:owns_tree(inn))
+:say(:owns_tree(rope))

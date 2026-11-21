@@ -144,10 +144,29 @@ pub struct LinkDef {
     /// The values the link can take (None only for an object's own
     /// formula, which takes its class's range).
     pub range: Option<goblin_ast::LinkRange>,
+    /// The number the formula gives when it is a plain number (`score =>
+    /// .3`, or a block's start without `score`): read without running it.
+    #[serde(default)]
+    pub constant: Option<f64>,
+}
+
+impl LinkDef {
+    /// The number a formula that is a plain number gives, as the compiler
+    /// makes it (a whole number up to 2^53 is an Int, else it is a float).
+    /// None for anything else, which is run as a formula.
+    pub fn constant_of(formula: &goblin_ast::Expr) -> Option<f64> {
+        let goblin_ast::Expr::Number(raw, _) = formula else { return None };
+        let cleaned: String = raw.chars().filter(|&c| c != '_').collect();
+        if !raw.contains('.') && !raw.contains('e') && !raw.contains('E') {
+            let i = cleaned.parse::<i64>().ok()?;
+            return (i.unsigned_abs() <= 9_007_199_254_740_992).then_some(i as f64);
+        }
+        cleaned.parse::<f64>().ok()
+    }
 }
 
 /// The smallest arena size that triggers a collection.
-pub const GC_MIN_THRESHOLD: usize = 1 << 16;
+pub const GC_MIN_THRESHOLD: usize = 1 << 13;
 
 /// Roughly how many bytes of strings and collections may be stored into new
 /// slots before a collection runs, however few slots that took: a loop
@@ -162,6 +181,25 @@ pub struct LinkOffset {
 
 type LinkMap = HashMap<(String, String, String), Vec<LinkOffset>, rustc_hash::FxBuildHasher>;
 
+/// A key of two or three texts, looked up without making `String`s: a
+/// `(String, String)` key borrows as `dyn Key2`, so `(&str, &str)` finds it.
+/// It hashes as the tuple of strings does.
+pub trait Key2 { fn k0(&self) -> &str; fn k1(&self) -> &str; }
+impl Key2 for (String, String) { fn k0(&self) -> &str { &self.0 } fn k1(&self) -> &str { &self.1 } }
+impl Key2 for (&str, &str) { fn k0(&self) -> &str { self.0 } fn k1(&self) -> &str { self.1 } }
+impl<'a> std::borrow::Borrow<dyn Key2 + 'a> for (String, String) { fn borrow(&self) -> &(dyn Key2 + 'a) { self } }
+impl std::hash::Hash for dyn Key2 + '_ { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.k0().hash(h); self.k1().hash(h); } }
+impl PartialEq for dyn Key2 + '_ { fn eq(&self, o: &Self) -> bool { self.k0() == o.k0() && self.k1() == o.k1() } }
+impl Eq for dyn Key2 + '_ {}
+
+pub trait Key3 { fn k0(&self) -> &str; fn k1(&self) -> &str; fn k2(&self) -> &str; }
+impl Key3 for (String, String, String) { fn k0(&self) -> &str { &self.0 } fn k1(&self) -> &str { &self.1 } fn k2(&self) -> &str { &self.2 } }
+impl Key3 for (&str, &str, &str) { fn k0(&self) -> &str { self.0 } fn k1(&self) -> &str { self.1 } fn k2(&self) -> &str { self.2 } }
+impl<'a> std::borrow::Borrow<dyn Key3 + 'a> for (String, String, String) { fn borrow(&self) -> &(dyn Key3 + 'a) { self } }
+impl std::hash::Hash for dyn Key3 + '_ { fn hash<H: std::hash::Hasher>(&self, h: &mut H) { self.k0().hash(h); self.k1().hash(h); self.k2().hash(h); } }
+impl PartialEq for dyn Key3 + '_ { fn eq(&self, o: &Self) -> bool { self.k0() == o.k0() && self.k1() == o.k1() && self.k2() == o.k2() } }
+impl Eq for dyn Key3 + '_ {}
+
 /// Every change made to a link, by (from, to, name). Reads go straight to
 /// the map. It also answers "which objects does this one have a link to"
 /// from an index built when first asked and dropped on any change.
@@ -174,13 +212,88 @@ pub struct LinkTable {
 impl LinkTable {
     /// The objects `from` has a `name` link change to, in no set order.
     pub fn targets(&self, from: &str, name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        self.each_target(from, name, |b| out.push(b.to_string()));
+        out
+    }
+
+    /// Calls `f` with each object `from` has a `name` link change to, in no
+    /// set order.
+    pub fn each_target(&self, from: &str, name: &str, mut f: impl FnMut(&str)) {
         let mut idx = self.from.borrow_mut();
         let idx = idx.get_or_insert_with(|| {
             let mut m: HashMap<String, Vec<(String, String)>, rustc_hash::FxBuildHasher> = Default::default();
-            for (a, b, n) in self.map.keys() { m.entry(a.clone()).or_default().push((b.clone(), n.clone())); }
+            for (a, b, n) in self.map.keys() {
+                match m.get_mut(a.as_str()) {
+                    Some(v) => v.push((b.clone(), n.clone())),
+                    None => { m.insert(a.clone(), vec![(b.clone(), n.clone())]); }
+                }
+            }
             m
         });
-        idx.get(from).map(|v| v.iter().filter(|(_, n)| n == name).map(|(b, _)| b.clone()).collect()).unwrap_or_default()
+        if let Some(v) = idx.get(from) {
+            for (b, n) in v { if n == name { f(b); } }
+        }
+    }
+}
+
+/// `link_offsets.entry(key).or_default()`, keeping the index.
+pub struct LinkEntry<'a> { t: &'a mut LinkTable, k: (String, String, String) }
+impl<'a> LinkEntry<'a> {
+    pub fn or_default(self) -> &'a mut Vec<LinkOffset> {
+        let LinkEntry { t, k } = self;
+        if !t.map.contains_key(&k) { t.indexed_add(&k); }
+        t.map.entry(k).or_default()
+    }
+}
+
+// Changes that keep the index (`targets`) up to date instead of dropping
+// it: the index is rebuilt only after a change made through the map itself.
+impl LinkTable {
+    fn indexed_add(&mut self, k: &(String, String, String)) {
+        if let Some(idx) = self.from.get_mut() {
+            match idx.get_mut(k.0.as_str()) {
+                Some(v) => v.push((k.1.clone(), k.2.clone())),
+                None => { idx.insert(k.0.clone(), vec![(k.1.clone(), k.2.clone())]); }
+            }
+        }
+    }
+    fn indexed_remove(&mut self, k: &(String, String, String)) {
+        if let Some(idx) = self.from.get_mut() {
+            if let Some(v) = idx.get_mut(k.0.as_str()) {
+                if let Some(p) = v.iter().position(|(b, n)| *b == k.1 && *n == k.2) { v.swap_remove(p); }
+                if v.is_empty() { idx.remove(k.0.as_str()); }
+            }
+        }
+    }
+    pub fn entry(&mut self, k: (String, String, String)) -> LinkEntry<'_> { LinkEntry { t: self, k } }
+    pub fn insert(&mut self, k: (String, String, String), v: Vec<LinkOffset>) -> Option<Vec<LinkOffset>> {
+        if !self.map.contains_key(&k) { self.indexed_add(&k); }
+        self.map.insert(k, v)
+    }
+    pub fn remove(&mut self, k: &(String, String, String)) -> Option<Vec<LinkOffset>> {
+        let old = self.map.remove(k);
+        if old.is_some() { self.indexed_remove(k); }
+        old
+    }
+    /// Every change, to change in place (the keys stay).
+    pub fn iter_mut(&mut self) -> std::collections::hash_map::IterMut<'_, (String, String, String), Vec<LinkOffset>> { self.map.iter_mut() }
+    pub fn retain(&mut self, mut keep: impl FnMut(&(String, String, String), &mut Vec<LinkOffset>) -> bool) {
+        let mut gone: Vec<(String, String, String)> = Vec::new();
+        let indexed = self.from.get_mut().is_some();
+        let before = self.map.len();
+        // Past a quarter of the changes gone, the index is made again when
+        // next asked for instead.
+        let mut many = false;
+        self.map.retain(|k, v| {
+            let y = keep(k, v);
+            if !y && indexed && !many {
+                if gone.len() * 4 >= before { many = true; gone.clear(); } else { gone.push(k.clone()); }
+            }
+            y
+        });
+        if many { *self.from.get_mut() = None; return; }
+        for k in &gone { self.indexed_remove(k); }
     }
 }
 
@@ -353,6 +466,9 @@ pub struct Session {
     /// Each phase's view of the classes (`crate::tick::run_phase`), with
     /// the classes it was made from.
     pub phase_views: HashMap<String, (Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>, Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>)>,
+    /// While a phase runs: the classes its view (now `classes`) was made
+    /// from, which hold what the view leaves out (their actions).
+    pub phase_base: Option<Rc<HashMap<String, ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// What `:metrics()` reports: objects and overlays made, tick time.
     pub des_metrics: crate::metrics::DesMetrics,
     /// In a region: its objects that transitioned this tick (see
@@ -625,6 +741,7 @@ impl Session {
             compiled_methods: Default::default(),
             des_ticks: 0,
             phase_views: Default::default(),
+            phase_base: None,
             phase: None,
             event_log: None,
             des_metrics: Default::default(),
@@ -759,11 +876,12 @@ impl Session {
     // ── Address validation ──────────────────────────────────────────────────
 
     /// Resolve a live stash reference, returning an error if stale.
+    #[inline]
     pub fn resolve(&self, addr: Address) -> Result<&Stash, GoblinError> {
-        if !self.arena.contains(addr.slot as usize) {
+        // One slab lookup (`get`), not a `contains` and then an index.
+        let Some(stash) = self.arena.get(addr.slot as usize) else {
             return Err(GoblinError::EmptySlot { slot: addr.slot });
-        }
-        let stash = &self.arena[addr.slot as usize];
+        };
         if stash.generation != addr.generation {
             return Err(GoblinError::StaleAddress {
                 slot: addr.slot,
@@ -775,11 +893,12 @@ impl Session {
     }
 
     /// Mutable version of resolve.
+    #[inline]
     pub fn resolve_mut(&mut self, addr: Address) -> Result<&mut Stash, GoblinError> {
-        if !self.arena.contains(addr.slot as usize) {
+        // One slab lookup (`get_mut`), not a `contains` and then an index.
+        let Some(stash) = self.arena.get_mut(addr.slot as usize) else {
             return Err(GoblinError::EmptySlot { slot: addr.slot });
-        }
-        let stash = &mut self.arena[addr.slot as usize];
+        };
         if stash.generation != addr.generation {
             return Err(GoblinError::StaleAddress {
                 slot: addr.slot,
@@ -790,10 +909,12 @@ impl Session {
         Ok(stash)
     }
 
+    #[inline]
     pub fn get_stash(&self, t: &Tether) -> Result<&Stash, GoblinError> {
         self.resolve(t.addr)
     }
 
+    #[inline]
     pub fn get_stash_mut(&mut self, t: &Tether) -> Result<&mut Stash, GoblinError> {
         self.resolve_mut(t.addr)
     }
@@ -828,6 +949,19 @@ impl Session {
         let stash = self.get_stash_mut(t)?;
         stash.tether_count = stash.tether_count.saturating_add(1);
         Ok(())
+    }
+
+    /// Frees the stashes of `locals` (a returning call's variables) that
+    /// only they hold. A captured variable has a second holder (its
+    /// closure's cell) and stays; a stale tether finds its slot gone or
+    /// reused under another generation, as after a collection.
+    pub fn free_sole(&mut self, locals: &[Option<Tether>]) {
+        for t in locals.iter().flatten() {
+            let slot = t.addr.slot as usize;
+            if self.arena.get(slot).is_some_and(|s| s.generation == t.addr.generation && s.tether_count == 1) {
+                self.arena.remove(slot);
+            }
+        }
     }
 
     pub fn dec_tether(&mut self, t: &Tether) -> Result<(), GoblinError> {

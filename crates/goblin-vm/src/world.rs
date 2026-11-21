@@ -32,6 +32,36 @@ pub struct Snapshot {
     /// The changes to its objects' links (keyed by the object the link
     /// goes from), so other regions and the program read them.
     links: Vec<((String, String, String), Vec<crate::session::LinkOffset>)>,
+    /// Where each host's overlays are in `overlays`, in order, when
+    /// `indexed` (made with the snapshot; otherwise found by looking at
+    /// every overlay).
+    #[serde(skip)]
+    by_host: HashMap<String, Vec<u32>>,
+    #[serde(skip)]
+    indexed: bool,
+}
+
+impl Snapshot {
+    fn new(objects: Vec<(String, Arc<PValue>)>, overlays: Vec<POverlay>, links: Vec<((String, String, String), Vec<crate::session::LinkOffset>)>) -> Snapshot {
+        let mut by_host: HashMap<String, Vec<u32>> = HashMap::default();
+        for (i, o) in overlays.iter().enumerate() {
+            match by_host.get_mut(o.host()) {
+                Some(v) => v.push(i as u32),
+                None => { by_host.insert(o.host().to_string(), vec![i as u32]); }
+            }
+        }
+        Snapshot { objects, overlays, links, by_host, indexed: true }
+    }
+
+    /// The overlays on `host`, in order.
+    fn overlays_on<'a>(&'a self, host: &'a str) -> impl Iterator<Item = &'a POverlay> + 'a {
+        let (at, all): (&[u32], bool) = match self.indexed {
+            true => (self.by_host.get(host).map(Vec::as_slice).unwrap_or(&[]), false),
+            false => (&[], true),
+        };
+        at.iter().map(|&i| &self.overlays[i as usize])
+            .chain(self.overlays.iter().filter(move |o| all && o.host() == host))
+    }
 }
 
 /// A region's own object as it went into its last snapshot: reused while
@@ -229,8 +259,6 @@ pub struct RegionCtx {
     pub(crate) regions: Vec<u64>,
     pub(crate) me: u64,
     pub(crate) remote: IdSet,
-    /// The overlays those objects have: (overlay, host).
-    pub(crate) remote_overlays: HashSet<(String, String)>,
     pub(crate) sent: Vec<(Dest, Item)>,
     /// The other regions' snapshots this tick and their regions, to find
     /// where an object runs (`:move!(x, y)`).
@@ -295,9 +323,11 @@ pub struct World {
     /// The regions' overlay copies the program changed a field of since the
     /// last tick, as changed: it reads them back so until the next tick.
     rewritten: Vec<POverlay>,
-    /// Where each host's overlays are in `snaps`, built when first needed
-    /// after a tick: (snapshot, place).
-    by_host: Option<HashMap<String, Vec<(usize, usize)>>>,
+    /// The overlays of `snaps` the program has read since the last tick,
+    /// rebuilt in its session, by (snapshot, place).
+    converted: HashMap<(usize, usize), crate::session::OverlayInstance>,
+    /// Snapshots replaced last tick, freed while the regions work next round.
+    dropping: Vec<Arc<Snapshot>>,
     /// Which of `snaps` holds each object, built when first needed after a
     /// tick.
     home_of: Option<HashMap<String, usize>>,
@@ -342,7 +372,7 @@ pub(crate) fn tick_world(vm: &mut Vm, phase: Option<&str>) -> Result<Option<Valu
         let w = vm.session.world.as_mut().unwrap();
         w.counts.extend(outs.iter().map(|o| o.counts.clone()));
         w.snaps.extend(outs.into_iter().map(|o| o.snapshot));
-        w.by_host = None;
+        w.converted.clear();
         w.home_of = None;
     }
     tick_regions(vm, phase.map(Arc::from)).map(Some)
@@ -419,14 +449,14 @@ fn rebuild(vm: &mut Vm, actors: Vec<Arc<crate::actor::ActorShared>>) -> Result<(
         }
         in_flight_overlays = old.in_flight_overlays;
     }
-    vm.session.world = Some(World { grid_pending: Vec::new(), actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), by_host: None, home_of: None });
+    vm.session.world = Some(World { grid_pending: Vec::new(), actors: actors.clone(), ids: ids.clone(), tick, snaps: Vec::new(), inbox, main_sets: Vec::new(), kinds_sent: HashSet::default(), view: IdSet::default(), view_from: HashMap::default(), in_flight, in_flight_overlays, flying, pending_overlays: Vec::new(), dropped_overlays: Vec::new(), moving, counts: Vec::new(), rewritten: Vec::new(), converted: HashMap::default(), dropping: Vec::new(), home_of: None });
     // Before the first tick, every region reports its objects, so the
     // first tick already sees the whole world.
     let outs = round(vm, &actors, &ids, true, None)?;
     let w = vm.session.world.as_mut().unwrap();
     w.counts = outs.iter().map(|o| o.counts.clone()).collect();
     w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
-    w.by_host = None;
+    w.converted.clear();
     w.home_of = None;
     Ok(())
 }
@@ -522,7 +552,9 @@ fn tick_regions(vm: &mut Vm, phase: Option<Arc<str>>) -> Result<Value, GoblinErr
     w.in_flight_overlays = in_flight_overlays;
     w.flying = flying.into_iter().map(Arc::new).collect();
     w.counts = outs.iter().map(|o| o.counts.clone()).collect();
-    w.snaps = outs.into_iter().map(|o| o.snapshot).collect();
+    // The last tick's snapshots are freed next round, while the regions work.
+    let old = std::mem::replace(&mut w.snaps, outs.into_iter().map(|o| o.snapshot).collect());
+    w.dropping.extend(old);
     // A retired target is out of the world from now: no region sees it
     // next tick, nor does the program.
     for (ti, uuid) in &retired {
@@ -530,12 +562,13 @@ fn tick_regions(vm: &mut Vm, phase: Option<Arc<str>>) -> Result<Value, GoblinErr
         let objects = s.objects.iter().filter(|(u, _)| u != uuid).cloned().collect();
         let overlays = s.overlays.iter().filter(|x| x.host() != uuid).cloned().collect();
         let links = s.links.iter().filter(|(k, _)| k.0 != *uuid).cloned().collect();
-        w.snaps[*ti] = Arc::new(Snapshot { objects, overlays, links });
+        let old = std::mem::replace(&mut w.snaps[*ti], Arc::new(Snapshot::new(objects, overlays, links)));
+        w.dropping.push(old);
     }
     w.pending_overlays.clear();
     w.dropped_overlays.clear();
     w.rewritten.clear();
-    w.by_host = None;
+    w.converted.clear();
     w.home_of = None;
     let n = w.tick;
     refresh_view(vm);
@@ -698,6 +731,8 @@ fn round(vm: &mut Vm, actors: &[Arc<crate::actor::ActorShared>], ids: &[u64], pr
         let reply = crate::actor::send_world(a, job.clone())?;
         sent.push((job, reply));
     }
+    // While they work, free what the last tick left behind.
+    drop(std::mem::take(&mut w.dropping));
     // Every region finishes before anything else happens (the barrier).
     let mut outs = Vec::with_capacity(sent.len());
     let mut failed: Option<GoblinError> = None;
@@ -757,21 +792,7 @@ pub(crate) fn view_overlays_of(s: &mut crate::session::Session, host: Option<&st
     let mut found: Vec<POverlay> = Vec::new();
     match host {
         // One host: its overlays, found through the index of the snapshots.
-        Some(h) => {
-            if w.by_host.is_none() {
-                let mut idx: HashMap<String, Vec<(usize, usize)>> = HashMap::default();
-                for (si, snap) in w.snaps.iter().enumerate() {
-                    for (oi, o) in snap.overlays.iter().enumerate() { idx.entry(o.host().to_string()).or_default().push((si, oi)); }
-                }
-                w.by_host = Some(idx);
-            }
-            if let Some(places) = w.by_host.as_ref().and_then(|m| m.get(h)) {
-                for &(si, oi) in places {
-                    let o = &w.snaps[si].overlays[oi];
-                    if wanted(o) && !gone(w, o) { found.push(now(w, o)); }
-                }
-            }
-        }
+        Some(h) => return view_overlays_on_host(s, h, name),
         None => for snap in &w.snaps {
             for o in &snap.overlays { if wanted(o) && !gone(w, o) { found.push(now(w, o)); } }
         },
@@ -783,6 +804,69 @@ pub(crate) fn view_overlays_of(s: &mut crate::session::Session, host: Option<&st
     for o in &w.pending_overlays { if wanted(o) && w.view.contains(o.host()) { found.push(o.clone()); } }
     let mut fp = FromPortable::new();
     found.iter().map(|o| overlay_from_p(o, &mut fp, s)).collect()
+}
+
+/// `view_overlays_of` for one host: through the snapshots' indexes. An
+/// overlay as it was at the end of the tick, with plain fields, is rebuilt
+/// once a tick and then copied.
+/// A rebuilt overlay field that can be handed out again as a copy: plain
+/// data all the way down, nothing with an object id or session state in it.
+fn cacheable(v: &Value) -> bool {
+    match v {
+        Value::Nil | Value::Unit | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Big(_)
+        | Value::Pct(_) | Value::Char(_) | Value::Str(_) | Value::DateTime(_) | Value::Duration(_) => true,
+        Value::Formatted(v, _) => cacheable(v),
+        Value::Array(a) => a.iter().all(cacheable),
+        Value::Map(m) => m.values().all(cacheable),
+        Value::MapOrd(m) => m.values().all(cacheable),
+        Value::Pair(a, b) => cacheable(a) && cacheable(b),
+        Value::Collection(c) => match &c.layout {
+            crate::value::CollectionLayout::FlatArray(a) => a.iter().all(cacheable),
+            crate::value::CollectionLayout::SmallMap(m) => m.iter().all(|(k, v)| cacheable(k) && cacheable(v)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn view_overlays_on_host(s: &mut crate::session::Session, h: &str, name: Option<&str>) -> Vec<crate::session::OverlayInstance> {
+    let wanted = |o: &POverlay| h == o.host() && name.is_none_or(|n| n == o.name());
+    let gone = |w: &World, o: &POverlay| !w.view.contains(o.host())
+        || w.dropped_overlays.iter().any(|(h, n)| h == o.host() && n.as_deref().is_none_or(|n| n == o.name()));
+    let mut fp = FromPortable::new();
+    let mut out = Vec::new();
+    let n = s.world.as_ref().map_or(0, |w| w.snaps.len());
+    for si in 0..n {
+        let snap = s.world.as_ref().unwrap().snaps[si].clone();
+        let at: Vec<usize> = match snap.indexed {
+            true => snap.by_host.get(h).map(|v| v.iter().map(|&i| i as usize).collect()).unwrap_or_default(),
+            false => snap.overlays.iter().enumerate().filter(|(_, o)| o.host() == h).map(|(i, _)| i).collect(),
+        };
+        for oi in at {
+            let o = &snap.overlays[oi];
+            let w = s.world.as_ref().unwrap();
+            if !wanted(o) || gone(w, o) { continue; }
+            if let Some(r) = w.rewritten.iter().find(|r| r.des_id == o.des_id && r.host() == o.host()).cloned() {
+                out.push(overlay_from_p(&r, &mut fp, s));
+                continue;
+            }
+            if let Some(i) = w.converted.get(&(si, oi)) { out.push(i.clone()); continue; }
+            let inst = overlay_from_p(o, &mut fp, s);
+            let plain = inst.extra_fields.values().all(cacheable);
+            if plain { s.world.as_mut().unwrap().converted.insert((si, oi), inst.clone()); }
+            out.push(inst);
+        }
+    }
+    let w = s.world.as_ref().unwrap();
+    let mut found: Vec<POverlay> = Vec::new();
+    // Moving between regions this tick.
+    for o in &w.in_flight_overlays {
+        if wanted(o) && !gone(w, o) { found.push(w.rewritten.iter().find(|r| r.des_id == o.des_id && r.host() == o.host()).cloned().unwrap_or_else(|| o.clone())); }
+    }
+    // Put on since the last tick.
+    for o in &w.pending_overlays { if wanted(o) && w.view.contains(o.host()) { found.push(o.clone()); } }
+    out.extend(found.iter().map(|o| overlay_from_p(o, &mut fp, s)));
+    out
 }
 
 // ── Inside a region ──────────────────────────────────────────────────────────
@@ -811,7 +895,7 @@ pub(crate) fn region_tick(vm: &mut Vm, state: &mut Value, handler: &Value, job: 
         crate::grid::apply_writes(&job.grid, &mut FromPortable::new(), &mut vm.session);
     }
     vm.session.grid_log = Some(Vec::new());
-    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), remote_overlays: HashSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect(), rewritten: Vec::new() });
+    vm.session.region = Some(RegionCtx { regions: job.regions.clone(), me: job.me, remote: IdSet::default(), sent: Vec::new(), homes: job.remote_ids.iter().copied().zip(job.remote.iter().cloned()).collect(), rewritten: Vec::new() });
     // The region's own event log, if one was started in it, stays its own.
     let own_log = if job.log { vm.session.event_log.replace(crate::events::Sink::Lines(Vec::new())) } else { None };
     let mut r = region_steps(vm, state, handler, job);
@@ -930,7 +1014,13 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             Item::Change { uuid, field, change } => apply_change(vm, uuid, field, change, &mut fp),
             Item::Erase { uuid } => {
                 // Its `on erase:` runs here, where the object lives.
-                if vm.session.object_store.contains_key(uuid) { crate::tick::run_on_erase(vm, uuid)?; }
+                if vm.session.object_store.contains_key(uuid) {
+                    if crate::events::on(vm) {
+                        let who = crate::events::who(vm, uuid);
+                        crate::events::log(vm, who, "erase", &[])?;
+                    }
+                    crate::tick::run_on_erase(vm, uuid)?;
+                }
                 if vm.session.object_store.contains_key(uuid) {
                     let var = vm.session.object_names.get(uuid).map(|(n, _)| n.clone()).unwrap_or_default();
                     crate::builtins::erase_object(&mut vm.session, &var, uuid);
@@ -1007,9 +1097,15 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
     // A copy the program's sets changed is kept for next tick as it arrived.
     let mut arrived: HashMap<crate::value::ObjId, std::rc::Rc<crate::value::FieldMap>> = HashMap::default();
     for snap in &job.remote {
+        // Objects of this snapshot that are not copies here (this region
+        // holds them): their links are not taken.
+        let mut not_copies: Vec<crate::value::ObjId> = Vec::new();
         for (uuid, p) in &snap.objects {
             let uuid = crate::value::ObjId::from(uuid.as_str());
-            if vm.session.object_store.contains_key(&uuid) { continue; }
+            if vm.session.object_store.contains_key(&uuid) {
+                if !vm.session.region.as_ref().is_some_and(|c| c.remote.contains(&uuid)) { not_copies.push(uuid); }
+                continue;
+            }
             let v = match copies.remove(&uuid) {
                 // The same entry as last tick: the copy is current.
                 Some(c) if Arc::ptr_eq(&c.from, p) => c.v,
@@ -1034,16 +1130,15 @@ fn region_tick_steps(vm: &mut Vm, state: &mut Value, handler: &Value, job: &Worl
             vm.session.object_store.insert(uuid.clone(), v);
             if let Some(c) = vm.session.region.as_mut() { c.remote.insert(uuid); }
         }
-        if let Some(c) = vm.session.region.as_mut() {
-            for o in &snap.overlays {
-                if c.remote.contains(o.host()) { c.remote_overlays.insert((o.name().to_string(), o.host().to_string())); }
-            }
-        }
         // Their links, as they were: read here this tick, changed by their
         // own regions.
-        let remote = vm.session.region.as_ref().map(|c| &c.remote);
-        let mine: Vec<_> = snap.links.iter().filter(|(k, _)| remote.is_some_and(|r| r.contains(k.0.as_str()))).cloned().collect();
-        for (k, v) in mine { vm.session.link_offsets.insert(k, v); }
+        // A snapshot's links all go from its own objects.
+        if vm.session.region.is_some() {
+            for (k, v) in &snap.links {
+                if !not_copies.is_empty() && not_copies.iter().any(|u| u.as_str() == k.0) { continue; }
+                vm.session.link_offsets.insert(k.clone(), v.clone());
+            }
+        }
     }
     // The copies are from the end of last tick: what they say an object
     // erased since owned has moved up in its region already, so the copies
@@ -1237,7 +1332,7 @@ fn snapshot_of(vm: &mut Vm) -> Result<Snapshot, GoblinError> {
         .filter(|((from, _, _), _)| s.object_store.contains_key(from.as_str()))
         .map(|(k, v)| (k.clone(), v.clone())).collect();
     vm.session.sent_objects = now;
-    Ok(Snapshot { objects, overlays, links })
+    Ok(Snapshot::new(objects, overlays, links))
 }
 
 /// Whether `o` would go into a snapshot as it did last time (`b`): the same
@@ -1287,18 +1382,25 @@ pub(crate) fn send_overlay(vm: &mut Vm, inst: &crate::session::OverlayInstance, 
 /// tick, on `host` (every one with None).
 pub(crate) fn remote_overlays(s: &mut crate::session::Session, host: Option<&str>) -> Vec<crate::session::OverlayInstance> {
     let Some(c) = s.region.as_ref() else { return Vec::new() };
-    let found: Vec<POverlay> = c.homes.iter()
+    let found: Vec<POverlay> = match host {
+        Some(h) if !c.remote.contains(h) => Vec::new(),
+        Some(h) => c.homes.iter().flat_map(|(_, snap)| snap.overlays_on(h))
+            .map(|o| c.rewritten.iter().find(|r| r.des_id == o.des_id && r.host() == o.host()).unwrap_or(o).clone())
+            .collect(),
+        None => c.homes.iter()
         .flat_map(|(_, snap)| snap.overlays.iter())
-        .filter(|o| host.is_none_or(|h| h == o.host()) && c.remote.contains(o.host()))
+        .filter(|o| c.remote.contains(o.host()))
         .map(|o| c.rewritten.iter().find(|r| r.des_id == o.des_id && r.host() == o.host()).unwrap_or(o).clone())
-        .collect();
+        .collect(),
+    };
     if found.is_empty() { return Vec::new(); }
     let mut fp = FromPortable::new();
     found.iter().map(|o| overlay_from_p(o, &mut fp, s)).collect()
 }
 
 pub(crate) fn remote_has_overlay(vm: &Vm, overlay: &str, host: &str) -> bool {
-    vm.session.region.as_ref().is_some_and(|c| c.remote_overlays.contains(&(overlay.to_string(), host.to_string())))
+    vm.session.region.as_ref().is_some_and(|c| c.remote.contains(host)
+        && c.homes.iter().any(|(_, snap)| snap.overlays_on(host).any(|o| o.name() == overlay)))
 }
 
 // ── The program that runs the world, writing to the regions' objects ───────
@@ -1478,16 +1580,111 @@ pub(crate) fn is_remote(vm: &Vm, uuid: &(impl crate::value::IdKey + ?Sized)) -> 
 
 /// Before `owner` of `uuid` is set to `v`: ownership is a tree, so an
 /// object can't come to own itself.
-pub(crate) fn check_owner_write(s: &crate::session::Session, uuid: &str, v: &Value) -> Result<(), GoblinError> {
-    if !s.object_store.would_loop(uuid, v) { return Ok(()); }
-    let name = |u: &str| match s.object_store.get(u) {
+/// `x >> owner |= v`: an object can't go inside something inside it
+/// (R1246). A full container passes it up to the first container above
+/// it with room (`settle_owner`); when none has room it is R1267 and
+/// nothing moves. Gives the owner to store.
+pub(crate) fn check_owner_write(s: &crate::session::Session, uuid: &str, v: &Value) -> Result<Value, GoblinError> {
+    if s.object_store.would_loop(uuid, v) {
+        return Err(err(format!("R1246: owner-loop: {} can't be owned by that object: it already owns it, at some depth, and ownership is a tree", object_label(s, uuid, None))));
+    }
+    let me = match s.object_store.get(uuid) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
+    settle_owner(s, uuid, me, v, false)
+}
+
+/// `Class `name``, or `a Class`, for an error.
+fn object_label(s: &crate::session::Session, uuid: &str, obj: Option<&Value>) -> String {
+    match obj.or_else(|| s.object_store.get(uuid)) {
         Some(Value::Object(o)) => match o.fields.get("name") {
             Some(Value::Str(n)) if !n.is_empty() => format!("{} `{}`", o.class_name, n),
             _ => format!("a {}", o.class_name),
         },
         _ => "an object".to_string(),
+    }
+}
+
+/// Why container `h` has no room for object `uuid` (`me`: its class and
+/// fields), or None when it has room. `capacity: N` counts what it holds;
+/// `capacity from f: N` adds up field `f` (stored values; an object
+/// without a number there adds 0). A container with no `capacity`, or in
+/// another region, has room.
+fn no_room(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, h: &str) -> Option<String> {
+    let Some(Value::Object(ho)) = s.object_store.get(h) else { return None };
+    let cap = s.classes.get(&*ho.class_name).and_then(|c| c.capacity.as_ref())?;
+    let num = |f: Option<&Value>| match f {
+        Some(Value::Int(n)) => *n as f64,
+        Some(Value::Float(x)) => *x,
+        Some(Value::Big(d)) => d.to_string().parse::<f64>().unwrap_or(0.0),
+        _ => 0.0,
     };
-    Err(err(format!("R1246: owner-loop: {} can't be owned by that object: it already owns it, at some depth, and ownership is a tree", name(uuid))))
+    let others = s.object_store.contents_of(h).filter(|u| *u != uuid);
+    match cap {
+        goblin_ast::CapacityDecl::Count(n) => {
+            let held = others.count() as u64;
+            (held + 1 > *n).then(|| format!("it holds {held} and its capacity is {n}"))
+        }
+        goblin_ast::CapacityDecl::Field { field_name, limit } => {
+            let held: f64 = others.map(|u| match s.object_store.get(u) {
+                Some(Value::Object(o)) => num(o.fields.get(field_name.as_str())),
+                _ => 0.0,
+            }).sum();
+            let adds = num(me.and_then(|(_, f)| f.get(field_name.as_str())));
+            (held + adds > *limit).then(|| format!("it holds {held} {field_name}, this adds {adds}, and its capacity is {limit}"))
+        }
+    }
+}
+
+/// Where object `uuid` (`me`: its class and fields) ends up when it is
+/// put inside the container `v` names: that container when it has room,
+/// else the first container above it that has room. When none has room:
+/// R1267 for a move (`implicit` false: nothing moves), and the topmost
+/// container for contents moving up from a destroyed container
+/// (`implicit` true: nothing is ever lost).
+pub(crate) fn settle_owner(s: &crate::session::Session, uuid: &str, me: Option<(&str, &crate::value::FieldMap)>, v: &Value, implicit: bool) -> Result<Value, GoblinError> {
+    let Some(h) = crate::store::owner_in_value(v) else { return Ok(v.clone()) };
+    let first = h.as_str();
+    let mut at = first;
+    let mut why = None;
+    for _ in 0..=s.object_store.len() {
+        match no_room(s, uuid, me, at) {
+            None => return Ok(if at == first { v.clone() } else { Value::Ref(at.into()) }),
+            Some(w) => { if why.is_none() { why = Some(w); } }
+        }
+        match s.object_store.holder_of(at) { Some(up) => at = up.as_str(), None => break }
+    }
+    if implicit { return Ok(if at == first { v.clone() } else { Value::Ref(at.into()) }); }
+    let what = match me {
+        Some((class, f)) => match f.get("name") {
+            Some(Value::Str(n)) if !n.is_empty() => format!("{class} `{n}`"),
+            _ => format!("a {class}"),
+        },
+        None => object_label(s, uuid, None),
+    };
+    let tail = if at == first { String::new() } else { ", and nothing it is inside has room".to_string() };
+    Err(err(format!("R1267: container-full: {what} can't go inside {}: {}{tail}", object_label(s, first, None), why.unwrap_or_default())))
+}
+
+/// What the erased or retired object `uuid` still holds moves up to its
+/// own container, or past it to the first one above with room
+/// (`settle_owner`, implicit).
+pub(crate) fn move_contents_up(s: &mut crate::session::Session, uuid: &str) {
+    let kids: Vec<String> = s.object_store.contents_of(uuid).map(str::to_string).collect();
+    if kids.is_empty() { return; }
+    if !s.classes.values().any(|c| c.capacity.is_some()) { s.object_store.move_contents_up(uuid); return; }
+    let up = match s.object_store.get(uuid) {
+        Some(Value::Object(o)) => o.fields.get(crate::store::OWNER_FIELD).cloned().unwrap_or(Value::Nil),
+        _ => Value::Nil,
+    };
+    let up = if crate::store::owner_in_value(&up).is_some_and(|o| o.as_str() == uuid) { Value::Nil } else { up };
+    // It is leaving: it no longer takes room in its container.
+    s.object_store.move_one(uuid, Value::Nil);
+    for k in kids {
+        let dest = {
+            let me = match s.object_store.get(k.as_str()) { Some(Value::Object(o)) => Some((&*o.class_name, &*o.fields)), _ => None };
+            settle_owner(s, &k, me, &up, true).unwrap_or_else(|_| up.clone())
+        };
+        s.object_store.move_one(k.as_str(), dest);
+    }
 }
 
 /// Before an object is erased: every region hears of it (`Item::Erased`),
@@ -1684,7 +1881,7 @@ pub(crate) fn move_object(vm: &mut Vm, obj: &Value, to: &Value) -> Result<(), Go
             let w = vm.session.world.as_mut().unwrap();
             w.counts.extend(outs.iter().map(|o| o.counts.clone()));
             w.snaps.extend(outs.into_iter().map(|o| o.snapshot));
-            w.by_host = None;
+            w.converted.clear();
             w.home_of = None;
         }
     }
@@ -2015,7 +2212,7 @@ pub(crate) fn load_world(vm: &mut Vm, ws: WorldState) -> Result<(), GoblinError>
         flying: ws.flying.into_iter().map(Arc::new).collect(),
         pending_overlays: ws.pending_overlays, dropped_overlays: ws.dropped_overlays,
         moving: ws.moving, counts: ws.counts, rewritten: ws.rewritten,
-        by_host: None, home_of: None,
+        converted: HashMap::default(), dropping: Vec::new(), home_of: None,
     });
     // The program's grid writes from now on go to the regions too.
     vm.session.grid_log = Some(Vec::new());

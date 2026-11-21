@@ -1,0 +1,48 @@
+/// known-gap: interp has no contents: destroy (it has no move-up on erase either)
+/// `contents: destroy` in a container's class: when it is erased (transition or
+/// delete_object!), what it holds is erased with it, each as its own erase, so a
+/// bag inside it drops its things into it and those go too. Without the line,
+/// contents move up. The line can come before or after the fields.
+/// `:delete_object!` writes an `erase` line to the event log, as an erase
+/// transition does.
+<>Place |
+    name: ..
+    owner: nil
+xx
+<>Chest |
+    contents: destroy
+    name: ..
+    owner: nil
+    hp: 5
+    transition erase where @hp <= 0
+xx
+<>Bag |
+    name: ..
+    owner: nil
+xx
+<>Item |
+    name: ..
+    owner: nil
+xx
+<>Shop |
+    name: ..
+    owner: nil
+    contents: destroy
+xx
+room <> Place | name: "the room"
+chest <> Chest | name: "chest", owner: room
+scroll <> Item | name: "scroll", owner: chest
+bag <> Bag | name: "pouch", owner: chest
+coin <> Item | name: "coin", owner: bag
+pack <> Bag | name: "backpack", owner: room
+rope <> Item | name: "rope", owner: pack
+shop <> Shop | name: "forge", owner: room
+axe <> Item | name: "axe", owner: shop
+:event_log("des_contents_destroy.log.txt")
+chest >> hp |= 0
+:tick()
+:delete_object!(pack)
+:delete_object!(shop)
+:event_log(nil)
+:say(:owns_tree(room))
+:say(:read_text("des_contents_destroy.log.txt"))

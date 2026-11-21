@@ -1,13 +1,13 @@
 epidemic: 4 towns of 100, 60 days
-day 5: alive 400, sick 3, immune 0, dead 0
-day 10: alive 399, sick 7, immune 0, dead 1
-day 15: alive 398, sick 31, immune 3, dead 2
-day 20: alive 395, sick 57, immune 17, dead 5
-day 25: alive 377, sick 89, immune 41, dead 23
-day 30: alive 354, sick 102, immune 85, dead 46
-day 35: alive 320, sick 89, immune 130, dead 80
-day 40: alive 295, sick 49, immune 177, dead 105
-day 45: alive 283, sick 20, immune 205, dead 117
-day 50: alive 281, sick 9, immune 218, dead 119
-day 55: alive 277, sick 4, immune 222, dead 123
-day 60: alive 277, sick 4, immune 224, dead 123
+day 5: alive 400, sick 2, immune 0, dead 0
+day 10: alive 399, sick 6, immune 0, dead 1
+day 15: alive 395, sick 5, immune 2, dead 5
+day 20: alive 394, sick 19, immune 3, dead 6
+day 25: alive 388, sick 73, immune 9, dead 12
+day 30: alive 370, sick 100, immune 36, dead 30
+day 35: alive 341, sick 111, immune 75, dead 59
+day 40: alive 315, sick 75, immune 136, dead 85
+day 45: alive 290, sick 56, immune 170, dead 110
+day 50: alive 277, sick 26, immune 203, dead 123
+day 55: alive 269, sick 10, immune 216, dead 131
+day 60: alive 267, sick 3, immune 223, dead 133

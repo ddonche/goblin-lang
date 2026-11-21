@@ -128,7 +128,7 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
         Some((Box::new(a), Box::new(b)))
     };
     while i < end {
-        let op = code[i];
+        let op = code[i].plain();
         match op {
             Opcode::LoadConst(c) => st.push(Node::Const(f.constants.get(c as usize)?.clone_fast())),
             Opcode::LoadTrue => st.push(Node::Const(Value::Bool(true))),
@@ -139,6 +139,8 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
             Opcode::LoadGlobal(g) => st.push(Node::Load(Slot::Global(g))),
             Opcode::GetMember(c) => {
                 let Value::Str(name) = f.constants.get(c as usize)? else { return None };
+                // A member builtin (`x.nix?`) is not a field: the step runner's.
+                if crate::vm::member_builtin(name).is_some() { return None; }
                 let obj = st.pop()?;
                 st.push(Node::Member(Box::new(obj), name.to_string(), Cell::new(u32::MAX)));
             }

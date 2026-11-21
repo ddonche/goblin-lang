@@ -1,0 +1,18 @@
+/// known-gap: interp clone_object writes a hard-coded owner_id field
+/// clone_object(x) gives a copy with its own id that is inside nothing: the original stays where it was.
+<>Bag |
+    name: ""
+    owner: nil
+xx
+<>Item |
+    name: ""
+    owner: nil
+xx
+pack <> Bag | name: "pack"
+rope <> Item | name: "rope", owner: pack
+copy | :clone_object(rope)
+:say(copy >> name)
+:say(copy >> owner == nil)
+:say(copy >> id == copy >> uuid)
+:say(copy >> id == rope >> id)
+:say(:len(:owned_by(pack)))

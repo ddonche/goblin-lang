@@ -367,9 +367,48 @@ pub enum Opcode {
     RepeatStart(u16),
     /// In a condition `repeat`, after its test passed: idx = the counter.
     RepeatIdx(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst`, a
+    /// comparison, `JumpIfFalse | JumpIfTrue` (put in by the compiler when a
+    /// function is finished; the three steps after it stay as they were).
+    /// When both sides are plain numbers the VM does all four at once;
+    /// otherwise, and for everything that reads code, it is `LoadLocal(slot)`
+    /// (see `Opcode::plain`).
+    CmpJump(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst` and `+`,
+    /// `-`, `*` or a comparison (put in like `CmpJump`, the two steps after
+    /// it kept): with two plain numbers the VM pushes the result at once;
+    /// otherwise it is `LoadLocal(slot)` (see `Opcode::plain`).
+    BinLocal(u16),
+    /// `LoadConst(c)` at the start of `LoadConst(c)`, `AppendLocal(s)`,
+    /// `GuardRebindLocal(s, _)`, `StoreLocal(s)` (`x |= x + 1`; put in like
+    /// `CmpJump`, the steps after it kept): with a whole number in `x` and
+    /// in the constant, the VM writes the sum into `x` at once; otherwise
+    /// it is `LoadConst(c)` (see `Opcode::plain`).
+    IncLocal(u16),
+    /// `LoadLocal(src)` at the start of `LoadLocal(src)`,
+    /// `GuardRebindLocal(d, _)`, `StoreLocal(d)` (`a |= b`): with a number,
+    /// bool or nil in both, the VM copies `b` into `a` at once; otherwise it
+    /// is `LoadLocal(src)`.
+    MoveLocal(u16),
+    /// `Jump(offset)` back to a `RepeatNext` (the end of a `repeat` pass):
+    /// the VM also runs that `RepeatNext` and, for a condition loop, the
+    /// test (`CmpJump`) and `RepeatIdx` after it, while they take the fast
+    /// way; otherwise it is `Jump(offset)`.
+    LoopJump(i16),
 }
 
 impl Opcode {
+    /// The step as written: `CmpJump(s)` is `LoadLocal(s)`.
+    #[inline(always)]
+    pub fn plain(self) -> Opcode {
+        match self {
+            Opcode::CmpJump(s) | Opcode::BinLocal(s) | Opcode::MoveLocal(s) => Opcode::LoadLocal(s),
+            Opcode::IncLocal(c) => Opcode::LoadConst(c),
+            Opcode::LoopJump(o) => Opcode::Jump(o),
+            op => op,
+        }
+    }
+
     /// Returns the opcode name as a static string (for the disassembler).
     pub fn name(&self) -> &'static str {
         match self {
@@ -439,6 +478,11 @@ impl Opcode {
             Opcode::RepeatNext(_) => "RepeatNext",
             Opcode::RepeatStart(_) => "RepeatStart",
             Opcode::RepeatIdx(_) => "RepeatIdx",
+            Opcode::CmpJump(_) => "CmpJump",
+            Opcode::BinLocal(_) => "BinLocal",
+            Opcode::IncLocal(_) => "IncLocal",
+            Opcode::MoveLocal(_) => "MoveLocal",
+            Opcode::LoopJump(_) => "LoopJump",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",

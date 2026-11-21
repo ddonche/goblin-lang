@@ -1,0 +1,49 @@
+/// known-gap: interp parses capacity but never checks it
+/// A container's class can say how much it holds. `capacity: N` counts
+/// what is directly inside; `capacity from f: N` adds up field f of what is
+/// inside. Putting something into a full container, by setting `owner` or
+/// by making it there, is R1267 and changes nothing. Moving within the same
+/// container, or out of it, is always allowed. `capacity` can come before,
+/// between or after the fields.
+<>Pouch |
+    capacity: 2
+    name: ""
+    owner: nil
+xx
+<>Cart |
+    name: ""
+    owner: nil
+    capacity from weight: 10
+xx
+<>Item |
+    name: ""
+    weight: 0
+    owner: nil
+xx
+pouch <> Pouch | name: "pouch"
+cart <> Cart | name: "cart"
+ring <> Item | name: "ring", owner: pouch
+coin <> Item | name: "coin", owner: pouch
+gem <> Item | name: "gem"
+attempt
+    gem >> owner |= pouch
+rescue e
+    :say(:has("{e}", "R1267"))
+xx
+:say(gem >> owner == nil)
+coin >> owner |= pouch
+:say(:len(:owned_by(pouch)))
+coin >> owner |= nil
+gem >> owner |= pouch
+:say(:len(:owned_by(pouch)))
+anvil <> Item | name: "anvil", weight: 8, owner: cart
+nail <> Item | name: "nail", weight: 2, owner: cart
+attempt
+    rock <> Item | name: "rock", weight: 3, owner: cart
+rescue e
+    :say(:has("{e}", "R1267"))
+xx
+:say(:len(:objects("Item", it >> owner == cart)))
+nail >> owner |= nil
+note <> Item | name: "note", owner: cart
+:say(:len(:owned_by(cart)))
