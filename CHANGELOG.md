@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.86 — 2026-11-21
+
+- More decision formulas, `where` conditions and `:objects` conditions run as a fast tree instead of step by step, with the same results: link scores (`:link_score(self, target, "border")` on a link that starts with no formula), `:min`, `:max`, `:abs`, `:clamp`, `x.nix?`, a formula that gives back one of its objects, and calls to actions that are one expression themselves (`score => room(target) - room(self)`, where `room` is `return 1.0 - (l >> people) / (l >> food)`): such an action runs as part of the tree, with no call frame. This is step 4 of the register VM. The capstone over 10 years (no regions, seed 42) runs 54.46 billion machine instructions on 0.51.85 and 49.22 billion on 0.51.86 (9.6% fewer). Histories are identical (seed 42 with and without regions, seed 7 with and without regions, seed 99 with regions).
+
 ## 0.51.85 — 2026-11-21
 
 - A call's variables live on the VM's stack, as in Lua: the arguments a caller pushes already are the callee's first variables, so a call copies nothing into a separate list. A line of number arithmetic and comparisons (`x |= x + i * 2 - 1`, `if a * b < c`) runs as register code in one step, with the same results; anything that isn't a plain number takes the usual steps. This is step 3 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.84 → 0.51.85: empty loop 353 → 352; arithmetic 962 → 780; local copies 796 → 798; decimals 931 → 718; field write 1,508 → 1,502; field read 873 → 857; call 1,700 → 1,559. The capstone over 10 years (no regions, seed 42) runs 55.43 billion machine instructions on 0.51.84 and 54.46 billion on 0.51.85 (54.29 billion on 0.51.83). Histories are identical (seed 42 with and without regions, seed 7, seed 99 with regions).

@@ -1848,6 +1848,28 @@ pub(crate) fn link_value(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Re
     link_value_of(vm, &from.into(), &to.into(), channel)
 }
 
+/// `link_value_of` for a link that starts with no formula to run (a plain
+/// number, or none): None when it has one, or the link is not there (the
+/// caller then asks `link_value_of`, which runs it or says what is wrong).
+pub(crate) fn link_value_plain(vm: &Vm, from_id: &crate::value::ObjId, to_id: &crate::value::ObjId, channel: &str) -> Option<Value> {
+    use crate::session::{Key2, Key3};
+    let (from, to): (&str, &str) = (from_id, to_id);
+    let decl = link_decl(vm, from_id, channel).ok()?;
+    let (lo, hi) = decl_bounds(&decl);
+    let base = match vm.session.object_link_defs.get(&(from, channel) as &dyn Key2) {
+        Some(d) => d.constant?,
+        None if decl.has_formula => decl.constant?,
+        None => 0f64.clamp(lo, hi),
+    };
+    let changes: f64 = vm.session.link_offsets.get(&(from, to, channel) as &dyn Key3)
+        .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
+    let v = (base + changes).clamp(lo, hi);
+    Some(match decl.range {
+        Some(goblin_ast::LinkRange::Bool) => Value::Bool(v >= 1.0),
+        _ => Value::Float(v),
+    })
+}
+
 /// `link_value`, with both ends given by id.
 pub(crate) fn link_value_of(vm: &mut Vm, from_id: &crate::value::ObjId, to_id: &crate::value::ObjId, channel: &str) -> Result<Value, GoblinError> {
     use crate::session::Key3;

@@ -4,17 +4,21 @@
 //! and an `:objects` predicate run once per candidate object, so their cost
 //! per run decides how fast a simulation goes. `Vm::run_formula_in` runs the
 //! bytecode on its own operand stack; most formulas are field reads,
-//! numbers, comparisons, arithmetic and `and`/`or`, and as a tree of those
-//! they run with no operand stack and no values made or dropped.
+//! numbers, comparisons, arithmetic, `and`/`or`, `x.nix?`, link scores,
+//! `:min`/`:max`/`:abs`/`:clamp` and calls to actions that are one such
+//! expression themselves (`room(target) - room(self)`), and as a tree of
+//! those they run with no operand stack, no call frame and no values made
+//! or dropped.
 //!
 //! The tree gives exactly what `run_formula_in` gives. Anything it does not
 //! handle, or any case where the result is not certain (an erased object, a
 //! value of another kind), stops the run, and the caller runs the formula
 //! the usual way from the start; nothing here changes anything.
 
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
+use std::rc::Rc;
 use crate::opcode::Opcode;
-use crate::value::{FunctionObject, ObjectVal, Value};
+use crate::value::{BuiltinId, FunctionObject, ObjectVal, Value};
 use crate::vm::{FormulaEnv, Vm};
 
 /// Where a formula reads a value: an argument, a captured variable or a
@@ -43,8 +47,37 @@ pub(crate) enum Node {
     /// `==` (true) or `!=` (false).
     Eq(bool, Box<Node>, Box<Node>),
     Not(Box<Node>),
+    /// `x.nix?`.
+    Nix(Box<Node>),
     /// `a and b` (true) / `a or b` (false): the left value when it decides.
     Logic(bool, Box<Node>, Box<Node>),
+    /// `:link_score(a, b, "name")` on two objects, for a link that starts
+    /// with no formula.
+    Link(Box<[Node; 3]>),
+    /// A math builtin (`:min`, `:clamp` ...) on plain numbers.
+    Math(BuiltinId, Vec<Node>),
+    /// An action held in a global, called with these arguments; it runs as
+    /// a tree too (built the first time, for the action found then).
+    Call(u16, Vec<Node>, OnceCell<Box<Callee>>),
+}
+
+/// An action a `Node::Call` runs: which one, its tree (None: it isn't one),
+/// and the nothing it reads besides its arguments.
+pub(crate) struct Callee { func: Rc<FunctionObject>, tree: Option<FormulaTree>, env: FormulaEnv }
+
+/// How deep actions called from a formula may go before the run is left
+/// to the VM.
+const MAX_CALLS: u8 = 16;
+
+/// What a run reads: the formula's arguments, where their objects sit, its
+/// captured variables and globals; inside an action it calls, that
+/// action's arguments, already worked out.
+struct Cx<'a, 'b> {
+    args: &'b [(&'b str, &'a Value)],
+    at: &'b mut [usize],
+    env: &'a FormulaEnv,
+    call: Option<&'b [Tv<'a>]>,
+    depth: u8,
 }
 
 pub(crate) struct FormulaTree { root: Node }
@@ -139,7 +172,14 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
             Opcode::LoadGlobal(g) => st.push(Node::Load(Slot::Global(g))),
             Opcode::GetMember(c) => {
                 let Value::Str(name) = f.constants.get(c as usize)? else { return None };
-                // A member builtin (`x.nix?`) is not a field: the step runner's.
+                // `x.nix?`, as `run_formula_in` works it out; another member
+                // builtin is not a field: the step runner's.
+                if AsRef::<str>::as_ref(name) == "is_nix" {
+                    let x = st.pop()?;
+                    st.push(Node::Nix(Box::new(x)));
+                    i += 1;
+                    continue;
+                }
                 if crate::vm::member_builtin(name).is_some() { return None; }
                 let obj = st.pop()?;
                 st.push(Node::Member(Box::new(obj), name.to_string(), Cell::new(u32::MAX)));
@@ -188,6 +228,23 @@ fn segment(f: &FunctionObject, start: usize, end: usize, top: bool) -> Option<(V
                 i = target;
                 continue;
             }
+            Opcode::CallBuiltin(BuiltinId::LinkScore, 3) => {
+                let c = st.pop()?;
+                let (a, b) = bin(&mut st)?;
+                st.push(Node::Link(Box::new([*a, *b, c])));
+            }
+            // Only those `quick_math` works out (another stops every run).
+            Opcode::CallBuiltin(id @ (BuiltinId::Min | BuiltinId::Max | BuiltinId::Abs | BuiltinId::Clamp), argc) => {
+                let from = st.len().checked_sub(argc as usize)?;
+                let args = st.split_off(from);
+                st.push(Node::Math(id, args));
+            }
+            Opcode::Call(argc) => {
+                let from = st.len().checked_sub(argc as usize)?;
+                let args = st.split_off(from);
+                let Node::Load(Slot::Global(g)) = st.pop()? else { return None };
+                st.push(Node::Call(g, args, OnceCell::new()));
+            }
             Opcode::Return if top => return Some((st, Some(i))),
             _ => return None,
         }
@@ -204,8 +261,10 @@ fn reads_arg(n: &Node, arg: u16, has_field: &dyn Fn(&str) -> bool) -> bool {
         Node::Load(_) => false,
         // `it` is argument 0 of a query predicate.
         Node::ItOr(name, x) => (arg == 0 && has_field(name)) || r(x),
-        Node::Member(x, _, _) | Node::Neg(x) | Node::Not(x) => r(x),
+        Node::Member(x, _, _) | Node::Neg(x) | Node::Not(x) | Node::Nix(x) => r(x),
         Node::Arith(_, a, b) | Node::Cmp(_, a, b) | Node::Eq(_, a, b) | Node::Logic(_, a, b) => r(a) || r(b),
+        Node::Link(x) => x.iter().any(r),
+        Node::Math(_, x) | Node::Call(_, x, _) => x.iter().any(r),
     }
 }
 
@@ -233,6 +292,17 @@ fn eq_plain(a: Tv<'_>, b: Tv<'_>) -> Option<bool> {
     })
 }
 
+/// A plain value as the tree holds it.
+fn plain_tv(v: &Value) -> R<'_> {
+    Ok(match v {
+        Value::Int(x) => Tv::Int(*x),
+        Value::Float(x) => Tv::Float(*x),
+        Value::Bool(x) => Tv::Bool(*x),
+        Value::Nil => Tv::Nil,
+        _ => return Err(Stop::Fallback),
+    })
+}
+
 /// `Value::is_truthy` of a plain value.
 fn truthy(v: Tv<'_>) -> Option<bool> {
     Some(match v {
@@ -255,9 +325,14 @@ impl Vm {
 
     /// Runs one part of a tree (see `FormulaTree::field_equal`).
     pub(crate) fn run_formula_part(&self, n: &Node, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<Value> {
-        match self.tree_eval(n, args, at, env) {
+        let mut cx = Cx { args, at, env, call: None, depth: 0 };
+        match self.tree_eval(n, &mut cx) {
+            // An argument given back (`self`): as it was given.
+            Ok(Tv::Obj(..)) => match n {
+                Node::Load(Slot::Arg(s)) => Some(args.get(*s as usize)?.1.clone()),
+                _ => None,
+            },
             Ok(v) => match v {
-                Tv::Obj(..) => None,
                 Tv::Other(v) => Some(v.clone_fast()),
                 v => plain(v),
             },
@@ -269,7 +344,8 @@ impl Vm {
     /// The key (see `store::field_key`) of what one part of a tree gives,
     /// an object included (it keys by id). None: work it out the usual way.
     pub(crate) fn run_formula_key(&self, n: &Node, args: &[(&str, &Value)], at: &mut [usize], env: &FormulaEnv) -> Option<crate::store::FieldKey> {
-        match self.tree_eval(n, args, at, env) {
+        let mut cx = Cx { args, at, env, call: None, depth: 0 };
+        match self.tree_eval(n, &mut cx) {
             Ok(Tv::Obj(o, _)) => Some(crate::store::FieldKey::Obj(o.uuid.clone())),
             Ok(Tv::Other(v)) => crate::store::field_key(v),
             Ok(v) => crate::store::field_key(&plain(v)?),
@@ -302,15 +378,21 @@ impl Vm {
     }
 
     /// The value field `name` of the object `obj` gives holds, as stored.
-    fn tree_field<'a>(&'a self, obj: &'a Node, name: &str, hint: &Cell<u32>, args: &[(&str, &'a Value)], at: &mut [usize], env: &'a FormulaEnv) -> Result<&'a Value, Stop> {
-        let Tv::Obj(o, _) = self.tree_eval(obj, args, at, env)? else { return Err(Stop::Fallback) };
+    fn tree_field<'a>(&'a self, obj: &'a Node, name: &str, hint: &Cell<u32>, cx: &mut Cx<'a, '_>) -> Result<&'a Value, Stop> {
+        let Tv::Obj(o, _) = self.tree_eval(obj, cx)? else { return Err(Stop::Fallback) };
         Ok(match o.fields.get_index(hint.get() as usize) {
             Some((k, v)) if k == name => v,
             _ => match o.fields.get_full(name) {
                 Some((i, _, v)) => { hint.set(i as u32); v }
-                None => return Err(if env.missing_field_is_false { Stop::False } else { Stop::Fallback }),
+                None => return Err(if cx.env.missing_field_is_false { Stop::False } else { Stop::Fallback }),
             },
         })
+    }
+
+    /// Global `g` where it lives now.
+    fn tree_global(&self, g: u16) -> Result<&Value, Stop> {
+        let t = self.session.get_global(g as usize).ok_or(Stop::Fallback)?;
+        Ok(&self.session.resolve(t.addr).map_err(|_| Stop::Fallback)?.value)
     }
 
     /// A field's value as `tree_eval` gives it.
@@ -327,9 +409,7 @@ impl Vm {
         })
     }
 
-    fn tree_eval<'a>(&'a self, n: &'a Node, args: &[(&str, &'a Value)], at: &mut [usize], env: &'a FormulaEnv) -> R<'a> {
-        let ups_at = args.len();
-        let globals_at = ups_at + env.upvalues.len();
+    fn tree_eval<'a>(&'a self, n: &'a Node, cx: &mut Cx<'a, '_>) -> R<'a> {
         Ok(match n {
             Node::Const(v) => match v {
                 Value::Int(i) => Tv::Int(*i),
@@ -339,28 +419,40 @@ impl Vm {
                 other => Tv::Other(other),
             },
             Node::Load(slot) => {
+                if let (Some(call), Slot::Arg(s)) = (cx.call, *slot) {
+                    return call.get(s as usize).copied().ok_or(Stop::Fallback);
+                }
+                let env = cx.env;
+                let ups_at = cx.args.len();
+                let globals_at = ups_at + env.upvalues.len();
                 let (i, v): (usize, &'a Value) = match *slot {
-                    Slot::Arg(s) => { let s = s as usize; (s, args.get(s).ok_or(Stop::Fallback)?.1) }
+                    Slot::Arg(s) => { let s = s as usize; (s, cx.args.get(s).ok_or(Stop::Fallback)?.1) }
                     Slot::Up(u) => (ups_at + u as usize, env.upvalues.get(u as usize).ok_or(Stop::Fallback)?),
-                    Slot::Global(g) => {
-                        let k = env.globals.iter().position(|(n, _)| *n == g).ok_or(Stop::Fallback)?;
-                        (globals_at + k, &env.globals[k].1)
-                    }
+                    Slot::Global(g) => match env.globals.iter().position(|(n, _)| *n == g) {
+                        Some(k) => (globals_at + k, &env.globals[k].1),
+                        // Read where it lives now, as `run_formula_in` does: a
+                        // plain value or a string.
+                        None => return match self.tree_global(g)? {
+                            v @ Value::Str(_) => Ok(Tv::Other(v)),
+                            v => plain_tv(v),
+                        },
+                    },
                 };
                 match v {
                     Value::Int(x) => Tv::Int(*x),
                     Value::Float(x) => Tv::Float(*x),
                     Value::Bool(x) => Tv::Bool(*x),
                     Value::Nil => Tv::Nil,
-                    Value::Object(_) | Value::Ref(_) => return self.tree_obj(v, at.get_mut(i), true),
+                    Value::Object(_) | Value::Ref(_) => return self.tree_obj(v, cx.at.get_mut(i), true),
                     _ => return Err(Stop::Fallback),
                 }
             }
-            Node::Member(obj, name, hint) => return self.tree_field_tv(self.tree_field(obj, name, hint, args, at, env)?),
+            Node::Member(obj, name, hint) => return self.tree_field_tv(self.tree_field(obj, name, hint, cx)?),
             Node::ItOr(name, alt) => {
                 // As `run_formula_in`: `it` (argument 0) when it is an object
                 // that has the field.
-                let it = args.first().ok_or(Stop::Fallback)?.1;
+                if cx.call.is_some() { return Err(Stop::Fallback); }
+                let it = cx.args.first().ok_or(Stop::Fallback)?.1;
                 let obj = match it {
                     Value::Object(o) => Some(&**o),
                     Value::Ref(uuid) => match self.session.object_store.get(uuid) {
@@ -378,12 +470,12 @@ impl Vm {
                         Value::Nil => Tv::Nil,
                         other => Tv::Other(other),
                     },
-                    None => self.tree_eval(alt, args, at, env)?,
+                    None => self.tree_eval(alt, cx)?,
                 }
             }
             Node::Arith(k, a, b) => {
-                let a = self.tree_eval(a, args, at, env)?;
-                let b = self.tree_eval(b, args, at, env)?;
+                let a = self.tree_eval(a, cx)?;
+                let b = self.tree_eval(b, cx)?;
                 let num = |v: Tv| match v { Tv::Int(n) => Some(n as f64), Tv::Float(x) => Some(x), _ => None };
                 match (k, a, b) {
                     (Arith::Add, Tv::Int(x), Tv::Int(y)) => Tv::Int(x.wrapping_add(y)),
@@ -407,14 +499,14 @@ impl Vm {
                     _ => return Err(Stop::Fallback),
                 }
             }
-            Node::Neg(a) => match self.tree_eval(a, args, at, env)? {
+            Node::Neg(a) => match self.tree_eval(a, cx)? {
                 Tv::Int(x) => Tv::Int(x.checked_neg().ok_or(Stop::Fallback)?),
                 Tv::Float(x) => Tv::Float(-x),
                 _ => return Err(Stop::Fallback),
             },
             Node::Cmp(k, a, b) => {
-                let a = self.tree_eval(a, args, at, env)?;
-                let b = self.tree_eval(b, args, at, env)?;
+                let a = self.tree_eval(a, cx)?;
+                let b = self.tree_eval(b, cx)?;
                 // As `compare_values` orders numbers (an unordered pair is equal).
                 use std::cmp::Ordering;
                 let o = match (a, b) {
@@ -436,14 +528,14 @@ impl Vm {
                 // looking the object up (`target >> owner == @owner`).
                 let (a, b) = match (&**a, &**b) {
                     (Node::Member(ao, an, ah), Node::Member(bo, bn, bh)) => {
-                        let x = self.tree_field(ao, an, ah, args, at, env)?;
-                        let y = self.tree_field(bo, bn, bh, args, at, env)?;
+                        let x = self.tree_field(ao, an, ah, cx)?;
+                        let y = self.tree_field(bo, bn, bh, cx)?;
                         if let (Value::Ref(x), Value::Ref(y)) = (x, y) {
                             if x == y && !x.starts_with(crate::vm::OVERLAY_RECORD) { return Ok(Tv::Bool(*is_eq)); }
                         }
                         (self.tree_field_tv(x)?, self.tree_field_tv(y)?)
                     }
-                    _ => (self.tree_eval(a, args, at, env)?, self.tree_eval(b, args, at, env)?),
+                    _ => (self.tree_eval(a, cx)?, self.tree_eval(b, cx)?),
                 };
                 let eq = match (a, b) {
                     (Tv::Obj(x, _), Tv::Obj(y, _)) => x.uuid == y.uuid,
@@ -460,11 +552,73 @@ impl Vm {
                 Tv::Bool(eq == *is_eq)
             }
             Node::Not(a) => {
-                Tv::Bool(!truthy(self.tree_eval(a, args, at, env)?).ok_or(Stop::Fallback)?)
+                Tv::Bool(!truthy(self.tree_eval(a, cx)?).ok_or(Stop::Fallback)?)
             }
+            Node::Nix(a) => Tv::Bool(match self.tree_eval(a, cx)? {
+                Tv::Nil => true,
+                Tv::Bool(_) | Tv::Int(_) | Tv::Float(_) | Tv::Obj(..) => false,
+                Tv::Other(Value::Str(s)) => s.is_empty() || s.chars().all(|c| c.is_whitespace()),
+                Tv::Other(_) => return Err(Stop::Fallback),
+            }),
             Node::Logic(and, a, b) => {
-                let l = self.tree_eval(a, args, at, env)?;
-                if truthy(l).ok_or(Stop::Fallback)? != *and { l } else { self.tree_eval(b, args, at, env)? }
+                let l = self.tree_eval(a, cx)?;
+                if truthy(l).ok_or(Stop::Fallback)? != *and { l } else { self.tree_eval(b, cx)? }
+            }
+            Node::Link(x) => {
+                // As `run_formula_in`: the two objects and the link's name.
+                let [a, b, c] = &**x;
+                let Tv::Obj(a, _) = self.tree_eval(a, cx)? else { return Err(Stop::Fallback) };
+                let Tv::Obj(b, _) = self.tree_eval(b, cx)? else { return Err(Stop::Fallback) };
+                let Tv::Other(Value::Str(ch)) = self.tree_eval(c, cx)? else { return Err(Stop::Fallback) };
+                match crate::tick::link_value_plain(self, &a.uuid, &b.uuid, ch) {
+                    Some(Value::Bool(v)) => Tv::Bool(v),
+                    Some(Value::Float(v)) => Tv::Float(v),
+                    _ => return Err(Stop::Fallback),
+                }
+            }
+            Node::Call(g, argn, callee) => {
+                // As `run_formula_in` calls an action that only reads: an
+                // action (no captured variables) in a global the run's
+                // snapshot doesn't hold, with plain values, strings and
+                // objects. A tree only reads, so it needs no other check.
+                if cx.depth >= MAX_CALLS || cx.env.globals.iter().any(|(n, _)| n == g) { return Err(Stop::Fallback); }
+                let func: &'a Rc<FunctionObject> = match self.tree_global(*g)? {
+                    Value::Function(f) => f,
+                    Value::Closure(c) if c.upvalues.is_empty() => &c.func,
+                    _ => return Err(Stop::Fallback),
+                };
+                if func.params != argn.len() || func.required_params != func.params { return Err(Stop::Fallback); }
+                let callee = callee.get_or_init(|| Box::new(Callee { func: func.clone(), tree: FormulaTree::build(func), env: FormulaEnv::default() }));
+                if !Rc::ptr_eq(&callee.func, func) { return Err(Stop::Fallback); }
+                let tree = callee.tree.as_ref().ok_or(Stop::Fallback)?;
+                let mut vals: smallvec::SmallVec<[Tv<'a>; 4]> = smallvec::SmallVec::new();
+                for a in argn {
+                    match self.tree_eval(a, cx)? {
+                        v @ (Tv::Int(_) | Tv::Float(_) | Tv::Bool(_) | Tv::Nil | Tv::Other(Value::Str(_))) => vals.push(v),
+                        Tv::Obj(o, _) => vals.push(Tv::Obj(o, false)),
+                        _ => return Err(Stop::Fallback),
+                    }
+                }
+                let mut inner = Cx { args: &[], at: &mut [], env: &callee.env, call: Some(&vals), depth: cx.depth + 1 };
+                match self.tree_eval(&tree.root, &mut inner)? {
+                    Tv::Obj(o, _) => Tv::Obj(o, false),
+                    v => v,
+                }
+            }
+            Node::Math(id, x) => {
+                let mut nums: smallvec::SmallVec<[Value; 4]> = smallvec::SmallVec::new();
+                for n in x {
+                    match self.tree_eval(n, cx)? {
+                        Tv::Int(v) => nums.push(Value::Int(v)),
+                        Tv::Float(v) => nums.push(Value::Float(v)),
+                        _ => return Err(Stop::Fallback),
+                    }
+                }
+                match crate::builtins::quick_math(*id, &nums) {
+                    Some(Value::Int(v)) => Tv::Int(v),
+                    Some(Value::Float(v)) => Tv::Float(v),
+                    _ => return Err(Stop::Fallback),
+                }
             }
         })
     }
