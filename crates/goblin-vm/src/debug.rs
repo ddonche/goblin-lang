@@ -112,8 +112,9 @@ pub fn dump_vm(vm: &Vm) {
         );
         for (s, t) in frame.locals.iter().enumerate() {
             match t {
-                Some(tt) => eprintln!("    local[{s}] → {:?}", tt.addr),
-                None     => eprintln!("    local[{s}] (nil)"),
+                crate::vm::Local::Cell(tt) => eprintln!("    local[{s}] → {:?}", tt.addr),
+                crate::vm::Local::Val(v) => eprintln!("    local[{s}] = {}", v.type_name()),
+                crate::vm::Local::Unset => eprintln!("    local[{s}] (nil)"),
             }
         }
     }
@@ -121,6 +122,7 @@ pub fn dump_vm(vm: &Vm) {
     for (i, op) in vm.stack.iter().enumerate().rev() {
         match op {
             Operand::Val(v) => eprintln!("    [{i}] {}", format_value(v)),
+            Operand::Obj(u) => eprintln!("    [{i}] Obj({})", &**u),
             Operand::Ref(t) => eprintln!("    [{i}] Ref({:?})", t.addr),
         }
     }

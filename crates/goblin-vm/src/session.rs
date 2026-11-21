@@ -955,8 +955,8 @@ impl Session {
     /// only they hold. A captured variable has a second holder (its
     /// closure's cell) and stays; a stale tether finds its slot gone or
     /// reused under another generation, as after a collection.
-    pub fn free_sole(&mut self, locals: &[Option<Tether>]) {
-        for t in locals.iter().flatten() {
+    pub fn free_sole<'a>(&mut self, locals: impl Iterator<Item = &'a Tether>) {
+        for t in locals {
             let slot = t.addr.slot as usize;
             if self.arena.get(slot).is_some_and(|s| s.generation == t.addr.generation && s.tether_count == 1) {
                 self.arena.remove(slot);

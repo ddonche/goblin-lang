@@ -19,14 +19,61 @@ pub const MAX_CALL_DEPTH: usize = 512;
 pub(crate) enum Operand {
     Val(Value),
     Ref(Tether),
+    /// A plain variable holding a stored object, by its id: resolves to the
+    /// object as it is in the store, as reading the variable does.
+    Obj(crate::value::ObjId),
+}
+
+/// `n` unset variables.
+#[inline]
+fn unset_locals(n: usize) -> Vec<Local> {
+    let mut v = Vec::with_capacity(n);
+    v.resize_with(n, || Local::Unset);
+    v
+}
+
+/// Variable `l` (slot `slot`) read as a value (`Session::read_value`): an
+/// object from the store, a frozen snapshot's value.
+pub(crate) fn local_read(s: &crate::session::Session, l: &Local, slot: u16) -> Result<Value, GoblinError> {
+    match l {
+        Local::Val(Value::Ref(u)) => match s.object_store.get(u) {
+            Some(v) => Ok(v.clone()),
+            None => crate::actor::gone_object(s, u),
+        },
+        Local::Val(Value::Frozen(f)) => Ok(f.value.clone()),
+        Local::Val(v) => Ok(v.clone_fast()),
+        Local::Cell(t) => s.read_value(t),
+        Local::Unset => Err(GoblinError::Runtime(format!("local slot {slot} is uninitialized"))),
+    }
 }
 
 // ── CallFrame ─────────────────────────────────────────────────────────────────
 
 /// One activation record on the call stack.
+/// One variable of a call. A plain variable holds its value right here
+/// (`Val`); a variable something else shares (a closure captured it, or it
+/// was asked for its address) holds a stash in the arena (`Cell`), which
+/// every holder reads and writes. A `Val` becomes a `Cell` the first time
+/// it is shared (`Vm::local_tether`), so nothing can tell the two apart.
+#[derive(Clone, Default)]
+pub enum Local {
+    #[default]
+    Unset,
+    Val(Value),
+    Cell(Tether),
+}
+
+impl Local {
+    #[inline]
+    pub fn is_set(&self) -> bool { !matches!(self, Local::Unset) }
+    /// The stash, for a shared variable.
+    #[inline]
+    pub fn cell(&self) -> Option<&Tether> { match self { Local::Cell(t) => Some(t), _ => None } }
+}
+
 pub struct CallFrame {
     /// Local variable slots (0..params are args, rest are locals).
-    pub locals: Vec<Option<Tether>>,
+    pub locals: Vec<Local>,
     /// Type locks per slot, made on the first lock: most calls lock nothing.
     locks: Option<Box<Locks>>,
     /// Captured upvalues for the current closure (empty if plain function).
@@ -69,11 +116,11 @@ pub struct LoopState {
 impl CallFrame {
     fn new(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> Self {
         let n = func.locals;
-        Self::new_with(func, upvalues, stack_base, vec![None; n])
+        Self::new_with(func, upvalues, stack_base, unset_locals(n))
     }
 
     /// `new`, with an empty list of `func.locals` slots to use.
-    fn new_with(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize, locals: Vec<Option<Tether>>) -> Self {
+    fn new_with(func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize, locals: Vec<Local>) -> Self {
         CallFrame {
             locals,
             locks: None,
@@ -81,24 +128,56 @@ impl CallFrame {
         }
     }
 
-    fn load_local(&self, slot: u16) -> Result<Tether, GoblinError> {
-        match self.locals.get(slot as usize) {
-            Some(Some(t)) => Ok(t.clone()),
-            Some(None) => Err(GoblinError::Runtime(
-                format!("local slot {slot} is uninitialized")
-            )),
-            None => Err(GoblinError::Runtime(
-                format!("local slot {slot} out of range (frame has {} slots)", self.locals.len())
-            )),
+    /// The value variable `slot` holds, read in place.
+    #[inline]
+    fn local_val<'a>(&'a self, slot: u16, session: &'a crate::session::Session) -> Option<&'a Value> {
+        match self.locals.get(slot as usize)? {
+            Local::Val(v) => Some(v),
+            Local::Cell(t) => session.get_stash(t).ok().map(|s| &s.value),
+            Local::Unset => None,
         }
     }
 
+    /// What `LoadLocal(slot)` pushes: the value of a plain variable, the
+    /// stash of a shared one.
+    #[inline(always)]
+    fn load_operand(&self, slot: u16) -> Result<Operand, GoblinError> {
+        match self.locals.get(slot as usize) {
+            Some(Local::Val(Value::Int(n))) => Ok(Operand::Val(Value::Int(*n))),
+            Some(Local::Val(Value::Float(x))) => Ok(Operand::Val(Value::Float(*x))),
+            Some(Local::Val(Value::Ref(u))) => Ok(Operand::Obj(u.clone())),
+            Some(Local::Val(v)) => Ok(Operand::Val(v.clone_fast())),
+            Some(Local::Cell(t)) => Ok(Operand::Ref(t.clone())),
+            _ => Err(self.bad_slot(slot)),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bad_slot(&self, slot: u16) -> GoblinError {
+        match self.locals.get(slot as usize) {
+            Some(_) => GoblinError::Runtime(format!("local slot {slot} is uninitialized")),
+            None => GoblinError::Runtime(format!("local slot {slot} out of range (frame has {} slots)", self.locals.len())),
+        }
+    }
+
+    /// Gives variable `slot` its own stash `t` (a new binding).
     fn store_local(&mut self, slot: u16, t: Tether, _session: &mut crate::session::Session) {
         let idx = slot as usize;
         if idx >= self.locals.len() {
-            self.locals.resize(idx + 1, None);
+            self.locals.resize(idx + 1, Local::Unset);
         }
-        self.locals[idx] = Some(t);
+        self.locals[idx] = Local::Cell(t);
+    }
+
+    /// Puts `v` in variable `slot` as a plain value (a new binding).
+    #[inline]
+    fn set_local(&mut self, slot: u16, v: Value) {
+        let idx = slot as usize;
+        if idx >= self.locals.len() {
+            self.locals.resize(idx + 1, Local::Unset);
+        }
+        self.locals[idx] = Local::Val(v);
     }
 
     fn get_type_lock(&self, slot: u16) -> Option<&str> {
@@ -213,7 +292,7 @@ pub struct Vm {
     /// The class table `erase_conds` was made from.
     pub(crate) erase_classes: Option<Rc<std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher>>>,
     /// Emptied local lists of returned calls, for the next calls to reuse.
-    spare_locals: Vec<Vec<Option<Tether>>>,
+    spare_locals: Vec<Vec<Local>>,
     /// `objects_owned`: per query, whether its class can be read from
     /// contents lists, for the class table `owned_classes`.
     /// Each entry keeps its function alive, so the query's address names it.
@@ -310,6 +389,7 @@ impl Vm {
         let held = match self.stack.last() {
             Some(Operand::Ref(t)) => match self.session.get_stash(t) { Ok(s) => &s.value, Err(_) => return Step::Slow },
             Some(Operand::Val(v @ Value::Ref(_))) => v,
+            Some(Operand::Obj(u)) => match self.session.object_store.get(u) { Some(v @ Value::Object(_)) => v, _ => return Step::Slow },
             _ => return Step::Slow,
         };
         let obj = match held {
@@ -439,8 +519,7 @@ impl Vm {
                 Operand::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => v,
                 op => self.arg_of(op)?,
             };
-            let t = self.session.alloc_value(v);
-            new_frame.locals[i] = Some(t);
+            new_frame.locals[i] = Local::Val(v);
         }
         // Pop function operand.
         self.stack.pop();
@@ -468,7 +547,7 @@ impl Vm {
         let ret_val = match ret_op {
             // Only this call's own operands can refer to its variables:
             // they were made after everything below its base.
-            Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.as_ref() == Some(&t))
+            Operand::Ref(t) if self.call_stack.last().unwrap().locals.iter().any(|l| l.cell() == Some(&t))
                 && !self.stack[self.call_stack.last().unwrap().stack_base..].iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) => {
                 let stash = self.session.resolve_mut(t.addr)?;
                 if stash.tether_count == 1 && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_)) {
@@ -485,7 +564,7 @@ impl Vm {
         // The call's own variables that nothing else holds (no
         // closure captured them) are gone with it: free their slots
         // now instead of leaving them for the next collection.
-        self.session.free_sole(&frame.locals);
+        self.session.free_sole(frame.locals.iter().filter_map(Local::cell));
         if self.spare_locals.len() < 64 {
             let mut l = std::mem::take(&mut frame.locals);
             l.clear();
@@ -517,7 +596,7 @@ impl Vm {
         if AsRef::<str>::as_ref(name) == crate::store::OWNER_FIELD { return Step::Slow; }
         let uuid = match &self.stack[n - 2] {
             Operand::Ref(t) => match self.session.get_stash(t) { Ok(st) => match &st.value { Value::Ref(u) => u.clone(), _ => return Step::Slow }, Err(_) => return Step::Slow },
-            Operand::Val(Value::Ref(u)) => u.clone(),
+            Operand::Val(Value::Ref(u)) | Operand::Obj(u) => u.clone(),
             _ => return Step::Slow,
         };
         if uuid.starts_with(OVERLAY_RECORD) { return Step::Slow; }
@@ -714,9 +793,8 @@ impl Vm {
             Opcode::LoadTrue => self.stack.push(Operand::Val(Value::Bool(true))),
             Opcode::LoadFalse => self.stack.push(Operand::Val(Value::Bool(false))),
             Opcode::LoadLocal(slot) => {
-                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
-                let t = t.clone();
-                self.stack.push(Operand::Ref(t));
+                let Ok(op) = self.local_operand(slot) else { return Step::Slow };
+                self.stack.push(op);
             }
             Opcode::IncLocal(c) => {
                 // `x |= x + k` on whole numbers: the steps after it at once.
@@ -727,9 +805,8 @@ impl Vm {
             Opcode::MoveLocal(src) => {
                 // `a |= b` with plain values: copied at once.
                 if let Some(next) = self.move_local(src, *ip, code) { *ip = next; return Step::Done; }
-                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(src as usize) else { return Step::Slow };
-                let t = t.clone();
-                self.stack.push(Operand::Ref(t));
+                let Ok(op) = self.local_operand(src) else { return Step::Slow };
+                self.stack.push(op);
             }
             Opcode::CmpJump(slot) | Opcode::BinLocal(slot) => {
                 let done = if matches!(op, Opcode::CmpJump(_)) {
@@ -746,9 +823,8 @@ impl Vm {
                 };
                 if done.is_some() { return Step::Done; }
                 // Not two plain numbers: just the `LoadLocal` it stands for.
-                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
-                let t = t.clone();
-                self.stack.push(Operand::Ref(t));
+                let Ok(op) = self.local_operand(slot) else { return Step::Slow };
+                self.stack.push(op);
             }
             Opcode::LoadGlobal(idx) => {
                 let Some(t) = self.session.get_global(idx as usize) else { return Step::Slow };
@@ -868,9 +944,21 @@ impl Vm {
                     return Step::Done;
                 }
                 // Only an object can't be rebound; a plain local passes.
-                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
-                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
-                if matches!(stash.value, Value::Object(_) | Value::Ref(_) | Value::Frozen(_)) { return Step::Slow; }
+                let frame = self.call_stack.last().unwrap();
+                let Some(cur) = frame.local_val(slot, &self.session) else { return Step::Slow };
+                if let Value::Ref(held) = cur {
+                    // `p >> f |= v` hands `p` its own object back: the guard
+                    // passes and the store changes nothing (`same_id_store`).
+                    if frame.locks.is_none() && matches!(code.get(*ip), Some(Opcode::StoreLocal(s)) if *s == slot)
+                        && matches!(self.stack.last(), Some(Operand::Val(Value::Ref(u)) | Operand::Obj(u)) if held.same(u))
+                        && !held.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(held) {
+                        self.stack.pop();
+                        *ip += 1;
+                        return Step::Done;
+                    }
+                    return Step::Slow;
+                }
+                if matches!(cur, Value::Object(_) | Value::Frozen(_)) { return Step::Slow; }
                 if self.stack.is_empty() { return Step::Slow; }
                 // The store into the same variable that always follows: done
                 // here when it is a plain overwrite (see `StoreLocal`).
@@ -891,9 +979,7 @@ impl Vm {
             }
             Opcode::AppendLocal(slot) => {
                 // `x += n` on ints: the sum `op_add` would push.
-                let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) else { return Step::Slow };
-                let Ok(stash) = self.session.get_stash(t) else { return Step::Slow };
-                let Value::Int(a) = stash.value else { return Step::Slow };
+                let Some(&Value::Int(a)) = self.call_stack.last().unwrap().local_val(slot, &self.session) else { return Step::Slow };
                 let Some(top) = self.stack.last() else { return Step::Slow };
                 let Some(b) = self.operand_int(top) else { return Step::Slow };
                 self.set_top_plain(Value::Int(a.wrapping_add(b)));
@@ -962,15 +1048,28 @@ impl Vm {
 
             // ── Locals ──────────────────────────────────────────────────────
             Opcode::LoadLocal(slot) | Opcode::CmpJump(slot) | Opcode::BinLocal(slot) | Opcode::MoveLocal(slot) => {
-                // Push a lazy Ref — deferred read, no clone until the value is used.
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
-                self.stack.push(Operand::Ref(t));
+                // A plain variable's value (shared, not copied), a shared
+                // variable's stash.
+                let op = self.local_operand(slot)?;
+                self.stack.push(op);
             }
             Opcode::TakeLocal(slot) => {
-                let frame = self.call_stack.last().unwrap();
-                let t = frame.load_local(slot)?;
-                if frame.get_hard_type_lock(slot).is_none()
-                    && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) {
+                let frame = self.call_stack.last_mut().unwrap();
+                let unlocked = frame.get_hard_type_lock(slot).is_none();
+                if let Some(Local::Val(v)) = frame.locals.get_mut(slot as usize) {
+                    // Moved out to the call, so the callee can change it in
+                    // place; earlier reads hold their own copies.
+                    if unlocked && !matches!(v, Value::Ref(_) | Value::Frozen(_) | Value::Object(_)) {
+                        let v = std::mem::replace(v, Value::Nil);
+                        self.stack.push(Operand::Val(v));
+                        return Ok(());
+                    }
+                    let op = self.local_operand(slot)?;
+                    self.stack.push(op);
+                    return Ok(());
+                }
+                let t = self.local_tether(slot)?;
+                if unlocked && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) {
                     let stash = self.session.resolve_mut(t.addr)?;
                     if stash.tether_count == 1
                         && !matches!(stash.value, Value::Ref(_) | Value::Frozen(_) | Value::Object(_)) {
@@ -988,7 +1087,11 @@ impl Vm {
             // without a full Vec clone when we have sole ownership.
             Opcode::ArrayPushToLocal(slot) => {
                 let elem = self.stack_pop()?;
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                if let Some(Local::Val(Value::Array(v))) = self.call_stack.last_mut().unwrap().locals.get_mut(slot as usize) {
+                    v.push(elem);
+                    return Ok(());
+                }
+                let t = self.local_tether(slot)?;
                 // Fast path: sole owner — mutate in place, no new stash.
                 {
                     let stash = self.session.resolve_mut(t.addr)?;
@@ -1010,13 +1113,30 @@ impl Vm {
             }
 
             Opcode::AppendLocal(slot) => {
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
                 let piece = self.pop_value()?;
+                let frame = self.call_stack.last_mut().unwrap();
+                let unlocked = frame.get_hard_type_lock(slot).is_none();
+                if let Some(Local::Val(cur)) = frame.locals.get_mut(slot as usize) {
+                    // In place: text this variable alone holds (a shared
+                    // buffer is still copied by make_mut); the store that
+                    // follows puts the same text back.
+                    if let (Value::Str(p), Value::Str(s), true) = (&piece, &mut *cur, unlocked) {
+                        s.make_mut().push_str(p);
+                        let v = cur.clone_fast();
+                        self.stack.push(Operand::Val(v));
+                        return Ok(());
+                    }
+                    let op = self.local_operand(slot)?;
+                    self.stack.push(op);
+                    self.stack.push(Operand::Val(piece));
+                    return self.op_add();
+                }
+                let t = self.local_tether(slot)?;
                 // In place: x is text only this variable holds (a shared
                 // buffer is still copied by make_mut), the piece is text,
                 // and no hard type lock casts what is stored.
                 if let Value::Str(p) = &piece {
-                    if self.call_stack.last().unwrap().get_hard_type_lock(slot).is_none() {
+                    if unlocked {
                         let stash = self.session.resolve_mut(t.addr)?;
                         if stash.tether_count == 1 {
                             if let Value::Str(ref mut s) = stash.value {
@@ -1110,8 +1230,7 @@ impl Vm {
                         )));
                     }
                 }
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
-                let val = self.session.read_value(&t)?;
+                let val = self.read_local(slot)?;
                 let new_val = crate::builtins::cast_value_to_lock(val, &cast_type)?;
                 let new_t = self.session.alloc_value(new_val.clone());
                 self.call_stack.last_mut().unwrap().store_local(slot, new_t, &mut self.session);
@@ -1144,8 +1263,7 @@ impl Vm {
             Opcode::GetTypeLockLocal(slot) => {
                 let lock = self.call_stack.last().and_then(|f| f.get_type_lock(slot).map(|s| s.to_string()));
                 if let Some(lock) = lock {
-                    let t = self.call_stack.last().unwrap().load_local(slot)?;
-                    let val = self.session.read_value(&t)?;
+                    let val = self.read_local(slot)?;
                     let label = match &val {
                         Value::Array(_) => format!("array({})", lock),
                         Value::Map(_) | Value::MapOrd(_) => format!("map({})", lock),
@@ -1158,8 +1276,7 @@ impl Vm {
                     self.stack.push(Operand::Val(Value::Str(label.into())));
                 } else {
                     // No lock — fall through to normal type name of the value.
-                    let t = self.call_stack.last().unwrap().load_local(slot)?;
-                    let val = self.session.read_value(&t)?;
+                    let val = self.read_local(slot)?;
                     self.stack.push(Operand::Val(Value::Str(val.type_name().to_string().into())));
                 }
             }
@@ -1202,8 +1319,7 @@ impl Vm {
                         )));
                     }
                 }
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
-                let val = self.session.read_value(&t)?;
+                let val = self.read_local(slot)?;
                 let cast = crate::builtins::cast_value_to_lock(val, &cast_type)?;
                 self.stack.push(Operand::Val(cast));
             }
@@ -1278,6 +1394,7 @@ impl Vm {
                 let op = self.stack.pop().ok_or_else(|| GoblinError::Runtime("stack underflow".into()))?;
                 let frozen = match &op {
                     Operand::Val(v) => matches!(v, Value::Frozen(_)),
+                    Operand::Obj(_) => false,
                     Operand::Ref(t) => matches!(self.session.get_stash(t)?.value, Value::Frozen(_)),
                 };
                 if frozen {
@@ -1686,11 +1803,11 @@ impl Vm {
                 self.stack.push(Operand::Val(self.read_entry(result)));
             }
             Opcode::GuardRebindLocal(slot, name_idx) => {
-                let t = self.call_stack.last().unwrap().load_local(slot)?;
+                let cur = self.call_stack.last().unwrap().load_operand(slot)?;
                 let Some(new) = self.stack.last() else {
                     return Err(GoblinError::Runtime("stack underflow on GuardObjRebind".into()));
                 };
-                if self.operand_is_obj(&Operand::Ref(t))? && !self.operand_is_obj(new)? {
+                if self.operand_is_obj(&cur)? && !self.operand_is_obj(new)? {
                     let name = match self.call_stack.last().and_then(|f| f.func.constants.get(name_idx as usize)) {
                         Some(Value::Str(s)) => s.clone(),
                         _ => String::new().into(),
@@ -1840,7 +1957,7 @@ impl Vm {
             }
             Opcode::JumpIfLocalSet(slot, offset) => {
                 let frame = self.call_stack.last_mut().unwrap();
-                if frame.locals[slot as usize].is_some() {
+                if frame.locals[slot as usize].is_set() {
                     frame.ip = (frame.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1851,10 +1968,11 @@ impl Vm {
                         Value::Str(s) => s.clone(),
                         _ => return Ok(()),
                     };
-                    (frame.locals.first().cloned().flatten(), field)
+                    (frame.locals.first().map_or(false, Local::is_set), field)
                 };
-                let Some(t) = it else { return Ok(()) };
-                let found = match self.deref_value(&t)? {
+                if !it { return Ok(()) }
+                let v = match self.read_local(0)? { Value::Ref(u) => self.read_obj(&u)?, v => v };
+                let found = match v {
                     Value::Object(o) => o.fields.get(field.as_str()).cloned(),
                     _ => None,
                 };
@@ -2036,8 +2154,7 @@ impl Vm {
                 for i in (0..=arg_count).rev() {
                     let op = self.stack.pop().unwrap();
                     let v = self.resolve_op(op)?;
-                    let t = self.session.alloc_value(v);
-                    new_frame.locals[i] = Some(t);
+                    new_frame.locals[i] = Local::Val(v);
                 }
                 self.call_stack.push(new_frame);
             }
@@ -2712,8 +2829,8 @@ impl Vm {
                 for desc in &descriptors {
                     let (tether, lock) = match desc {
                         UpvalueDescriptor::Local(slot) => {
-                            let frame = self.call_stack.last().unwrap();
-                            (frame.load_local(*slot)?, frame.get_hard_type_lock(*slot).map(Rc::from))
+                            let t = self.local_tether(*slot)?;
+                            (t, self.call_stack.last().unwrap().get_hard_type_lock(*slot).map(Rc::from))
                         }
                         UpvalueDescriptor::Upvalue(uv_idx) => {
                             let cell = self.call_stack.last().unwrap()
@@ -3583,11 +3700,11 @@ impl Vm {
     /// Whether the running action has a `self` with a field `name`: a bare
     /// `name` there is then most likely meant as `@name`.
     fn self_has_field(&mut self, name: &str) -> bool {
-        let Some(t) = self.call_stack.last().and_then(|f| {
+        let Some(slot) = self.call_stack.last().and_then(|f| {
             let slot = f.func.local_names.iter().position(|n| n == "self")?;
-            f.locals.get(slot).cloned().flatten()
+            f.locals.get(slot)?.is_set().then_some(slot)
         }) else { return false };
-        match self.session.read_value(&t) {
+        match self.read_local(slot as u16) {
             Ok(Value::Object(o)) => o.fields.contains_key(name),
             Ok(Value::Ref(u)) => matches!(self.session.object_store.get(&u), Some(Value::Object(o)) if o.fields.contains_key(name)),
             _ => false,
@@ -3618,12 +3735,12 @@ impl Vm {
 
     fn lookup_interp_value(&mut self, name: &str) -> Option<Value> {
         // 1. Check locals in current frame by name
-        let local_tether = self.call_stack.last().and_then(|frame| {
+        let local_slot = self.call_stack.last().and_then(|frame| {
             frame.func.local_names.iter().position(|n| n == name)
-                .and_then(|slot| frame.locals.get(slot).and_then(|opt| opt.clone()))
+                .filter(|&slot| frame.locals.get(slot).map_or(false, Local::is_set))
         });
-        if let Some(t) = local_tether {
-            if let Ok(v) = self.session.read_value(&t) {
+        if let Some(slot) = local_slot {
+            if let Ok(v) = self.read_local(slot as u16) {
                 return Some(v);
             }
         }
@@ -3741,7 +3858,9 @@ impl Vm {
             trace: self.session.has_cells,
         };
         for frame in &self.call_stack {
-            for t in frame.locals.iter().flatten() { m.slot(t.addr.slot); }
+            for l in &frame.locals {
+                match l { Local::Cell(t) => m.slot(t.addr.slot), Local::Val(v) => m.value(v), Local::Unset => {} }
+            }
             for cell in &frame.upvalues { m.slot(cell.0.borrow().addr.slot); }
             // What a running repeat walks over can be held nowhere else.
             for st in &frame.loops { m.value(&st.iter); }
@@ -3751,6 +3870,7 @@ impl Vm {
             match op {
                 Operand::Ref(t) => m.slot(t.addr.slot),
                 Operand::Val(v) => m.value(v),
+                Operand::Obj(u) => m.value(&Value::Ref(u.clone())),
             }
         }
         if m.trace {
@@ -3791,6 +3911,7 @@ impl Vm {
             Some(Operand::Ref(t)) => &self.session.get_stash(t).ok()?.value,
             // A field read that kept its object as a reference.
             Some(Operand::Val(v @ Value::Ref(_))) => v,
+            Some(Operand::Obj(u)) => self.session.object_store.get(u)?,
             _ => return None,
         };
         let obj = match held {
@@ -3817,6 +3938,7 @@ impl Vm {
         fn id<'a>(vm: &'a Vm, op: &'a Operand) -> Option<&'a crate::value::ObjId> {
             let v = match op {
                 Operand::Val(v) => v,
+                Operand::Obj(u) => return (!u.starts_with(OVERLAY_RECORD) && vm.session.object_store.contains_key(u)).then_some(u),
                 Operand::Ref(t) => &vm.session.get_stash(t).ok()?.value,
             };
             match v {
@@ -3835,6 +3957,25 @@ impl Vm {
             Operand::Val(Value::Frozen(f)) => Ok(f.value.clone()),
             Operand::Val(v) => Ok(v),
             Operand::Ref(t) => self.session.read_value(&t),
+            Operand::Obj(u) => self.read_obj(&u),
+        }
+    }
+
+    /// A variable holding the stored object `u`, read (`Session::read_value`).
+    fn read_obj(&self, u: &crate::value::ObjId) -> Result<Value, GoblinError> {
+        match self.session.object_store.get(u) {
+            Some(v) => Ok(v.clone()),
+            None => crate::actor::gone_object(&self.session, u),
+        }
+    }
+
+    /// The value an operand holds, read in place: for a variable, what the
+    /// variable holds (an object as its id).
+    fn peek_op<'a>(&'a self, op: &'a Operand) -> Option<std::borrow::Cow<'a, Value>> {
+        match op {
+            Operand::Val(v) => Some(std::borrow::Cow::Borrowed(v)),
+            Operand::Ref(t) => self.session.get_stash(t).ok().map(|s| std::borrow::Cow::Borrowed(&s.value)),
+            Operand::Obj(u) => Some(std::borrow::Cow::Owned(Value::Ref(u.clone()))),
         }
     }
 
@@ -3854,6 +3995,7 @@ impl Vm {
                 f @ Value::Frozen(_) => Ok(f.clone()),
                 _ => self.session.read_value(&t),
             },
+            Operand::Obj(u) => self.read_obj(&u),
         }
     }
 
@@ -3883,6 +4025,7 @@ impl Vm {
                 let plain = |op: &Operand| -> Option<Value> {
                     let v = match op {
                         Operand::Val(v) => v,
+                        Operand::Obj(_) => return None,
                         Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
                     };
                     match v {
@@ -3910,6 +4053,7 @@ impl Vm {
         let num = |op: &Operand| -> Option<(f64, bool)> {
             let v = match op {
                 Operand::Val(v) => v,
+                Operand::Obj(_) => return None,
                 Operand::Ref(t) => &self.session.get_stash(t).ok()?.value,
             };
             match v { Value::Int(n) => Some((*n as f64, false)), Value::Float(x) => Some((*x, true)), _ => None }
@@ -3949,6 +4093,7 @@ impl Vm {
         }
         Ok(match op {
             Operand::Val(v) => is_obj(&self.session, v),
+            Operand::Obj(u) => self.session.object_store.contains_key(u),
             Operand::Ref(t) => is_obj(&self.session, &self.session.get_stash(t)?.value),
         })
     }
@@ -4091,6 +4236,7 @@ impl Vm {
         let base = self.stack.len() - n - 1;
         let mut cur: &Value = match &self.stack[base] {
             Operand::Val(v) => v,
+            Operand::Obj(_) => return Ok(false),
             Operand::Ref(t) => match &self.session.get_stash(t)?.value {
                 // An object goes through the object store; leave it to the copying walk.
                 Value::Ref(_) => return Ok(false),
@@ -4102,6 +4248,7 @@ impl Vm {
             let key: &Value = match &self.stack[base + 1 + i] {
                 Operand::Val(Value::Frozen(f)) => &f.value,
                 Operand::Val(v) => v,
+                Operand::Obj(_) => return Ok(false),
                 Operand::Ref(t) => match &self.session.get_stash(t)?.value {
                     Value::Ref(_) => return Ok(false),
                     Value::Frozen(f) => &f.value,
@@ -4217,14 +4364,18 @@ impl Vm {
     #[inline(always)]
     fn local_and_next(&self, slot: u16, ip: usize, code: &[Opcode]) -> Option<(Num, Num)> {
         let frame = self.call_stack.last().unwrap();
-        let num = |t: &Option<Tether>| -> Option<Num> {
-            let t = t.as_ref()?;
-            match self.session.arena.get(t.addr.slot as usize) {
-                Some(st) if st.generation == t.addr.generation => match st.value {
-                    Value::Int(n) => Some(Num::I(n)),
-                    Value::Float(x) => Some(Num::F(x)),
-                    _ => None,
+        let num = |l: &Local| -> Option<Num> {
+            let v = match l {
+                Local::Val(v) => v,
+                Local::Cell(t) => match self.session.arena.get(t.addr.slot as usize) {
+                    Some(st) if st.generation == t.addr.generation => &st.value,
+                    _ => return None,
                 },
+                Local::Unset => return None,
+            };
+            match *v {
+                Value::Int(n) => Some(Num::I(n)),
+                Value::Float(x) => Some(Num::F(x)),
                 _ => None,
             }
         };
@@ -4248,10 +4399,14 @@ impl Vm {
     /// that is the case (the caller then pops the operand).
     #[inline(always)]
     fn same_id_store(&mut self, slot: u16) -> bool {
-        let Some(Operand::Val(Value::Ref(u))) = self.stack.last() else { return false };
+        let (Some(Operand::Val(Value::Ref(u))) | Some(Operand::Obj(u))) = self.stack.last() else { return false };
         let frame = self.call_stack.last().unwrap();
         if frame.locks.is_some() { return false; }
-        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let t = match frame.locals.get(slot as usize) {
+            Some(Local::Val(Value::Ref(held))) => return held.same(u),
+            Some(Local::Cell(t)) => t,
+            _ => return false,
+        };
         match self.session.arena.get(t.addr.slot as usize) {
             Some(st) if st.generation == t.addr.generation => matches!(&st.value, Value::Ref(held) if held.same(u)),
             _ => false,
@@ -4266,9 +4421,16 @@ impl Vm {
     fn guard_store_plain(&mut self, slot: u16) -> bool {
         let Some(v) = self.plain_top() else { return false };
         let v = std::mem::ManuallyDrop::new(v);
-        let frame = self.call_stack.last().unwrap();
+        let frame = self.call_stack.last_mut().unwrap();
         if frame.locks.is_some() { return false; }
-        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let t = match frame.locals.get_mut(slot as usize) {
+            Some(Local::Val(old @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil))) => {
+                std::mem::forget(std::mem::replace(old, std::mem::ManuallyDrop::into_inner(v)));
+                return true;
+            }
+            Some(Local::Cell(t)) => t,
+            _ => return false,
+        };
         let addr = t.addr;
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
         match self.session.arena.get_mut(addr.slot as usize) {
@@ -4287,9 +4449,16 @@ impl Vm {
     /// `guard_store_plain`). False (nothing changed) otherwise.
     #[inline(always)]
     fn write_plain_local(&mut self, slot: u16, v: &Value) -> bool {
-        let frame = self.call_stack.last().unwrap();
+        let frame = self.call_stack.last_mut().unwrap();
         if frame.locks.is_some() { return false; }
-        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let t = match frame.locals.get_mut(slot as usize) {
+            Some(Local::Val(old @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil))) => {
+                std::mem::forget(std::mem::replace(old, v.clone_fast()));
+                return true;
+            }
+            Some(Local::Cell(t)) => t,
+            _ => return false,
+        };
         let addr = t.addr;
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
         match self.session.arena.get_mut(addr.slot as usize) {
@@ -4336,7 +4505,12 @@ impl Vm {
         let frame = self.call_stack.last().unwrap();
         let Value::Int(k) = *frame.func.constants.get(c as usize)? else { return None };
         if frame.locks.is_some() { return None; }
-        let addr = frame.locals.get(s as usize)?.as_ref()?.addr;
+        let frame = self.call_stack.last_mut().unwrap();
+        let addr = match frame.locals.get_mut(s as usize)? {
+            Local::Val(Value::Int(a)) => { *a = a.wrapping_add(k); return Some(ip + 3); }
+            Local::Cell(t) => t.addr,
+            _ => return None,
+        };
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return None; }
         match self.session.arena.get_mut(addr.slot as usize) {
             Some(st) if st.generation == addr.generation && st.tether_count == 1 => {
@@ -4355,7 +4529,14 @@ impl Vm {
     fn move_local(&mut self, src: u16, ip: usize, code: &[Opcode]) -> Option<usize> {
         let Opcode::GuardRebindLocal(d, _) = *code.get(ip)? else { return None };
         let frame = self.call_stack.last().unwrap();
-        let from = frame.locals.get(src as usize)?.as_ref()?.addr;
+        let from = match frame.locals.get(src as usize)? {
+            Local::Val(v @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => {
+                let v = v.clone_fast();
+                return if self.write_plain_local(d, &v) { Some(ip + 2) } else { None };
+            }
+            Local::Cell(t) => t.addr,
+            _ => return None,
+        };
         let v = match self.session.arena.get(from.slot as usize) {
             Some(st) if st.generation == from.generation => match st.value {
                 Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil => st.value.clone_fast(),
@@ -4370,9 +4551,17 @@ impl Vm {
     fn store_plain_local(&mut self, slot: u16, v: Value) -> bool {
         // `v` is a number, bool or nil: nothing to drop when it isn't stored.
         let v = std::mem::ManuallyDrop::new(v);
-        let frame = self.call_stack.last().unwrap();
+        let frame = self.call_stack.last_mut().unwrap();
         if frame.locks.is_some() { return false; }
-        let Some(Some(t)) = frame.locals.get(slot as usize) else { return false };
+        let t = match frame.locals.get_mut(slot as usize) {
+            Some(Local::Val(old)) => {
+                let old = std::mem::replace(old, std::mem::ManuallyDrop::into_inner(v));
+                if matches!(old, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil) { std::mem::forget(old) } else { drop(old) }
+                return true;
+            }
+            Some(Local::Cell(t)) => t,
+            _ => return false,
+        };
         let addr = t.addr;
         if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u.addr == addr)) { return false; }
         match self.session.arena.get_mut(addr.slot as usize) {
@@ -4386,12 +4575,75 @@ impl Vm {
         }
     }
 
+    /// The stash of variable `slot` of the running call, made for it the
+    /// first time something needs it (a closure capturing it, a step that
+    /// works on stashes): from then on the variable lives there.
+    pub(crate) fn local_tether(&mut self, slot: u16) -> Result<Tether, GoblinError> {
+        let frame = self.call_stack.last_mut().unwrap();
+        match frame.locals.get_mut(slot as usize) {
+            Some(Local::Cell(t)) => Ok(t.clone()),
+            Some(l @ Local::Val(_)) => {
+                let Local::Val(v) = std::mem::take(l) else { unreachable!() };
+                let t = self.session.alloc_value(v);
+                *self.call_stack.last_mut().unwrap().locals.get_mut(slot as usize).unwrap() = Local::Cell(t.clone());
+                Ok(t)
+            }
+            Some(Local::Unset) => Err(GoblinError::Runtime(format!("local slot {slot} is uninitialized"))),
+            None => Err(GoblinError::Runtime(format!("local slot {slot} out of range (frame has {} slots)", frame.locals.len()))),
+        }
+    }
+
+    /// Variable `slot` read as a value (`Session::read_value`): an object
+    /// from the store, a frozen snapshot's value.
+    pub(crate) fn read_local(&self, slot: u16) -> Result<Value, GoblinError> {
+        match self.call_stack.last().unwrap().locals.get(slot as usize) {
+            Some(l) => local_read(&self.session, l, slot),
+            None => Err(GoblinError::Runtime(format!("local slot {slot} out of range"))),
+        }
+    }
+
+    /// What a variable holds, by reference (an object as its id); None
+    /// when it is unset.
+    #[inline]
+    fn raw<'a>(&'a self, l: Option<&'a Local>) -> Result<Option<&'a Value>, GoblinError> {
+        match l {
+            Some(Local::Val(v)) => Ok(Some(v)),
+            Some(Local::Cell(t)) => Ok(Some(&self.session.get_stash(t)?.value)),
+            _ => Ok(None),
+        }
+    }
+
+    /// What `LoadLocal(slot)` pushes. A collection keeps a stash, so the
+    /// bang writes that change it in place (`sole_ref_target`) still can.
+    #[inline(always)]
+    fn local_operand(&mut self, slot: u16) -> Result<Operand, GoblinError> {
+        let frame = self.call_stack.last().unwrap();
+        if let Some(Local::Val(Value::Collection(_))) = frame.locals.get(slot as usize) {
+            return self.promoted_operand(slot);
+        }
+        frame.load_operand(slot)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn promoted_operand(&mut self, slot: u16) -> Result<Operand, GoblinError> {
+        Ok(Operand::Ref(self.local_tether(slot)?))
+    }
+
+    /// `local_tether` for a slot that may be unset (None then).
+    pub(crate) fn local_tether_opt(&mut self, slot: usize) -> Option<Tether> {
+        match self.call_stack.last()?.locals.get(slot)? {
+            Local::Unset => None,
+            _ => self.local_tether(slot as u16).ok(),
+        }
+    }
+
     fn store_local_op(&mut self, slot: u16, assign: bool) -> Result<(), GoblinError> {
                 // Storing a variable's own stash back into it (after an
                 // in-place CallBuiltinMut / UpdatePathMut) changes nothing.
                 if let Some(Operand::Ref(t)) = self.stack.last() {
                     let frame = self.call_stack.last().unwrap();
-                    if frame.locals.get(slot as usize).and_then(|o| o.as_ref()) == Some(t)
+                    if frame.locals.get(slot as usize).and_then(Local::cell) == Some(t)
                         && frame.get_hard_type_lock(slot).is_none() {
                         self.stack.pop();
                         return Ok(());
@@ -4411,6 +4663,11 @@ impl Vm {
                             _ => self.stack_pop_raw()?,
                         }
                     }
+                    Some(Operand::Obj(u)) if self.call_stack.last().unwrap().get_hard_type_lock(slot).is_none()
+                        && !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u) => {
+                        let Some(Operand::Obj(u)) = self.stack.pop() else { unreachable!() };
+                        Value::Ref(u)
+                    }
                     _ => self.stack_pop_raw()?,
                 };
                 if let Value::Ref(u) = &val {
@@ -4424,8 +4681,15 @@ impl Vm {
                 // instead of making a new stash. Nobody can tell the
                 // difference, and it saves an allocation per assignment.
                 if !matches!(val, Value::Object(_)) {
+                    let frame = self.call_stack.last_mut().unwrap();
+                    if frame.locks.is_none() {
+                        if let Some(l @ (Local::Val(_) | Local::Unset)) = frame.locals.get_mut(slot as usize) {
+                            *l = Local::Val(val);
+                            return Ok(());
+                        }
+                    }
                     let frame = self.call_stack.last().unwrap();
-                    if let Some(Some(t)) = frame.locals.get(slot as usize) {
+                    if let Some(Local::Cell(t)) = frame.locals.get(slot as usize) {
                         if frame.get_hard_type_lock(slot).is_none()
                             && !self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if u == t)) {
                             let addr = t.addr;
@@ -4453,7 +4717,7 @@ impl Vm {
                 // `x |=` on a variable a nested action also uses: change the
                 // one value they share, so each sees the other's writes.
                 if assign {
-                    if let Some(Some(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) {
+                    if let Some(Local::Cell(t)) = self.call_stack.last().unwrap().locals.get(slot as usize) {
                         let t = t.clone();
                         if self.session.get_stash(&t)?.tether_count > 1 {
                             if let Some(uuid) = registered_uuid(&val) {
@@ -4464,14 +4728,15 @@ impl Vm {
                     }
                 }
                 // Mirror interpreter: store Object in object_store, put Ref in slot.
-                let t = if let Some(uuid) = registered_uuid(&val) {
+                // A new binding: the variable holds the value itself.
+                let val = if let Some(uuid) = registered_uuid(&val) {
                     self.note_object_name(&uuid, NameOf::Local(slot as usize));
                     self.session.put_object(&uuid, val);
-                    self.session.alloc_value(Value::Ref(uuid.into()))
+                    Value::Ref(uuid.into())
                 } else {
-                    self.session.alloc_value(val)
+                    val
                 };
-                self.call_stack.last_mut().unwrap().store_local(slot, t, &mut self.session);
+                self.call_stack.last_mut().unwrap().set_local(slot, val);
                     Ok(())
     }
 
@@ -4576,15 +4841,20 @@ impl Vm {
         let OpData::QuickSet(q) = &func.op_data[idx as usize] else { unreachable!("QuickSet without its data") };
         let OpData::Fused(f) = &func.op_data[q.check as usize] else { unreachable!("QuickSet without its check") };
         let frame = self.call_stack.last().unwrap();
-        let Some(Some(t)) = frame.locals.get(f.root as usize) else { return Ok(None) };
         // A hard type lock casts and checks on the store this would skip.
         if frame.get_hard_type_lock(f.root).is_some() { return Ok(None); }
-        let t = t.clone();
-        {
-            let stash = self.session.get_stash(&t)?;
-            if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
-        }
-        if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
+        // None: the variable holds the collection itself.
+        let cell = match frame.locals.get(f.root as usize) {
+            Some(Local::Val(Value::Collection(_))) => None,
+            Some(Local::Cell(t)) => {
+                let t = t.clone();
+                let stash = self.session.get_stash(&t)?;
+                if stash.tether_count != 1 || !matches!(stash.value, Value::Collection(_)) { return Ok(None); }
+                if self.stack.iter().any(|op| matches!(op, Operand::Ref(u) if *u == t)) { return Ok(None); }
+                Some(t)
+            }
+            _ => return Ok(None),
+        };
         // `path + n` (or - or *) with n a number written in the code: the
         // most common case, worked out straight from the old value.
         let simple = match &q.expr {
@@ -4607,13 +4877,13 @@ impl Vm {
         let frame = self.call_stack.last().unwrap();
         for seg in &f.segs {
             if let FusedKey::Local(s) = seg.key {
-                let k = match frame.locals.get(s as usize) {
-                    Some(Some(kt)) => match &self.session.get_stash(kt)?.value {
+                let k = match self.raw(frame.locals.get(s as usize))? {
+                    Some(v) => match v {
                         Value::Ref(_) => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
                         Value::Frozen(fr) => fr.value.clone_fast(),
                         v => v.clone_fast(),
                     },
-                    _ => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
+                    None => { self.key_buf = owned; self.num_buf = nums; return Ok(None) }
                 };
                 owned.push(k);
             }
@@ -4628,12 +4898,18 @@ impl Vm {
             };
         }
         let keys = &keys[..f.segs.len()];
-        let stash = self.session.resolve_mut(t.addr)?;
+        let target: &mut Value = match &cell {
+            Some(t) => &mut self.session.resolve_mut(t.addr)?.value,
+            None => match &mut self.call_stack.last_mut().unwrap().locals[f.root as usize] {
+                Local::Val(v) => v,
+                _ => unreachable!(),
+            },
+        };
         let expr = &q.expr;
         let done = match simple {
-            Some(c) => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+            Some(c) => crate::collections::update_path_with(target, keys, &f.segs,
                 &mut |old| quick_arith(expr, old, &c)),
-            None => crate::collections::update_path_with(&mut stash.value, keys, &f.segs,
+            None => crate::collections::update_path_with(target, keys, &f.segs,
                 &mut |old| quick_eval(expr, &nums, &mut 0, old)),
         };
         owned.clear();
@@ -4654,9 +4930,9 @@ impl Vm {
         Ok(match e {
             QExpr::Target => true,
             QExpr::Const(c) => leaf(&func.constants[*c as usize], out),
-            QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
-                Some(Some(t)) => leaf(&self.session.get_stash(t)?.value, out),
-                _ => false,
+            QExpr::Local(s) => match self.raw(self.call_stack.last().unwrap().locals.get(*s as usize))? {
+                Some(v) => leaf(v, out),
+                None => false,
             },
             QExpr::Read(i) => {
                 let OpData::Fused(f) = &func.op_data[*i as usize] else { return Ok(false) };
@@ -4673,8 +4949,8 @@ impl Vm {
         use crate::collections::{value_child_hint, ChildRef};
         use crate::opcode::FusedKey;
         let frame = self.call_stack.last().unwrap();
-        let Some(Some(root_t)) = frame.locals.get(f.root as usize) else { return Ok(false) };
-        let mut cur = match &self.session.get_stash(root_t)?.value {
+        let Some(root) = self.raw(frame.locals.get(f.root as usize))? else { return Ok(false) };
+        let mut cur = match root {
             Value::Frozen(_) | Value::Ref(_) => return Ok(false),
             v => v,
         };
@@ -4684,13 +4960,13 @@ impl Vm {
             if i == last { break; }
             let key: &Value = match seg.key {
                 FusedKey::Const(c) => &frame.func.constants[c as usize],
-                FusedKey::Local(s) => match frame.locals.get(s as usize) {
-                    Some(Some(t)) => match &self.session.get_stash(t)?.value {
+                FusedKey::Local(s) => match self.raw(frame.locals.get(s as usize))? {
+                    Some(v) => match v {
                         Value::Ref(_) => return Ok(false),
                         Value::Frozen(fr) => &fr.value,
                         v => v,
                     },
-                    _ => return Ok(false),
+                    None => return Ok(false),
                 },
             };
             match value_child_hint(cur, key, &seg.slot) {
@@ -4708,15 +4984,14 @@ impl Vm {
         use crate::collections::{value_child_hint, ChildRef};
         use crate::opcode::FusedKey;
         let frame = self.call_stack.last().unwrap();
-        let Some(Some(root_t)) = frame.locals.get(f.root as usize) else { return Ok(None) };
-        let mut cur: &Value = &self.session.get_stash(root_t)?.value;
+        let Some(mut cur) = self.raw(frame.locals.get(f.root as usize))? else { return Ok(None) };
         for seg in &f.segs {
             let coll = match cur { Value::Ref(_) => return Ok(None), Value::Frozen(fr) => &fr.value, v => v };
             let key: &Value = match seg.key {
                 FusedKey::Const(c) => &func.constants[c as usize],
-                FusedKey::Local(s) => match frame.locals.get(s as usize) {
-                    Some(Some(t)) => &self.session.get_stash(t)?.value,
-                    _ => return Ok(None),
+                FusedKey::Local(s) => match self.raw(frame.locals.get(s as usize))? {
+                    Some(v) => v,
+                    None => return Ok(None),
                 },
             };
             let key = match key { Value::Ref(_) => return Ok(None), Value::Frozen(fr) => &fr.value, v => v };
@@ -4742,9 +5017,9 @@ impl Vm {
         Ok(match e {
             QExpr::Target => None,
             QExpr::Const(c) => leaf(&func.constants[*c as usize]),
-            QExpr::Local(s) => match self.call_stack.last().unwrap().locals.get(*s as usize) {
-                Some(Some(t)) => leaf(&self.session.get_stash(t)?.value),
-                _ => None,
+            QExpr::Local(s) => match self.raw(self.call_stack.last().unwrap().locals.get(*s as usize))? {
+                Some(v) => leaf(v),
+                None => None,
             },
             QExpr::Read(i) => {
                 let OpData::Fused(f) = &func.op_data[*i as usize] else { return Ok(None) };
@@ -4784,14 +5059,17 @@ impl Vm {
             FusedKind::Check { .. } => {
                 if !self.check_walk(f)? { return Ok(false); }
                 // Push the root and the keys, as the loads would.
+                // The root keeps its stash, so a write after the check
+                // changes it in place.
+                let root = self.local_tether(f.root)?;
                 let frame = self.call_stack.last().unwrap();
                 let mut ops: Vec<Operand> = std::mem::take(&mut self.scratch);
                 ops.clear();
-                ops.push(Operand::Ref(frame.load_local(f.root)?));
+                ops.push(Operand::Ref(root));
                 for seg in &f.segs {
                     ops.push(match seg.key {
                         FusedKey::Const(c) => Operand::Val(func.constants[c as usize].clone_fast()),
-                        FusedKey::Local(s) => Operand::Ref(frame.load_local(s)?),
+                        FusedKey::Local(s) => frame.load_operand(s)?,
                     });
                 }
                 self.stack.extend(ops.drain(..));
@@ -4827,6 +5105,7 @@ impl Vm {
     fn plain_operand<'a>(&'a self, op: &'a Operand) -> Result<Option<&'a Value>, GoblinError> {
         let v = match op {
             Operand::Val(v) => v,
+            Operand::Obj(_) => return Ok(None),
             Operand::Ref(t) => &self.session.get_stash(t)?.value,
         };
         Ok(match v {
@@ -4955,8 +5234,7 @@ impl Vm {
         self.stack.push(Operand::Val(Value::Nil));
         let mut frame = CallFrame::new(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            frame.locals[i] = Some(t);
+            frame.locals[i] = Local::Val(a);
         }
         self.call_stack.push(frame);
         self.run_slice(base)
@@ -5620,8 +5898,8 @@ impl Vm {
     /// call's when one is kept (see `Opcode::Return`).
     fn fresh_frame(&mut self, func: Rc<FunctionObject>, upvalues: Vec<UpvalueCell>, stack_base: usize) -> CallFrame {
         let locals = match self.spare_locals.pop() {
-            Some(mut l) => { l.resize(func.locals, None); l }
-            None => vec![None; func.locals],
+            Some(mut l) => { l.resize_with(func.locals, || Local::Unset); l }
+            None => unset_locals(func.locals),
         };
         CallFrame::new_with(func, upvalues, stack_base, locals)
     }
@@ -5649,8 +5927,7 @@ impl Vm {
         self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            new_frame.locals[i] = Some(t);
+            new_frame.locals[i] = Local::Val(a);
         }
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
@@ -6381,19 +6658,19 @@ impl Vm {
     fn maker_values(&mut self) -> Result<Vec<(String, Value)>, GoblinError> {
         if self.call_stack.len() <= 1 { return Ok(Vec::new()); }
         let frame = self.call_stack.last().unwrap();
-        let mut found: Vec<(String, Tether)> = Vec::new();
+        let mut found: Vec<(String, usize)> = Vec::new();
         for (i, name) in frame.func.local_names.iter().enumerate() {
             if name.is_empty() || name.starts_with("__") { continue; }
-            let Some(Some(t)) = frame.locals.get(i) else { continue };
+            if !frame.locals.get(i).map_or(false, Local::is_set) { continue };
             match found.iter_mut().find(|(n, _)| n == name) {
-                Some(slot) => slot.1 = t.clone(),
-                None => found.push((name.clone(), t.clone())),
+                Some(slot) => slot.1 = i,
+                None => found.push((name.clone(), i)),
             }
         }
         // An object is kept as a reference to it, so the overlay's lines
         // read its fields as they are when they run.
-        found.into_iter().map(|(n, t)| {
-            let v = match self.resolve_op(Operand::Ref(t))? {
+        found.into_iter().map(|(n, i)| {
+            let v = match self.read_local(i as u16)? {
                 Value::Object(o) if self.session.object_store.contains_key(&o.uuid) => Value::Ref(o.uuid.clone().into()),
                 v => v,
             };
@@ -6511,8 +6788,7 @@ impl Vm {
         self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = self.fresh_frame(func_rc, Vec::new(), stack_base);
         for (i, (_, a)) in locals.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            new_frame.locals[i] = Some(t);
+            new_frame.locals[i] = Local::Val(a);
         }
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
@@ -7005,6 +7281,8 @@ impl Vm {
             let a = match &self.stack[i] {
                 Operand::Val(Value::Frozen(f)) => Arg::of(&f.value),
                 Operand::Val(v) => Arg::of(v),
+                Operand::Obj(u) if self.session.object_store.contains_key(u) => Some(Arg::Obj(u.clone())),
+                Operand::Obj(_) => { self.resolve_op(self.stack[i].clone())?; None }
                 Operand::Ref(t) => match &self.session.get_stash(t)?.value {
                     Value::Ref(u) if self.session.object_store.contains_key(u) => Some(Arg::Obj(u.clone())),
                     // Gone from the store: the error reading it gives.
@@ -7052,8 +7330,7 @@ impl Vm {
         self.stack.push(Operand::Val(Value::Nil));
         let mut new_frame = self.fresh_frame(func_rc, upvalues, stack_base);
         for (i, a) in args.into_iter().enumerate() {
-            let t = self.session.alloc_value(a);
-            new_frame.locals[i] = Some(t);
+            new_frame.locals[i] = Local::Val(a);
         }
         self.call_stack.push(new_frame);
         let depth_before = self.call_stack.len() - 1;
@@ -7121,6 +7398,12 @@ impl Vm {
     /// out without copying a stored object only to turn it back into a
     /// reference.
     fn arg_of(&self, op: Operand) -> Result<Value, GoblinError> {
+        if let Operand::Obj(u) = &op {
+            if let Some(Value::Object(_)) = self.session.object_store.get(u) {
+                let Operand::Obj(u) = op else { unreachable!() };
+                return Ok(Value::Ref(u));
+            }
+        }
         if let Operand::Ref(t) = &op {
             let store = &self.session.object_store;
             match &self.session.get_stash(t)?.value {
@@ -7210,10 +7493,10 @@ impl Vm {
         let func = self.call_stack.last().unwrap().func.clone();
         let crate::opcode::OpData::ObjectsOwned(q) = &func.op_data[idx as usize] else { unreachable!("ObjectsOwned without its data") };
         let frame = self.call_stack.last().unwrap();
-        let t = match q.load {
-            Opcode::LoadLocal(s) => frame.locals.get(s as usize)?.clone()?,
-            Opcode::LoadUpvalue(u) => frame.upvalues.get(u as usize)?.get(),
-            Opcode::LoadGlobal(g) => self.session.get_global(g as usize)?.clone(),
+        let root: &Value = match q.load {
+            Opcode::LoadLocal(s) => self.raw(frame.locals.get(s as usize)).ok()??,
+            Opcode::LoadUpvalue(u) => &self.session.get_stash(&frame.upvalues.get(u as usize)?.get()).ok()?.value,
+            Opcode::LoadGlobal(g) => &self.session.get_stash(self.session.get_global(g as usize)?).ok()?.value,
             _ => return None,
         };
         // Each field is read as `>>` reads it: from the object a variable
@@ -7230,7 +7513,6 @@ impl Vm {
             };
             Some(o.fields.get(f)?.clone_fast())
         };
-        let root = &self.session.get_stash(&t).ok()?.value;
         let mut held: Option<Value> = None;
         for f in &q.path { held = Some(field(held.as_ref().unwrap_or(root), f)?); }
         let owner = match held.as_ref().unwrap_or(root) {
@@ -7720,9 +8002,12 @@ impl Vm {
     /// `get_var`: the current frame's locals, then the globals.
     fn lookup_var(&self, name: &str) -> Option<Value> {
         let frame = self.call_stack.last()?;
-        let local = frame.func.local_names.iter().position(|n| n == name)
-            .and_then(|slot| frame.locals.get(slot).cloned().flatten());
-        let t = local
+        if let Some(slot) = frame.func.local_names.iter().position(|n| n == name) {
+            if let Some(l) = frame.locals.get(slot).filter(|l| l.is_set()) {
+                return local_read(&self.session, l, slot as u16).ok();
+            }
+        }
+        let t = None
             .or_else(|| frame.func.global_names().iter().position(|n| n == name)
                 .and_then(|slot| self.session.globals.get(slot).cloned().flatten()))
             .or_else(|| self.session.global_names.iter().position(|n| n == name)
@@ -7998,9 +8283,9 @@ impl Vm {
             None => {
                 let frame = self.call_stack.last()?;
                 let local = frame.func.local_names.iter().position(|n| n == name)
-                    .and_then(|slot| frame.locals.get(slot).cloned().flatten());
+                    .and_then(|slot| self.raw(frame.locals.get(slot)).ok().flatten());
                 match local {
-                    Some(t) => deref(&self.session.get_stash(&t).ok()?.value),
+                    Some(v) => deref(v),
                     None => globals(&frame.func),
                 }
             }
@@ -8010,22 +8295,22 @@ impl Vm {
     /// decision_debug(): one line per object variable saying whether its class
     /// has a decision and a judge (the interpreter's `decision_debug`).
     fn vm_decision_debug(&mut self) {
-        let mut bindings: Vec<(String, Tether)> = Vec::new();
+        let mut bindings: Vec<(String, Result<Value, GoblinError>)> = Vec::new();
         for (slot, name) in self.session.global_names.iter().enumerate() {
             if let Some(Some(t)) = self.session.globals.get(slot) {
-                bindings.push((name.clone(), t.clone()));
+                bindings.push((name.clone(), self.session.read_value(t)));
             }
         }
         for frame in &self.call_stack {
             for (slot, name) in frame.func.local_names.iter().enumerate() {
                 if name.is_empty() { continue; }
-                if let Some(Some(t)) = frame.locals.get(slot) {
-                    bindings.push((name.clone(), t.clone()));
+                if let Some(l) = frame.locals.get(slot).filter(|l| l.is_set()) {
+                    bindings.push((name.clone(), local_read(&self.session, l, slot as u16)));
                 }
             }
         }
-        for (var_name, t) in bindings {
-            if let Ok(Value::Object(o)) = self.session.read_value(&t) {
+        for (var_name, v) in bindings {
+            if let Ok(Value::Object(o)) = v {
                 let class_name = o.class_name;
                 let class = self.session.classes.get(&*class_name);
                 let has_decision = class.map(|c| c.decision.is_some()).unwrap_or(false);

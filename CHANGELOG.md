@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.84 — 2026-11-21
+
+- A variable holds its value in its call's frame instead of in a separate slot of the session's store, with the same results. A variable gets a slot of its own only when something needs one: a closure that captures it, `:mem_id` / `:mem_addr`, or a collection that a bang write changes in place. Arguments passed to an action go straight into its variables. This is step 2 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.83 → 0.51.84: empty loop 396 → 353; arithmetic 984 → 962; local copies 861 → 796; decimals 970 → 931; field write 1,445 → 1,508; field read 887 → 873; call 1,777 → 1,700. The capstone over 10 years (no regions, seed 42) runs 54.29 billion machine instructions on 0.51.83 and 55.43 billion on 0.51.84 (2.1% more: the run loop handles both kinds of variable until step 3 replaces it); its history is identical.
+
 ## 0.51.83 — 2026-11-21
 
 - Arrays and maps are shared between copies of a value and copied only when one copy changes (copy-on-write), with the same results. This is the groundwork for the register VM: copying a value into a variable no longer copies its elements. The capstone over 10 years (no regions, seed 42) runs 54.23 billion machine instructions on 0.51.82 and 54.02 billion on 0.51.83; its history is identical.
