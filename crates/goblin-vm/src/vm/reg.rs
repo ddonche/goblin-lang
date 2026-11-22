@@ -25,13 +25,17 @@ pub(crate) fn enabled() -> bool {
 
 /// A plain number while register code runs.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum N { I(i64), F(f64), B(bool) }
+pub(crate) enum N { I(i64), F(f64), B(bool), Nil }
 
 /// Where an instruction reads a value: a variable (register of the
 /// call's window), a constant (`Prog::k`), or a scratch register of the
 /// current line.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Src { L(u16), K(u16), T(u8) }
+
+/// Scratch registers from SBASE up hold the values a line takes off the
+/// stack at its start (`TakeS`): value j below the top is T(TEMPS - 1 - j).
+const SBASE: u8 = 8;
 
 /// Where an instruction puts its result.
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +89,39 @@ pub(crate) enum Ins {
     RepNext { id: u16, exit: u32, nexit: u32, at: u32, ncont: u32 },
     /// `RepeatIdx`: the pass number into variable `slot`.
     RepIdx { id: u16, slot: u16, at: u32, ncont: u32 },
+    /// `dst = (obj >> name == k)` (`!=` when `ne`) for a text field and
+    /// the text constant `k` of the function.
+    FieldEqK { obj: u16, name: u16, hint: u32, k: u16, ne: bool, dst: Dst, from: u32, to: u32, nto: u32 },
+    /// `d = obj >> name` for a field holding text, nil, a number, a bool
+    /// or a stored object (kept as its id, and naming it after d).
+    GetV { obj: u16, name: u16, hint: u32, d: u16, from: u32, to: u32, nto: u32 },
+    /// `dst = (obj >> name == other)` (`!=` when `ne`): the field and the
+    /// variable `other` both hold stored objects, compared by id.
+    FieldIsL { obj: u16, name: u16, hint: u32, other: u16, ne: bool, dst: Dst, from: u32, to: u32, nto: u32 },
+    /// `dst = (a == k)` (`!=` when `ne`) for the text variable a and the
+    /// text constant `k` of the function.
+    TextEqL { a: u16, k: u16, ne: bool, dst: Dst, from: u32, to: u32, nto: u32 },
+    /// `obj >> name |= val` with the object on the stack (left by a call),
+    /// then the object's id back into variable d (`StoreLocal(d)`, or
+    /// `Dup`, `StoreLocal(d)`, `Pop`), which already holds it. `store_at`:
+    /// that store's first step, run as a bytecode step when d holds
+    /// something else.
+    SetFS { name: u16, hint: u32, val: Src, d: u16, from: u32, store_at: u32, to: u32, nto: u32 },
+    /// `d = not t` for the bool in scratch register t.
+    NotT { t: u8, d: u8, from: u32 },
+    /// Takes the top `n` stack values (plain numbers, bools or nil) into
+    /// scratch registers TEMPS-1, TEMPS-2, ... (the top first) at the start
+    /// of a line; they go back if the line hands over to bytecode steps.
+    TakeS { n: u8, from: u32 },
+    /// Pushes `Prog::srcs[at..at + n]`, in order, for the steps after the line.
+    PushAll { at: u32, n: u8, from: u32, to: u32, nto: u32 },
+    /// `if t == when goto target` for the bool in scratch register t.
+    JmpT { t: u8, when: bool, target: u32, ntarget: u32, from: u32, to: u32, nto: u32 },
+    /// `if a == when goto target` for the bool variable a.
+    JmpL { a: u16, when: bool, target: u32, ntarget: u32, from: u32, to: u32, nto: u32 },
+    /// `and` / `or` (`Dup`, `JumpIfFalse`/`JumpIfTrue`, `Pop`): when the
+    /// bool in t is `when`, it is pushed and the code goes on at target.
+    AndOrT { t: u8, when: bool, target: u32, ntarget: u32, from: u32, to: u32, nto: u32 },
 }
 
 /// A function's register code.
@@ -98,6 +135,8 @@ pub(crate) struct Prog {
     pub(crate) k: Vec<N>,
     /// The arguments of `CallG` instructions.
     pub(crate) args: Vec<Arg>,
+    /// The values `PushAll` instructions push.
+    pub(crate) srcs: Vec<Src>,
     /// Per field instruction: the layout it last saw and the field's place in it.
     pub(crate) hints: Vec<std::cell::Cell<(usize, u32)>>,
 }
@@ -142,6 +181,7 @@ pub(crate) fn build(f: &FunctionObject) -> Prog {
     let mut k: Vec<N> = Vec::new();
     let mut hints = 0u32;
     let mut args: Vec<Arg> = Vec::new();
+    let mut srcs: Vec<Src> = Vec::new();
     let mut i = 0;
     while i < code.len() {
         if let Some((call, end)) = call_at(f, i, &targets, &mut args) {
@@ -151,7 +191,7 @@ pub(crate) fn build(f: &FunctionObject) -> Prog {
             continue;
         }
         let (k0, h0) = (k.len(), hints);
-        if let Some((line, end)) = line_at(f, i, &targets, &mut k, &mut hints) {
+        if let Some((line, end)) = line_at(f, i, &targets, &mut k, &mut hints, &mut srcs) {
             at[i] = ins.len() as u32;
             ins.extend(line);
             i = end;
@@ -204,10 +244,15 @@ pub(crate) fn build(f: &FunctionObject) -> Prog {
             Ins::Jump { target, ntarget, .. } => *ntarget = pc_of(*target),
             Ins::RepNext { exit, nexit, at: a, ncont, .. } => { *nexit = pc_of(*exit); *ncont = pc_of(*a + 1); }
             Ins::RepIdx { at: a, ncont, .. } => *ncont = pc_of(*a + 1),
-            Ins::Old { .. } | Ins::CallG { .. } | Ins::Ret { .. } => {}
+            Ins::FieldEqK { to, nto, dst, .. } | Ins::FieldIsL { to, nto, dst, .. } | Ins::TextEqL { to, nto, dst, .. } => if !matches!(dst, Dst::T(_)) { *nto = pc_of(*to) },
+            Ins::GetV { to, nto, .. } | Ins::SetFS { to, nto, .. } => *nto = pc_of(*to),
+            Ins::JmpT { target, ntarget, to, nto, .. } | Ins::JmpL { target, ntarget, to, nto, .. }
+            | Ins::AndOrT { target, ntarget, to, nto, .. } => { *ntarget = pc_of(*target); *nto = pc_of(*to); }
+            Ins::PushAll { to, nto, .. } => *nto = pc_of(*to),
+            Ins::Old { .. } | Ins::CallG { .. } | Ins::Ret { .. } | Ins::NotT { .. } | Ins::TakeS { .. } => {}
         }
     }
-    Prog { ins, at, k, args, hints: (0..hints).map(|_| std::cell::Cell::new((0, 0))).collect() }
+    Prog { ins, at, k, args, srcs, hints: (0..hints).map(|_| std::cell::Cell::new((0, 0))).collect() }
 }
 
 /// `LoadGlobal(g)`, one load per argument, `Call(n)`, starting at `start`.
@@ -244,53 +289,101 @@ fn konst(f: &FunctionObject, c: u16) -> Option<N> {
 /// ending in a store into a variable, a conditional jump, or one value
 /// left for the steps after. Gives its instructions and where it ends.
 /// No jump may land inside it.
-fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, hints: &mut u32) -> Option<(Vec<Ins>, usize)> {
+fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, hints: &mut u32, srcs: &mut Vec<Src>) -> Option<(Vec<Ins>, usize)> {
+    let (mut out, end, rest, m) = line_raw(f, start, targets, k, hints)?;
+    let from = start as u32;
+    if !rest.is_empty() {
+        // What is left goes on the stack: the last instruction pushes a
+        // value it works out, or one instruction pushes them all.
+        let last_makes = |out: &[Ins], t: u8| matches!(out.last(),
+            Some(Ins::Bin { dst: Dst::T(d), .. } | Ins::GetF { dst: Dst::T(d), .. } | Ins::FieldEqK { dst: Dst::T(d), .. } | Ins::FieldIsL { dst: Dst::T(d), .. } | Ins::TextEqL { dst: Dst::T(d), .. }) if *d == t);
+        match rest[..] {
+            [Src::T(t)] if t < SBASE && last_makes(&out, t) => match out.last_mut() {
+                Some(Ins::Bin { dst, to, .. } | Ins::GetF { dst, to, .. } | Ins::FieldEqK { dst, to, .. } | Ins::FieldIsL { dst, to, .. } | Ins::TextEqL { dst, to, .. }) => { *dst = Dst::Push; *to = end as u32; }
+                _ => unreachable!(),
+            },
+            _ => {
+                if out.is_empty() && m == 0 { return None; }
+                if rest.len() > u8::MAX as usize { return None; }
+                out.push(Ins::PushAll { at: srcs.len() as u32, n: rest.len() as u8, from, to: end as u32, nto: NONE });
+                srcs.extend_from_slice(&rest);
+            }
+        }
+    }
+    if out.is_empty() { return None; }
+    if m > 0 { out.insert(0, Ins::TakeS { n: m, from }); }
+    Some((out, end))
+}
+
+/// `line_at` before what is left over is pushed: the instructions, where
+/// the line ends, the values left for the stack, and how many values it
+/// takes off the stack at its start.
+fn line_raw(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, hints: &mut u32) -> Option<(Vec<Ins>, usize, Vec<Src>, u8)> {
     let code = &f.bytecode;
     let mut st: Vec<Src> = Vec::new();
     let mut out: Vec<Ins> = Vec::new();
     let mut temps = 0u8;
+    // Values taken off the stack at the line's start.
+    let mut m = 0u8;
     let mut i = start;
     let from = start as u32;
     // Leaves the line before step i, with what has been worked out pushed.
-    let end_push = |out: &mut Vec<Ins>, st: &[Src], i: usize| -> Option<(Vec<Ins>, usize)> {
-        if st.len() != 1 { return None; }
-        match (out.last_mut(), st[0]) {
-            (Some(Ins::Bin { dst, to, .. } | Ins::GetF { dst, to, .. }), Src::T(_)) => { *dst = Dst::Push; *to = i as u32; }
-            _ => return None,
-        }
-        Some((std::mem::take(out), i))
-    };
+    macro_rules! end_push { () => { return Some((std::mem::take(&mut out), i, std::mem::take(&mut st), m)) } }
+    // An operand: worked out in the line, or a value already on the stack.
+    macro_rules! pop { () => { match st.pop() {
+        Some(x) => x,
+        None => { if m >= TEMPS as u8 - SBASE { return None; } m += 1; Src::T(TEMPS as u8 - m) }
+    } } }
     let field_name = |c: u16| -> bool {
         matches!(f.constants.get(c as usize), Some(Value::Str(n)) if member_builtin(n).is_none())
     };
     loop {
         if i >= code.len() { return None; }
-        if i > start && targets[i] { return end_push(&mut out, &st, i); }
+        if i > start && targets[i] { end_push!(); }
         let op = code[i].plain();
         match op {
             O::LoadLocal(s) => st.push(Src::L(s)),
-            O::LoadConst(c) => match konst(f, c) {
-                Some(n) => {
-                    let same = |x: &N| match (x, &n) {
-                        (N::I(a), N::I(b)) => a == b,
-                        (N::F(a), N::F(b)) => a.to_bits() == b.to_bits(),
-                        (N::B(a), N::B(b)) => a == b,
-                        _ => false,
-                    };
-                    let at = match k.iter().position(same) {
-                        Some(j) => j,
-                        None => { k.push(n); k.len() - 1 }
-                    };
-                    // Past what an instruction can name, the step stays on the stack VM.
-                    if at > u16::MAX as usize { return end_push(&mut out, &st, i); }
-                    st.push(Src::K(at as u16))
+            O::LoadConst(_) | O::LoadNil | O::LoadTrue | O::LoadFalse => {
+                let n = match op {
+                    O::LoadConst(c) => konst(f, c),
+                    O::LoadNil => Some(N::Nil),
+                    O::LoadTrue => Some(N::B(true)),
+                    _ => Some(N::B(false)),
+                };
+                // `a == "text"` on a text variable.
+                if let (O::LoadConst(kc), Some(&Src::L(a))) = (op, st.last()) {
+                    let cmp = code.get(i + 1).map(|o| o.plain());
+                    if matches!(f.constants.get(kc as usize), Some(Value::Str(_))) && matches!(cmp, Some(O::Eq | O::Ne)) && !targets[i + 1] {
+                        st.pop();
+                        if temps >= SBASE { return None; }
+                        let t = temps;
+                        temps += 1;
+                        out.push(Ins::TextEqL { a, k: kc, ne: matches!(cmp, Some(O::Ne)), dst: Dst::T(t), from, to: NONE, nto: NONE });
+                        st.push(Src::T(t));
+                        i += 2;
+                        continue;
+                    }
                 }
-                None => return end_push(&mut out, &st, i),
-            },
+                let Some(n) = n else { end_push!() };
+                let same = |x: &N| match (x, &n) {
+                    (N::I(a), N::I(b)) => a == b,
+                    (N::F(a), N::F(b)) => a.to_bits() == b.to_bits(),
+                    (N::B(a), N::B(b)) => a == b,
+                    (N::Nil, N::Nil) => true,
+                    _ => false,
+                };
+                let at = match k.iter().position(same) {
+                    Some(j) => j,
+                    None => { k.push(n); k.len() - 1 }
+                };
+                // Past what an instruction can name, the step stays on the stack VM.
+                if at > u16::MAX as usize { end_push!(); }
+                st.push(Src::K(at as u16))
+            }
             O::Add | O::Sub | O::Mul | O::Div | O::Lt | O::Le | O::Gt | O::Ge | O::Eq | O::Ne | O::AppendLocal(_) => {
                 let (a, b) = match op {
-                    O::AppendLocal(s) => (Src::L(s), st.pop()?),
-                    _ => { let b = st.pop()?; (st.pop()?, b) }
+                    O::AppendLocal(s) => (Src::L(s), pop!()),
+                    _ => { let b = pop!(); (pop!(), b) }
                 };
                 let bin = match op {
                     O::Add => Bin::Add, O::Sub => Bin::Sub, O::Mul => Bin::Mul, O::Div => Bin::Div,
@@ -298,9 +391,9 @@ fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, h
                     O::Eq => Bin::Eq, O::Ne => Bin::Ne, _ => Bin::AddInts,
                 };
                 // Scratch registers free up as their values are used.
-                let used = [a, b].iter().filter(|s| matches!(s, Src::T(_))).count() as u8;
+                let used = [a, b].iter().filter(|s| matches!(s, Src::T(t) if *t < SBASE)).count() as u8;
                 temps -= used;
-                if temps as usize >= TEMPS { return None; }
+                if temps >= SBASE { return None; }
                 let t = temps;
                 temps += 1;
                 out.push(Ins::Bin { op: bin, a, b, dst: Dst::T(t), from, to: NONE, nto: NONE });
@@ -308,7 +401,46 @@ fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, h
             }
             O::GetMember(c) if field_name(c) && matches!(st.last(), Some(Src::L(_))) => {
                 let Some(Src::L(obj)) = st.pop() else { unreachable!() };
-                if temps as usize >= TEMPS { return None; }
+                let plain = |j: usize| code.get(j).map(|o| o.plain());
+                // `d | obj >> name`: the field's value straight into d.
+                if out.is_empty() && st.is_empty() && !targets[i + 1] {
+                    if let Some(O::StoreLocal(d) | O::BindLocal(d)) = plain(i + 1) {
+                        out.push(Ins::GetV { obj, name: c, hint: *hints, d, from, to: i as u32 + 2, nto: NONE });
+                        *hints += 1;
+                        return Some((out, i + 2, Vec::new(), m));
+                    }
+                }
+                // `a == b >> name` / `b >> name == a` on objects: by id.
+                let other = match (st.last(), plain(i + 1), plain(i + 2)) {
+                    (Some(&Src::L(a)), Some(cmp @ (O::Eq | O::Ne)), _) if !targets[i + 1] => Some((a, cmp, 1usize, true)),
+                    (_, Some(O::LoadLocal(a)), Some(cmp @ (O::Eq | O::Ne))) if !targets[i + 1] && !targets[i + 2] => Some((a, cmp, 2, false)),
+                    _ => None,
+                };
+                if let Some((a, cmp, len, popped)) = other {
+                    if popped { st.pop(); }
+                    if temps >= SBASE { return None; }
+                    let t = temps;
+                    temps += 1;
+                    out.push(Ins::FieldIsL { obj, name: c, hint: *hints, other: a, ne: matches!(cmp, O::Ne), dst: Dst::T(t), from, to: NONE, nto: NONE });
+                    *hints += 1;
+                    st.push(Src::T(t));
+                    i += len + 1;
+                    continue;
+                }
+                // `obj >> name == "text"`: compared in place.
+                if let (Some(O::LoadConst(kc)), Some(cmp @ (O::Eq | O::Ne))) = (plain(i + 1), plain(i + 2)) {
+                    if matches!(f.constants.get(kc as usize), Some(Value::Str(_))) && !targets[i + 1] && !targets[i + 2] {
+                        if temps >= SBASE { return None; }
+                        let t = temps;
+                        temps += 1;
+                        out.push(Ins::FieldEqK { obj, name: c, hint: *hints, k: kc, ne: matches!(cmp, O::Ne), dst: Dst::T(t), from, to: NONE, nto: NONE });
+                        *hints += 1;
+                        st.push(Src::T(t));
+                        i += 3;
+                        continue;
+                    }
+                }
+                if temps >= SBASE { return None; }
                 let t = temps;
                 temps += 1;
                 out.push(Ins::GetF { obj, name: c, hint: *hints, dst: Dst::T(t), from, to: NONE, nto: NONE });
@@ -328,37 +460,92 @@ fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, h
                 let val = st[1];
                 out.push(Ins::SetF { obj, name: c, hint: *hints, val, from, to: (i + len) as u32, nto: NONE });
                 *hints += 1;
-                return Some((out, i + len));
+                return Some((out, i + len, Vec::new(), m));
+            }
+            O::Not if matches!(st.last(), Some(Src::T(_)) | None) => {
+                let Src::T(t) = pop!() else { unreachable!() };
+                // A value taken off the stack is kept as it was (it may go back).
+                let d = if t < SBASE { t } else {
+                    if temps >= SBASE { return None; }
+                    temps += 1;
+                    temps - 1
+                };
+                out.push(Ins::NotT { t, d, from });
+                st.push(Src::T(d));
+            }
+            O::Dup if (st.len() == 1 && matches!(st[0], Src::T(_))) || st.is_empty() => {
+                // `and` / `or`: `Dup`, a conditional jump, `Pop`.
+                if st.is_empty() { let x = pop!(); st.push(x); }
+                let Src::T(t) = st[0] else { unreachable!() };
+                let plain = |j: usize| code.get(j).map(|o| o.plain());
+                let (Some(j @ (O::JumpIfFalse(_) | O::JumpIfTrue(_))), Some(O::Pop)) = (plain(i + 1), plain(i + 2)) else { return None };
+                if targets[i + 1] || targets[i + 2] { return None; }
+                let (O::JumpIfFalse(o) | O::JumpIfTrue(o)) = j else { unreachable!() };
+                let target = (i as isize + 2 + o as isize) as u32;
+                out.push(Ins::AndOrT { t, when: matches!(j, O::JumpIfTrue(_)), target, ntarget: NONE, from, to: i as u32 + 3, nto: NONE });
+                return Some((out, i + 3, Vec::new(), m));
+            }
+            O::SetField(c) if field_name(c) && st.len() <= 1 => {
+                // The object is on the stack, under what the line takes off it.
+                let val = if st.is_empty() { pop!() } else { st[0] };
+                let plain = |j: usize| code.get(j).map(|o| o.plain());
+                let (d, len) = match (plain(i + 1), plain(i + 2), plain(i + 3)) {
+                    (Some(O::StoreLocal(d)), _, _) => (d, 2),
+                    (Some(O::Dup), Some(O::StoreLocal(d)), Some(O::Pop)) => (d, 4),
+                    _ => return None,
+                };
+                if (i + 1..i + len).any(|j| targets[j]) { return None; }
+                out.push(Ins::SetFS { name: c, hint: *hints, val, d, from, store_at: i as u32 + 1, to: (i + len) as u32, nto: NONE });
+                *hints += 1;
+                return Some((out, i + len, Vec::new(), m));
             }
             O::JumpIfFalse(o) | O::JumpIfTrue(o) => {
                 let when = matches!(op, O::JumpIfTrue(_));
                 let target = (i as isize + 1 + o as isize) as u32;
+                let to = i as u32 + 1;
+                if st.is_empty() { let x = pop!(); st.push(x); }
                 if st.len() != 1 { return None; }
-                let Some(Ins::Bin { op: bin, a, b, dst: Dst::T(_), .. }) = out.pop() else { return None };
-                if !matches!(bin, Bin::Lt | Bin::Le | Bin::Gt | Bin::Ge | Bin::Eq | Bin::Ne) { return None; }
-                out.push(Ins::CmpJump { op: bin, a, b, when, target, ntarget: NONE, from, to: i as u32 + 1, nto: NONE });
-                return Some((out, i + 1));
+                match st[0] {
+                    Src::T(t) => {
+                        if let Some(&Ins::Bin { op: bin, a, b, dst: Dst::T(tt), .. }) = out.last() {
+                            if tt == t && matches!(bin, Bin::Lt | Bin::Le | Bin::Gt | Bin::Ge | Bin::Eq | Bin::Ne) {
+                                out.pop();
+                                out.push(Ins::CmpJump { op: bin, a, b, when, target, ntarget: NONE, from, to, nto: NONE });
+                                return Some((out, i + 1, Vec::new(), m));
+                            }
+                        }
+                        out.push(Ins::JmpT { t, when, target, ntarget: NONE, from, to, nto: NONE });
+                    }
+                    Src::L(a) if out.is_empty() => out.push(Ins::JmpL { a, when, target, ntarget: NONE, from, to, nto: NONE }),
+                    _ => return None,
+                }
+                return Some((out, i + 1, Vec::new(), m));
             }
             O::GuardRebindLocal(d, _) | O::StoreLocal(d) | O::BindLocal(d) => {
                 let (dst, len) = match op {
                     O::GuardRebindLocal(..) => {
-                        if !matches!(code.get(i + 1).map(|o| o.plain()), Some(O::StoreLocal(s)) if s == d) { return end_push(&mut out, &st, i); }
-                        if targets.get(i + 1) == Some(&true) { return end_push(&mut out, &st, i); }
+                        if !matches!(code.get(i + 1).map(|o| o.plain()), Some(O::StoreLocal(s)) if s == d) { end_push!(); }
+                        if targets.get(i + 1) == Some(&true) { end_push!(); }
                         (Dst::Rebind(d), 2)
                     }
                     _ => (Dst::Store(d), 1),
                 };
+                if st.is_empty() { let x = pop!(); st.push(x); }
                 if st.len() != 1 { return None; }
                 let to = (i + len) as u32;
                 let empty = out.is_empty();
+                let makes = matches!((out.last(), st[0]), (Some(Ins::Bin { dst: Dst::T(d), .. } | Ins::GetF { dst: Dst::T(d), .. }
+                    | Ins::FieldEqK { dst: Dst::T(d), .. } | Ins::FieldIsL { dst: Dst::T(d), .. } | Ins::TextEqL { dst: Dst::T(d), .. }), Src::T(x)) if *d == x);
                 match (out.last_mut(), st[0]) {
-                    (Some(Ins::Bin { dst: last, to: t, .. } | Ins::GetF { dst: last, to: t, .. }), Src::T(_)) => { *last = dst; *t = to; }
+                    (Some(Ins::Bin { dst: last, to: t, .. } | Ins::GetF { dst: last, to: t, .. }
+                        | Ins::FieldEqK { dst: last, to: t, .. } | Ins::FieldIsL { dst: last, to: t, .. } | Ins::TextEqL { dst: last, to: t, .. }), Src::T(_)) if makes => { *last = dst; *t = to; }
                     (None, a @ (Src::L(_) | Src::K(_))) if empty => out.push(Ins::Move { a, dst, from, to, nto: NONE }),
+                    (_, a @ Src::T(_)) => out.push(Ins::Move { a, dst, from, to, nto: NONE }),
                     _ => return None,
                 }
-                return Some((out, i + len));
+                return Some((out, i + len, Vec::new(), m));
             }
-            _ => return end_push(&mut out, &st, i),
+            _ => end_push!(),
         }
         i += 1;
     }
@@ -390,6 +577,8 @@ impl Vm {
         let mut ks: &[N] = &prog.k;
         let mut ip = frame.ip;
         let mut tmp = [N::I(0); TEMPS];
+        // Values a line took off the stack (`TakeS`), until it is done.
+        let mut restore = 0u8;
         // Bytecode steps to run the old way before register code goes on
         // (a line whose values were not plain numbers).
         let mut slow_to = 0usize;
@@ -427,20 +616,24 @@ impl Vm {
                 macro_rules! store { ($d:expr, $v:expr, $rebind:expr) => {{
                     let d = $d as usize;
                     if !unlocked || d >= n { false } else {
-                        match unsafe { &mut *regs.add(d) } {
+                        let slot = unsafe { &mut *regs.add(d) };
+                        match slot {
                             Operand::Val(old @ (Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) => {
                                 unsafe { std::ptr::write(old, $v) }; true
                             }
                             Operand::Val(old) if !$rebind => { *old = $v; true }
+                            // A first store, as `store_local_op` makes it.
+                            Operand::Unset if !$rebind => { unsafe { std::ptr::write(slot, Operand::Val($v)) }; true }
                             _ => false,
                         }
                     }
                 }} }
-                macro_rules! val { ($r:expr) => { match $r { N::I(v) => Value::Int(v), N::F(x) => Value::Float(x), N::B(b) => Value::Bool(b) } } }
+                macro_rules! val { ($r:expr) => { match $r { N::I(v) => Value::Int(v), N::F(x) => Value::Float(x), N::B(b) => Value::Bool(b), N::Nil => Value::Nil } } }
                 // Register instructions, until one hands back to a bytecode step.
                 // `go!(ip, pc)`: on at bytecode position ip, which is
                 // instruction pc (NONE: a bytecode step).
                 macro_rules! go { ($ip:expr, $pc:expr) => {{
+                    restore = 0;
                     let p = $pc;
                     if p == NONE { ip = $ip as usize; break; }
                     pc = p as usize;
@@ -474,6 +667,169 @@ impl Vm {
                             ip = from as usize; slow_to = to as usize; break;
                         }
                         &Ins::Old { at } => { ip = at as usize; break; }
+                        &Ins::FieldEqK { obj, name, hint, k, ne, dst, from, to, nto } => {
+                            let r = if (obj as usize) < n {
+                                let held = unsafe { &*regs.add(obj as usize) };
+                                self.reg_field_eq_text(held, name, &prog.hints[hint as usize], &func, k)
+                            } else { None };
+                            let Some(c) = r else { ip = from as usize; slow_to = line_end(ins, pc); break };
+                            let r = N::B(c != ne);
+                            let ok = match dst {
+                                Dst::T(t) => { tmp[t as usize] = r; pc += 1; continue; }
+                                Dst::Rebind(d) => store!(d, val!(r), true),
+                                Dst::Store(d) => store!(d, val!(r), false),
+                                Dst::Push => {
+                                    self.stack.push(Operand::Val(val!(r)));
+                                    regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                                    true
+                                }
+                            };
+                            if !ok { ip = from as usize; slow_to = to as usize; break; }
+                            go!(to, nto);
+                        }
+                        &Ins::GetV { obj, name, hint, d, from, to, nto } => {
+                            let r = if (obj as usize) < n {
+                                let held = unsafe { &*regs.add(obj as usize) };
+                                self.reg_field_value(held, name, &prog.hints[hint as usize], &func)
+                            } else { None };
+                            let Some(v) = r else { ip = from as usize; slow_to = to as usize; break };
+                            let id = match &v { Value::Ref(u) => Some(u.clone()), _ => None };
+                            if !store!(d, v, false) { ip = from as usize; slow_to = to as usize; break; }
+                            if let Some(u) = id { self.note_object_name(&u, NameOf::Local(d as usize)); }
+                            go!(to, nto);
+                        }
+                        &Ins::FieldIsL { obj, name, hint, other, ne, dst, from, to, nto } => {
+                            let r = if (obj as usize) < n && (other as usize) < n {
+                                let (held, o) = unsafe { (&*regs.add(obj as usize), &*regs.add(other as usize)) };
+                                self.reg_field_is(held, name, &prog.hints[hint as usize], &func, o)
+                            } else { None };
+                            let Some(c) = r else { ip = from as usize; slow_to = line_end(ins, pc); break };
+                            let r = N::B(c != ne);
+                            let ok = match dst {
+                                Dst::T(t) => { tmp[t as usize] = r; pc += 1; continue; }
+                                Dst::Rebind(d) => store!(d, val!(r), true),
+                                Dst::Store(d) => store!(d, val!(r), false),
+                                Dst::Push => {
+                                    self.stack.push(Operand::Val(val!(r)));
+                                    regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                                    true
+                                }
+                            };
+                            if !ok { ip = from as usize; slow_to = to as usize; break; }
+                            go!(to, nto);
+                        }
+                        &Ins::TextEqL { a, k, ne, dst, from, to, nto } => {
+                            let r = if (a as usize) < n {
+                                match (unsafe { &*regs.add(a as usize) }, func.constants.get(k as usize)) {
+                                    (Operand::Val(Value::Str(x)), Some(Value::Str(y))) => Some(x == y),
+                                    _ => None,
+                                }
+                            } else { None };
+                            let Some(c) = r else { ip = from as usize; slow_to = line_end(ins, pc); break };
+                            let r = N::B(c != ne);
+                            let ok = match dst {
+                                Dst::T(t) => { tmp[t as usize] = r; pc += 1; continue; }
+                                Dst::Rebind(d) => store!(d, val!(r), true),
+                                Dst::Store(d) => store!(d, val!(r), false),
+                                Dst::Push => {
+                                    self.stack.push(Operand::Val(val!(r)));
+                                    regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                                    true
+                                }
+                            };
+                            if !ok { ip = from as usize; slow_to = to as usize; break; }
+                            go!(to, nto);
+                        }
+                        &Ins::SetFS { name, hint, val, d, from, store_at, to, nto } => {
+                            let v = num!(val);
+                            let uuid = match self.stack.last() {
+                                Some(Operand::Val(Value::Ref(u)) | Operand::Obj(u)) if self.stack.len() > self.cur_base + n => Some(u.clone()),
+                                Some(Operand::Ref(t)) if self.stack.len() > self.cur_base + n => match self.session.get_stash(t) {
+                                    Ok(st) => match &st.value { Value::Ref(u) => Some(u.clone()), _ => None },
+                                    Err(_) => None,
+                                },
+                                _ => None,
+                            };
+                            let ok = unlocked && match (v, uuid) {
+                                (Some(v), Some(u)) => self.reg_set_field(u, name, &prog.hints[hint as usize], &func, val!(v)),
+                                _ => false,
+                            };
+                            if !ok { ip = from as usize; slow_to = line_end(ins, pc); break; }
+                            // The field is written: the object leaves the stack,
+                            // its id as `SetField` leaves it.
+                            let u = match self.stack.pop() {
+                                Some(Operand::Val(Value::Ref(u)) | Operand::Obj(u)) => u,
+                                Some(Operand::Ref(t)) => match self.session.get_stash(&t).map(|st| st.value.clone()) { Ok(Value::Ref(u)) => u, _ => unreachable!() },
+                                _ => unreachable!(),
+                            };
+                            restore = 0;
+                            let same = (d as usize) < n && matches!(unsafe { &*regs.add(d as usize) }, Operand::Val(Value::Ref(held)) if held.same(&u));
+                            if same { go!(to, nto); }
+                            self.stack.push(Operand::Val(Value::Ref(u)));
+                            ip = store_at as usize;
+                            break;
+                        }
+                        &Ins::NotT { t, d, from } => {
+                            if let N::B(b) = tmp[t as usize] { tmp[d as usize] = N::B(!b); pc += 1; continue; }
+                            ip = from as usize; slow_to = line_end(ins, pc); break;
+                        }
+                        &Ins::TakeS { n: m, from } => {
+                            let len = self.stack.len();
+                            let ok = len >= self.cur_base + n + m as usize && (0..m as usize).all(|j| matches!(self.stack[len - 1 - j],
+                                Operand::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)));
+                            if !ok { ip = from as usize; slow_to = line_end(ins, pc); break; }
+                            for j in 0..m as usize {
+                                tmp[TEMPS - 1 - j] = match self.stack.pop() {
+                                    Some(Operand::Val(Value::Int(v))) => N::I(v),
+                                    Some(Operand::Val(Value::Float(v))) => N::F(v),
+                                    Some(Operand::Val(Value::Bool(v))) => N::B(v),
+                                    _ => N::Nil,
+                                };
+                            }
+                            restore = m;
+                            pc += 1;
+                            continue;
+                        }
+                        &Ins::PushAll { at, n: cnt, from, to, nto } => {
+                            let list = &prog.srcs[at as usize..at as usize + cnt as usize];
+                            // A variable is pushed as `LoadLocal` pushes it (any value).
+                            if !list.iter().all(|s| matches!(s, Src::L(r) if (*r as usize) < n) || num!(*s).is_some()) {
+                                ip = from as usize; slow_to = to as usize; break;
+                            }
+                            let mut ops: smallvec::SmallVec<[Operand; 4]> = smallvec::SmallVec::new();
+                            let mut bad = false;
+                            for s in list {
+                                match *s {
+                                    Src::L(r) => match self.local_operand(r) { Ok(op) => ops.push(op), Err(_) => { bad = true; break } },
+                                    s => { let v = num!(s).unwrap(); ops.push(Operand::Val(val!(v))); }
+                                }
+                            }
+                            if bad { ip = from as usize; slow_to = to as usize; break; }
+                            self.stack.extend(ops);
+                            regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                            go!(to, nto);
+                        }
+                        &Ins::JmpT { t, when, target, ntarget, from, to, nto } => {
+                            let N::B(c) = tmp[t as usize] else { ip = from as usize; slow_to = to as usize; break };
+                            if c == when { go!(target, ntarget) } else { go!(to, nto) }
+                        }
+                        &Ins::JmpL { a, when, target, ntarget, from, to, nto } => {
+                            if (a as usize) < n {
+                                if let Operand::Val(Value::Bool(c)) = unsafe { &*regs.add(a as usize) } {
+                                    if *c == when { go!(target, ntarget) } else { go!(to, nto) }
+                                }
+                            }
+                            ip = from as usize; slow_to = to as usize; break;
+                        }
+                        &Ins::AndOrT { t, when, target, ntarget, from, to, nto } => {
+                            let N::B(c) = tmp[t as usize] else { ip = from as usize; slow_to = to as usize; break };
+                            if c == when {
+                                self.stack.push(Operand::Val(Value::Bool(c)));
+                                regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                                go!(target, ntarget)
+                            }
+                            go!(to, nto);
+                        }
                         &Ins::CallG { g, args, argc, from, at, to } => {
                             if self.reg_call(g, &prog.args[args as usize..args as usize + argc as usize], to, &func) {
                                 switched = true;
@@ -575,6 +931,15 @@ impl Vm {
                             go!(at + 1, ncont);
                         }
                     }
+                }
+                // A line that took values off the stack and then handed
+                // over to the bytecode steps: they get them back.
+                if restore > 0 {
+                    for j in (0..restore as usize).rev() {
+                        let v = match tmp[TEMPS - 1 - j] { N::I(v) => Value::Int(v), N::F(x) => Value::Float(x), N::B(b) => Value::Bool(b), N::Nil => Value::Nil };
+                        self.stack.push(Operand::Val(v));
+                    }
+                    restore = 0;
                 }
             if switched {
                 let f = self.call_stack.last().unwrap();
@@ -727,6 +1092,78 @@ impl Vm {
         }
     }
 
+    /// The object `held` refers to, and the place of its field `name`.
+    fn reg_obj_field<'a>(&'a self, held: &'a Operand, name: u16, hint: &std::cell::Cell<(usize, u32)>, func: &FunctionObject) -> Option<&'a Value> {
+        let obj = match held {
+            Operand::Val(Value::Ref(u)) => match self.session.object_store.get(u) { Some(Value::Object(o)) => o, _ => return None },
+            Operand::Val(Value::Object(o)) => o,
+            _ => return None,
+        };
+        let layout = obj.fields.layout_id();
+        let at = match hint.get() {
+            (l, at) if l == layout => at as usize,
+            _ => {
+                let Some(Value::Str(name)) = func.constants.get(name as usize) else { return None };
+                let at = obj.fields.get_index_of(name.as_str())?;
+                hint.set((layout, at as u32));
+                at
+            }
+        };
+        Some(obj.fields.value_at(at))
+    }
+
+    /// A field's value as `GetMember` then a store into a variable give
+    /// it: text, nil, a number or a bool as it is, a stored object as its
+    /// id. None: the steps read it.
+    fn reg_field_value(&self, held: &Operand, name: u16, hint: &std::cell::Cell<(usize, u32)>, func: &FunctionObject) -> Option<Value> {
+        match self.reg_obj_field(held, name, hint, func)? {
+            v @ (Value::Str(_) | Value::Nil | Value::Int(_) | Value::Float(_) | Value::Bool(_)
+                | Value::Array(_) | Value::Map(_) | Value::MapOrd(_)) => Some(v.clone()),
+            v @ Value::Ref(u) if !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the object field `name` of `held` and the variable `other`
+    /// hold the same stored object; None unless both hold stored objects.
+    fn reg_field_is(&self, held: &Operand, name: u16, hint: &std::cell::Cell<(usize, u32)>, func: &FunctionObject, other: &Operand) -> Option<bool> {
+        let stored = |u: &crate::value::ObjId| !u.starts_with(OVERLAY_RECORD) && self.session.object_store.contains_key(u);
+        let b = match other {
+            Operand::Val(Value::Ref(u)) if stored(u) => u,
+            Operand::Val(Value::Object(o)) if stored(&o.uuid) => &o.uuid,
+            _ => return None,
+        };
+        match self.reg_obj_field(held, name, hint, func)? {
+            Value::Ref(a) if stored(a) => Some(a == b),
+            _ => None,
+        }
+    }
+
+    /// Whether the text field `name` of the object `held` refers to is the
+    /// text constant `k`, as `GetMember` then `Eq` work it out; None when
+    /// the field is not text (or the steps must read it).
+    fn reg_field_eq_text(&self, held: &Operand, name: u16, hint: &std::cell::Cell<(usize, u32)>, func: &FunctionObject, k: u16) -> Option<bool> {
+        let obj = match held {
+            Operand::Val(Value::Ref(u)) => match self.session.object_store.get(u) { Some(Value::Object(o)) => o, _ => return None },
+            Operand::Val(Value::Object(o)) => o,
+            _ => return None,
+        };
+        let layout = obj.fields.layout_id();
+        let at = match hint.get() {
+            (l, at) if l == layout => at as usize,
+            _ => {
+                let Some(Value::Str(name)) = func.constants.get(name as usize) else { return None };
+                let at = obj.fields.get_index_of(name.as_str())?;
+                hint.set((layout, at as u32));
+                at
+            }
+        };
+        match (obj.fields.value_at(at), func.constants.get(k as usize)?) {
+            (Value::Str(a), Value::Str(b)) => Some(a == b),
+            _ => None,
+        }
+    }
+
     /// A plain value written to a stored object's field, as
     /// `set_plain_field` writes it; false (nothing changed) when the
     /// bytecode steps must do it.
@@ -768,9 +1205,10 @@ impl Vm {
 fn line_end(ins: &[Ins], mut pc: usize) -> usize {
     loop {
         match ins[pc] {
-            Ins::Bin { dst: Dst::T(_), .. } | Ins::GetF { dst: Dst::T(_), .. } => pc += 1,
+            Ins::Bin { dst: Dst::T(_), .. } | Ins::GetF { dst: Dst::T(_), .. } | Ins::FieldEqK { dst: Dst::T(_), .. } | Ins::FieldIsL { dst: Dst::T(_), .. } | Ins::TextEqL { dst: Dst::T(_), .. } | Ins::NotT { .. } | Ins::TakeS { .. } => pc += 1,
             Ins::Bin { to, .. } | Ins::Move { to, .. } | Ins::CmpJump { to, .. } | Ins::IncK { to, .. } | Ins::CmpLL { to, .. }
-            | Ins::GetF { to, .. } | Ins::SetF { to, .. } => return to as usize,
+            | Ins::GetF { to, .. } | Ins::SetF { to, .. } | Ins::FieldEqK { to, .. } | Ins::FieldIsL { to, .. } | Ins::TextEqL { to, .. } | Ins::GetV { to, .. } | Ins::SetFS { to, .. } | Ins::JmpT { to, .. } | Ins::JmpL { to, .. }
+            | Ins::AndOrT { to, .. } | Ins::PushAll { to, .. } => return to as usize,
             _ => return 0,
         }
     }
@@ -794,10 +1232,10 @@ fn bin(op: Bin, a: N, b: N) -> Option<N> {
             Bin::Gt => N::B(x > y), Bin::Ge => N::B(x >= y),
             Bin::Eq => N::B(x == y), Bin::Ne => N::B(x != y),
         },
-        (N::B(_), _) | (_, N::B(_)) => return None,
+        (N::B(_) | N::Nil, _) | (_, N::B(_) | N::Nil) => return None,
         _ if op == Bin::AddInts => return None,
         (a, b) => {
-            let f = |v: N| match v { N::I(i) => i as f64, N::F(x) => x, N::B(_) => 0.0 };
+            let f = |v: N| match v { N::I(i) => i as f64, N::F(x) => x, N::B(_) | N::Nil => 0.0 };
             let (x, y) = (f(a), f(b));
             let o = || x.partial_cmp(&y).map_or(0, |o| o as i32);
             match op {
@@ -813,3 +1251,4 @@ fn bin(op: Bin, a: N, b: N) -> Option<N> {
         }
     })
 }
+
