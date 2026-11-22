@@ -49,6 +49,8 @@ macro_rules! loc_mut {
     ($vm:expr, $i:expr) => {{ let i = $i as usize; if i < $vm.cur_n { $vm.stack.get_mut($vm.cur_base + i) } else { None } }};
 }
 
+pub(crate) mod reg;
+
 /// A call's variables: its window of the operand stack.
 macro_rules! locals_of {
     ($vm:expr, $f:expr) => { $vm.stack[$f.base..$f.base + $f.nlocals] };
@@ -616,7 +618,7 @@ impl Vm {
                 }
                 continue;
             }
-            let Some((step, op)) = self.run_fast(&mut steps) else { continue };
+            let Some((step, op)) = (if reg::enabled() { self.run_reg(&mut steps, 0) } else { self.run_fast(&mut steps) }) else { continue };
             let r = if step == Step::Failed { Err(self.step_err.take().unwrap()) } else { self.execute_op(op) };
             match r {
                 Ok(()) => {}
@@ -5475,7 +5477,7 @@ impl Vm {
             // Nested runs (`:summon`, callbacks) collect too; the frames below
             // stay on `call_stack`, so they are still roots.
             if self.session.gc_due() { self.vm_gc(); }
-            let Some((step, op)) = self.run_fast(&mut steps) else {
+            let Some((step, op)) = (if reg::enabled() { self.run_reg(&mut steps, target_depth) } else { self.run_fast(&mut steps) }) else {
                 let frame = self.call_stack.last_mut().unwrap();
                 if frame.ip >= frame.func.bytecode.len() {
                     let stack_base = frame.stack_base;
@@ -9223,7 +9225,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false, field_hints: Default::default(),
+            calls_values: false, field_hints: Default::default(), reg: Default::default(),
         }
     }
 
@@ -9361,7 +9363,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false, field_hints: Default::default(),
+            calls_values: false, field_hints: Default::default(), reg: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(10)));
@@ -9394,7 +9396,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false, field_hints: Default::default(),
+            calls_values: false, field_hints: Default::default(), reg: Default::default(),
         };
         let result = vm.execute(func).unwrap();
         assert!(matches!(result, Value::Int(2)));
@@ -9425,7 +9427,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false, field_hints: Default::default(),
+            calls_values: false, field_hints: Default::default(), reg: Default::default(),
         };
 
         // Outer: create inner, call with 5, return result
@@ -9449,7 +9451,7 @@ mod tests {
             global_prefix: None,
             source_file: String::new(),
             global_names: Default::default(),
-            calls_values: false, field_hints: Default::default(),
+            calls_values: false, field_hints: Default::default(), reg: Default::default(),
         };
 
         let result = vm.execute(outer).unwrap();

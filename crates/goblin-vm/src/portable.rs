@@ -723,7 +723,7 @@ impl FromPortable {
             global_prefix: f.global_prefix.clone(),
             source_file: f.source_file.clone(),
             global_names: names,
-            calls_values: f.calls_values, field_hints: Default::default(),
+            calls_values: f.calls_values, field_hints: Default::default(), reg: Default::default(),
         });
         self.funcs.insert(key, r.clone());
         r
