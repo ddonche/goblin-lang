@@ -6903,6 +6903,7 @@ impl Vm {
         if locals.len() != formula.func.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
+        if formula_in_loop() { return self.run_formula_reg(&formula.func, &[], locals); }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
             match self.run_formula_in(&formula.func, locals, &[], &formula.hints, &formula.env, formula.tree.as_ref()) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
@@ -6922,6 +6923,10 @@ impl Vm {
         let func_rc = formula.func.clone();
         if locals.len() != func_rc.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
+        }
+        if formula_in_loop() {
+            let refs: smallvec::SmallVec<[(&str, &Value); 4]> = locals.iter().map(|(n, v)| (*n, v)).collect();
+            return self.run_formula_reg(&func_rc, &[], &refs);
         }
         // A formula that keeps needing the VM (it errors every time, say)
         // stops being tried directly; one success makes it eligible again.
@@ -6967,6 +6972,7 @@ impl Vm {
         if locals.len() != formula.func.params {
             return Err(GoblinError::Runtime("eval_tick_expr: param count mismatch".into()));
         }
+        if formula_in_loop() { return self.run_formula_reg(&formula.func, &[], locals); }
         if formula.direct && formula.misses.get() < TickFormula::MAX_MISSES {
             match self.run_formula_in(&formula.func, locals, known, &formula.hints, &formula.env, formula.tree.as_ref()) {
                 Some(v) => { formula.misses.set(0); return Ok(v); }
@@ -7967,6 +7973,23 @@ impl Vm {
         };
         let p = self.predicate(func);
         if !p.direct { return None; }
+        if formula_in_loop() {
+            // The test runs in a register window for each object; an error
+            // means no match, as `query_predicate_holds` has it.
+            let (func, cells) = (func.clone(), cells.to_vec());
+            let mut found = Vec::new();
+            let all: Vec<usize> = match only { Some(p) => p.to_vec(), None => self.session.object_store.places().collect() };
+            for i in all {
+                let it = Value::Ref(self.session.object_store.get_index(i)?.0.clone());
+                let base = self.stack.len();
+                let holds = match self.run_formula_reg(&func, &cells, &[("it", &it)]) {
+                    Ok(v) => matches!(v, Value::Bool(true)),
+                    Err(_) => { self.stack.truncate(base); false }
+                };
+                if holds { found.push(self.session.object_store.get_index(i)?.1.clone()); }
+            }
+            return Some(found);
+        }
         let env = self.predicate_env(func, cells)?;
         let (func, hints, tree) = (&p.func, &p.hints, p.tree.as_ref());
         let mut found = Vec::new();
@@ -9835,3 +9858,12 @@ pub(crate) fn segment_matches(pat: &str, name: &str) -> bool {
 }
 
 
+
+/// Whether DES formulas, conditions and `:objects` tests run in a register
+/// window of the register VM (`run_formula_reg`) instead of the formula
+/// evaluator (`run_formula_in`): `GOBLIN_REG_FORMULAS=loop` with
+/// `GOBLIN_ENGINE=reg`. Off by default until it measures faster.
+fn formula_in_loop() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| reg::enabled() && std::env::var("GOBLIN_REG_FORMULAS").is_ok_and(|v| v == "loop"))
+}

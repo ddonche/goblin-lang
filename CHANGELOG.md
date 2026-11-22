@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.91 — 2026-11-22
+
+- Register VM (`GOBLIN_ENGINE=reg`): `:link_score(a, b, "name")` on two object variables is register code, calls of actions keep working as register code while a decision is scored (the answers an action that only reads gave are kept as before), and a return drops its window faster. DES formulas, conditions and `:objects` tests can run in a register window of the same loop (`GOBLIN_REG_FORMULAS=loop`); that is off by default because it is slower today than the formula evaluator. The capstone over 2 years (no regions, seed 42), machine instructions: current VM 32.26 billion; register VM 29.16 billion (9.6% fewer; 29.54 billion on 0.51.89); register VM with formulas in the loop 33.8 billion. Micro-benchmarks on the register VM, machine instructions per pass: empty loop 187; arithmetic 455; local copies 382; decimals 397; field write 749; field read 397; call 1,170. Histories on the register VM are identical to 0.51.85 both ways (seed 42 with and without regions, seed 7 with and without regions, seed 99 with regions).
+
 ## 0.51.90 — 2026-11-22
 
 - CLAUDE.md: the old VM blueprint section (every binding in its own arena slot) is replaced by the owner's 2026-11-21 ruling: internals are free to change as long as the VM is fast, the language behaves the same, DES works and histories stay identical. It also records how the register VM is built beside the current one and when it replaces it. No code change.

@@ -122,6 +122,9 @@ pub(crate) enum Ins {
     /// `and` / `or` (`Dup`, `JumpIfFalse`/`JumpIfTrue`, `Pop`): when the
     /// bool in t is `when`, it is pushed and the code goes on at target.
     AndOrT { t: u8, when: bool, target: u32, ntarget: u32, from: u32, to: u32, nto: u32 },
+    /// `dst = :link_score(a, b, "k")` for the objects in variables a and
+    /// b and the text constant `k` (a link's name) of the function.
+    Link { a: u16, b: u16, k: u16, dst: Dst, from: u32, to: u32, nto: u32 },
 }
 
 /// A function's register code.
@@ -244,7 +247,7 @@ pub(crate) fn build(f: &FunctionObject) -> Prog {
             Ins::Jump { target, ntarget, .. } => *ntarget = pc_of(*target),
             Ins::RepNext { exit, nexit, at: a, ncont, .. } => { *nexit = pc_of(*exit); *ncont = pc_of(*a + 1); }
             Ins::RepIdx { at: a, ncont, .. } => *ncont = pc_of(*a + 1),
-            Ins::FieldEqK { to, nto, dst, .. } | Ins::FieldIsL { to, nto, dst, .. } | Ins::TextEqL { to, nto, dst, .. } => if !matches!(dst, Dst::T(_)) { *nto = pc_of(*to) },
+            Ins::FieldEqK { to, nto, dst, .. } | Ins::FieldIsL { to, nto, dst, .. } | Ins::TextEqL { to, nto, dst, .. } | Ins::Link { to, nto, dst, .. } => if !matches!(dst, Dst::T(_)) { *nto = pc_of(*to) },
             Ins::GetV { to, nto, .. } | Ins::SetFS { to, nto, .. } => *nto = pc_of(*to),
             Ins::JmpT { target, ntarget, to, nto, .. } | Ins::JmpL { target, ntarget, to, nto, .. }
             | Ins::AndOrT { target, ntarget, to, nto, .. } => { *ntarget = pc_of(*target); *nto = pc_of(*to); }
@@ -296,10 +299,10 @@ fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, h
         // What is left goes on the stack: the last instruction pushes a
         // value it works out, or one instruction pushes them all.
         let last_makes = |out: &[Ins], t: u8| matches!(out.last(),
-            Some(Ins::Bin { dst: Dst::T(d), .. } | Ins::GetF { dst: Dst::T(d), .. } | Ins::FieldEqK { dst: Dst::T(d), .. } | Ins::FieldIsL { dst: Dst::T(d), .. } | Ins::TextEqL { dst: Dst::T(d), .. }) if *d == t);
+            Some(Ins::Bin { dst: Dst::T(d), .. } | Ins::GetF { dst: Dst::T(d), .. } | Ins::FieldEqK { dst: Dst::T(d), .. } | Ins::FieldIsL { dst: Dst::T(d), .. } | Ins::TextEqL { dst: Dst::T(d), .. } | Ins::Link { dst: Dst::T(d), .. }) if *d == t);
         match rest[..] {
             [Src::T(t)] if t < SBASE && last_makes(&out, t) => match out.last_mut() {
-                Some(Ins::Bin { dst, to, .. } | Ins::GetF { dst, to, .. } | Ins::FieldEqK { dst, to, .. } | Ins::FieldIsL { dst, to, .. } | Ins::TextEqL { dst, to, .. }) => { *dst = Dst::Push; *to = end as u32; }
+                Some(Ins::Bin { dst, to, .. } | Ins::GetF { dst, to, .. } | Ins::FieldEqK { dst, to, .. } | Ins::FieldIsL { dst, to, .. } | Ins::TextEqL { dst, to, .. } | Ins::Link { dst, to, .. }) => { *dst = Dst::Push; *to = end as u32; }
                 _ => unreachable!(),
             },
             _ => {
@@ -350,6 +353,21 @@ fn line_raw(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, 
                     O::LoadTrue => Some(N::B(true)),
                     _ => Some(N::B(false)),
                 };
+                // `:link_score(a, b, "name")` on two variables.
+                if let (O::LoadConst(kc), [.., Src::L(a), Src::L(b)]) = (op, &st[..]) {
+                    let (a, b) = (*a, *b);
+                    let call = code.get(i + 1).map(|o| o.plain());
+                    if matches!(f.constants.get(kc as usize), Some(Value::Str(_))) && matches!(call, Some(O::CallBuiltin(crate::value::BuiltinId::LinkScore, 3))) && !targets[i + 1] {
+                        st.pop(); st.pop();
+                        if temps >= SBASE { return None; }
+                        let t = temps;
+                        temps += 1;
+                        out.push(Ins::Link { a, b, k: kc, dst: Dst::T(t), from, to: NONE, nto: NONE });
+                        st.push(Src::T(t));
+                        i += 2;
+                        continue;
+                    }
+                }
                 // `a == "text"` on a text variable.
                 if let (O::LoadConst(kc), Some(&Src::L(a))) = (op, st.last()) {
                     let cmp = code.get(i + 1).map(|o| o.plain());
@@ -594,7 +612,7 @@ impl Vm {
                 // register instructions (nothing in it moves them).
                 let n = self.cur_n;
                 let mut regs: *mut Operand = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
-                let fr: *mut CallFrame = self.call_stack.last_mut().unwrap();
+                let mut fr: *mut CallFrame = self.call_stack.last_mut().unwrap();
                 let unlocked = unsafe { (*fr).locks.is_none() };
                 // A register as a plain number (a variable holding one, not a cell).
                 macro_rules! num { ($s:expr) => {
@@ -705,6 +723,32 @@ impl Vm {
                             } else { None };
                             let Some(c) = r else { ip = from as usize; slow_to = line_end(ins, pc); break };
                             let r = N::B(c != ne);
+                            let ok = match dst {
+                                Dst::T(t) => { tmp[t as usize] = r; pc += 1; continue; }
+                                Dst::Rebind(d) => store!(d, val!(r), true),
+                                Dst::Store(d) => store!(d, val!(r), false),
+                                Dst::Push => {
+                                    self.stack.push(Operand::Val(val!(r)));
+                                    regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                                    true
+                                }
+                            };
+                            if !ok { ip = from as usize; slow_to = to as usize; break; }
+                            go!(to, nto);
+                        }
+                        &Ins::Link { a, b, k, dst, from, to, nto } => {
+                            let ends = if (a as usize) < n && (b as usize) < n {
+                                match unsafe { (&*regs.add(a as usize), &*regs.add(b as usize)) } {
+                                    (Operand::Val(Value::Ref(x)), Operand::Val(Value::Ref(y))) => Some((x.clone(), y.clone())),
+                                    _ => None,
+                                }
+                            } else { None };
+                            // A link's value may run a formula of its own, which
+                            // uses the stack and the frames: find them again after.
+                            let r = ends.and_then(|(x, y)| self.reg_link(&x, &y, k, &func));
+                            regs = unsafe { self.stack.as_mut_ptr().add(self.cur_base) };
+                            fr = self.call_stack.last_mut().unwrap();
+                            let Some(r) = r else { ip = from as usize; slow_to = line_end(ins, pc); break };
                             let ok = match dst {
                                 Dst::T(t) => { tmp[t as usize] = r; pc += 1; continue; }
                                 Dst::Rebind(d) => store!(d, val!(r), true),
@@ -996,7 +1040,7 @@ impl Vm {
     /// callee returns, and the callee's frame is pushed. False (nothing
     /// changed): the bytecode steps make the call.
     fn reg_call(&mut self, g: u16, args: &[Arg], to: u32, caller: &FunctionObject) -> bool {
-        if self.memo.is_some() || self.call_stack.len() >= MAX_CALL_DEPTH { return false; }
+        if self.call_stack.len() >= MAX_CALL_DEPTH { return false; }
         if self.deciding.as_deref().is_some_and(|d| d.deed_depth == Some(self.call_stack.len())) { return false; }
         let Some(t) = self.session.get_global(g as usize) else { return false };
         let f = match self.session.get_stash(t) {
@@ -1004,6 +1048,9 @@ impl Vm {
             Err(_) => return false,
         };
         if f.params != args.len() || f.required_params != args.len() { return false; }
+        // Under a decision memo a moved-out argument could not be put back
+        // if the memo refused the call: the bytecode steps make that one.
+        if self.memo.is_some() && args.iter().any(|a| matches!(a, Arg::Take(_))) { return false; }
         let plain = |v: &Value| matches!(v, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil);
         for a in args {
             let ok = match *a {
@@ -1038,8 +1085,23 @@ impl Vm {
             };
             self.stack.push(Operand::Val(v));
         }
+        // While a decision is worked out, an action that only reads gives
+        // the answer it gave for these arguments before (`op_call`).
+        let mark = if self.memo.is_some() {
+            match self.memo_call(&f, false, func_idx) {
+                Ok(Ok(mark)) => mark,
+                Ok(Err(answer)) => {
+                    self.stack.truncate(func_idx);
+                    self.stack.push(Operand::Val(answer));
+                    self.call_stack.last_mut().unwrap().ip = to as usize;
+                    return true;
+                }
+                // The bytecode steps make the call and raise the error.
+                Err(_) => { self.stack.truncate(func_idx); return false; }
+            }
+        } else { None };
         self.call_stack.last_mut().unwrap().ip = to as usize;
-        self.push_frame(f, Vec::new(), func_idx, func_idx + 1);
+        self.push_frame(f, Vec::new(), func_idx, func_idx + 1).memo = mark;
         true
     }
 
@@ -1048,7 +1110,6 @@ impl Vm {
     /// give back. False (nothing changed): `op_return` does it.
     fn reg_return(&mut self) -> bool {
         let fr = self.call_stack.last().unwrap();
-        if fr.memo.is_some() { return false; }
         let top = fr.top();
         if self.stack[fr.base..top].iter().any(|l| matches!(l, Operand::Cell(_))) { return false; }
         let v = if self.stack.len() > top {
@@ -1058,9 +1119,10 @@ impl Vm {
                 _ => return false,
             }
         } else { Value::Nil };
-        let frame = self.call_stack.pop().unwrap();
+        let mut frame = self.call_stack.pop().unwrap();
         self.refresh_top();
-        self.stack.truncate(frame.stack_base);
+        if let Some(mark) = frame.memo.take() { self.memo_return(mark, &v); }
+        cut_stack(&mut self.stack, frame.stack_base);
         self.stack.push(Operand::Val(v));
         true
     }
@@ -1088,6 +1150,24 @@ impl Vm {
             Value::Int(n) => Some(N::I(n)),
             Value::Float(x) => Some(N::F(x)),
             Value::Bool(b) => Some(N::B(b)),
+            _ => None,
+        }
+    }
+
+    /// `:link_score(x, y, name)` for two stored objects, as a plain number
+    /// (None: the bytecode steps work it out, or raise its error).
+    fn reg_link(&mut self, x: &crate::value::ObjId, y: &crate::value::ObjId, k: u16, func: &FunctionObject) -> Option<N> {
+        let Some(Value::Str(name)) = func.constants.get(k as usize) else { return None };
+        // A link with no formula of its own: read where it is kept.
+        let v = match crate::tick::link_value_plain(self, x, y, name.as_ref()) {
+            Some(v) => v,
+            None => crate::tick::link_value_of(self, x, y, name.as_ref()).ok()?,
+        };
+        match v {
+            Value::Int(v) => Some(N::I(v)),
+            Value::Float(v) => Some(N::F(v)),
+            Value::Bool(v) => Some(N::B(v)),
+            Value::Nil => Some(N::Nil),
             _ => None,
         }
     }
@@ -1252,3 +1332,44 @@ fn bin(op: Bin, a: N, b: N) -> Option<N> {
     })
 }
 
+
+impl Vm {
+    /// A DES formula, condition or `:objects` test run in a register
+    /// window, in the same loop as everything else: the arguments go
+    /// straight into the window's first registers and the formula's code
+    /// runs as register code; its `Return` hands the value back. This
+    /// replaces the separate formula evaluator (`run_formula_in`) when the
+    /// register VM runs.
+    pub(crate) fn run_formula_reg(&mut self, func: &Rc<FunctionObject>, upvalues: &[crate::value::UpvalueCell], args: &[(&str, &Value)]) -> Result<Value, GoblinError> {
+        if self.call_stack.len() >= MAX_CALL_DEPTH {
+            return Err(GoblinError::StackOverflow);
+        }
+        let stack_base = self.stack.len();
+        self.stack.push(Operand::Val(Value::Nil));
+        self.stack.extend(args.iter().map(|(_, v)| Operand::Val((*v).clone())));
+        self.push_frame(func.clone(), upvalues.to_vec(), stack_base, stack_base + 1);
+        let depth = self.call_stack.len() - 1;
+        self.run_until_depth(depth)?;
+        let op = self.stack.pop()
+            .ok_or_else(|| GoblinError::Runtime("eval_tick_expr: no return value".into()))?;
+        self.resolve_op(op)
+    }
+}
+
+/// `stack.truncate(to)`, without a drop call for the plain values and
+/// unset variables most windows hold.
+#[inline]
+fn cut_stack(stack: &mut Vec<Operand>, to: usize) {
+    let len = stack.len();
+    if to >= len { return; }
+    unsafe {
+        stack.set_len(to);
+        let p = stack.as_mut_ptr();
+        for i in to..len {
+            let e = p.add(i);
+            if !matches!(&*e, Operand::Unset | Operand::Val(Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Nil)) {
+                std::ptr::drop_in_place(e);
+            }
+        }
+    }
+}
