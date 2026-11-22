@@ -150,12 +150,16 @@ pub(crate) fn build(f: &FunctionObject) -> Prog {
             i = end;
             continue;
         }
+        let (k0, h0) = (k.len(), hints);
         if let Some((line, end)) = line_at(f, i, &targets, &mut k, &mut hints) {
             at[i] = ins.len() as u32;
             ins.extend(line);
             i = end;
             continue;
         }
+        // A line that didn't translate leaves no constants or hints behind.
+        k.truncate(k0);
+        hints = h0;
         at[i] = ins.len() as u32;
         let rep = |idx: u16| match f.op_data.get(idx as usize) {
             Some(crate::opcode::OpData::Repeat(r)) => Some(r),
@@ -266,7 +270,21 @@ fn line_at(f: &FunctionObject, start: usize, targets: &[bool], k: &mut Vec<N>, h
         match op {
             O::LoadLocal(s) => st.push(Src::L(s)),
             O::LoadConst(c) => match konst(f, c) {
-                Some(n) => { k.push(n); st.push(Src::K(k.len() as u16 - 1)) }
+                Some(n) => {
+                    let same = |x: &N| match (x, &n) {
+                        (N::I(a), N::I(b)) => a == b,
+                        (N::F(a), N::F(b)) => a.to_bits() == b.to_bits(),
+                        (N::B(a), N::B(b)) => a == b,
+                        _ => false,
+                    };
+                    let at = match k.iter().position(same) {
+                        Some(j) => j,
+                        None => { k.push(n); k.len() - 1 }
+                    };
+                    // Past what an instruction can name, the step stays on the stack VM.
+                    if at > u16::MAX as usize { return end_push(&mut out, &st, i); }
+                    st.push(Src::K(at as u16))
+                }
                 None => return end_push(&mut out, &st, i),
             },
             O::Add | O::Sub | O::Mul | O::Div | O::Lt | O::Le | O::Gt | O::Ge | O::Eq | O::Ne | O::AppendLocal(_) => {

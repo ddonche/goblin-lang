@@ -3,6 +3,10 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.88 — 2026-11-22
+
+- Register VM (`GOBLIN_ENGINE=reg`): an action with a long list of number literals (a few hundred) no longer gives wrong numbers further down. Each line that couldn't be translated left its numbers in the action's constant table, and past 65,536 entries a later number could read an earlier one. Lines that don't translate now leave nothing behind, equal numbers share one entry, and a line past the table's limit stays on the current VM's steps. New conformance case `core/many_number_constants`.
+
 ## 0.51.87 — 2026-11-22
 
 - A new register VM runs beside the current one. `GOBLIN_ENGINE=reg` selects it; the current VM stays the default and is unchanged. The register VM translates each action once into register instructions: number arithmetic and comparisons, conditional jumps, `repeat` loops, field reads and writes on objects, and calls to actions and returns work on the call's variables directly, with no operand stack. Anything else runs the current VM's step for it, so results are the same. The conformance suite and the full test suite pass on both engines. Machine instructions per pass of the VM micro-benchmarks, current VM → register VM: empty loop 331 → 183; arithmetic 760 → 454; local copies 790 → 369; decimals 699 → 390; field write 1,509 → 671; field read 845 → 388; call 1,600 → 1,163. The capstone is not faster yet, because most of its time is in decision formulas, which still run in their own evaluator (the next step moves them into the register loop). 100 years, seed 42, median of three runs alternating (time; peak memory), current VM → register VM: without regions 30.7 s → 31.9 s (99 → 99 MB); 4 regions on one thread 67.0 s → 68.0 s (268 → 272 MB); 4 regions on 4 threads 33.6 s → 33.3 s (345 → 351 MB); 4 regions on 8 threads 32.9 s → 33.0 s (344 → 357 MB). Histories on the register VM are identical to 0.51.85 (seed 42 with and without regions, seed 7 with and without regions, seed 99 with regions).
