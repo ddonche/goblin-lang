@@ -191,14 +191,14 @@ fn array_op(
             Ok(xs[i].clone())
         }
         (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
-            Ok(Value::Array(xs.clone()))
+            Ok(Value::Array(Into::into(xs.clone())))
         }
         (Position::Where(pred), Operation::Get) | (Position::Where(pred), Operation::Reap) => {
             let result: Vec<Value> = xs.iter()
                 .filter(|v| fmt_value_raw(v) == pred)
                 .cloned()
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
             let re = compile_regex(&pat)?;
@@ -212,7 +212,7 @@ fn array_op(
                 })
                 .cloned()
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Between(start_pat, end_pat), Operation::Get) |
         (Position::Between(start_pat, end_pat), Operation::Reap) => {
@@ -228,19 +228,19 @@ fn array_op(
                     for i in si+1..ei { result.push(xs[i].clone()); }
                 }
             }
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
 
         // ── Put ─────────────────────────────────────────────────────────────
         (Position::First, Operation::Put(v)) => {
             let mut new_xs = vec![v];
             new_xs.extend_from_slice(xs);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Last, Operation::Put(v)) => {
             let mut new_xs = xs.clone();
             new_xs.push(v);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::At(idx_val), Operation::Put(v)) => {
             let idx = match idx_val {
@@ -251,17 +251,17 @@ fn array_op(
             let i = if idx == xs.len() as i64 { xs.len() } else { resolve_seq_index(idx, xs.len())? };
             let mut new_xs = xs.clone();
             new_xs.insert(i, v);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Random, Operation::Put(v)) => {
             let mut new_xs = xs.clone();
             let i = if new_xs.is_empty() { 0 } else { rng_bounded(session, new_xs.len() + 1) };
             new_xs.insert(i, v);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::All, Operation::Put(v)) => {
             match v.seq_items() {
-                Some(items) => Ok(Value::Array(items.into_owned())),
+                Some(items) => Ok(Value::Array(Into::into(items.into_owned()))),
                 None => Err(GoblinError::type_error("array", v.type_name(), "put-all on array expects array value")),
             }
         }
@@ -273,7 +273,7 @@ fn array_op(
                 }
                 new_xs.push(elem.clone());
             }
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Matching(pat), Operation::Put(v)) => {
             let re = compile_regex(&pat)?;
@@ -283,7 +283,7 @@ fn array_op(
                 new_xs.push(elem.clone());
                 if elem_matches(elem) { new_xs.push(v.clone()); }
             }
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Between(start_pat, end_pat), Operation::Put(v)) => {
             let start_re = compile_regex(&start_pat)?;
@@ -304,7 +304,7 @@ fn array_op(
                 last_end = ei + 1;
             }
             for i in last_end..xs.len() { result.push(xs[i].clone()); }
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
 
         // ── Update ──────────────────────────────────────────────────────────
@@ -312,14 +312,14 @@ fn array_op(
             if xs.is_empty() { return Err(GoblinError::IndexOutOfBounds { index: 0, len: 0 }); }
             let mut new_xs = xs.clone();
             new_xs[0] = v;
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Last, Operation::Update(v)) => {
             if xs.is_empty() { return Err(GoblinError::IndexOutOfBounds { index: -1, len: 0 }); }
             let mut new_xs = xs.clone();
             let last = new_xs.len() - 1;
             new_xs[last] = v;
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::At(idx_val), Operation::Update(v)) => {
             let idx = match idx_val {
@@ -329,18 +329,18 @@ fn array_op(
             let i = resolve_seq_index(idx, xs.len())?;
             let mut new_xs = xs.clone();
             new_xs[i] = v;
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Random, Operation::Update(v)) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Ok(Value::Array(Into::into(xs.clone()))); }
             let i = rng_bounded(session, xs.len());
             let mut new_xs = xs.clone();
             new_xs[i] = v;
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::All, Operation::Update(v)) => {
             match v.seq_items() {
-                Some(items) => Ok(Value::Array(items.into_owned())),
+                Some(items) => Ok(Value::Array(Into::into(items.into_owned()))),
                 None => Err(GoblinError::type_error("array", v.type_name(), "update-all on array expects array value")),
             }
         }
@@ -369,17 +369,17 @@ fn array_op(
                     for i in si+1..ei { result[i] = v.clone(); }
                 }
             }
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
 
         // ── Delete ──────────────────────────────────────────────────────────
         (Position::First, Operation::Delete) => {
             if xs.is_empty() { return Err(GoblinError::Runtime("delete_first: empty array".into())); }
-            Ok(Value::Array(xs[1..].to_vec()))
+            Ok(Value::Array(Into::into(xs[1..].to_vec())))
         }
         (Position::Last, Operation::Delete) => {
             if xs.is_empty() { return Err(GoblinError::Runtime("delete_last: empty array".into())); }
-            Ok(Value::Array(xs[..xs.len()-1].to_vec()))
+            Ok(Value::Array(Into::into(xs[..xs.len()-1].to_vec())))
         }
         (Position::At(idx_val), Operation::Delete) => {
             let idx = match idx_val {
@@ -389,17 +389,17 @@ fn array_op(
             let i = resolve_seq_index(idx, xs.len())?;
             let mut new_xs = xs.clone();
             new_xs.remove(i);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::Random, Operation::Delete) => {
-            if xs.is_empty() { return Ok(Value::Array(xs.clone())); }
+            if xs.is_empty() { return Ok(Value::Array(Into::into(xs.clone()))); }
             let i = rng_bounded(session, xs.len());
             let mut new_xs = xs.clone();
             new_xs.remove(i);
-            Ok(Value::Array(new_xs))
+            Ok(Value::Array(Into::into(new_xs)))
         }
         (Position::All, Operation::Delete) => {
-            Ok(Value::Array(Vec::new()))
+            Ok(Value::Array(Into::into(Vec::new())))
         }
         (Position::Where(pred), Operation::Delete) => {
             let new_xs = xs.iter()
@@ -462,14 +462,14 @@ fn map_op_btree(
             Ok(m.values().nth(i).cloned().unwrap_or(Value::Nil))
         }
         (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
-            Ok(Value::Map(m.clone()))
+            Ok(Value::Map(Into::into(m.clone())))
         }
         (Position::Where(pred), Operation::Get) | (Position::Where(pred), Operation::Reap) => {
             let result: Vec<Value> = m.values()
                 .filter(|v| fmt_value_raw(v) == pred)
                 .cloned()
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
             let re = compile_regex(&pat)?;
@@ -477,7 +477,7 @@ fn map_op_btree(
                 .filter(|(k, _)| re.is_match(k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(Value::Map(result))
+            Ok(Value::Map(Into::into(result)))
         }
         // Put
         (Position::At(key_val), Operation::Put(v)) => {
@@ -485,7 +485,7 @@ fn map_op_btree(
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::First, Operation::Put(_)) | (Position::Last, Operation::Put(_)) => {
             Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
@@ -495,7 +495,7 @@ fn map_op_btree(
             let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
             let mut new_m = m.clone();
             new_m.insert(first_key, v);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::At(key_val), Operation::Update(v)) => {
             let key = value_to_map_key(&key_val)
@@ -503,51 +503,51 @@ fn map_op_btree(
             if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::Random, Operation::Update(v)) => {
-            if m.is_empty() { return Ok(Value::Map(m.clone())); }
+            if m.is_empty() { return Ok(Value::Map(Into::into(m.clone()))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::Where(pred), Operation::Update(v)) => {
             let mut new_m = m.clone();
             for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::Matching(pat), Operation::Update(v)) => {
             let re = compile_regex(&pat)?;
             let mut new_m = m.clone();
             for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         // Delete
         (Position::First, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::Map(m.clone())); }
+            if m.is_empty() { return Ok(Value::Map(Into::into(m.clone()))); }
             let first_key = m.iter().next().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.remove(&first_key);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::Last, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::Map(m.clone())); }
+            if m.is_empty() { return Ok(Value::Map(Into::into(m.clone()))); }
             let last_key = m.iter().last().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.remove(&last_key);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::At(key_val), Operation::Delete) => {
             let key = value_to_map_key(&key_val)
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.remove(&key);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         (Position::All, Operation::Delete) => {
-            Ok(Value::Map(std::collections::BTreeMap::new()))
+            Ok(Value::Map(Into::into(std::collections::BTreeMap::new())))
         }
         (Position::Where(pred), Operation::Delete) => {
             let new_m = m.iter()
@@ -564,18 +564,18 @@ fn map_op_btree(
         // All + Put/Update: replace entire map (v must be a Map)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
             match v.to_btree_map() {
-                Some(m2) => Ok(Value::Map(m2)),
+                Some(m2) => Ok(Value::Map(Into::into(m2))),
                 None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
             }
         }
         // Random + Put: update a random key's value (same as Random + Update)
         (Position::Random, Operation::Put(v)) => {
-            if m.is_empty() { return Ok(Value::Map(m.clone())); }
+            if m.is_empty() { return Ok(Value::Map(Into::into(m.clone()))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::Map(new_m))
+            Ok(Value::Map(Into::into(new_m)))
         }
         // Last + Put/Update/Delete: not meaningful for maps
         (Position::Last, Operation::Put(_)) | (Position::Last, Operation::Update(_)) | (Position::Last, Operation::Delete) => {
@@ -590,7 +590,7 @@ fn map_op_btree(
             if pat.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
                 let mut new_m = m.clone();
                 new_m.insert(pat, v);
-                Ok(Value::Map(new_m))
+                Ok(Value::Map(Into::into(new_m)))
             } else {
                 Err(GoblinError::Runtime("put_matching with complex regex is not meaningful for maps".into()))
             }
@@ -624,17 +624,17 @@ fn map_op_btree(
                     let result: std::collections::BTreeMap<String, Value> = between.iter()
                         .map(|k| (k.clone(), m.get(k).unwrap().clone()))
                         .collect();
-                    Ok(Value::Map(result))
+                    Ok(Value::Map(Into::into(result)))
                 }
                 Operation::Delete => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.remove(k); }
-                    Ok(Value::Map(new_m))
+                    Ok(Value::Map(Into::into(new_m)))
                 }
                 Operation::Update(v) => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.insert(k.clone(), v.clone()); }
-                    Ok(Value::Map(new_m))
+                    Ok(Value::Map(Into::into(new_m)))
                 }
                 Operation::Put(_) => {
                     Err(GoblinError::Runtime("put_between is not meaningful for maps".into()))
@@ -677,14 +677,14 @@ fn map_op_ordered(
             Ok(m.values().nth(i).cloned().unwrap_or(Value::Nil))
         }
         (Position::All, Operation::Get) | (Position::All, Operation::Reap) => {
-            Ok(Value::MapOrd(Box::new(m.clone())))
+            Ok(Value::MapOrd(Into::into(Box::new(m.clone()))))
         }
         (Position::Where(pred), Operation::Get) | (Position::Where(pred), Operation::Reap) => {
             let result: Vec<Value> = m.values()
                 .filter(|v| fmt_value_raw(v) == pred)
                 .cloned()
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
             let re = compile_regex(&pat)?;
@@ -692,7 +692,7 @@ fn map_op_ordered(
                 .filter(|(k, _)| re.is_match(k))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            Ok(Value::MapOrd(Box::new(result)))
+            Ok(Value::MapOrd(Into::into(Box::new(result))))
         }
         // Put
         (Position::At(key_val), Operation::Put(v)) => {
@@ -700,7 +700,7 @@ fn map_op_ordered(
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::First, Operation::Put(_)) | (Position::Last, Operation::Put(_)) => {
             Err(GoblinError::Runtime("put_first/put_last not meaningful for maps".into()))
@@ -710,7 +710,7 @@ fn map_op_ordered(
             let first_key = m.iter().next().ok_or(GoblinError::IndexOutOfBounds { index: 0, len: 0 })?.0.clone();
             let mut new_m = m.clone();
             new_m.insert(first_key, v);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::At(key_val), Operation::Update(v)) => {
             let key = value_to_map_key(&key_val)
@@ -718,79 +718,79 @@ fn map_op_ordered(
             if !m.contains_key(&key) { return Err(GoblinError::KeyNotFound); }
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::Random, Operation::Update(v)) => {
-            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
+            if m.is_empty() { return Ok(Value::MapOrd(Into::into(Box::new(m.clone())))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::Where(pred), Operation::Update(v)) => {
             let mut new_m = m.clone();
             for (k, val) in m { if fmt_value_raw(val) == pred { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::Matching(pat), Operation::Update(v)) => {
             let re = compile_regex(&pat)?;
             let mut new_m = m.clone();
             for k in m.keys() { if re.is_match(k) { new_m.insert(k.clone(), v.clone()); } }
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         // Delete
         (Position::First, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
+            if m.is_empty() { return Ok(Value::MapOrd(Into::into(Box::new(m.clone())))); }
             let first_key = m.iter().next().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.shift_remove(&first_key);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::Last, Operation::Delete) => {
-            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
+            if m.is_empty() { return Ok(Value::MapOrd(Into::into(Box::new(m.clone())))); }
             let last_key = m.iter().last().map(|(k, _)| k.clone()).unwrap();
             let mut new_m = m.clone();
             new_m.shift_remove(&last_key);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::At(key_val), Operation::Delete) => {
             let key = value_to_map_key(&key_val)
                 .ok_or_else(|| GoblinError::type_error("string-compatible", key_val.type_name(), "map key"))?;
             let mut new_m = m.clone();
             new_m.shift_remove(&key);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::All, Operation::Delete) => {
-            Ok(Value::MapOrd(Box::new(indexmap::IndexMap::new())))
+            Ok(Value::MapOrd(Into::into(Box::new(indexmap::IndexMap::new()))))
         }
         (Position::Where(pred), Operation::Delete) => {
             let new_m = m.iter()
                 .filter(|(_, v)| fmt_value_raw(v) != pred)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<indexmap::IndexMap<_, _>>();
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         (Position::Matching(pat), Operation::Delete) => {
             let re = compile_regex(&pat)?;
             let new_m = m.iter().filter(|(k, _)| !re.is_match(k)).map(|(k, v)| (k.clone(), v.clone())).collect::<indexmap::IndexMap<_, _>>();
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         // All + Put/Update: replace entire map (v must be a Map)
         (Position::All, Operation::Put(v)) | (Position::All, Operation::Update(v)) => {
             match v.to_index_map() {
-                Some(m2) => Ok(Value::MapOrd(Box::new(m2))),
+                Some(m2) => Ok(Value::MapOrd(Into::into(Box::new(m2)))),
                 None => Err(GoblinError::type_error("map", v.type_name(), "put/update-all on map expects map value")),
             }
         }
         // Random + Put: update a random key's value (same as Random + Update)
         (Position::Random, Operation::Put(v)) => {
-            if m.is_empty() { return Ok(Value::MapOrd(Box::new(m.clone()))); }
+            if m.is_empty() { return Ok(Value::MapOrd(Into::into(Box::new(m.clone())))); }
             let i = rng_bounded(session, m.len());
             let key = m.keys().nth(i).cloned().unwrap();
             let mut new_m = m.clone();
             new_m.insert(key, v);
-            Ok(Value::MapOrd(Box::new(new_m)))
+            Ok(Value::MapOrd(Into::into(Box::new(new_m))))
         }
         // Last + Put/Update/Delete: not meaningful for maps
         (Position::Last, Operation::Put(_)) | (Position::Last, Operation::Update(_)) | (Position::Last, Operation::Delete) => {
@@ -805,7 +805,7 @@ fn map_op_ordered(
             if pat.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
                 let mut new_m = m.clone();
                 new_m.insert(pat, v);
-                Ok(Value::MapOrd(Box::new(new_m)))
+                Ok(Value::MapOrd(Into::into(Box::new(new_m))))
             } else {
                 Err(GoblinError::Runtime("put_matching with complex regex is not meaningful for maps".into()))
             }
@@ -839,17 +839,17 @@ fn map_op_ordered(
                     let result: indexmap::IndexMap<String, Value> = between.iter()
                         .map(|k| (k.clone(), m.get(k).unwrap().clone()))
                         .collect();
-                    Ok(Value::MapOrd(Box::new(result)))
+                    Ok(Value::MapOrd(Into::into(Box::new(result))))
                 }
                 Operation::Delete => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.shift_remove(k); }
-                    Ok(Value::MapOrd(Box::new(new_m)))
+                    Ok(Value::MapOrd(Into::into(Box::new(new_m))))
                 }
                 Operation::Update(v) => {
                     let mut new_m = m.clone();
                     for k in &between { new_m.insert(k.clone(), v.clone()); }
-                    Ok(Value::MapOrd(Box::new(new_m)))
+                    Ok(Value::MapOrd(Into::into(Box::new(new_m))))
                 }
                 Operation::Put(_) => {
                     Err(GoblinError::Runtime("put_between is not meaningful for maps".into()))
@@ -911,12 +911,12 @@ fn str_op(
                 .filter(|&&c| c.to_string() == needle)
                 .map(|&c| Value::Char(c))
                 .collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Matching(pat), Operation::Get) | (Position::Matching(pat), Operation::Reap) => {
             let re = compile_regex(&pat)?;
             let result: Vec<Value> = re.find_iter(s).map(|m| Value::Str(m.as_str().to_string().into())).collect();
-            Ok(Value::Array(result))
+            Ok(Value::Array(Into::into(result)))
         }
         (Position::Between(start_pat, end_pat), Operation::Get) |
         (Position::Between(start_pat, end_pat), Operation::Reap) => {
@@ -930,7 +930,7 @@ fn str_op(
                     results.push(Value::Str(s[sm.end()..em.start()].to_string().into()));
                 }
             }
-            Ok(Value::Array(results))
+            Ok(Value::Array(Into::into(results)))
         }
 
         // Put
@@ -1229,7 +1229,7 @@ fn build_seq(items: Vec<Value>, meta: CollectionMeta) -> CollectionValue {
 /// Scalars (Int, Str, Bool, etc.) pass through unchanged — they are element values, not collections.
 pub fn into_collection(v: Value) -> Value {
     match v {
-        Value::Array(xs) => Value::Collection(Rc::new(CollectionValue::from_flat(xs))),
+        Value::Array(xs) => Value::Collection(Rc::new(CollectionValue::from_flat((xs).into_vec()))),
         Value::Map(m) => {
             let pairs: Vec<(Value, Value)> = m.into_iter()
                 .map(|(k, v)| (Value::Str(k.into()), v))
@@ -1297,7 +1297,7 @@ fn collection_value_op(
     };
     Ok(match result {
         Value::Array(arr) => {
-            Value::Collection(Rc::new(build_seq(arr, meta)))
+            Value::Collection(Rc::new(build_seq((arr).into_vec(), meta)))
         }
         Value::Map(m2) => {
             let pairs: Vec<(Value, Value)> = m2.into_iter()
@@ -2245,7 +2245,7 @@ mod in_place_tests {
     /// the general path that takes over counts it again.
     #[test]
     fn failed_in_place_write_keeps_access_count() {
-        let inner = Value::Array(vec![Value::Int(1)]);
+        let inner = Value::Array(Into::into(vec![Value::Int(1)]));
         let meta = CollectionMeta { len: 1, ..Default::default() };
         let mut outer = Value::Collection(Rc::new(CollectionValue {
             layout: CollectionLayout::FlatArray(Rc::new(vec![inner])),

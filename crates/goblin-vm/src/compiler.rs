@@ -36,6 +36,10 @@ struct FunctionScope {
     /// Position of a `LoadNil` that only gives a statement-like call its
     /// value; a statement that discards it drops the pair instead.
     unused_nil: Option<usize>,
+    /// Position of the `Dup` in a `Dup` + store that gives an assignment
+    /// its value; a statement that discards the value drops the `Dup`
+    /// instead of popping after the store.
+    dup_store: Option<usize>,
     /// Data for opcodes that carry strings or AST.
     op_data: Vec<crate::opcode::OpData>,
     /// Constant pool.
@@ -79,6 +83,7 @@ impl FunctionScope {
             upvalues: Vec::new(),
             bytecode: Vec::new(),
             unused_nil: None,
+            dup_store: None,
             op_data: Vec::new(),
             constants: Vec::new(),
             next_slot: params as u16,
@@ -190,6 +195,7 @@ impl FunctionScope {
     fn patch_jump(&mut self, jump_idx: usize) {
         // A jump now lands after the trailing `LoadNil`, so it can't be dropped.
         self.unused_nil = None;
+        self.dup_store = None;
         let current = self.bytecode.len();
         let offset = (current as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
@@ -202,6 +208,7 @@ impl FunctionScope {
     /// Patch a previously emitted jump to a specific target IP.
     fn patch_jump_to(&mut self, jump_idx: usize, target_ip: usize) {
         self.unused_nil = None;
+        self.dup_store = None;
         let offset = (target_ip as isize - jump_idx as isize - 1) as i16;
         match &mut self.bytecode[jump_idx] {
             Opcode::Jump(o) | Opcode::JumpIfFalse(o) | Opcode::JumpIfTrue(o)
@@ -220,9 +227,13 @@ impl FunctionScope {
                 local_names[*slot as usize] = name.clone();
             }
         }
+        let mut bytecode = self.bytecode;
+        let mut op_data = self.op_data;
+        mark_calcs(&mut bytecode, &self.constants, &mut op_data);
+        mark_cmp_jumps(&mut bytecode);
         FunctionObject {
-            bytecode: self.bytecode,
-            op_data: self.op_data,
+            bytecode,
+            op_data,
             constants: self.constants,
             locals: total_slots,
             params: self.params,
@@ -236,6 +247,101 @@ impl FunctionScope {
             source_file,
             global_names,
             calls_values: self.calls_values, field_hints: Default::default(),
+        }
+    }
+}
+
+/// Marks each run of number steps with two or more operations as a
+/// `CalcL` / `CalcK` (see the opcodes). Nothing moves: the run's first step
+/// is replaced, the others stay, so a jump into the run still finds them.
+fn mark_calcs(code: &mut [Opcode], constants: &[Value], op_data: &mut Vec<crate::opcode::OpData>) {
+    use crate::opcode::{Calc, CalcTail, COp, OpData, CALC_REGS};
+    let mut i = 0;
+    while i < code.len() {
+        let load = |op: Opcode| -> Option<COp> {
+            match op {
+                Opcode::LoadLocal(s) => Some(COp::Local(s)),
+                Opcode::LoadConst(c) => match constants.get(c as usize)? {
+                    Value::Int(n) => Some(COp::Int(*n)),
+                    Value::Float(x) => Some(COp::Float(*x)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        if load(code[i]).is_none() { i += 1; continue; }
+        // The longest run from i that leaves exactly one value.
+        let (mut depth, mut ops, mut best, mut bins) = (0usize, Vec::new(), None, 0);
+        let mut j = i;
+        while j < code.len() {
+            let op = match code[j] {
+                op @ (Opcode::LoadLocal(_) | Opcode::LoadConst(_)) => match load(op) { Some(c) => c, None => break },
+                Opcode::Add => COp::Add, Opcode::Sub => COp::Sub, Opcode::Mul => COp::Mul, Opcode::Div => COp::Div,
+                Opcode::Lt => COp::Lt, Opcode::Le => COp::Le, Opcode::Gt => COp::Gt, Opcode::Ge => COp::Ge,
+                Opcode::Eq => COp::Eq, Opcode::Ne => COp::Ne,
+                _ => break,
+            };
+            if matches!(op, COp::Local(_) | COp::Int(_) | COp::Float(_)) {
+                depth += 1;
+                if depth > CALC_REGS { break; }
+            } else {
+                if depth < 2 { break; }
+                depth -= 1;
+                bins += 1;
+            }
+            ops.push(op);
+            j += 1;
+            if depth == 1 && bins >= 2 { best = Some((j, ops.len())); }
+        }
+        let Some((end, n)) = best else { i += 1; continue };
+        if op_data.len() >= u16::MAX as usize { return; }
+        ops.truncate(n);
+        let tail = match (code.get(end), code.get(end + 1)) {
+            (Some(Opcode::GuardRebindLocal(d, _)), Some(Opcode::StoreLocal(t))) if d == t => CalcTail::Store(*d),
+            (Some(Opcode::JumpIfFalse(o)), _) => CalcTail::Jump(false, *o),
+            (Some(Opcode::JumpIfTrue(o)), _) => CalcTail::Jump(true, *o),
+            _ => CalcTail::Push,
+        };
+        let idx = op_data.len() as u16;
+        op_data.push(OpData::Calc(Box::new(Calc { ops, len: (end - i) as u16, tail })));
+        code[i] = match code[i] {
+            Opcode::LoadLocal(s) => Opcode::CalcL(s, idx),
+            Opcode::LoadConst(c) => Opcode::CalcK(c, idx),
+            _ => unreachable!(),
+        };
+        i = end;
+    }
+}
+
+/// Marks each `LoadLocal`, `LoadLocal | LoadConst`, comparison,
+/// `JumpIfFalse | JumpIfTrue` run as a `CmpJump`, and each `LoadLocal`,
+/// `LoadLocal | LoadConst`, `+ - *` or comparison as a `BinLocal` (see the
+/// opcodes). Nothing moves: the first step is replaced, the others stay.
+fn mark_cmp_jumps(code: &mut [Opcode]) {
+    for i in 0..code.len() {
+        if let Opcode::Jump(o) = code[i] {
+            let t = i as isize + 1 + o as isize;
+            if t >= 0 && matches!(code.get(t as usize), Some(Opcode::RepeatNext(_))) { code[i] = Opcode::LoopJump(o); }
+        }
+    }
+    let mut i = 0;
+    while i + 3 < code.len() {
+        if let [Opcode::LoadLocal(a), Opcode::LoadLocal(_) | Opcode::LoadConst(_),
+                Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne,
+                Opcode::JumpIfFalse(_) | Opcode::JumpIfTrue(_)] = code[i..i + 4] {
+            code[i] = Opcode::CmpJump(a);
+            i += 4;
+        } else if let [Opcode::LoadLocal(a), Opcode::LoadLocal(_) | Opcode::LoadConst(_),
+                Opcode::Add | Opcode::Sub | Opcode::Mul
+                | Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne] = code[i..i + 3] {
+            code[i] = Opcode::BinLocal(a);
+            i += 3;
+        } else if let [Opcode::LoadConst(c), Opcode::AppendLocal(s), Opcode::GuardRebindLocal(g, _), Opcode::StoreLocal(t)] = code[i..i + 4] {
+            if s == g && g == t { code[i] = Opcode::IncLocal(c); i += 4; } else { i += 1; }
+        } else if let [Opcode::LoadLocal(src), Opcode::GuardRebindLocal(g, _), Opcode::StoreLocal(t), _] = code[i..i + 4] {
+            if g == t && src != t { code[i] = Opcode::MoveLocal(src); i += 3; } else { i += 1; }
+        } else {
+            i += 1;
         }
     }
 }
@@ -825,10 +931,10 @@ impl Compiler {
                 self.emit(Opcode::CallBuiltin(BuiltinId::TickPhase, 1));
                 self.emit(Opcode::Pop);
             }
-            Stmt::Expr(e) => {
-                self.compile_expr(e)?;
-                self.emit_discard();
-            }
+            // A judge whose value nobody uses: each arm's value is worked
+            // out and dropped where it is made, so no nil is pushed for the
+            // no-match case and popped again.
+            Stmt::Expr(e) => self.compile_discarded(e)?,
 
             // `tick()` and its block: the phases it names, then the end of
             // the tick (what no phase holds, ageing, the count).
@@ -1276,9 +1382,9 @@ impl Compiler {
                 })],
                 SweepArmKind::AllBody => vec![s("all"), s(""), s(""), s("all")],
             };
-            Value::Array(fields)
+            Value::Array(Into::into(fields))
         }).collect();
-        let spec_idx = self.add_constant(Value::Array(spec));
+        let spec_idx = self.add_constant(Value::Array(Into::into(spec)));
         self.emit(Opcode::LoadConst(spec_idx));
         self.emit(if matches!(sweep.mode, SweepMode::All) { Opcode::LoadTrue } else { Opcode::LoadFalse });
         for t in &sweep.targets { self.compile_expr(t)?; }
@@ -1476,7 +1582,7 @@ impl Compiler {
                     } else {
                         let mut parts = vec![Value::Str(s.clone().into())];
                         parts.extend(names.iter().cloned().map(|s: String| Value::Str(s.into())));
-                        let tidx = self.add_constant(Value::Array(parts));
+                        let tidx = self.add_constant(Value::Array(Into::into(parts)));
                         self.emit(Opcode::StringInterpVals(tidx, names.len() as u8));
                     }
                 } else {
@@ -2306,8 +2412,7 @@ impl Compiler {
                     };
                     let store_op = self.resolve_store(&var_name)
                         .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-                    self.emit(Opcode::Dup);
-                    self.emit(store_op);
+                    self.emit_dup_store(store_op);
                     return Ok(());
                 }
             }
@@ -2325,8 +2430,7 @@ impl Compiler {
                 };
                 let store_op = self.resolve_store(&var_name)
                     .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-                self.emit(Opcode::Dup);
-                self.emit(store_op);
+                self.emit_dup_store(store_op);
                 return Ok(());
             }
 
@@ -2339,8 +2443,7 @@ impl Compiler {
             self.emit_obj_rebind_guard(&var_name)?;
             let store_op = self.resolve_store(&var_name)
                 .ok_or_else(|| self.locate_err(self.undef_err(var_name.clone())))?;
-            self.emit(Opcode::Dup);
-            self.emit(store_op);
+            self.emit_dup_store(store_op);
             return Ok(());
         }
 
@@ -2352,9 +2455,12 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
-            // D8: `and` / `or` give a bool, whatever the operands.
-            self.emit(Opcode::Not);
-            self.emit(Opcode::Not);
+            // D8: `and` / `or` give a bool, whatever the operands. When
+            // both sides already give a bool there is nothing to coerce.
+            if !(gives_bool(lhs) && gives_bool(rhs)) {
+                self.emit(Opcode::Not);
+                self.emit(Opcode::Not);
+            }
             return Ok(());
         }
         if op == "||" || op == "or" {
@@ -2364,9 +2470,12 @@ impl Compiler {
             self.emit(Opcode::Pop);
             self.compile_expr(rhs)?;
             self.scope_mut().patch_jump(skip);
-            // D8: `and` / `or` give a bool, whatever the operands.
-            self.emit(Opcode::Not);
-            self.emit(Opcode::Not);
+            // D8: `and` / `or` give a bool, whatever the operands. When
+            // both sides already give a bool there is nothing to coerce.
+            if !(gives_bool(lhs) && gives_bool(rhs)) {
+                self.emit(Opcode::Not);
+                self.emit(Opcode::Not);
+            }
             return Ok(());
         }
 
@@ -2470,6 +2579,88 @@ impl Compiler {
         match arms.iter().find(|a| a.condition.is_none()) {
             Some(else_arm) => self.compile_judge_arm_value(else_arm, header)?,
             None => { self.emit(Opcode::LoadNil); }
+        }
+        for j in end_jumps { self.scope_mut().patch_jump(j); }
+        Ok(())
+    }
+
+    /// `compile_judge_expr` for a judge used as a statement: the same arms
+    /// in the same order (`else` only when none matched), with each arm's
+    /// value dropped and nothing left on the stack.
+    /// Code that jumps when `e` is truthy (`when` true) or falsy (`when`
+    /// false) and goes on otherwise; gives the jumps to patch. `and` / `or`
+    /// jump on each side as it is worked out, instead of making their bool
+    /// and testing it again: a jump tests the same truthiness the bool was
+    /// made from, so the same branch is taken.
+    fn compile_cond_jump(&mut self, e: &Expr, when: bool) -> Result<Vec<usize>, GoblinError> {
+        // `!x` jumps the other way on `x` (`Not` makes its bool from the same truthiness).
+        if let Expr::Prefix(op, x, _) = e {
+            if op == "!" || op == "not" { return self.compile_cond_jump(x, !when); }
+        }
+        if let Expr::Binary(l, op, r, _) = e {
+            let and = op == "&&" || op == "and";
+            if and || op == "||" || op == "or" {
+                // `and` falsy / `or` truthy: either side settles it.
+                if and != when {
+                    let mut j = self.compile_cond_jump(l, when)?;
+                    j.extend(self.compile_cond_jump(r, when)?);
+                    return Ok(j);
+                }
+                // Otherwise the left side can only rule it out.
+                let skip = self.compile_cond_jump(l, !when)?;
+                let j = self.compile_cond_jump(r, when)?;
+                for k in skip { self.scope_mut().patch_jump(k); }
+                return Ok(j);
+            }
+        }
+        self.compile_expr(e)?;
+        Ok(vec![self.scope_mut().emit_jump(if when { Opcode::JumpIfTrue } else { Opcode::JumpIfFalse })])
+    }
+
+    /// An expression whose value nobody uses. A judge, or an `if` /
+    /// `unless`, has each branch's value worked out and dropped where it is
+    /// made, so no nil is pushed for the branch not written and popped again.
+    fn compile_discarded(&mut self, e: &Expr) -> Result<(), GoblinError> {
+        match e {
+            Expr::Judge { header, arms, all: false, .. } => self.compile_judge_discard(header.as_deref(), arms),
+            Expr::FreeCall(name, args, _) if matches!(name.trim_start_matches(':'), "if" | "unless") && !args.is_empty() => {
+                let else_jumps = self.compile_cond_jump(&args[0], name.trim_start_matches(':') == "unless")?;
+                if let Some(then) = args.get(1) { self.compile_discarded(then)?; }
+                match args.get(2) {
+                    Some(other) => {
+                        let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
+                        for j in else_jumps { self.scope_mut().patch_jump(j); }
+                        self.compile_discarded(other)?;
+                        self.scope_mut().patch_jump(end_jump);
+                    }
+                    None => for j in else_jumps { self.scope_mut().patch_jump(j); },
+                }
+                Ok(())
+            }
+            e => {
+                self.compile_expr(e)?;
+                self.emit_discard();
+                Ok(())
+            }
+        }
+    }
+
+    fn compile_judge_discard(&mut self, header: Option<&Expr>, arms: &[JudgeArm]) -> Result<(), GoblinError> {
+        let else_arm = arms.iter().find(|a| a.condition.is_none());
+        let conds: Vec<&JudgeArm> = arms.iter().filter(|a| a.condition.is_some()).collect();
+        let mut end_jumps: Vec<usize> = Vec::new();
+        for (i, arm) in conds.iter().enumerate() {
+            let skips = self.compile_cond_jump(arm.condition.as_ref().unwrap(), false)?;
+            self.compile_judge_arm_value(arm, header)?;
+            self.emit_discard();
+            if i + 1 < conds.len() || else_arm.is_some() {
+                end_jumps.push(self.scope_mut().emit_jump(Opcode::Jump));
+            }
+            for k in skips { self.scope_mut().patch_jump(k); }
+        }
+        if let Some(else_arm) = else_arm {
+            self.compile_judge_arm_value(else_arm, header)?;
+            self.emit_discard();
         }
         for j in end_jumps { self.scope_mut().patch_jump(j); }
         Ok(())
@@ -2688,7 +2879,7 @@ impl Compiler {
         if info.is_empty() { return Ok(()); }
         info.reverse();
         let n = info.len() as u8;
-        let idx = self.add_constant(Value::Array(info));
+        let idx = self.add_constant(Value::Array(Into::into(info)));
         self.emit(Opcode::CheckPath(n, idx));
         Ok(())
     }
@@ -2858,12 +3049,25 @@ impl Compiler {
 
     /// Throw away the value just computed: `Pop`, or, when that value is
     /// a `LoadNil` nothing jumps past (see `unused_nil`), leave both out.
+    /// `Dup` then `store_op`: an assignment that also gives the stored value.
+    fn emit_dup_store(&mut self, store_op: Opcode) {
+        let at = self.emit(Opcode::Dup);
+        self.emit(store_op);
+        self.scope_mut().dup_store = Some(at);
+    }
+
     fn emit_discard(&mut self) {
         let sc = self.scope_mut();
         if sc.unused_nil.is_some() && sc.unused_nil == sc.bytecode.len().checked_sub(1) {
             sc.bytecode.pop();
             sc.line_numbers.pop();
             sc.unused_nil = None;
+        } else if sc.dup_store.is_some() && sc.dup_store == sc.bytecode.len().checked_sub(2) {
+            // Nothing jumps between the `Dup` and the store (a patch clears
+            // `dup_store`), so the store can take the value itself.
+            let at = sc.dup_store.take().unwrap();
+            sc.bytecode.remove(at);
+            sc.line_numbers.remove(at);
         } else {
             self.emit(Opcode::Pop);
         }
@@ -3030,9 +3234,7 @@ impl Compiler {
                         span_debug: String::new(),
                     });
                 }
-                self.compile_expr(&args[0])?;
-                if invert { self.emit(Opcode::Not); }
-                let else_jump = self.scope_mut().emit_jump(Opcode::JumpIfFalse);
+                let else_jumps = self.compile_cond_jump(&args[0], invert)?;
                 // then branch
                 if args.len() > 1 {
                     self.compile_expr(&args[1])?;
@@ -3040,7 +3242,7 @@ impl Compiler {
                     self.emit(Opcode::LoadNil);
                 }
                 let end_jump = self.scope_mut().emit_jump(Opcode::Jump);
-                self.scope_mut().patch_jump(else_jump);
+                for j in else_jumps { self.scope_mut().patch_jump(j); }
                 // else branch
                 if args.len() > 2 {
                     self.compile_expr(&args[2])?;
@@ -3817,6 +4019,19 @@ fn owner_test(pred: &Expr) -> Option<(String, Expr)> {
 /// Whether a query predicate only reads: names, literals, fields,
 /// operators, indexes and calls to builtins that change nothing. Then
 /// running it on fewer objects changes nothing but the result.
+/// True when `e` always gives a bool on the VM: a bool literal, `not`, a
+/// comparison, or `and` / `or` (D8). Used to skip the double `Not` that
+/// turns an `and` / `or` result into a bool when it already is one.
+fn gives_bool(e: &Expr) -> bool {
+    match e {
+        Expr::Bool(..) => true,
+        Expr::Prefix(op, _, _) => op == "!" || op == "not",
+        Expr::Binary(_, op, _, _) => matches!(op.as_str(),
+            "==" | "!=" | "/=" | "===" | "!==" | "<" | "<=" | ">" | ">=" | "&&" | "and" | "||" | "or"),
+        _ => false,
+    }
+}
+
 pub(crate) fn only_reads(e: &Expr) -> bool {
     only_reads_with(e, &mut |_| false)
 }

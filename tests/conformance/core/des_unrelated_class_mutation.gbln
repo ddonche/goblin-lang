@@ -1,3 +1,4 @@
+/// known-gap: interp has no mutation into an unrelated class (the interpreter is being retired)
 /// An entity can mutate into an unrelated class without inheritance,
 /// a shared aspect, or a subtype relationship. The same identity survives;
 /// shared fields keep their values and new fields use destination defaults.

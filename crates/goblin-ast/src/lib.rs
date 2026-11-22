@@ -358,6 +358,9 @@ pub struct ClassDecl {
     /// Optional capacity declaration — how many/how much this class can own.
     /// None = infinite capacity.
     pub capacity: Option<CapacityDecl>,
+    /// `contents: destroy`: what it holds is erased with it, rather than
+    /// moving up to its own container.
+    pub destroy_contents: bool,
     /// `every N ticks ... end` blocks: each runs as a method (named
     /// `action`) on every object of the class, every N ticks.
     pub every: Vec<EveryDecl>,

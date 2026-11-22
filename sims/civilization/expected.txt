@@ -1,3 +1,3 @@
 civilization: 4 villages, 120 months
-year 5: [36 people, 13 huts, 0 food, 0 food sent, 27 born, 11 dead] [32 people, 8 huts, 23 food, 0 food sent, 12 born, 0 dead] [32 people, 8 huts, 36 food, 0 food sent, 12 born, 0 dead] [43 people, 12 huts, 25 food, 52 food sent, 23 born, 0 dead] total 143
-year 10: [35 people, 13 huts, 41 food, 280 food sent, 45 born, 30 dead] [32 people, 8 huts, 149 food, 77 food sent, 12 born, 0 dead] [32 people, 8 huts, 123 food, 0 food sent, 12 born, 0 dead] [32 people, 12 huts, 39 food, 52 food sent, 42 born, 30 dead] total 131
+year 5: [41 people, 12 huts, 21 food, 0 food sent, 21 born, 0 dead] [36 people, 9 huts, 0 food, 0 food sent, 16 born, 0 dead] [36 people, 9 huts, 0 food, 0 food sent, 16 born, 2 dead] [44 people, 12 huts, 0 food, 0 food sent, 24 born, 1 dead] total 157
+year 10: [23 people, 12 huts, 159 food, 109 food sent, 33 born, 30 dead] [28 people, 9 huts, 102 food, 0 food sent, 27 born, 19 dead] [26 people, 9 huts, 0 food, 0 food sent, 36 born, 30 dead] [35 people, 12 huts, 0 food, 328 food sent, 41 born, 26 dead] total 112

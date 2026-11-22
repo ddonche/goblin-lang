@@ -1,0 +1,30 @@
+Bus school bus
+  Kid Sam
+    Holder backpack
+      Holder lunchbox
+        Item cake
+        Item apple
+      Item book
+    Item juice box
+--
+Bus school bus
+  Kid Sam
+    Holder backpack
+      Holder lunchbox
+        Item cake
+        Item apple
+      Item book
+    Item juice box
+    Item pen
+-- the lunchbox is lost
+Bus school bus
+  Kid Sam
+    Holder backpack
+      Item book
+      Item cake
+    Item juice box
+    Item pen
+    Item apple
+true
+true
+true

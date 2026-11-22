@@ -344,6 +344,95 @@ pub struct EnumVal {
     pub fields: Option<indexmap::IndexMap<String, Value>>,
 }
 
+/// A collection held by `Value` that copies of the value share: a copy adds
+/// a holder, and the first change through a shared one copies it first
+/// (`Rc::make_mut`). Reads and changes go through `Deref`/`DerefMut`, so it
+/// reads like the collection it holds.
+#[derive(Default)]
+pub struct Shared<T: Clone>(pub Rc<T>);
+
+impl<T: Clone> Clone for Shared<T> {
+    #[inline]
+    fn clone(&self) -> Self { Shared(self.0.clone()) }
+}
+
+impl<T: Clone> Shared<T> {
+    #[inline]
+    pub fn new(v: T) -> Self { Shared(Rc::new(v)) }
+    /// The collection itself: taken when this is its only holder, else copied.
+    #[inline]
+    pub fn into_inner(self) -> T { Rc::try_unwrap(self.0).unwrap_or_else(|rc| (*rc).clone()) }
+    /// Whether no other value shares it (a change won't copy it).
+    #[inline]
+    pub fn is_unique(&self) -> bool { Rc::strong_count(&self.0) == 1 }
+    #[inline]
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool { Rc::ptr_eq(&a.0, &b.0) }
+}
+
+impl Shared<Vec<Value>> {
+    #[inline]
+    pub fn into_vec(self) -> Vec<Value> { self.into_inner() }
+}
+
+impl<T: Clone> std::ops::Deref for Shared<T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T { &self.0 }
+}
+
+impl<T: Clone> std::ops::DerefMut for Shared<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut T { Rc::make_mut(&mut self.0) }
+}
+
+impl<T: Clone> From<T> for Shared<T> {
+    #[inline]
+    fn from(v: T) -> Self { Shared(Rc::new(v)) }
+}
+
+impl<T: Clone> From<Box<T>> for Shared<T> {
+    #[inline]
+    fn from(v: Box<T>) -> Self { Shared(Rc::new(*v)) }
+}
+
+impl<T: Clone + PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool { Rc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0 }
+}
+
+impl<T: Clone + std::fmt::Debug> std::fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.fmt(f) }
+}
+
+impl FromIterator<Value> for Shared<Vec<Value>> {
+    fn from_iter<I: IntoIterator<Item = Value>>(it: I) -> Self { Shared(Rc::new(it.into_iter().collect())) }
+}
+
+impl<K: Ord + Clone, V: Clone> FromIterator<(K, V)> for Shared<std::collections::BTreeMap<K, V>> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(it: I) -> Self { Shared(Rc::new(it.into_iter().collect())) }
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> FromIterator<(K, V)> for Shared<indexmap::IndexMap<K, V>> {
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(it: I) -> Self { Shared(Rc::new(it.into_iter().collect())) }
+}
+
+impl<'a, T: Clone> IntoIterator for &'a Shared<T> where &'a T: IntoIterator {
+    type Item = <&'a T as IntoIterator>::Item;
+    type IntoIter = <&'a T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { (&*self.0).into_iter() }
+}
+
+impl<'a, T: Clone> IntoIterator for &'a mut Shared<T> where &'a mut T: IntoIterator {
+    type Item = <&'a mut T as IntoIterator>::Item;
+    type IntoIter = <&'a mut T as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { Rc::make_mut(&mut self.0).into_iter() }
+}
+
+impl<T: Clone + IntoIterator> IntoIterator for Shared<T> {
+    type Item = T::Item;
+    type IntoIter = T::IntoIter;
+    fn into_iter(self) -> Self::IntoIter { self.into_inner().into_iter() }
+}
+
 /// The user-facing value stored inside a stash.
 #[derive(Clone)]
 pub enum Value {
@@ -363,9 +452,9 @@ pub enum Value {
 
     // ── Structured ──────────────────────────────────────────────────────────
     Formatted(Box<Value>, FormatSpec),
-    Array(Vec<Value>),
-    Map(std::collections::BTreeMap<String, Value>),
-    MapOrd(Box<indexmap::IndexMap<String, Value>>),
+    Array(Shared<Vec<Value>>),
+    Map(Shared<std::collections::BTreeMap<String, Value>>),
+    MapOrd(Shared<indexmap::IndexMap<String, Value>>),
     Pair(Box<Value>, Box<Value>),
     Seq(Seq),
 
@@ -720,8 +809,8 @@ impl Value {
     /// values pass through. For builtins that only understand legacy shapes.
     pub fn into_legacy(self) -> Value {
         match &self {
-            Value::Collection(c) if c.is_map() => Value::MapOrd(Box::new(self.to_index_map().unwrap_or_default())),
-            Value::Collection(_) => Value::Array(self.seq_items().map(|x| x.into_owned()).unwrap_or_default()),
+            Value::Collection(c) if c.is_map() => Value::MapOrd(Into::into(Box::new(self.to_index_map().unwrap_or_default()))),
+            Value::Collection(_) => Value::Array(Into::into(self.seq_items().map(|x| x.into_owned()).unwrap_or_default())),
             _ => self,
         }
     }

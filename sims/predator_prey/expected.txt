@@ -1,7 +1,7 @@
 predator and prey: 4 meadows, 60 days
-day 10: rabbits 720, foxes 24, grass 0
-day 20: rabbits 554, foxes 43, grass 0
-day 30: rabbits 516, foxes 61, grass 0
-day 40: rabbits 514, foxes 93, grass 0
-day 50: rabbits 413, foxes 132, grass 0
-day 60: rabbits 380, foxes 188, grass 0
+day 10: rabbits 693, foxes 26, grass 0
+day 20: rabbits 556, foxes 49, grass 0
+day 30: rabbits 518, foxes 80, grass 0
+day 40: rabbits 448, foxes 115, grass 0
+day 50: rabbits 376, foxes 169, grass 0
+day 60: rabbits 263, foxes 235, grass 317

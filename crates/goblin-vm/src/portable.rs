@@ -142,7 +142,7 @@ fn unsupported(what: &str) -> GoblinError {
 /// converted once each, however often they appear.
 pub struct ToPortable<'s> {
     pub(crate) session: &'s Session,
-    funcs: HashMap<*const FunctionObject, Arc<PFunction>>,
+    funcs: rustc_hash::FxHashMap<*const FunctionObject, Arc<PFunction>>,
     share: bool,
     /// Short texts converted so far: map keys and words like "wage" repeat
     /// in every item, so each is converted once.
@@ -158,7 +158,7 @@ pub struct ToPortable<'s> {
     by_id: bool,
     /// Values converted once and shared by what holds them (the variables
     /// overlay kinds keep), by the collection they were converted from.
-    once: HashMap<usize, Arc<PValue>>,
+    once: rustc_hash::FxHashMap<usize, Arc<PValue>>,
 }
 
 /// Texts up to this long are converted once per conversion and shared.
@@ -169,7 +169,7 @@ const SHARED_STR: usize = 256;
 
 impl<'s> ToPortable<'s> {
     pub fn new(session: &'s Session) -> Self {
-        ToPortable { session, funcs: HashMap::new(), share: false, strs: Default::default(), home: None, visiting: Default::default(), by_id: false, once: HashMap::new() }
+        ToPortable { session, funcs: Default::default(), share: false, strs: Default::default(), home: None, visiting: Default::default(), by_id: false, once: Default::default() }
     }
 
     /// Convert collections and long strings that hold no session state once,
@@ -443,26 +443,26 @@ impl<'s> ToPortable<'s> {
 /// Rebuilds portable values inside one session. Shared functions and frozen
 /// snapshots are rebuilt once per session.
 pub struct FromPortable {
-    funcs: HashMap<*const PFunction, Rc<FunctionObject>>,
+    funcs: rustc_hash::FxHashMap<*const PFunction, Rc<FunctionObject>>,
     /// Reuse functions already rebuilt on this thread by other sessions
     /// (actors on one worker share their compiled code).
     shared: bool,
     /// Rebuilt frozen values, and whether each holds a closure.
-    frozen: HashMap<*const PValue, (Rc<Frozen>, bool)>,
+    frozen: rustc_hash::FxHashMap<*const PValue, (Rc<Frozen>, bool)>,
     /// Shared values already rebuilt in this session.
-    values: HashMap<*const PValue, Value>,
+    values: rustc_hash::FxHashMap<*const PValue, Value>,
     global_names: HashMap<Vec<String>, Rc<std::cell::OnceCell<Vec<String>>>>,
     /// Short strings already rebuilt, so repeated keys and names ("id",
     /// "money", ...) share one copy instead of each allocating its own.
-    strs: HashMap<Box<str>, GStr>,
+    strs: rustc_hash::FxHashMap<Box<str>, GStr>,
     /// Objects rebuilt go into the session's object store, and the value
     /// holds a reference (an actor's starting state, at any depth).
     adopt: bool,
-    stored: HashMap<String, Vec<(usize, Value)>>,
+    stored: rustc_hash::FxHashMap<String, Vec<(usize, Value)>>,
     /// The field layout of the last object rebuilt (see `FieldMap::from_names`).
     layout: Option<Rc<crate::fields::Layout>>,
     /// Values `shared_value_of` rebuilt in this session, by their copy.
-    once: HashMap<*const PValue, Value>,
+    once: rustc_hash::FxHashMap<*const PValue, Value>,
 }
 
 /// Strings up to this long are shared by content when rebuilt.
@@ -476,7 +476,7 @@ impl Default for FromPortable {
 
 impl FromPortable {
     pub fn new() -> Self {
-        FromPortable { funcs: HashMap::new(), shared: false, frozen: HashMap::new(), values: HashMap::new(), global_names: HashMap::new(), strs: HashMap::new(), adopt: false, stored: HashMap::new(), layout: None, once: HashMap::new() }
+        FromPortable { funcs: Default::default(), shared: false, frozen: Default::default(), values: Default::default(), global_names: HashMap::new(), strs: Default::default(), adopt: false, stored: Default::default(), layout: None, once: Default::default() }
     }
 
     /// Before converting into a new session, drop rebuilt frozen values that
@@ -546,9 +546,9 @@ impl FromPortable {
             PValue::DateTime(d) => Value::DateTime(Box::new(d.clone())),
             PValue::Duration(d) => Value::Duration(Box::new(d.clone())),
             PValue::Formatted(inner, spec) => Value::Formatted(Box::new(self.value(inner, session)), spec.clone()),
-            PValue::Array(a) => Value::Array(self.values(a, session)),
+            PValue::Array(a) => Value::Array(Into::into(self.values(a, session))),
             PValue::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), self.value(v, session))).collect()),
-            PValue::MapOrd(m) => Value::MapOrd(Box::new(self.fields(m, session))),
+            PValue::MapOrd(m) => Value::MapOrd(Into::into(Box::new(self.fields(m, session)))),
             PValue::Pair(a, b) => Value::Pair(Box::new(self.value(a, session)), Box::new(self.value(b, session))),
             PValue::Seq(s) => Value::Seq(Seq::from_vec(self.values(s, session))),
             PValue::CtrlSkip => Value::CtrlSkip,

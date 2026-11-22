@@ -1,0 +1,10 @@
+Place the room
+  Item rope
+tick 1 | Chest chest | erase
+tick 1 | Item scroll | erase
+tick 1 | Bag pouch | erase
+tick 1 | Item coin | erase
+tick 1 | Bag backpack | erase
+tick 1 | Shop forge | erase
+tick 1 | Item axe | erase
+

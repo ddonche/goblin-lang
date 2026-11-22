@@ -3,6 +3,176 @@
 The Goblin version is the version of `goblin` (crates/goblin-cli). Numbers
 in parentheses are the pull requests that made each change.
 
+## 0.51.86 — 2026-11-21
+
+- More decision formulas, `where` conditions and `:objects` conditions run as a fast tree instead of step by step, with the same results: link scores (`:link_score(self, target, "border")` on a link that starts with no formula), `:min`, `:max`, `:abs`, `:clamp`, `x.nix?`, a formula that gives back one of its objects, and calls to actions that are one expression themselves (`score => room(target) - room(self)`, where `room` is `return 1.0 - (l >> people) / (l >> food)`): such an action runs as part of the tree, with no call frame. This is step 4 of the register VM. The capstone over 10 years (no regions, seed 42) runs 54.46 billion machine instructions on 0.51.85 and 49.22 billion on 0.51.86 (9.6% fewer). Histories are identical (seed 42 with and without regions, seed 7 with and without regions, seed 99 with regions).
+
+## 0.51.85 — 2026-11-21
+
+- A call's variables live on the VM's stack, as in Lua: the arguments a caller pushes already are the callee's first variables, so a call copies nothing into a separate list. A line of number arithmetic and comparisons (`x |= x + i * 2 - 1`, `if a * b < c`) runs as register code in one step, with the same results; anything that isn't a plain number takes the usual steps. This is step 3 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.84 → 0.51.85: empty loop 353 → 352; arithmetic 962 → 780; local copies 796 → 798; decimals 931 → 718; field write 1,508 → 1,502; field read 873 → 857; call 1,700 → 1,559. The capstone over 10 years (no regions, seed 42) runs 55.43 billion machine instructions on 0.51.84 and 54.46 billion on 0.51.85 (54.29 billion on 0.51.83). Histories are identical (seed 42 with and without regions, seed 7, seed 99 with regions).
+
+## 0.51.84 — 2026-11-21
+
+- A variable holds its value in its call's frame instead of in a separate slot of the session's store, with the same results. A variable gets a slot of its own only when something needs one: a closure that captures it, `:mem_id` / `:mem_addr`, or a collection that a bang write changes in place. Arguments passed to an action go straight into its variables. This is step 2 of the register VM. Machine instructions per pass of the VM micro-benchmarks, 0.51.83 → 0.51.84: empty loop 396 → 353; arithmetic 984 → 962; local copies 861 → 796; decimals 970 → 931; field write 1,445 → 1,508; field read 887 → 873; call 1,777 → 1,700. The capstone over 10 years (no regions, seed 42) runs 54.29 billion machine instructions on 0.51.83 and 55.43 billion on 0.51.84 (2.1% more: the run loop handles both kinds of variable until step 3 replaces it); its history is identical.
+
+## 0.51.83 — 2026-11-21
+
+- Arrays and maps are shared between copies of a value and copied only when one copy changes (copy-on-write), with the same results. This is the groundwork for the register VM: copying a value into a variable no longer copies its elements. The capstone over 10 years (no regions, seed 42) runs 54.23 billion machine instructions on 0.51.82 and 54.02 billion on 0.51.83; its history is identical.
+
+## 0.51.82 — 2026-11-21
+
+- An action called from a decision formula gets its arguments without an extra list being made, with the same results. The capstone over 10 years (no regions, seed 42) runs 54.52 billion machine instructions on 0.51.81 and 54.23 billion on 0.51.82. 100 years, median of three runs alternating with 0.51.81 (time; peak memory): without regions 31.3 s → 31.9 s (94 → 96 MB); 4 regions on one thread 61.2 s → 61.6 s (270 → 268 MB); 4 regions on 4 threads 29.3 s → 28.0 s (333 → 337 MB); 4 regions on 8 threads 29.4 s → 29.0 s (344 → 344 MB), within this machine's noise. Histories are identical.
+
+## 0.51.81 — 2026-11-21
+
+- Calls and returns take fewer steps, with the same results. Call micro-benchmark: 1,897 → 1,762 machine instructions per pass. The capstone over 10 years (no regions, seed 42) runs 54.94 billion machine instructions on 0.51.80 and 54.52 billion on 0.51.81. 100 years, median of three runs alternating with 0.51.80 (time; peak memory): without regions 30.7 s → 32.1 s (97 → 95 MB); 4 regions on one thread 58.7 s → 60.4 s (268 → 268 MB); 4 regions on 4 threads 29.3 s → 28.4 s (337 → 337 MB); 4 regions on 8 threads 30.7 s → 28.8 s (332 → 341 MB), within this machine's noise. Histories are identical.
+  - A number, bool or nil passed to an action goes into its variable without being looked at again.
+  - A return checks only the returning call's own operands for references to its variables.
+  - A call frame no longer carries an unused slot.
+
+## 0.51.80 — 2026-11-21
+
+- The capstone finds the war between two realms with one query instead of walking every open war (`war_between` in sims/capstone/polity.gbln). Over 10 years (no regions, seed 42) it runs 57.15 billion machine instructions on 0.51.79 and 54.94 billion on 0.51.80. 100 years, median of three runs alternating with 0.51.79 (time; peak memory): without regions 35.5 s → 32.9 s (103 → 97 MB); 4 regions on one thread 68.4 s → 66.6 s (296 → 269 MB); 4 regions on 4 threads 32.3 s → 31.9 s (382 → 346 MB); 4 regions on 8 threads 33.0 s → 31.7 s (372 → 338 MB). Histories are identical.
+
+## 0.51.79 — 2026-11-21
+
+- Plain statements take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.78 → 0.51.79: empty loop 609 → 379; arithmetic 1,163 → 975; local copies 1,253 → 852; decimals 1,149 → 957; field write 1,665 → 1,444; field read 1,106 → 878; call 2,101 → 1,897. The capstone over 10 years (no regions, seed 42) runs 57.22 billion machine instructions on 0.51.78 and 57.15 billion on 0.51.79; its history is identical.
+  - `x |= x + 1` with a whole number, `a |= b` with plain values, and `x |= a + b` with plain numbers are each one step.
+  - The end of a `repeat` pass, the pass count and the loop's test (`repeat i < n`) are one step when they take the fast way.
+  - An `if` or `unless` whose value nobody uses no longer makes a nil for the branch not written and drops it again.
+  - `and`, `or` and `!` in the condition of an `if`, `unless` or judge jump on each side as it is worked out, instead of making a bool and testing it again.
+
+## 0.51.78 — 2026-11-21
+
+- Link reads, DES formula lookups and program variables read inside a method take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.3 billion machine instructions on 0.51.77 and 57.2 billion on 0.51.78 (5.1% fewer). 100 years, median of three runs alternating with 0.51.77 (time; peak memory): without regions 31.5 s → 30.1 s (95 → 97 MB); 4 regions on one thread 58.0 s → 54.5 s (274 → 272 MB); 4 regions on 4 threads 24.9 s → 25.2 s (351 → 351 MB); 4 regions on 8 threads 23.3 s → 23.1 s (347 → 352 MB). Histories are identical.
+  - A link whose start is a plain number (`score => .3`, or a link block without `score`) gives that number without running it as a formula.
+  - A DES formula looked up again is found in a small table by where it is, before the table of every compiled formula.
+  - A bare name in a method that reads a program variable keeps the variable's place instead of building its full name and searching all of the program's names on every read.
+
+## 0.51.77 — 2026-11-20
+
+- Calls and returns take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 60.7 billion machine instructions on 0.51.76 and 60.3 billion on 0.51.77. 100 years, median of three runs alternating with 0.51.76 (time; peak memory): without regions 34.2 s → 33.2 s (95 → 96 MB); 4 regions on one thread 67.0 s → 67.3 s (271 → 277 MB); 4 regions on 4 threads 31.0 s → 32.3 s (349 → 346 MB); 4 regions on 8 threads 31.4 s → 30.2 s (348 → 355 MB), within this machine's noise. Histories are identical. Call micro-benchmark: 2,297 → 2,101 machine instructions per pass.
+  - A call to an action and its return run straight from the run loop instead of going through the general step.
+  - An action held in a variable is called without first copying it out.
+
+## 0.51.76 — 2026-11-20
+
+- Field writes take fewer steps, with the same results. The capstone over 10 years (no regions, seed 42) runs 62.2 billion machine instructions on 0.51.75 and 60.7 billion on 0.51.76 (2.5% fewer). 100 years, median of three runs alternating with 0.51.75 (time; peak memory): without regions 34.9 s → 34.4 s (96 → 95 MB); 4 regions on one thread 65.1 s → 65.4 s (275 → 277 MB); 4 regions on 4 threads 30.5 s → 30.7 s (355 → 360 MB); 4 regions on 8 threads 29.7 s → 29.4 s (352 → 356 MB), within this machine's noise. Histories are identical. Field write micro-benchmark: 2,665 → 1,687 machine instructions per pass.
+  - `p >> field |= v` with a number, bool or nil runs in the fast loop, finding the field where that line found it last time.
+  - Any other field write finds the field once instead of three times and no longer copies its name.
+  - Storing an object's id back into the variable that already holds it (what a field write does next) is skipped.
+  - A `repeat` over a list no longer goes through a builtin call to start.
+  - A DES formula is found among the compiled ones without hashing the name of its file.
+
+## 0.51.75 — 2026-11-20
+
+- Comparisons, arithmetic and `x |= ...` on plain numbers take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.74 → 0.51.75: empty loop 769 → 613; arithmetic 1,444 → 1,171; local copies 1,508 → 1,258; decimals 1,519 → 1,157; field write 2,827 → 2,665; field read 1,296 → 1,107; call 2,552 → 2,260. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.74 (time; peak memory): without regions 34.6 s → 35.2 s (96 → 98 MB); 4 regions on one thread 65.6 s → 64.6 s (274 → 275 MB); 4 regions on 4 threads 30.5 s → 31.2 s (345 → 344 MB); 4 regions on 8 threads 29.3 s → 30.4 s (345 → 350 MB), within this machine's noise. Histories are identical.
+  - A comparison of a variable with another variable or a number, followed by the jump it decides, is one step when both are plain numbers.
+  - `+`, `-`, `*` or a comparison of a variable with another variable or a number is one step when both are plain numbers.
+  - `x |= v` with plain values on both sides looks the variable up once.
+  - Storing a plain number no longer checks whether it needs freeing.
+
+## 0.51.74 — 2026-11-20
+
+- Each VM step is found faster, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.73 → 0.51.74: empty loop 878 → 769; arithmetic 1,605 → 1,444; local copies 1,665 → 1,508; decimals 1,670 → 1,519; field write 2,902 → 2,827; field read 1,419 → 1,296; call 2,623 → 2,552. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.73 (time; peak memory): without regions 34.7 s → 36.0 s (95 → 98 MB); 4 regions on one thread 67.0 s → 67.0 s (273 → 276 MB); 4 regions on 4 threads 32.1 s → 31.9 s (340 → 347 MB); 4 regions on 8 threads 29.9 s → 30.1 s (347 → 346 MB), within this machine's noise. Histories are identical.
+  - The run loop keeps the current function's code and position at hand instead of finding them through the call stack for every step.
+  - Reading a variable looks it up once instead of twice.
+  - A `repeat` with a condition counts its passes without leaving the run loop.
+
+## 0.51.73 — 2026-11-20
+
+- Storing a value in a variable and running a loop take fewer steps, with the same results. Machine instructions per pass of the VM micro-benchmarks, 0.51.72 → 0.51.73: empty loop 1,097 → 878; arithmetic 1,870 → 1,605; local copies 2,347 → 1,665; decimals 1,942 → 1,670; field write 3,285 → 2,902; field read 1,691 → 1,419; call 2,890 → 2,623. The capstone does not change measurably: 100 years at seed 42, median of three runs alternating with 0.51.72 (time; peak memory): without regions 33.6 s → 34.0 s (97 → 101 MB); 4 regions on one thread 64.4 s → 63.6 s (270 → 271 MB); 4 regions on 4 threads 30.6 s → 30.7 s (344 → 353 MB); 4 regions on 8 threads 30.0 s → 31.3 s (345 → 346 MB), within this machine's noise. Histories are identical.
+  - A number, bool or nil stored in a variable nothing else refers to replaces the old value in place, without the general store's checks.
+  - The check before `x |= ...` and the store after it run as one step.
+  - A loop's pass counter is stored the same way.
+  - `and` / `or` between two comparisons no longer turns its result into a bool a second time.
+  - An `if` (or `judge`) used as a statement no longer makes a value and throws it away.
+  - `x |= ...` and `p >> field |= ...` used as statements no longer copy the stored value and throw the copy away.
+
+## 0.51.72 — 2026-11-20
+
+- Calls and DES formulas do less work per step, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.71 on the same machine (time; peak memory): without regions 33.3 s → 33.4 s (97 → 100 MB); 4 regions on one thread 66.6 s → 64.5 s (273 → 270 MB); 4 regions on 4 threads 29.9 s → 29.5 s (357 → 347 MB); 4 regions on 8 threads 30.4 s → 29.5 s (351 → 356 MB). The gains are small, 1 to 3%, and within this machine's noise without regions. Every sim's output and event log is the same as before.
+  - An action called from a builtin, a DES formula or a method call reuses the variable slots of a call that has returned, as a plain call already did.
+  - A plain argument (a number, text, a list) is read once when a call is set up, not three times.
+  - Decimal arithmetic and comparisons in the fast loop read their numbers in place instead of copying them.
+  - A link's formula gets `self` and `target` without a new list on every read.
+  - `==` and `!=` on two objects in a DES formula or `:objects` condition compare their ids without copying them.
+
+## 0.51.71 — 2026-11-20
+
+- Faster and smaller, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.70 on the same machine (time; peak memory): without regions 36.7 s → 32.8 s (115 → 100 MB); 4 regions on one thread 67.7 s → 64.2 s (317 → 271 MB); 4 regions on 4 threads 30.7 s → 29.5 s (377 → 347 MB); 4 regions on 8 threads 31.0 s → 29.7 s (382 → 347 MB). Every sim's output and event log is the same as before.
+  - When an action returns, its own variables are freed at once, unless a closure captured one. Before, they stayed until the next collection.
+  - Collections start once 8,192 variables are held instead of 65,536 (or at twice what was still in use after the last one), so dead values are let go sooner. With the variables of finished calls already gone, collecting this often costs no time.
+
+## 0.51.70 — 2026-11-19
+
+- Less memory for DES phases, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.69 on the same machine (time; peak memory): without regions 41.2 s → 40.4 s (131 → 116 MB); 4 regions on one thread 75.2 s → 77.4 s (400 → 310 MB); 4 regions on 4 threads 36.4 s → 35.3 s (471 → 372 MB); 4 regions on 8 threads 35.5 s → 36.0 s (462 → 374 MB). The times are the same within this machine's noise. Every sim's output and event log is the same as before.
+  - Each phase of a `:tick()` block no longer keeps its own copy of every class's code. A phase's view of the classes held all of every class's actions and phase blocks, once per phase, in the program and in every region.
+  - `==` and `!=` on two objects, or on nil, true/false and numbers, and `+`, `-`, `*`, `/`, `<`, `<=`, `>`, `>=` on decimals, are done in the VM's fast loop instead of its general step.
+
+## 0.51.69 — 2026-11-19
+
+- The conformance case `des_unrelated_class_mutation` is marked a known interpreter gap: the interpreter has no mutation into an unrelated class, and it is being retired. The conformance suite passes on both engines.
+
+## 0.51.68 — 2026-11-19
+
+- Faster `:objects` conditions and DES formulas, with the same results. The capstone, 100 years at seed 42, median of three runs alternating with 0.51.67 on the same machine (time; peak memory): without regions 50.8 s → 43.9 s (138 → 141 MB); 4 regions on one thread 91.4 s → 84.1 s (398 → 393 MB); 4 regions on 4 threads 41.8 s → 40.1 s (466 → 475 MB); 4 regions on 8 threads 40.9 s → 39.2 s (471 → 474 MB). Every sim's output and event log is the same as before.
+  - An `:objects(Class, ...)` condition that reads a link (`:link_score`), uses `:min`, `:max`, `:abs`, `:clamp` or another math builtin, calls an action that only reads, or asks `x.nix?` is now worked out on each object directly, as a plain one already was, instead of through a full call per object. A condition such as `:min(it >> x, 5) >= 3 and it >> owner == p` takes half as long.
+  - `x.nix?` in a DES formula or condition no longer hands the formula to the full VM.
+  - `:min`, `:max`, `:abs` and `:clamp` on numbers in a formula are worked out without building their argument list again.
+  - Whether a name after `>>` or `.` is a builtin member (`len`, `nix?`, ...) is looked up once per name, not checked against every member name on each read.
+
+## 0.51.67 — 2026-11-19
+
+- Faster DES on regions, with the same results. The capstone, 100 years at seed 42 (0.51.66 → 0.51.67, run one after the other on the same machine; peak memory is the most the process held): 4 regions on 4 threads 48.4 s → 43.5 s (472 → 468 MB); 4 regions on 8 threads 45.5 s → 42.1 s (495 → 476 MB); 4 regions on one thread 100.0 s → 92.2 s (411 → 410 MB); without regions 50.1 s → 51.6 s (136 → 133 MB), the same within this machine's noise. Every sim's output and event log is the same as before.
+  - Reading a link and passing an object to a formula's action look the object up by its id, not by its text, which went through the thread's table of ids on every read.
+  - Copying values between regions and the program uses a faster hash for the strings and shared values it remembers.
+  - The program running a world keeps a region's overlay it rebuilt for the rest of the tick when its fields hold lists or maps too, not only plain values.
+  - The snapshots a tick replaces are freed while the regions run the next round, instead of while every region waits.
+
+## 0.51.66 — 2026-11-19
+
+- Faster DES, with the same results. The capstone, 100 years at seed 42, on 4 cores: without regions 53.5 s → 42.7 s; 4 regions on 4 threads 38.0 s → 33.5 s; 4 regions on one thread 94.3 s → 76.4 s. Every sim's output and event log is the same as before.
+  - Reading a link no longer builds text keys to look it up, and finds the link's declaration once per read instead of three times.
+  - The index of who has links to whom is kept up to date as links change, instead of being built again after every change. A query narrowed by a link (`where :link_score(self, target, ...)`) no longer copies the list of linked objects.
+  - A link's formula is run from its declaration instead of a copy of it.
+  - In regions: another region's overlays are found by their host instead of by looking through all of them, and its links are copied in without looking each one up first.
+  - The program running a world rebuilds a region's overlay once a tick when it reads it (`:overlays(x)`), instead of on every read.
+  - Starting several regions at once works out what their DES code can reach once instead of once per region.
+- The civilization, epidemic, feudal, predator-prey and town_des checks' expected outputs are recorded again: 0.51.65 gave each actor its own dice, which changed what these sims roll.
+
+## 0.51.65 — 2026-11-19
+
+- Each new actor gets dice of its own. Before, an actor's dice were seeded with the program's next roll, so each actor rolled the same numbers as the actor started before it, one roll behind: two regions' herds rose and fell together. Results stay the same from run to run and on any number of threads, but programs that start actors or regions roll different numbers than before (the capstone's `expected_history.txt` and `world_guide_on_regions` were recorded again).
+
+## 0.51.64 — 2026-11-18
+
+- `:delete_object!(x)` writes an `erase` line to the event log, as an erase transition does, so the object's timeline shows how it ended. Before, only what it destroyed through `contents: destroy` got a line.
+
+## 0.51.63 — 2026-11-18
+
+- A container's class can say `contents: destroy`. When it is erased (by an erase transition or `:delete_object!`), whatever it still holds after its `on erase` code is erased with it. Each thing goes through its own erase: its `on erase` code runs, it gets its own `erase` line in the event log, and its own contents follow its own class's rule. A bag destroyed inside a burning chest drops its things into the chest, and they burn too. Without the line, contents move up as before. A class can no longer have a field named `contents` whose value is a variable named `destroy`.
+
+## 0.51.62 — 2026-11-18
+
+- A full container passes things up instead of refusing them. A juice box put in a full lunchbox goes into the backpack holding the lunchbox, or past a full backpack to whoever carries it: the first container above with room. An object made inside a full container lands the same way. Only when nothing above has room is it R1267, and nothing moves.
+- When a container is destroyed, each thing it held goes to the first container above with room, and the destroyed container no longer takes up room in its own container. When nothing above has room, things go to the topmost container anyway, so nothing is lost. The same goes for contents an absorb, merge or split hands on.
+
+## 0.51.61 — 2026-11-18
+
+- A container's `capacity` is enforced. `capacity: N` counts what is directly inside; `capacity from f: N` adds up field `f` of what is inside. Putting an object into a full container, by setting its `owner` or by making it there, is R1267 (container-full) and changes nothing. A container's contents still move up to its own container when it is erased, whatever room that container has.
+- `capacity` can come before, between or after a class's fields (it was a parse error before the fields).
+- `:owned_by(x)` and `:owns_tree(x)` read `owner`, the field ownership uses everywhere else, instead of a fixed `owner_id` field. `:owns_tree` names each object (`Place the inn`: its `name`, else the variable that names it) in the order it came to its container, instead of printing ids.
+- `:clone_object(x)` gives a copy that is inside nothing (`owner` nil) with its own `id`, instead of adding an `owner_id` field.
+
+## 0.51.60 — 2026-11-18
+
+- An overlay's transition lines (its condition, `targets:` and field lists) read the copy's own fields by name, as its `every`, `modify` and `on` lines do: `transition mutate where damage < 2` with `carries:` `damage: damage * 3`. `@damage` still works there.
+
+## 0.51.59 — 2026-11-17
+
+- Reading or changing a link a class does not declare (R1228) now shows the `link` block to write, instead of a one-line form the parser no longer takes.
+
 ## 0.51.58 — 2026-11-17
 
 - `:write_png!`'s picture-on-a-mask options are named for what they do, not for maps: `mask` and `outside` (they were `coastline` and `sea` in 0.51.57; that entry now uses the new names). The same pictures come out.

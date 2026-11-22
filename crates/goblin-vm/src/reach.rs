@@ -69,17 +69,7 @@ impl Base {
         // DES formulas (decision conditions and scores, order, transitions,
         // overlays, links) are compiled when a tick runs; they can read
         // globals and call actions. Every name in them counts.
-        let mut des = String::new();
-        for c in session.classes.values() {
-            if c.decisions.is_empty() && c.decision.is_none() && c.transitions.is_empty() && c.order_by.is_none() { continue; }
-            des.push_str(&format!("{:?}{:?}{:?}{:?}{:?}", c.decision, c.judge, c.decisions, c.transitions, c.order_by));
-        }
-        for d in session.overlay_defs.values() { des.push_str(&format!("{d:?}")); }
-        for d in session.link_defs.values() { des.push_str(&format!("{d:?}")); }
-        for d in session.object_link_defs.values() { des.push_str(&format!("{d:?}")); }
-        for d in session.object_decisions.values() { des.push_str(&format!("{d:?}")); }
-        for d in session.overlay_classes.values() { des.push_str(&format!("{d:?}")); }
-        if !des.is_empty() { w.words(&des, true); }
+        for i in des_marks(session, &tokens).iter() { w.mark(*i); }
         // Field defaults that are not plain literals run when an object is
         // made, so the globals they read count too.
         let mut defaults = Vec::new();
@@ -97,6 +87,70 @@ impl Base {
         let (all, slots, seen, maybe) = (w.all, w.slots, w.seen, w.maybe);
         Base { all, slots, seen, tokens, maybe, _defaults: defaults }
     }
+}
+
+/// The DES definitions a set of `des_marks` was worked out from: held, so
+/// a definition that changes is a new one.
+struct DesTables {
+    classes: Rc<HashMap<String, goblin_ast::ClassDecl>>,
+    names: Rc<Vec<String>>,
+    defs: Vec<Rc<crate::session::OverlayDef>>,
+    links: Vec<Rc<crate::session::LinkDef>>,
+    decisions: Vec<Rc<goblin_ast::DecisionDef>>,
+    overlay_classes: Vec<Rc<goblin_ast::OverlayDefStmt>>,
+}
+
+impl DesTables {
+    fn of(s: &Session) -> DesTables {
+        DesTables {
+            classes: s.classes.clone(),
+            names: s.global_names.clone(),
+            defs: s.overlay_defs.values().cloned().collect(),
+            links: s.link_defs.values().chain(s.object_link_defs.values()).cloned().collect(),
+            decisions: s.object_decisions.values().cloned().collect(),
+            overlay_classes: s.overlay_classes.values().cloned().collect(),
+        }
+    }
+    fn same(&self, o: &DesTables) -> bool {
+        fn same_rcs<T>(a: &[Rc<T>], b: &[Rc<T>]) -> bool { a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Rc::ptr_eq(x, y)) }
+        Rc::ptr_eq(&self.classes, &o.classes) && Rc::ptr_eq(&self.names, &o.names)
+            && same_rcs(&self.defs, &o.defs) && same_rcs(&self.links, &o.links)
+            && same_rcs(&self.decisions, &o.decisions) && same_rcs(&self.overlay_classes, &o.overlay_classes)
+    }
+}
+
+thread_local! {
+    static DES_MARKS: std::cell::RefCell<Option<(DesTables, Rc<Vec<usize>>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The global slots named anywhere in the program's DES formulas (decision
+/// conditions and scores, order, transitions, overlays, links): they are
+/// compiled when a tick runs and can read globals and call actions, so
+/// every name in them counts. Worked out again only when a definition
+/// changes (starting several regions at once does it once).
+fn des_marks(session: &Session, tokens: &HashMap<String, Vec<usize>>) -> Rc<Vec<usize>> {
+    let now = DesTables::of(session);
+    if let Some(hit) = DES_MARKS.with(|c| c.borrow().as_ref().filter(|(t, _)| t.same(&now)).map(|(_, m)| m.clone())) {
+        return hit;
+    }
+    let mut des = String::new();
+    for c in session.classes.values() {
+        if c.decisions.is_empty() && c.decision.is_none() && c.transitions.is_empty() && c.order_by.is_none() { continue; }
+        des.push_str(&format!("{:?}{:?}{:?}{:?}{:?}", c.decision, c.judge, c.decisions, c.transitions, c.order_by));
+    }
+    for d in session.overlay_defs.values() { des.push_str(&format!("{d:?}")); }
+    for d in session.link_defs.values() { des.push_str(&format!("{d:?}")); }
+    for d in session.object_link_defs.values() { des.push_str(&format!("{d:?}")); }
+    for d in session.object_decisions.values() { des.push_str(&format!("{d:?}")); }
+    for d in session.overlay_classes.values() { des.push_str(&format!("{d:?}")); }
+    let mut marks = Vec::new();
+    for word in des.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+        if word.is_empty() { continue; }
+        if let Some(slots) = tokens.get(word) { marks.extend(slots.iter().copied()); }
+    }
+    let marks = Rc::new(marks);
+    DES_MARKS.with(|c| *c.borrow_mut() = Some((now, marks.clone())));
+    marks
 }
 
 /// The globals one actor can reach, given the program's `Base`.

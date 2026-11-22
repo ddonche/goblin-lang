@@ -23,7 +23,7 @@ fn err(m: impl Into<String>) -> GoblinError { GoblinError::Runtime(m.into()) }
 
 fn items(v: &Value) -> Option<Vec<Value>> {
     match v {
-        Value::Array(xs) => Some(xs.clone()),
+        Value::Array(xs) => Some((xs.clone()).into_vec()),
         Value::Collection(c) if !c.is_map() => Some(crate::collections::to_vec(c)),
         _ => None,
     }

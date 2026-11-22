@@ -36,6 +36,7 @@ type Classes = std::rc::Rc<std::collections::HashMap<String, goblin_ast::ClassDe
 pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
     let view = phase_view(vm, name)?;
     let base = std::mem::replace(&mut vm.session.classes, view);
+    let outer = vm.session.phase_base.replace(base.clone());
     let own = std::mem::take(&mut vm.session.object_decisions);
     vm.session.des_ticks += 1;
     vm.session.phase = Some(name.into());
@@ -43,6 +44,7 @@ pub fn run_phase(vm: &mut Vm, name: &str) -> Result<(), GoblinError> {
     vm.session.phase = None;
     vm.session.des_ticks -= 1;
     vm.session.classes = base;
+    vm.session.phase_base = outer;
     vm.session.object_decisions = own;
     des_flush_pending(vm);
     r
@@ -96,8 +98,30 @@ fn phase_view(vm: &mut Vm, name: &str) -> Result<Classes, GoblinError> {
         if std::rc::Rc::ptr_eq(from, &base) { return Ok(view.clone()); }
     }
     let view: std::collections::HashMap<String, goblin_ast::ClassDecl, rustc_hash::FxBuildHasher> = base.iter().map(|(k, c)| {
-        let mut v = c.clone();
-        v.judge = None;
+        // Its phase blocks and actions stay out: the view holds the phase it
+        // runs (below), and copying every class's code into every phase's
+        // view kept it in each session once per phase. The actions (compiled
+        // when the class was made) are read from the classes themselves
+        // (`Session::phase_base`).
+        let mut v = goblin_ast::ClassDecl {
+            name: c.name.clone(),
+            fields: c.fields.clone(),
+            actions: Vec::new(),
+            decision: None,
+            judge: None,
+            transitions: Vec::new(),
+            capacity: c.capacity.clone(),
+            destroy_contents: c.destroy_contents,
+            every: Vec::new(),
+            decisions: Vec::new(),
+            on_erase: c.on_erase.clone(),
+            one_of: Vec::new(),
+            order_by: c.order_by.clone(),
+            decide: None,
+            phases: Vec::new(),
+            uses: c.uses.clone(),
+            span: c.span.clone(),
+        };
         match c.phases.iter().find(|p| p.name == name) {
             Some(p) => {
                 v.transitions = p.transitions.clone();
@@ -636,7 +660,7 @@ fn spread_pass(vm: &mut Vm) -> Result<(), GoblinError> {
             let candidates = match def.host_types.as_slice() {
                 [class] => match narrow(vm, &rule.condition, false, class, &self_ref, self_at, &candidates) {
                     Some(fewer) => {
-                        let keep: std::collections::HashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
+                        let keep: rustc_hash::FxHashSet<usize> = fewer.iter().map(|(_, i)| *i).collect();
                         std::rc::Rc::new(candidates.iter().filter(|(_, i)| keep.contains(i)).cloned().collect())
                     }
                     None => candidates,
@@ -1424,6 +1448,10 @@ fn judge_reads_only(vm: &mut Vm, class: &goblin_ast::ClassDecl, action: &str) ->
     let calls = match vm.judge_calls.get(&key) {
         Some(c) => c.clone(),
         None => {
+            // During a phase the class table is the phase's view, which has
+            // no actions: they are in the classes it was made from.
+            let base = vm.session.phase_base.clone();
+            let class = base.as_deref().and_then(|b| b.get(&class.name)).unwrap_or(class);
             let Some(a) = class.actions.iter().find(|a| a.name == action) else { return false };
             let mut calls = Some(Vec::new());
             let body: &[goblin_ast::Stmt] = match &a.body { goblin_ast::ActionBody::Block(b) => b, _ => &[] };
@@ -1754,34 +1782,56 @@ pub(crate) fn derive_link_formula_range(expr: &goblin_ast::Expr) -> (f64, f64) {
     }
 }
 
-/// The class declaration of A's link on `channel` (`link Nation trade 0...1`).
-fn link_decl(vm: &Vm, from: &str, channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
-    let class = match vm.session.object_store.get(from) {
-        Some(Value::Object(o)) => o.class_name[..].to_string(),
-        _ => return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into())),
+/// The class declaration of A's link on `channel` (a `link trade` block that `hosts:` the class).
+fn link_decl(vm: &Vm, from: &(impl crate::value::IdKey + ?Sized), channel: &str) -> Result<std::rc::Rc<crate::session::LinkDef>, GoblinError> {
+    use crate::session::Key2;
+    let Some(Value::Object(o)) = vm.session.object_store.get(from) else {
+        return Err(GoblinError::Runtime("R1225: link-not-object: a link end is not an object that exists".into()));
     };
-    vm.session.link_defs.get(&(class.clone(), channel.to_string())).cloned().ok_or_else(|| GoblinError::Runtime(format!(
-        "R1228: link-undeclared: {class} has no `{channel}` link; declare it with its range first: `link {class} {channel} 0...1` or `link {class} {channel} bool`")))
+    let class: &str = &o.class_name;
+    vm.session.link_defs.get(&(class, channel) as &dyn Key2).cloned().ok_or_else(|| GoblinError::Runtime(format!(
+        "R1228: link-undeclared: {class} has no `{channel}` link; declare it with a block: `link {channel}`, `hosts: {class}`, `range: 0...1` (or `range: bool`), `xx`")))
+}
+
+/// The two ends of a link range (`bool` is 0 to 1).
+fn decl_bounds(decl: &crate::session::LinkDef) -> (f64, f64) {
+    match decl.range {
+        Some(goblin_ast::LinkRange::Between(lo, hi)) => (lo, hi),
+        _ => (0.0, 1.0),
+    }
 }
 
 /// The two ends of A's link range on `channel` (`bool` is 0 to 1).
 pub(crate) fn link_bounds(vm: &Vm, from: &str, channel: &str) -> Result<(f64, f64), GoblinError> {
-    Ok(match link_decl(vm, from, channel)?.range {
-        Some(goblin_ast::LinkRange::Between(lo, hi)) => (lo, hi),
-        _ => (0.0, 1.0),
-    })
+    Ok(decl_bounds(&*link_decl(vm, from, channel)?))
 }
 
 /// Where A's link to B starts before any change: its formula (the
 /// object's own, else its class's), else 0 (kept inside the range).
 pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<f64, GoblinError> {
     let decl = link_decl(vm, from, channel)?;
-    let formula = vm.session.object_link_defs.get(&(from.to_string(), channel.to_string())).map(|d| d.formula.clone())
-        .or_else(|| decl.has_formula.then(|| decl.formula.clone()));
-    // No formula: 0, or the nearer end of the range when 0 is outside it,
-    // so a first `offset` gives the number written.
-    let Some(formula) = formula else { let (lo, hi) = link_bounds(vm, from, channel)?; return Ok(0f64.clamp(lo, hi)) };
-    match vm.eval_tick_expr(&formula, vec![("self", Value::Ref(from.into())), ("target", Value::Ref(to.into()))]) {
+    base_with(vm, &decl, &from.into(), &to.into(), channel)
+}
+
+fn base_with(vm: &mut Vm, decl: &crate::session::LinkDef, from: &crate::value::ObjId, to: &crate::value::ObjId, channel: &str) -> Result<f64, GoblinError> {
+    use crate::session::Key2;
+    let (from_id, to_id) = (from, to);
+    let (from, to): (&str, &str) = (from, to);
+    // The formula's own definition is held (not a copy of the formula), so
+    // its compiled form is found by its place.
+    let own = vm.session.object_link_defs.get(&(from, channel) as &dyn Key2).cloned();
+    let formula = match &own {
+        // A plain number is the start as it is.
+        Some(d) if d.constant.is_some() => return Ok(d.constant.unwrap_or_default()),
+        Some(d) => &d.formula,
+        None if decl.has_formula && decl.constant.is_some() => return Ok(decl.constant.unwrap_or_default()),
+        None if decl.has_formula => &decl.formula,
+        // No formula: 0, or the nearer end of the range when 0 is outside
+        // it, so a first `offset` gives the number written.
+        None => { let (lo, hi) = decl_bounds(decl); return Ok(0f64.clamp(lo, hi)) }
+    };
+    let (me, them) = (Value::Ref(from_id.clone()), Value::Ref(to_id.clone()));
+    match vm.eval_tick_expr_ref(formula, &[("self", &me), ("target", &them)]) {
         Ok(Value::Int(i)) => Ok(i as f64),
         Ok(Value::Float(f)) => Ok(f),
         Ok(Value::Bool(b)) => Ok(if b { 1.0 } else { 0.0 }),
@@ -1795,10 +1845,39 @@ pub(crate) fn link_base(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Res
 /// the pair, kept inside the declared range. A `bool` link gives true or
 /// false. Links go one way: B's link to A is its own.
 pub(crate) fn link_value(vm: &mut Vm, from: &str, to: &str, channel: &str) -> Result<Value, GoblinError> {
-    let decl = link_decl(vm, from, channel)?;
-    let (lo, hi) = link_bounds(vm, from, channel)?;
-    let base = link_base(vm, from, to, channel)?;
-    let changes: f64 = vm.session.link_offsets.get(&(from.to_string(), to.to_string(), channel.to_string()))
+    link_value_of(vm, &from.into(), &to.into(), channel)
+}
+
+/// `link_value_of` for a link that starts with no formula to run (a plain
+/// number, or none): None when it has one, or the link is not there (the
+/// caller then asks `link_value_of`, which runs it or says what is wrong).
+pub(crate) fn link_value_plain(vm: &Vm, from_id: &crate::value::ObjId, to_id: &crate::value::ObjId, channel: &str) -> Option<Value> {
+    use crate::session::{Key2, Key3};
+    let (from, to): (&str, &str) = (from_id, to_id);
+    let decl = link_decl(vm, from_id, channel).ok()?;
+    let (lo, hi) = decl_bounds(&decl);
+    let base = match vm.session.object_link_defs.get(&(from, channel) as &dyn Key2) {
+        Some(d) => d.constant?,
+        None if decl.has_formula => decl.constant?,
+        None => 0f64.clamp(lo, hi),
+    };
+    let changes: f64 = vm.session.link_offsets.get(&(from, to, channel) as &dyn Key3)
+        .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
+    let v = (base + changes).clamp(lo, hi);
+    Some(match decl.range {
+        Some(goblin_ast::LinkRange::Bool) => Value::Bool(v >= 1.0),
+        _ => Value::Float(v),
+    })
+}
+
+/// `link_value`, with both ends given by id.
+pub(crate) fn link_value_of(vm: &mut Vm, from_id: &crate::value::ObjId, to_id: &crate::value::ObjId, channel: &str) -> Result<Value, GoblinError> {
+    use crate::session::Key3;
+    let (from, to): (&str, &str) = (from_id, to_id);
+    let decl = link_decl(vm, from_id, channel)?;
+    let (lo, hi) = decl_bounds(&decl);
+    let base = base_with(vm, &decl, from_id, to_id, channel)?;
+    let changes: f64 = vm.session.link_offsets.get(&(from, to, channel) as &dyn Key3)
         .map(|v| v.iter().map(|o| o.value).sum()).unwrap_or(0.0);
     let v = (base + changes).clamp(lo, hi);
     Ok(match decl.range {
@@ -1935,12 +2014,11 @@ fn call_object_action(vm: &mut Vm, uuid: &str, action: &str, args: Vec<Value>) -
 /// `call_object_action`, giving what the action returned (nil when the
 /// object is gone).
 fn action_result(vm: &mut Vm, uuid: &str, action: &str, mut args: Vec<Value>) -> Result<Value, GoblinError> {
-    let class_name = match vm.session.object_store.get(uuid) {
-        Some(Value::Object(o)) => o.class_name[..].to_string(),
-        Some(_) => String::new(),
+    let method = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => vm.session.compiled_methods.get(&(&*o.class_name, action) as &dyn crate::session::Key2).cloned(),
+        Some(_) => vm.session.compiled_methods.get(&("", action) as &dyn crate::session::Key2).cloned(),
         None => return Ok(Value::Nil),
     };
-    let method = vm.session.compiled_methods.get(&(class_name, action.to_string())).cloned();
     args.insert(0, Value::Ref(uuid.to_string().into()));
     let mut out = Value::Nil;
     with_erase_check(vm, |vm| {
@@ -2073,9 +2151,10 @@ pub(crate) fn erase_object(vm: &mut Vm, uuid: &str, on_erase: Option<&str>) -> R
         vm.session.des_erasing.retain(|u| u != uuid);
         r?;
     }
+    destroy_contents(vm, uuid)?;
     crate::world::note_erased(&mut vm.session, uuid);
     crate::holdings::hand_over(&mut vm.session, uuid, None);
-    vm.session.object_store.move_contents_up(uuid);
+    crate::world::move_contents_up(&mut vm.session, uuid);
     vm.session.object_store.shift_remove(uuid);
     Ok(())
 }
@@ -2088,11 +2167,39 @@ pub(crate) fn run_on_erase(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
         Some(Value::Object(o)) => o.class_name[..].to_string(),
         _ => return Ok(()),
     };
-    let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) else { return Ok(()) };
-    vm.session.des_erasing.push(uuid.to_string());
-    let r = call_object_action(vm, uuid, &action, Vec::new());
-    vm.session.des_erasing.retain(|u| u != uuid);
-    r
+    if let Some(action) = vm.session.classes.get(&class).and_then(|c| c.on_erase.clone()) {
+        vm.session.des_erasing.push(uuid.to_string());
+        let r = call_object_action(vm, uuid, &action, Vec::new());
+        vm.session.des_erasing.retain(|u| u != uuid);
+        r?;
+    }
+    destroy_contents(vm, uuid)
+}
+
+/// A container whose class says `contents: destroy`: what it still holds
+/// (after its `on erase` code) is erased with it, each thing as its own
+/// erase (its `on erase` code runs, and its own contents follow its own
+/// class's rule). Otherwise nothing: its contents move up.
+pub(crate) fn destroy_contents(vm: &mut Vm, uuid: &str) -> Result<(), GoblinError> {
+    let destroy = match vm.session.object_store.get(uuid) {
+        Some(Value::Object(o)) => vm.session.classes.get(&*o.class_name).is_some_and(|c| c.destroy_contents),
+        _ => false,
+    };
+    if !destroy { return Ok(()); }
+    // Until it is empty: a bag erased inside it drops its things into it,
+    // and those go too.
+    loop {
+        let Some(k) = vm.session.object_store.contents_of(uuid).next().map(str::to_string) else { return Ok(()) };
+        let on_erase = match vm.session.object_store.get(k.as_str()) {
+            Some(Value::Object(o)) => vm.session.classes.get(&*o.class_name).and_then(|c| c.on_erase.clone()),
+            _ => None,
+        };
+        erase_object(vm, &k, on_erase.as_deref())?;
+        if vm.session.object_store.contains_key(k.as_str()) && vm.session.object_store.holder_of(k.as_str()).is_some_and(|h| h.as_str() == uuid) {
+            // Not erased (another region holds it): leave the rest to move up.
+            return Ok(());
+        }
+    }
 }
 
 /// The action a judge arm calls, and the arguments it writes (none for a

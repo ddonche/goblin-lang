@@ -367,9 +367,58 @@ pub enum Opcode {
     RepeatStart(u16),
     /// In a condition `repeat`, after its test passed: idx = the counter.
     RepeatIdx(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst`, a
+    /// comparison, `JumpIfFalse | JumpIfTrue` (put in by the compiler when a
+    /// function is finished; the three steps after it stay as they were).
+    /// When both sides are plain numbers the VM does all four at once;
+    /// otherwise, and for everything that reads code, it is `LoadLocal(slot)`
+    /// (see `Opcode::plain`).
+    CmpJump(u16),
+    /// `LoadLocal(slot)` at the start of `LoadLocal | LoadConst` and `+`,
+    /// `-`, `*` or a comparison (put in like `CmpJump`, the two steps after
+    /// it kept): with two plain numbers the VM pushes the result at once;
+    /// otherwise it is `LoadLocal(slot)` (see `Opcode::plain`).
+    BinLocal(u16),
+    /// `LoadConst(c)` at the start of `LoadConst(c)`, `AppendLocal(s)`,
+    /// `GuardRebindLocal(s, _)`, `StoreLocal(s)` (`x |= x + 1`; put in like
+    /// `CmpJump`, the steps after it kept): with a whole number in `x` and
+    /// in the constant, the VM writes the sum into `x` at once; otherwise
+    /// it is `LoadConst(c)` (see `Opcode::plain`).
+    IncLocal(u16),
+    /// `LoadLocal(src)` at the start of `LoadLocal(src)`,
+    /// `GuardRebindLocal(d, _)`, `StoreLocal(d)` (`a |= b`): with a number,
+    /// bool or nil in both, the VM copies `b` into `a` at once; otherwise it
+    /// is `LoadLocal(src)`.
+    MoveLocal(u16),
+    /// `Jump(offset)` back to a `RepeatNext` (the end of a `repeat` pass):
+    /// the VM also runs that `RepeatNext` and, for a condition loop, the
+    /// test (`CmpJump`) and `RepeatIdx` after it, while they take the fast
+    /// way; otherwise it is `Jump(offset)`.
+    LoopJump(i16),
+    /// `LoadLocal(slot)` / `LoadConst(c)` at the start of a run of number
+    /// steps (loads of locals and constants, `+ - * /`, comparisons) that
+    /// leaves one value, with `op_data[idx]` (a `Calc`) holding the run as
+    /// register code. The VM works the run out on its own registers, with no
+    /// pushes or pops, and stores the result into a variable, jumps on it or
+    /// pushes it, as the steps after the run would. When a value isn't a
+    /// plain number it is the plain load and the steps run one by one.
+    CalcL(u16, u16),
+    CalcK(u16, u16),
 }
 
 impl Opcode {
+    /// The step as written: `CmpJump(s)` is `LoadLocal(s)`.
+    #[inline(always)]
+    pub fn plain(self) -> Opcode {
+        match self {
+            Opcode::CmpJump(s) | Opcode::BinLocal(s) | Opcode::MoveLocal(s) => Opcode::LoadLocal(s),
+            Opcode::IncLocal(c) | Opcode::CalcK(c, _) => Opcode::LoadConst(c),
+            Opcode::CalcL(s, _) => Opcode::LoadLocal(s),
+            Opcode::LoopJump(o) => Opcode::Jump(o),
+            op => op,
+        }
+    }
+
     /// Returns the opcode name as a static string (for the disassembler).
     pub fn name(&self) -> &'static str {
         match self {
@@ -439,6 +488,13 @@ impl Opcode {
             Opcode::RepeatNext(_) => "RepeatNext",
             Opcode::RepeatStart(_) => "RepeatStart",
             Opcode::RepeatIdx(_) => "RepeatIdx",
+            Opcode::CmpJump(_) => "CmpJump",
+            Opcode::BinLocal(_) => "BinLocal",
+            Opcode::IncLocal(_) => "IncLocal",
+            Opcode::MoveLocal(_) => "MoveLocal",
+            Opcode::LoopJump(_) => "LoopJump",
+            Opcode::CalcL(..) => "CalcL",
+            Opcode::CalcK(..) => "CalcK",
             Opcode::CallBuiltinMut(..) => "CallBuiltinMut",
             Opcode::CallBuiltinMutPath(..) => "CallBuiltinMutPath",
             Opcode::AgendaCall(..) => "AgendaCall",
@@ -517,7 +573,41 @@ pub enum OpData {
     QuickSet(Box<QuickSet>),
     ObjectsOwned(Box<ObjectsOwned>),
     Repeat(RepeatSlots),
+    Calc(Box<Calc>),
 }
+
+/// A run of number steps as register code (see `Opcode::CalcL`).
+#[derive(Debug, Clone)]
+pub struct Calc {
+    /// The run in order, each step on the registers the stack would hold.
+    pub ops: Vec<COp>,
+    /// How many steps the run is.
+    pub len: u16,
+    /// What the steps right after the run do with its value.
+    pub tail: CalcTail,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum COp {
+    Local(u16),
+    Int(i64),
+    Float(f64),
+    Add, Sub, Mul, Div,
+    Lt, Le, Gt, Ge, Eq, Ne,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CalcTail {
+    /// Left on the stack.
+    Push,
+    /// `GuardRebindLocal(d, _)`, `StoreLocal(d)`.
+    Store(u16),
+    /// `JumpIfFalse(o)` (false) / `JumpIfTrue(o)` (true).
+    Jump(bool, i16),
+}
+
+/// The most registers a `Calc` uses.
+pub const CALC_REGS: usize = 16;
 
 /// The locals a `repeat` loop keeps, and where its pass goes.
 #[derive(Debug, Clone)]

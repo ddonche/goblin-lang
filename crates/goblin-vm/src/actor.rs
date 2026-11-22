@@ -876,7 +876,7 @@ fn graph_of(v: &Value, session: &Session, out: &mut HashSet<String>) {
             Value::Object(o) => {
                 // The stored object is the current one; an inline copy may be older.
                 let first = out.insert(o.uuid.to_string());
-                if let Some(Value::Object(stored)) = session.object_store.get(&*o.uuid) {
+                if let Some(Value::Object(stored)) = session.object_store.get(&o.uuid) {
                     if first { stack.extend(not_owner(&stored.fields)); }
                 }
                 stack.extend(not_owner(&o.fields));
@@ -1032,7 +1032,9 @@ impl Vm {
             handler: p_handler,
             stop_when: p_stop,
             idle: policy.idle,
-            seed: self.session.next_u128(),
+            // Mixed, so one actor's dice never repeat another's a draw
+            // later (the next actor's seed is this program's next draw).
+            seed: crate::swarm::task_seed(self.session.next_u128(), 0),
             worker_id: self.session.worker_id,
             restart: policy.restart,
         })));

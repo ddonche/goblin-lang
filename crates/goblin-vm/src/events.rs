@@ -179,7 +179,7 @@ fn named(vm: &Vm, class: &str, uuid: &str, name: Option<&Value>) -> String {
 pub fn who_value(vm: &Vm, v: &Value) -> Option<String> {
     match v {
         Value::Ref(u) => Some(who(vm, u)),
-        Value::Object(o) if vm.session.object_store.contains_key(&*o.uuid) => Some(who(vm, &o.uuid)),
+        Value::Object(o) if vm.session.object_store.contains_key(&o.uuid) => Some(who(vm, &o.uuid)),
         Value::Object(o) => Some(named(vm, &o.class_name, &o.uuid, o.fields.get("name"))),
         _ => None,
     }
@@ -228,7 +228,7 @@ fn named_in(session: &crate::session::Session, v: &Value) -> Option<String> {
             Some(Value::Object(o)) => Some(name_of(&o.class_name, u, o.fields.get("name"))),
             _ => Some(name_of("", u, None)),
         },
-        Value::Object(o) => match session.object_store.get(&*o.uuid) {
+        Value::Object(o) => match session.object_store.get(&o.uuid) {
             Some(Value::Object(live)) => Some(name_of(&live.class_name, &o.uuid, live.fields.get("name"))),
             _ => Some(name_of(&o.class_name, &o.uuid, o.fields.get("name"))),
         },
@@ -264,7 +264,7 @@ pub fn event(args: Vec<Value>, session: &mut crate::session::Session) -> Result<
             tellings = Some(m.into_iter().map(|(k, v)| (k, v)).collect());
             Value::Nil
         }
-        Value::Collection(c) => Value::Array(crate::collections::to_vec(&c)),
+        Value::Collection(c) => Value::Array(Into::into(crate::collections::to_vec(&c))),
         a => a,
     }).collect();
     let who = named_in(session, &args[0])
@@ -361,5 +361,5 @@ pub fn timeline(args: Vec<Value>, session: &mut crate::session::Session) -> Resu
         r.read_line(&mut line).map_err(|e| bad(format!("can't read the event log: {e}")))?;
         out.push(Value::Str(line.trim_end_matches('\n').to_string().into()));
     }
-    Ok(Value::Array(out))
+    Ok(Value::Array(Into::into(out)))
 }
