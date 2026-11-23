@@ -932,6 +932,8 @@ pub struct FunctionObject {
     /// Per instruction: for a field read, the layout it last read and the
     /// field's place in it (see `Vm::get_plain_field`). Made on first use.
     pub field_hints: std::cell::OnceCell<Box<[std::cell::Cell<(usize, u32)>]>>,
+    /// Its register code (`GOBLIN_ENGINE=reg`), made on first use.
+    pub(crate) reg: std::cell::OnceCell<Box<crate::vm::reg::Prog>>,
 }
 
 impl FunctionObject {

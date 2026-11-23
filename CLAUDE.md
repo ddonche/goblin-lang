@@ -9,25 +9,13 @@
 - Never say "sorry", "I apologize", or any variant — no emotion language
 - Never say "noted" or imply memory without actually writing it down
 
-## Blueprint architecture (NEVER change without explicit user permission)
-The VM implements the Goblin VM Blueprint v1.2 — register-stack hybrid with arena-backed named slots.
-These are HARD CONSTRAINTS — violating any of them is forbidden regardless of perceived performance benefit:
-
-- `session.arena: Slab<Stash>` — ALL named values live in the arena.
-- `Stash { value: Value, tether_count: usize, generation: u32 }` — exact shape, no changes
-- `Address { slot: u32, generation: u32 }` — exact shape, no changes
-- `Tether { addr: Address }` — frame locals/globals/upvalues hold Tethers (arena-backed, have identity)
-- `pub stack: Vec<Value>` — expression scratch space holds Value directly (NO arena involvement for temporaries). Authorized by Blueprint v1.2.
-- `GcMode { Off, Manual, Auto }` — three modes, always present in Session
-- `session.alloc_value(v)` — called ONLY at binding points: StoreLocal, StoreGlobal, StoreUpvalue, StoreBox, and when building call frame arg lists. Never bypass it for named values.
-- `session.gc_sweep()` — called by `gc()` builtin and Auto mode. Never remove it.
-- `:mem_id(x)` / `:mem_addr(x)` — return errors when called on stack Values (no Tether address)
-- `overwrite!` is the only language-level mutation primitive — it mutates the stash in place
-- Bang writes (`put_last!`, `update!`, `name!(x[k], …)`) rebind the variable; as an optimization the VM applies them to the stash's collection in place when the variable's tether is the only reference to it (`sole_ref_target` in vm.rs), so no alias can observe the change. Approved by the owner 2026-10-06; `tests/conformance/collections/bang_write_keeps_value_semantics.gbln` guards it.
-- Worker isolation: each Worker has its own Session (its own arena). No shared arenas.
-- Do NOT replace the arena with Vec<Value> or any flat structure for "performance"
-- Do NOT change Tether to store Value directly
-- Do NOT make frame locals/globals/upvalues hold Values instead of Tethers
+## VM internals (owner, 2026-11-21)
+The old "VM Blueprint v1.2" (every binding in its own arena slot, Tether/Stash shapes, `alloc_value` at every store) is obsolete and no longer binding. Internals are free to change (registers, values in place, a stash only where needed) as long as the VM is fast, correct and DES works. What must hold:
+- The language behaves the same: the conformance suite passes; closures see captured variables live; `overwrite!` mutates in place; `:mem_id` / `:mem_addr` work; the `gc` builtin works.
+- Bang writes (`put_last!`, `update!`, `name!(x[k], …)`) rebind the variable; applying them in place when nothing else refers to the collection is fine (`tests/conformance/collections/bang_write_keeps_value_semantics.gbln` guards it).
+- DES works and capstone histories stay identical.
+- Worker isolation: each Worker/actor has its own Session; no `Rc` crosses threads.
+- Register VM (approved 2026-11-21, design https://claude.ai/artifact/5Uo4fJoTkvFKifyFn2sajf): built beside the current VM in `crates/goblin-vm/src/vm/reg.rs`, selected with `GOBLIN_ENGINE=reg`. The current VM stays the default until the register VM passes everything (full suite, Sheriff, Campfire, identical capstone histories on all setups, speed and memory benchmarks) and the owner approves the swap.
 
 ## What to skip (user instructions)
 - `money` builtins — skip

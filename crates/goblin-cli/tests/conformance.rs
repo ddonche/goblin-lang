@@ -192,6 +192,8 @@ fn run_case(bin: &Path, root: &Path, rel: &str, engine: Engine, env: &[(String, 
         .env("GOBLIN_CONF_TMP", &tmp)
         .env_remove("GOBLIN_ENGINE")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // `GOBLIN_CONF_REG=1`: the VM cases run on the register VM.
+    if engine == Engine::Vm && std::env::var_os("GOBLIN_CONF_REG").is_some() { cmd.env("GOBLIN_ENGINE", "reg"); }
     for (k, v) in env { cmd.env(k, v); }
 
     let start = Instant::now();
